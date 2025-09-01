@@ -82,7 +82,10 @@ def find_spatial_neighbors_with_slices(
     
     # Pre-allocate output with fixed size, initialized with -1 (invalid)
     total_k = k_central + 2 * n_adjacent_slices * k_adjacent
-    spatial_neighbors = np.full((n_masked, total_k), -1, dtype=np.int32)
+    # Use int16 for indices if possible (saves memory for datasets < 32k cells)
+    max_possible_idx = n_cells - 1
+    idx_dtype = np.int16 if max_possible_idx < 32768 else np.int32
+    spatial_neighbors = np.full((n_masked, total_k), -1, dtype=idx_dtype)
     
     # Get unique slices and create mapping
     unique_slices = np.unique(masked_slice_ids)
@@ -269,8 +272,11 @@ def build_scrna_connectivity(
     connectivities = adata_temp.obsp['connectivities'].tocsr()
     
     # Convert to dense format for consistency with spatial methods
-    neighbor_indices = np.zeros((n_masked, n_neighbors), dtype=np.int32)
-    neighbor_weights = np.zeros((n_masked, n_neighbors), dtype=np.float32)
+    # Use int16 for indices if possible (saves memory for datasets < 32k cells)
+    max_idx = len(cell_indices) - 1 if len(cell_indices) > 0 else 0
+    idx_dtype = np.int16 if max_idx < 32768 else np.int32
+    neighbor_indices = np.zeros((n_masked, n_neighbors), dtype=idx_dtype)
+    neighbor_weights = np.zeros((n_masked, n_neighbors), dtype=np.float16)
     
     for i in range(n_masked):
         row = connectivities.getrow(i)
@@ -449,9 +455,21 @@ class ConnectivityMatrixBuilder:
         # Step 2 & 3: Find anchors and homogeneous neighbors in batches
         logger.info(f"Finding anchors and homogeneous neighbors (batch size: {self.mkscore_batch_size})...")
 
-        # Convert to JAX arrays once
-        all_emb_gcn_norm_jax = jnp.array(emb_gcn)
-        all_emb_indv_norm_jax = jnp.array(emb_indv)
+        # Convert to JAX arrays once with float16 for memory efficiency
+        # Note: float16 provides sufficient precision for normalized embeddings
+        all_emb_gcn_norm_jax = jnp.array(emb_gcn, dtype=jnp.float16)
+        all_emb_indv_norm_jax = jnp.array(emb_indv, dtype=jnp.float16)
+        
+        # Move masked embeddings to GPU once
+        masked_cell_indices = np.where(cell_mask)[0]
+        emb_gcn_masked_jax = all_emb_gcn_norm_jax[masked_cell_indices]
+        emb_indv_masked_jax = all_emb_indv_norm_jax[masked_cell_indices]
+        
+        # Move spatial neighbors to GPU once
+        # Use int16 if max index < 32768, otherwise int32
+        max_neighbor_idx = spatial_neighbors.max()
+        neighbor_dtype = jnp.int16 if max_neighbor_idx < 32768 else jnp.int32
+        spatial_neighbors_jax = jnp.array(spatial_neighbors, dtype=neighbor_dtype)
         
         # Process in batches to avoid GPU OOM
         homogeneous_neighbors_list = []
@@ -461,16 +479,16 @@ class ConnectivityMatrixBuilder:
             batch_end = min(batch_start + self.mkscore_batch_size, n_masked)
             batch_indices = slice(batch_start, batch_end)
             
-            # Get batch data (already normalized)
-            emb_gcn_batch_norm = emb_gcn[cell_mask][batch_indices]
-            emb_indv_batch_norm = emb_indv[cell_mask][batch_indices]
-            spatial_neighbors_batch = spatial_neighbors[batch_indices]
+            # Get batch data directly from JAX arrays (no GPU movement)
+            emb_gcn_batch_norm = emb_gcn_masked_jax[batch_indices]
+            emb_indv_batch_norm = emb_indv_masked_jax[batch_indices]
+            spatial_neighbors_batch = spatial_neighbors_jax[batch_indices]
             
             # Process batch with single JIT-compiled function
             homo_neighbors_batch, homo_weights_batch = _find_anchors_and_homogeneous_batch_jit(
-                jnp.array(emb_gcn_batch_norm),
-                jnp.array(emb_indv_batch_norm),
-                jnp.array(spatial_neighbors_batch),
+                emb_gcn_batch_norm,
+                emb_indv_batch_norm,
+                spatial_neighbors_batch,
                 all_emb_gcn_norm_jax,
                 all_emb_indv_norm_jax,
                 self.config.num_anchor,
