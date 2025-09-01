@@ -30,41 +30,13 @@ logger = logging.getLogger(__name__)
 
 @jit
 def jax_process_chunk(dense_matrix, n_genes):
-    """JAX-optimized processing: ranking + accumulator calculations."""
-    n_rows, n_cols = dense_matrix.shape
 
-    # # Vectorized ranking
-    # # Add small noise to break ties consistently
-    # noise = jax.random.uniform(jax.random.PRNGKey(0), dense_matrix.shape) * 1e-10
-    # matrix_with_noise = dense_matrix + noise
-    #
-    # # Get argsort for each row
-    # sorted_indices = jnp.argsort(matrix_with_noise, axis=1)
-    #
-    # # Create ranks
-    # ranks = jnp.zeros_like(dense_matrix)
-    # row_indices = jnp.arange(n_rows)[:, None]
-    # col_ranks = jnp.arange(1, n_cols + 1)[None, :]
-    #
-    # ranks = ranks.at[row_indices, sorted_indices].set(col_ranks)
-    #
-    # # Handle zeros by setting their rank to 1
-    # ranks = jnp.where(dense_matrix != 0, ranks, 1.0)
-    #
-    # # Compute log ranks
-    # log_ranks = jnp.log(ranks)
-    #
-    # # Compute accumulators for fill_zero logic
     nonzero_mask = dense_matrix != 0
-    # n_nonzero_per_row = nonzero_mask.sum(axis=1, keepdims=True)
-    # zero_log_ranks = jnp.log((n_genes - n_nonzero_per_row + 1) / 2)
 
     ranks = jax.scipy.stats.rankdata(dense_matrix, method='average', axis=1)
     log_ranks = jnp.log(ranks)
     # Sum log ranks (with fill_zero)
     sum_log_ranks = log_ranks.sum(axis=0)
-    # sum_log_ranks += zero_log_ranks.sum() - (zero_log_ranks * nonzero_mask).sum(axis=0)
-
     # Sum fraction (count of non-zeros)
     sum_frac = nonzero_mask.sum(axis=0)
 
@@ -95,7 +67,7 @@ def rank_data_jax(X: csr_matrix, n_genes,
 
     n_rows, n_cols = X.shape
 
-    # Initialize accumulators
+    # Initialize accumulators (use float32 for accumulators to avoid precision loss)
     sum_log_ranks = jnp.zeros(n_genes, dtype=jnp.float32)
     sum_frac = jnp.zeros(n_genes, dtype=jnp.float32)
 
@@ -112,10 +84,10 @@ def rank_data_jax(X: csr_matrix, n_genes,
         for start_idx in range(0, n_rows, chunk_size):
             end_idx = min(start_idx + chunk_size, n_rows)
 
-            # Convert chunk to dense
+            # Convert chunk to dense - use JAX asarray for zero-copy when possible
             chunk_X = X[start_idx:end_idx]
             chunk_dense = chunk_X.toarray().astype(np.float32)
-            chunk_jax = jnp.array(chunk_dense)
+            chunk_jax = jnp.asarray(chunk_dense)  # Use asarray for zero-copy conversion
 
             # Process chunk with JIT-compiled function (ranking + accumulators)
             chunk_log_ranks, chunk_sum_log_ranks, chunk_sum_frac = jax_process_chunk(chunk_jax, n_genes)
@@ -124,8 +96,9 @@ def rank_data_jax(X: csr_matrix, n_genes,
             sum_log_ranks += chunk_sum_log_ranks
             sum_frac += chunk_sum_frac
 
-            # Convert JAX array to numpy
-            chunk_log_ranks_np = np.array(chunk_log_ranks)
+            # Convert JAX array to numpy float16 for storage efficiency
+            # This reduces memory usage by 50% compared to float32
+            chunk_log_ranks_np = np.array(chunk_log_ranks, dtype=np.float16)
             pending_chunks.append(chunk_log_ranks_np)
             # Calculate global indices for this chunk
             global_start = current_row_offset + start_idx
@@ -286,11 +259,12 @@ class RankCalculator:
             if gene_list is None:
                 gene_list = adata.var_names.tolist()
                 n_genes = len(gene_list)
-                # Initialize rank memory map as dense matrix
+                # Initialize rank memory map as dense matrix with float16 for 50% space savings
+                # Log ranks typically have sufficient precision with float16
                 rank_memmap = MemMapDense(
                     str(rank_memmap_path),
                     shape=(total_cells_expected, n_genes),
-                    dtype=np.float32,
+                    dtype=np.float16,  # Use float16 to save space
                     mode='w',
                     num_write_workers=self.config.mkscore_write_workers
                 )
