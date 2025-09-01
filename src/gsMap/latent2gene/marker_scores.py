@@ -37,26 +37,21 @@ class ParallelRankReader:
         num_workers: int = 4,
         cache_size_mb: int = 1000
     ):
+        # Store path and metadata for workers to open their own instances
         if isinstance(rank_memmap, str):
-            # Open as MemMapDense in read mode
-            # Get shape from metadata first
-
-            meta_path = Path(rank_memmap).with_suffix('.meta.json')
+            self.memmap_path = Path(rank_memmap)
+            meta_path = self.memmap_path.with_suffix('.meta.json')
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
-            
-            self.rank_memmap = MemMapDense(
-                path=rank_memmap,
-                shape=tuple(meta['shape']),
-                dtype=np.dtype(meta['dtype']),
-                mode='r'
-            )
-            self.data = self.rank_memmap.memmap
-            self.shape = self.data.shape
+            self.shape = tuple(meta['shape'])
+            self.dtype = np.dtype(meta['dtype'])
         else:
-            self.rank_memmap = rank_memmap
-            self.data = rank_memmap.memmap if hasattr(rank_memmap, 'memmap') else rank_memmap
-            self.shape = rank_memmap.shape if hasattr(rank_memmap, 'shape') else self.data.shape
+            # If MemMapDense instance, extract path and metadata
+            assert hasattr(rank_memmap, 'path')
+            self.memmap_path = rank_memmap.path
+            self.shape = rank_memmap.shape
+            self.dtype = rank_memmap.dtype
+
         self.num_workers = num_workers
         
         # Queues for communication
@@ -83,6 +78,17 @@ class ParallelRankReader:
         """Worker thread for reading batches from memory map"""
         logger.info(f"Reader worker {worker_id} started")
         
+
+        # Open worker's own memory map instance
+        data_path = self.memmap_path.with_suffix('.dat')
+        worker_memmap = np.memmap(
+            data_path,
+            dtype=self.dtype,
+            mode='r',
+            shape=self.shape
+        )
+        logger.info(f"Worker {worker_id} opened its own memory map at {data_path}")
+
         while not self.stop_workers.is_set():
             try:
                 # Get batch request
@@ -100,9 +106,9 @@ class ParallelRankReader:
                 assert flat_indices.max() <= max_idx, \
                     f"Worker {worker_id}: Indices exceed bounds (max: {flat_indices.max()}, limit: {max_idx})"
                 
-                # Read from memory map (direct array access)
+                # Read from worker's own memory map (direct array access)
                 # Memory map stores log-ranks directly
-                rank_data = self.data[flat_indices]
+                rank_data = worker_memmap[flat_indices]
                 
                 # Ensure we have a numpy array
                 if not isinstance(rank_data, np.ndarray):
@@ -124,6 +130,11 @@ class ParallelRankReader:
             except Exception as e:
                 logger.error(f"Reader worker {worker_id} error: {e}")
                 raise
+        
+        # Clean up worker's memory map if it was opened
+        if self.memmap_path is not None and 'worker_memmap' in locals():
+            del worker_memmap
+            logger.info(f"Worker {worker_id} closed its memory map")
     
     def submit_batch(self, batch_id: int, neighbor_indices: np.ndarray):
         """Submit batch for reading"""
@@ -141,8 +152,9 @@ class ParallelRankReader:
         for worker in self.workers:
             worker.join(timeout=5)
         
-        # Close memory map if we own it
-        if hasattr(self, 'rank_memmap'):
+        # No need to close individual worker memmaps as they're cleaned up in _worker
+        # Only close if we have a shared rank_memmap (fallback mode)
+        if hasattr(self, 'rank_memmap') and hasattr(self.rank_memmap, 'close'):
             self.rank_memmap.close()
 
 
@@ -302,43 +314,46 @@ class MarkerScoreCalculator:
         logger.info("Processing batches...")
         pbar = tqdm(total=n_batches, desc=f"Processing {cell_type}")
         
-        for _ in range(n_batches):
-            # Get completed batch - rank_data and indices from worker
-            batch_idx, rank_data, rank_indices, original_shape = reader.get_result()
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, n_cells)
-            actual_batch_size = batch_end - batch_start
-            
-            # Verify shape
-            assert original_shape == (actual_batch_size, self.config.num_homogeneous), \
-                f"Shape mismatch: expected {(actual_batch_size, self.config.num_homogeneous)}, got {original_shape}"
-            
-            # Use fancy indexing in main thread to save memory
-            # This creates the (B*N) × G matrix efficiently
-            batch_ranks = rank_data[rank_indices]
-            
-            # Get batch weights
-            batch_weights = neighbor_weights[batch_start:batch_end]
-            
-            # Compute marker scores using JAX
-            marker_scores = compute_marker_scores_jax(
-                jnp.array(batch_ranks),
-                jnp.array(batch_weights),
-                actual_batch_size,
-                self.config.num_homogeneous,
-                jnp.array(global_log_gmean),
-                jnp.array(global_expr_frac)
-            )
-            marker_scores = np.array(marker_scores)
-            
-            # Write results (async)
-            global_indices = cell_indices_sorted[batch_start:batch_end]
-            output_memmap.write_batch(marker_scores, global_indices)
-            
-            pbar.update(1)
-        
-        pbar.close()
-        logger.info(f"Completed processing {cell_type}")
+        import viztracer
+        with viztracer.VizTracer(output_file=f"marker_score_trace{cell_type}_{n_batches}_thread.json", max_stack_depth=10):
+            for _ in range(n_batches):
+                # Get completed batch - rank_data and indices from worker
+                result = reader.get_result()
+                batch_idx, rank_data, rank_indices, original_shape = result
+                batch_start = batch_idx * batch_size
+                batch_end = min(batch_start + batch_size, n_cells)
+                actual_batch_size = batch_end - batch_start
+
+                # Verify shape
+                assert original_shape == (actual_batch_size, self.config.num_homogeneous), \
+                    f"Shape mismatch: expected {(actual_batch_size, self.config.num_homogeneous)}, got {original_shape}"
+
+                # Use fancy indexing in main thread to save memory
+                # This creates the (B*N) × G matrix efficiently
+                batch_ranks = rank_data[rank_indices]
+
+                # Get batch weights
+                batch_weights = neighbor_weights[batch_start:batch_end]
+
+                # Compute marker scores using JAX
+                marker_scores = compute_marker_scores_jax(
+                    jnp.array(batch_ranks),
+                    jnp.array(batch_weights),
+                    actual_batch_size,
+                    self.config.num_homogeneous,
+                    jnp.array(global_log_gmean),
+                    jnp.array(global_expr_frac)
+                )
+                marker_scores = np.array(marker_scores)
+
+                # Write results (async)
+                global_indices = cell_indices_sorted[batch_start:batch_end]
+                output_memmap.write_batch(marker_scores, global_indices)
+
+                pbar.update(1)
+
+            pbar.close()
+            logger.info(f"Completed processing {cell_type}")
     
     def calculate_marker_scores(
         self,
