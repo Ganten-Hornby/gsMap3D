@@ -158,6 +158,225 @@ class ParallelRankReader:
             self.rank_memmap.close()
 
 
+class ParallelMarkerScoreComputer:
+    """Multi-threaded computer pool for marker score calculation"""
+    
+    def __init__(
+        self,
+        global_log_gmean: np.ndarray,
+        global_expr_frac: np.ndarray,
+        num_homogeneous: int,
+        num_workers: int = 4
+    ):
+        """
+        Initialize computer pool
+        
+        Args:
+            global_log_gmean: Global log geometric mean
+            global_expr_frac: Global expression fraction
+            num_homogeneous: Number of homogeneous neighbors
+            num_workers: Number of compute workers
+        """
+        self.num_workers = num_workers
+        self.num_homogeneous = num_homogeneous
+        
+        # Store global statistics as JAX arrays
+        self.global_log_gmean = jnp.array(global_log_gmean)
+        self.global_expr_frac = jnp.array(global_expr_frac)
+        
+        # Queues for communication
+        self.compute_queue = queue.Queue(maxsize=num_workers * 2)
+        self.result_queue = queue.Queue(maxsize=num_workers * 2)
+        
+        # Start worker threads
+        self.workers = []
+        self.stop_workers = threading.Event()
+        self._start_workers()
+    
+    def _start_workers(self):
+        """Start compute worker threads"""
+        for i in range(self.num_workers):
+            worker = threading.Thread(
+                target=self._compute_worker,
+                args=(i,),
+                daemon=True
+            )
+            worker.start()
+            self.workers.append(worker)
+        logger.info(f"Started {self.num_workers} compute workers")
+    
+    def _compute_worker(self, worker_id: int):
+        """Compute worker thread"""
+        logger.info(f"Compute worker {worker_id} started")
+        
+        while not self.stop_workers.is_set():
+            try:
+                # Get compute request
+                item = self.compute_queue.get(timeout=1)
+                if item is None:
+                    break
+                
+                batch_idx, rank_data, rank_indices, neighbor_weights, cell_indices, batch_size = item
+                
+                # Convert to JAX for efficient computation
+                rank_data_jax = jnp.array(rank_data)
+                rank_indices_jax = jnp.array(rank_indices)
+                
+                # Use JAX fancy indexing
+                batch_ranks = rank_data_jax[rank_indices_jax]
+                
+                # Compute marker scores using JAX
+                marker_scores = compute_marker_scores_jax(
+                    batch_ranks,
+                    jnp.array(neighbor_weights),
+                    batch_size,
+                    self.num_homogeneous,
+                    self.global_log_gmean,
+                    self.global_expr_frac
+                )
+                
+                # Convert back to numpy
+                marker_scores_np = np.array(marker_scores)
+                
+                # Put result for writing
+                self.result_queue.put((batch_idx, marker_scores_np, cell_indices))
+                self.compute_queue.task_done()
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Compute worker {worker_id} error: {e}")
+                raise
+        
+        logger.info(f"Compute worker {worker_id} stopped")
+    
+    def submit_batch(self, batch_idx: int, rank_data: np.ndarray, rank_indices: np.ndarray,
+                    neighbor_weights: np.ndarray, cell_indices: np.ndarray, batch_size: int):
+        """Submit batch for computation"""
+        self.compute_queue.put((batch_idx, rank_data, rank_indices, neighbor_weights, cell_indices, batch_size))
+    
+    def get_result(self):
+        """Get computed marker scores"""
+        return self.result_queue.get()
+    
+    def get_queue_sizes(self):
+        """Get current queue sizes for progress tracking"""
+        return self.compute_queue.qsize(), self.result_queue.qsize()
+    
+    def close(self):
+        """Close compute pool"""
+        self.stop_workers.set()
+        for _ in range(self.num_workers):
+            self.compute_queue.put(None)
+        for worker in self.workers:
+            worker.join(timeout=5)
+        logger.info("Compute pool closed")
+
+
+class ParallelMarkerScoreWriter:
+    """Multi-threaded writer pool for marker scores"""
+    
+    def __init__(
+        self,
+        output_memmap: MemMapDense,
+        num_workers: int = 4
+    ):
+        """
+        Initialize writer pool
+        
+        Args:
+            output_memmap: Output memory map
+            num_workers: Number of writer threads
+        """
+        self.output_memmap = output_memmap
+        self.num_workers = num_workers
+        
+        # Queue for write requests
+        self.write_queue = queue.Queue(maxsize=100)
+        self.completed_count = 0
+        self.completed_lock = threading.Lock()
+        
+        # Start worker threads
+        self.workers = []
+        self.stop_workers = threading.Event()
+        self._start_workers()
+    
+    def _start_workers(self):
+        """Start writer worker threads"""
+        for i in range(self.num_workers):
+            worker = threading.Thread(
+                target=self._writer_worker,
+                args=(i,),
+                daemon=True
+            )
+            worker.start()
+            self.workers.append(worker)
+        logger.info(f"Started {self.num_workers} writer threads")
+    
+    def _writer_worker(self, worker_id: int):
+        """Writer worker thread"""
+        logger.info(f"Writer worker {worker_id} started")
+        
+        while not self.stop_workers.is_set():
+            try:
+                # Get write request
+                item = self.write_queue.get(timeout=1)
+                if item is None:
+                    break
+                
+                batch_idx, marker_scores, cell_indices = item
+                
+                # Write to memory map
+                self.output_memmap.write_batch(marker_scores, cell_indices)
+                
+                # Update completed count
+                with self.completed_lock:
+                    self.completed_count += 1
+                
+                self.write_queue.task_done()
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Writer worker {worker_id} error: {e}")
+                raise
+        
+        logger.info(f"Writer worker {worker_id} stopped")
+    
+    def submit_batch(self, batch_idx: int, marker_scores: np.ndarray, cell_indices: np.ndarray):
+        """Queue a batch for writing"""
+        self.write_queue.put((batch_idx, marker_scores, cell_indices))
+    
+    def get_completed_count(self):
+        """Get number of completed writes"""
+        with self.completed_lock:
+            return self.completed_count
+    
+    def get_queue_size(self):
+        """Get write queue size"""
+        return self.write_queue.qsize()
+    
+    def close(self):
+        """Close writer pool"""
+        logger.info("Closing writer pool...")
+        
+        # Wait for queue to empty
+        if not self.write_queue.empty():
+            logger.info("Waiting for remaining writes...")
+            self.write_queue.join()
+        
+        # Stop workers
+        self.stop_workers.set()
+        for _ in range(self.num_workers):
+            self.write_queue.put(None)
+        
+        # Wait for workers to finish
+        for worker in self.workers:
+            worker.join(timeout=5)
+        
+        logger.info("Writer pool closed")
+
+
 @partial(jit, static_argnums=(2, 3))
 def compute_marker_scores_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix
@@ -310,50 +529,117 @@ class MarkerScoreCalculator:
             batch_neighbors = neighbor_indices[batch_start:batch_end]
             reader.submit_batch(batch_idx, batch_neighbors)
         
-        # Process results as they complete
-        logger.info("Processing batches...")
-        pbar = tqdm(total=n_batches, desc=f"Processing {cell_type}")
+        # Create compute and writer pools
+        logger.info("Initializing compute and writer pools...")
+        computer = ParallelMarkerScoreComputer(
+            global_log_gmean,
+            global_expr_frac,
+            self.config.num_homogeneous,
+            num_workers=getattr(self.config, 'compute_workers', 4)
+        )
         
-        import viztracer
-        with viztracer.VizTracer(output_file=f"marker_score_trace{cell_type}_{n_batches}_thread.json", max_stack_depth=10):
+        writer = ParallelMarkerScoreWriter(
+            output_memmap,
+            num_workers=self.config.mkscore_write_workers
+        )
+        
+        # Process pipeline with fancy progress bar
+        logger.info("Starting processing pipeline...")
+        
+        # Optional profiling
+        use_profiling = getattr(self.config, 'enable_profiling', False)
+        if use_profiling:
+            import viztracer
+            tracer = viztracer.VizTracer(
+                output_file=f"marker_score_trace_{cell_type}_{n_batches}_pipeline.json",
+                max_stack_depth=10
+            )
+            tracer.start()
+        
+        # Create progress bar with custom format
+        pbar = tqdm(
+            total=n_batches,
+            desc=f"Processing {cell_type}",
+            bar_format='{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] |{bar}| [Pending: C:{postfix[0]} W:{postfix[1]}]',
+            postfix=[0, 0]
+        )
+        
+        # Start a thread to move data from reader to computer
+        def reader_to_computer():
             for _ in range(n_batches):
-                # Get completed batch - rank_data and indices from worker
+                # Get batch from reader
                 result = reader.get_result()
                 batch_idx, rank_data, rank_indices, original_shape = result
                 batch_start = batch_idx * batch_size
                 batch_end = min(batch_start + batch_size, n_cells)
                 actual_batch_size = batch_end - batch_start
-
+                
                 # Verify shape
                 assert original_shape == (actual_batch_size, self.config.num_homogeneous), \
                     f"Shape mismatch: expected {(actual_batch_size, self.config.num_homogeneous)}, got {original_shape}"
-
-                # Use fancy indexing in main thread to save memory
-                # This creates the (B*N) × G matrix efficiently
-                batch_ranks = rank_data[rank_indices]
-
-                # Get batch weights
+                
+                # Get batch weights and cell indices
                 batch_weights = neighbor_weights[batch_start:batch_end]
-
-                # Compute marker scores using JAX
-                marker_scores = compute_marker_scores_jax(
-                    jnp.array(batch_ranks),
-                    jnp.array(batch_weights),
-                    actual_batch_size,
-                    self.config.num_homogeneous,
-                    jnp.array(global_log_gmean),
-                    jnp.array(global_expr_frac)
+                batch_cell_indices = cell_indices_sorted[batch_start:batch_end]
+                
+                # Submit to computer
+                computer.submit_batch(
+                    batch_idx, rank_data, rank_indices,
+                    batch_weights, batch_cell_indices, actual_batch_size
                 )
-                marker_scores = np.array(marker_scores)
-
-                # Write results (async)
-                global_indices = cell_indices_sorted[batch_start:batch_end]
-                output_memmap.write_batch(marker_scores, global_indices)
-
-                pbar.update(1)
-
-            pbar.close()
-            logger.info(f"Completed processing {cell_type}")
+        
+        # Start a thread to move data from computer to writer
+        def computer_to_writer():
+            for _ in range(n_batches):
+                # Get computed results
+                batch_idx, marker_scores, cell_indices = computer.get_result()
+                
+                # Submit to writer
+                writer.submit_batch(batch_idx, marker_scores, cell_indices)
+        
+        # Start pipeline threads
+        import threading
+        reader_thread = threading.Thread(target=reader_to_computer, daemon=True)
+        compute_thread = threading.Thread(target=computer_to_writer, daemon=True)
+        reader_thread.start()
+        compute_thread.start()
+        
+        # Monitor progress
+        import time
+        while writer.get_completed_count() < n_batches:
+            # Update progress bar
+            completed = writer.get_completed_count()
+            compute_pending, compute_ready = computer.get_queue_sizes()
+            write_pending = writer.get_queue_size()
+            
+            # Update postfix with pending counts
+            pbar.postfix = [compute_pending + compute_ready, write_pending]
+            pbar.n = completed
+            pbar.refresh()
+            
+            time.sleep(0.1)
+        
+        # Final update
+        pbar.n = n_batches
+        pbar.postfix = [0, 0]
+        pbar.refresh()
+        pbar.close()
+        
+        # Wait for threads to complete
+        reader_thread.join()
+        compute_thread.join()
+        
+        # Clean up pools
+        computer.close()
+        writer.close()
+        
+        # Stop profiling if enabled
+        if use_profiling:
+            tracer.stop()
+            tracer.save()
+            logger.info(f"Profiling data saved to marker_score_trace_{cell_type}_{n_batches}_pipeline.json")
+        
+        logger.info(f"Completed processing {cell_type}")
     
     def calculate_marker_scores(
         self,
