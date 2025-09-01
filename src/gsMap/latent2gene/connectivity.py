@@ -82,10 +82,9 @@ def find_spatial_neighbors_with_slices(
     
     # Pre-allocate output with fixed size, initialized with -1 (invalid)
     total_k = k_central + 2 * n_adjacent_slices * k_adjacent
-    # Use int16 for indices if possible (saves memory for datasets < 32k cells)
-    max_possible_idx = n_cells - 1
-    idx_dtype = np.int16 if max_possible_idx < 32768 else np.int32
-    spatial_neighbors = np.full((n_masked, total_k), -1, dtype=idx_dtype)
+    # Always use int32 for spatial neighbors since they contain global cell indices
+    # which can easily exceed int16 range in large spatial datasets
+    spatial_neighbors = np.full((n_masked, total_k), -1, dtype=np.int32)
     
     # Get unique slices and create mapping
     unique_slices = np.unique(masked_slice_ids)
@@ -272,9 +271,9 @@ def build_scrna_connectivity(
     connectivities = adata_temp.obsp['connectivities'].tocsr()
     
     # Convert to dense format for consistency with spatial methods
-    # Use int16 for indices if possible (saves memory for datasets < 32k cells)
-    max_idx = len(cell_indices) - 1 if len(cell_indices) > 0 else 0
-    idx_dtype = np.int16 if max_idx < 32768 else np.int32
+    # Check the actual max cell index value to determine dtype
+    max_cell_idx = cell_indices.max() if len(cell_indices) > 0 else 0
+    idx_dtype = np.int16 if max_cell_idx < 32768 else np.int32
     neighbor_indices = np.zeros((n_masked, n_neighbors), dtype=idx_dtype)
     neighbor_weights = np.zeros((n_masked, n_neighbors), dtype=np.float16)
     
@@ -459,18 +458,14 @@ class ConnectivityMatrixBuilder:
         # Note: float16 provides sufficient precision for normalized embeddings
         all_emb_gcn_norm_jax = jnp.array(emb_gcn, dtype=jnp.float16)
         all_emb_indv_norm_jax = jnp.array(emb_indv, dtype=jnp.float16)
-        
+        spatial_neighbors_jax = jnp.array(spatial_neighbors, dtype=jnp.int32)
+
         # Move masked embeddings to GPU once
         masked_cell_indices = np.where(cell_mask)[0]
         emb_gcn_masked_jax = all_emb_gcn_norm_jax[masked_cell_indices]
         emb_indv_masked_jax = all_emb_indv_norm_jax[masked_cell_indices]
         
-        # Move spatial neighbors to GPU once
-        # Use int16 if max index < 32768, otherwise int32
-        max_neighbor_idx = spatial_neighbors.max()
-        neighbor_dtype = jnp.int16 if max_neighbor_idx < 32768 else jnp.int32
-        spatial_neighbors_jax = jnp.array(spatial_neighbors, dtype=neighbor_dtype)
-        
+
         # Process in batches to avoid GPU OOM
         homogeneous_neighbors_list = []
         homogeneous_weights_list = []

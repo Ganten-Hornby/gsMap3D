@@ -8,9 +8,8 @@ import queue
 import threading
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union
 from functools import partial
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -22,7 +21,7 @@ import jax
 import jax.numpy as jnp
 from jax import jit
 
-from .memmap_io import MemMapDense, ParallelMemMapReader
+from .memmap_io import MemMapDense
 from .connectivity import ConnectivityMatrixBuilder
 from .row_ordering import optimize_row_order
 
@@ -159,140 +158,6 @@ class ParallelRankReader:
             self.rank_memmap.close()
 
 
-class MarkerScoreWorker:
-    """Worker class that handles read-compute-write pipeline for marker score calculation"""
-    
-    def __init__(
-        self,
-        worker_id: int,
-        rank_memmap_path: Path,
-        rank_shape: Tuple[int, int],
-        rank_dtype: np.dtype,
-        output_memmap_path: Path,
-        output_shape: Tuple[int, int],
-        global_log_gmean: np.ndarray,
-        global_expr_frac: np.ndarray,
-        num_homogeneous: int
-    ):
-        """
-        Initialize a worker with its own memory map instances
-        
-        Args:
-            worker_id: Worker identifier
-            rank_memmap_path: Path to rank memory map
-            rank_shape: Shape of rank data
-            rank_dtype: Data type of rank data
-            output_memmap_path: Path to output memory map
-            output_shape: Shape of output data
-            global_log_gmean: Global log geometric mean
-            global_expr_frac: Global expression fraction
-            num_homogeneous: Number of homogeneous neighbors
-        """
-        self.worker_id = worker_id
-        self.num_homogeneous = num_homogeneous
-        
-        # Open worker's own rank memory map (read-only)
-        self.rank_data_path = rank_memmap_path.with_suffix('.dat')
-        self.rank_memmap = np.memmap(
-            self.rank_data_path,
-            dtype=rank_dtype,
-            mode='r',
-            shape=rank_shape
-        )
-        
-        # Open worker's own output memory map (read-write)
-        self.output_data_path = output_memmap_path.with_suffix('.dat')
-        self.output_memmap = np.memmap(
-            self.output_data_path,
-            dtype=np.float32,
-            mode='r+',
-            shape=output_shape
-        )
-        
-        # Store global statistics as JAX arrays for computation (float16 for memory)
-        self.global_log_gmean_jax = jnp.array(global_log_gmean, dtype=jnp.float16)
-        self.global_expr_frac_jax = jnp.array(global_expr_frac, dtype=jnp.float16)
-        
-        logger.info(f"Worker {worker_id} initialized with rank map {self.rank_data_path} and output map {self.output_data_path}")
-    
-    def process_batch(
-        self,
-        batch_idx: int,
-        neighbor_indices: np.ndarray,
-        neighbor_weights: np.ndarray,
-        cell_indices: np.ndarray
-    ) -> Tuple[int, bool, Optional[str]]:
-        """
-        Process a single batch: read, compute, write
-        
-        Args:
-            batch_idx: Batch index
-            neighbor_indices: Neighbor indices for this batch (batch_size × num_neighbors)
-            neighbor_weights: Weights for neighbors (batch_size × num_neighbors)
-            cell_indices: Global cell indices for writing results
-            
-        Returns:
-            Tuple of (batch_idx, success, error_message)
-        """
-        try:
-            batch_size = neighbor_indices.shape[0]
-            
-            # Step 1: Read rank data
-            flat_indices = np.unique(neighbor_indices.flatten())
-            rank_data = self.rank_memmap[flat_indices]
-            
-            # Convert to JAX array first for more efficient indexing (float16 for memory)
-            rank_data_jax = jnp.array(rank_data, dtype=jnp.float16)
-            
-            # Create mapping for reconstruction
-            idx_map = {idx: i for i, idx in enumerate(flat_indices)}
-            flat_neighbors = neighbor_indices.flatten()
-            # Use appropriate int type based on data size
-            idx_dtype = jnp.int16 if len(flat_indices) < 32768 else jnp.int32
-            rank_indices = jnp.array([idx_map[neighbor_idx] for neighbor_idx in flat_neighbors], dtype=idx_dtype)
-            
-            # Use JAX fancy indexing (more efficient than numpy)
-            rank_data_jax = rank_data_jax[rank_indices]
-            
-            # Step 2: Compute marker scores using JAX (already have JAX arrays)
-            marker_scores = compute_marker_scores_jax(
-                rank_data_jax,
-                jnp.array(neighbor_weights, dtype=jnp.float16),
-                batch_size,
-                self.num_homogeneous,
-                self.global_log_gmean_jax,
-                self.global_expr_frac_jax
-            )
-            
-            # Convert back to numpy for writing
-            marker_scores_np = np.array(marker_scores)
-            
-            # Step 3: Write results directly to output memory map
-            self.output_memmap[cell_indices] = marker_scores_np
-            
-            # # Periodic flush (every 10 batches)
-            # if batch_idx % 10 == 0:
-            #     self.output_memmap.flush()
-            
-            return (batch_idx, True, None)
-            
-        except Exception as e:
-            error_msg = f"Worker {self.worker_id} failed on batch {batch_idx}: {str(e)}"
-            logger.error(error_msg)
-            return (batch_idx, False, error_msg)
-    
-    def close(self):
-        """Clean up worker resources"""
-        # Final flush
-        self.output_memmap.flush()
-        
-        # Delete memory maps
-        del self.rank_memmap
-        del self.output_memmap
-        
-        logger.info(f"Worker {self.worker_id} closed")
-
-
 @partial(jit, static_argnums=(2, 3))
 def compute_marker_scores_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix
@@ -366,136 +231,7 @@ class MarkerScoreCalculator:
         logger.info(f"Loaded global stats for {len(global_log_gmean)} genes")
         
         return global_log_gmean, global_expr_frac
-    
-    def process_cell_type_with_workers(
-        self,
-        adata: ad.AnnData,
-        cell_type: str,
-        rank_memmap_path: Path,
-        rank_shape: Tuple[int, int],
-        rank_dtype: np.dtype,
-        output_memmap_path: Path,
-        output_shape: Tuple[int, int],
-        global_log_gmean: np.ndarray,
-        global_expr_frac: np.ndarray,
-        coords: np.ndarray,
-        emb_gcn: np.ndarray,
-        emb_indv: np.ndarray,
-        annotation_key: str,
-        slice_ids: Optional[np.ndarray] = None
-    ):
-        """Process a single cell type using worker pool"""
-        
-        # Get cells of this type
-        cell_mask = adata.obs[annotation_key] == cell_type
-        cell_indices = np.where(cell_mask)[0]
-        n_cells = len(cell_indices)
-        
-        min_cells = getattr(self.config, 'min_cells_per_type', 21)
-        if n_cells < min_cells:
-            logger.warning(f"Skipping {cell_type}: only {n_cells} cells (min: {min_cells})")
-            return
-        
-        logger.info(f"Processing {cell_type}: {n_cells} cells")
-        
-        # Build connectivity matrix
-        logger.info("Building connectivity matrix...")
-        neighbor_indices, neighbor_weights = self.connectivity_builder.build_connectivity_matrix(
-            coords=coords,
-            emb_gcn=emb_gcn,
-            emb_indv=emb_indv,
-            cell_mask=cell_mask,
-            slice_ids=slice_ids,
-            return_dense=True,
-            k_central=self.config.num_neighbour_spatial,
-            k_adjacent=self.config.k_adjacent if hasattr(self.config, 'k_adjacent') else 7,
-            n_adjacent_slices=self.config.n_adjacent_slices if hasattr(self.config, 'n_adjacent_slices') else 1
-        )
-        
-        # Validate neighbor indices are within bounds
-        max_valid_idx = rank_shape[0] - 1
-        assert neighbor_indices.max() <= max_valid_idx, \
-            f"Neighbor indices exceed bounds (max: {neighbor_indices.max()}, limit: {max_valid_idx})"
-        assert neighbor_indices.min() >= 0, \
-            f"Found negative neighbor indices (min: {neighbor_indices.min()})"
-        
-        # Optimize row order (auto-selects best method)
-        logger.info("Optimizing row order for cache efficiency...")
-        row_order = optimize_row_order(
-            neighbor_indices,
-            cell_indices=cell_indices,
-            method=None,  # Auto-select based on data
-            neighbor_weights=neighbor_weights
-        )
-        neighbor_indices = neighbor_indices[row_order]
-        neighbor_weights = neighbor_weights[row_order]
-        cell_indices_sorted = cell_indices[row_order]
-        
-        # Process in batches
-        batch_size = getattr(self.config, 'batch_size', 1000)
-        n_batches = (n_cells + batch_size - 1) // batch_size
-        
-        # Get number of workers from config
-        num_workers = getattr(self.config, 'rank_read_workers', 4)
-        
-        # Create worker pool
-        logger.info(f"Creating {num_workers} workers for processing {n_batches} batches...")
-        workers = []
-        for i in range(num_workers):
-            worker = MarkerScoreWorker(
-                worker_id=i,
-                rank_memmap_path=rank_memmap_path,
-                rank_shape=rank_shape,
-                rank_dtype=rank_dtype,
-                output_memmap_path=output_memmap_path,
-                output_shape=output_shape,
-                global_log_gmean=global_log_gmean,
-                global_expr_frac=global_expr_frac,
-                num_homogeneous=self.config.num_homogeneous
-            )
-            workers.append(worker)
-        
-        # Use ThreadPoolExecutor to process batches
-        logger.info("Processing batches with worker pool...")
-        
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            # Submit all batches
-            futures = []
-            for batch_idx in range(n_batches):
-                batch_start = batch_idx * batch_size
-                batch_end = min(batch_start + batch_size, n_cells)
-                
-                batch_neighbors = neighbor_indices[batch_start:batch_end]
-                batch_weights = neighbor_weights[batch_start:batch_end]
-                batch_cell_indices = cell_indices_sorted[batch_start:batch_end]
-                
-                # Round-robin assignment to workers
-                worker = workers[batch_idx % num_workers]
-                
-                future = executor.submit(
-                    worker.process_batch,
-                    batch_idx,
-                    batch_neighbors,
-                    batch_weights,
-                    batch_cell_indices
-                )
-                futures.append(future)
-            
-            # Process results as they complete
-            pbar = tqdm(total=n_batches, desc=f"Processing {cell_type}")
-            for future in as_completed(futures):
-                batch_idx, success, error_msg = future.result()
-                if not success:
-                    logger.error(f"Batch {batch_idx} failed: {error_msg}")
-                pbar.update(1)
-            pbar.close()
-        
-        # Clean up workers
-        for worker in workers:
-            worker.close()
-        
-        logger.info(f"Completed processing {cell_type}")
-    
+
     def process_cell_type(
         self,
         adata: ad.AnnData,
@@ -511,7 +247,7 @@ class MarkerScoreCalculator:
         annotation_key: str,
         slice_ids: Optional[np.ndarray] = None
     ):
-        """Process a single cell type (kept for backward compatibility)"""
+        """Process a single cell type"""
         
         # Get cells of this type
         cell_mask = adata.obs[annotation_key] == cell_type
@@ -578,44 +314,46 @@ class MarkerScoreCalculator:
         logger.info("Processing batches...")
         pbar = tqdm(total=n_batches, desc=f"Processing {cell_type}")
         
-        for _ in range(n_batches):
-            # Get completed batch - rank_data and indices from worker
-            result = reader.get_result()
-            batch_idx, rank_data, rank_indices, original_shape = result
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, n_cells)
-            actual_batch_size = batch_end - batch_start
+        import viztracer
+        with viztracer.VizTracer(output_file=f"marker_score_trace{cell_type}_{n_batches}_thread.json", max_stack_depth=10):
+            for _ in range(n_batches):
+                # Get completed batch - rank_data and indices from worker
+                result = reader.get_result()
+                batch_idx, rank_data, rank_indices, original_shape = result
+                batch_start = batch_idx * batch_size
+                batch_end = min(batch_start + batch_size, n_cells)
+                actual_batch_size = batch_end - batch_start
 
-            # Verify shape
-            assert original_shape == (actual_batch_size, self.config.num_homogeneous), \
-                f"Shape mismatch: expected {(actual_batch_size, self.config.num_homogeneous)}, got {original_shape}"
+                # Verify shape
+                assert original_shape == (actual_batch_size, self.config.num_homogeneous), \
+                    f"Shape mismatch: expected {(actual_batch_size, self.config.num_homogeneous)}, got {original_shape}"
 
-            # Use fancy indexing in main thread to save memory
-            # This creates the (B*N) × G matrix efficiently
-            batch_ranks = rank_data[rank_indices]
+                # Use fancy indexing in main thread to save memory
+                # This creates the (B*N) × G matrix efficiently
+                batch_ranks = rank_data[rank_indices]
 
-            # Get batch weights
-            batch_weights = neighbor_weights[batch_start:batch_end]
+                # Get batch weights
+                batch_weights = neighbor_weights[batch_start:batch_end]
 
-            # Compute marker scores using JAX
-            marker_scores = compute_marker_scores_jax(
-                jnp.array(batch_ranks, dtype=jnp.float16),
-                jnp.array(batch_weights, dtype=jnp.float16),
-                actual_batch_size,
-                self.config.num_homogeneous,
-                jnp.array(global_log_gmean, dtype=jnp.float16),
-                jnp.array(global_expr_frac, dtype=jnp.float16)
-            )
-            marker_scores = np.array(marker_scores)
+                # Compute marker scores using JAX
+                marker_scores = compute_marker_scores_jax(
+                    jnp.array(batch_ranks),
+                    jnp.array(batch_weights),
+                    actual_batch_size,
+                    self.config.num_homogeneous,
+                    jnp.array(global_log_gmean),
+                    jnp.array(global_expr_frac)
+                )
+                marker_scores = np.array(marker_scores)
 
-            # Write results (async)
-            global_indices = cell_indices_sorted[batch_start:batch_end]
-            output_memmap.write_batch(marker_scores, global_indices)
+                # Write results (async)
+                global_indices = cell_indices_sorted[batch_start:batch_end]
+                output_memmap.write_batch(marker_scores, global_indices)
 
-            pbar.update(1)
+                pbar.update(1)
 
-        pbar.close()
-        logger.info(f"Completed processing {cell_type}")
+            pbar.close()
+            logger.info(f"Completed processing {cell_type}")
     
     def calculate_marker_scores(
         self,
@@ -721,10 +459,7 @@ class MarkerScoreCalculator:
             # Load slice IDs if provided (for both spatial2D and spatial3D)
             if hasattr(self.config, 'slice_id_key') and self.config.slice_id_key:
                 if self.config.slice_id_key in adata.obs.columns:
-                    # Use int16 if possible for slice IDs
-                    unique_slices = adata.obs[self.config.slice_id_key].nunique()
-                    slice_dtype = np.int16 if unique_slices < 32768 else np.int32
-                    slice_ids = adata.obs[self.config.slice_id_key].values.astype(slice_dtype)
+                    slice_ids = adata.obs[self.config.slice_id_key].values.astype(np.int32)
                     if self.config.dataset_type == 'spatial2D':
                         logger.info(f"Loading slice IDs from {self.config.slice_id_key} for 2D multi-slice data (no cross-slice search)")
                     else:  # spatial3D
@@ -732,7 +467,7 @@ class MarkerScoreCalculator:
                 else:
                     logger.warning(f"Slice ID key '{self.config.slice_id_key}' not found in adata.obs")
         
-        # Load cell embeddings for all dataset types (float16 for memory efficiency)
+        # Load cell embeddings for all dataset types
         emb_indv = adata.obsm[self.config.latent_representation_cell].astype(np.float16)
         
         # Normalize embeddings
@@ -747,30 +482,32 @@ class MarkerScoreCalculator:
         emb_indv_norm = np.linalg.norm(emb_indv, axis=1, keepdims=True)
         emb_indv = emb_indv / (emb_indv_norm + 1e-8)
         
-        # Use new worker-based approach for better performance
-        logger.info("Using worker-based processing for marker scores...")
-        
-        # Get rank memmap metadata
-        rank_shape = rank_memmap.shape
-        rank_dtype = rank_memmap.dtype
+        # Initialize parallel reader once for all cell types
+        logger.info("Initializing parallel reader...")
+
+        reader = ParallelRankReader(
+            rank_memmap,
+            num_workers=self.config.rank_read_workers
+        )
         
         for cell_type in cell_types:
-            self.process_cell_type_with_workers(
+            self.process_cell_type(
                 adata,
                 cell_type,
-                rank_memmap_path,
-                rank_shape,
-                rank_dtype,
-                output_path,
-                (n_cells, n_genes),
+                output_memmap,
                 global_log_gmean,
                 global_expr_frac,
+                rank_memmap,
+                reader,
                 coords,
                 emb_gcn,
                 emb_indv,
                 annotation_key,
                 slice_ids
             )
+        
+        # Close the shared reader after all cell types are processed
+        reader.close()
         
         # Close rank memory map
         rank_memmap.close()
