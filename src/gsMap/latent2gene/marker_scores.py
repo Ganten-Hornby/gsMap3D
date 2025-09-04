@@ -1074,13 +1074,8 @@ class MarkerScoreCalculator:
         batch_size = self.config.mkscore_batch_size
         n_batches = (n_cells + batch_size - 1) // batch_size
         
-        # Submit all read requests
-        logger.info(f"Submitting {n_batches} batches for reading...")
-        for batch_idx in range(n_batches):
-            batch_start = batch_idx * batch_size
-            batch_end = min(batch_start + batch_size, n_cells)
-            batch_neighbors = neighbor_indices[batch_start:batch_end]
-            reader.submit_batch(batch_idx, batch_neighbors)
+        # Set batch context for computer (will be set by pipeline.submit_batches)
+        # Note: Pipeline will handle batch submission and context setting
         
         # Optional profiling
         use_profiling = self.config.enable_profiling

@@ -28,6 +28,31 @@ def get_gsMap_logger(logger_name):
 
 logger = get_gsMap_logger("gsMap")
 
+def configure_jax_platform(use_gpu: bool):
+    """Configure JAX platform based on use_gpu flag.
+    
+    Args:
+        use_gpu: If True, configure JAX to use GPU. If False, use CPU.
+    
+    Raises:
+        ImportError: If JAX is not installed.
+    """
+    try:
+        import jax
+        from jax import config as jax_config
+        
+        if use_gpu:
+            jax_config.update('jax_platform_name', 'gpu')  # Force GPU usage
+            logger.info("JAX configured to use GPU for computations")
+        else:
+            jax_config.update('jax_platform_name', 'cpu')  # Force CPU usage
+            logger.info("JAX configured to use CPU for computations")
+    except ImportError:
+        raise ImportError(
+            "JAX is required but not installed. Please install JAX by running: "
+            "pip install jax jaxlib (for CPU) or see JAX documentation for GPU installation."
+        )
+
 def get_anndata_shape(h5ad_path: str):
     """Get the shape (n_obs, n_vars) of an AnnData file without loading it."""
     with h5py.File(h5ad_path, 'r') as f:
@@ -734,13 +759,16 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     use_gpu: Annotated[bool, typer.Option(
         "--use-gpu/--no-gpu",
         help="Use GPU for JAX computations (requires sufficient GPU memory)"
-    )] = False
+    )] = True
     
 
     def __post_init__(self):
         """Initialize and validate configuration"""
         super().__post_init__()
         from collections import OrderedDict
+        
+        # Configure JAX platform
+        configure_jax_platform(self.use_gpu)
         
         # Define input options
         input_options = {
