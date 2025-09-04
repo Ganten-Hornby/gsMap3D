@@ -685,49 +685,58 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     )] = 'slice_id'
 
     # -------- IO parameters
-    rank_batch_size:int = 1000
-    rank_write_interval:int = 10
+    rank_batch_size:int = 500
+    mkscore_batch_size:int = 500
 
+    # Worker configurations
     rank_read_workers: Annotated[int, typer.Option(
-        help="Number of parallel reader threads of rank zarr",
+        help="Number of parallel reader threads for rank memory map",
         min=1,
         max=16
-    )] = 2
+    )] = 4
+    
+    compute_workers: Annotated[int, typer.Option(
+        help="Number of parallel compute threads for marker score calculation",
+        min=1,
+        max=16
+    )] = 4
     
     mkscore_write_workers: Annotated[int, typer.Option(
-        help="Number of parallel writer threads of marker scores",
+        help="Number of parallel writer threads for marker scores",
         min=1,
         max=16
+    )] = 4
+
+    compute_input_queue_size: Annotated[int, typer.Option(
+        help="Maximum size of compute input queue (multiplier of compute_workers)",
+        min=1,
+        max=10
     )] = 2
     
-    mkscore_batch_size: Annotated[int, typer.Option(
-        help="Batch size for GPU to calculate the marker score to avoid CUDA OOM",
-        min=100,
-        max=5000
-    )] = 500
+    writer_queue_size: Annotated[int, typer.Option(
+        help="Maximum size of writer input queue",
+        min=10,
+        max=500
+    )] = 100
+    
+    # Performance options
+    min_cells_per_type: Annotated[int, typer.Option(
+        help="Minimum number of cells per cell type to process",
+        min=1,
+        max=100
+    )] = 21
+    
+    enable_profiling: Annotated[bool, typer.Option(
+        "--enable-profiling/--no-profiling",
+        help="Enable viztracer profiling for performance analysis"
+    )] = False
+    
+    use_gpu: Annotated[bool, typer.Option(
+        "--use-gpu/--no-gpu",
+        help="Use GPU for JAX computations (requires sufficient GPU memory)"
+    )] = False
     
 
-    chunks_cells: Annotated[Optional[int], typer.Option(
-        help="Chunk size for cells dimension (None for optimal)"
-    )] = None
-    
-    chunks_genes: Annotated[Optional[int], typer.Option(
-        help="Chunk size for genes dimension (None for optimal)"
-    )] = None
-    
-    use_jax: Annotated[bool, typer.Option(
-        "--use-jax/--no-jax",
-        help="Use JAX acceleration for computations"
-    )] = True
-    
-    cache_size_mb: Annotated[int, typer.Option(
-        help="Cache size in MB for data reading",
-        min=100,
-        max=10000
-    )] = 1000
-
-    zarr_group_path: Optional[str] = None
-    
     def __post_init__(self):
         """Initialize and validate configuration"""
         super().__post_init__()

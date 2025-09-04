@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import anndata as ad
+import gc
 from scipy.sparse import csr_matrix
 import jax
 import jax.numpy as jnp
@@ -82,6 +83,10 @@ class ParallelRankReader:
         # Throughput tracking
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
+        
+        # Exception handling
+        self.exception_queue = queue.Queue()
+        self.has_error = threading.Event()
         
         # Start worker threads
         self.workers = []
@@ -161,7 +166,10 @@ class ParallelRankReader:
                 continue
             except Exception as e:
                 logger.error(f"Reader worker {worker_id} error: {e}")
-                raise
+                self.exception_queue.put((worker_id, e))
+                self.has_error.set()
+                self.stop_workers.set()  # Signal all workers to stop
+                break
         
         # Clean up worker's memory map if it was opened
         if self.memmap_path is not None and 'worker_memmap' in locals():
@@ -179,6 +187,15 @@ class ParallelRankReader:
     def get_queue_sizes(self):
         """Get current queue sizes for monitoring"""
         return self.read_queue.qsize(), self.result_queue.qsize()
+    
+    def check_errors(self):
+        """Check if any worker encountered an error"""
+        if self.has_error.is_set():
+            try:
+                worker_id, exception = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}") from exception
+            except queue.Empty:
+                raise RuntimeError("Reader worker failed with unknown error")
     
     def close(self):
         """Clean up resources"""
@@ -238,6 +255,10 @@ class ParallelMarkerScoreComputer:
         self.batch_size = None
         self.n_cells = None
         
+        # Exception handling
+        self.exception_queue = queue.Queue()
+        self.has_error = threading.Event()
+        
         # Start worker threads
         self.workers = []
         self.stop_workers = threading.Event()
@@ -274,8 +295,13 @@ class ParallelMarkerScoreComputer:
                 start_time = time.time()
                 
                 # Extract batch parameters from metadata
-                batch_start = batch_metadata.get('batch_start', batch_idx * self.batch_size)
-                batch_end = batch_metadata.get('batch_end', min(batch_start + self.batch_size, self.n_cells))
+                # These should always be provided, but check for safety
+                if self.batch_size is None or self.neighbor_weights is None:
+                    logger.error(f"Compute worker {worker_id}: batch context not set")
+                    raise RuntimeError("Batch context must be set before processing")
+                    
+                batch_start = batch_metadata['batch_start']
+                batch_end = batch_metadata['batch_end']
                 actual_batch_size = batch_end - batch_start
                 
                 # Verify shape
@@ -297,7 +323,7 @@ class ParallelMarkerScoreComputer:
                 marker_scores = compute_marker_scores_jax(
                     batch_ranks,
                     jnp.array(batch_weights),
-                    self.batch_size,
+                    actual_batch_size,  # Use actual batch size, not self.batch_size
                     self.num_homogeneous,
                     self.global_log_gmean,
                     self.global_expr_frac
@@ -319,7 +345,10 @@ class ParallelMarkerScoreComputer:
                 continue
             except Exception as e:
                 logger.error(f"Compute worker {worker_id} error: {e}")
-                raise
+                self.exception_queue.put((worker_id, e))
+                self.has_error.set()
+                self.stop_workers.set()  # Signal all workers to stop
+                break
         
         logger.info(f"Compute worker {worker_id} stopped")
     
@@ -342,6 +371,15 @@ class ParallelMarkerScoreComputer:
     def get_queue_sizes(self):
         """Get current queue sizes for progress tracking"""
         return self.compute_queue.qsize(), self.result_queue.qsize()
+    
+    def check_errors(self):
+        """Check if any worker encountered an error"""
+        if self.has_error.is_set():
+            try:
+                worker_id, exception = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Compute worker {worker_id} failed: {exception}") from exception
+            except queue.Empty:
+                raise RuntimeError("Compute worker failed with unknown error")
     
     def close(self):
         """Close compute pool"""
@@ -385,6 +423,10 @@ class ParallelMarkerScoreWriter:
         # Throughput tracking
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
+        
+        # Exception handling
+        self.exception_queue = queue.Queue()
+        self.has_error = threading.Event()
         
         # Start worker threads
         self.workers = []
@@ -448,7 +490,10 @@ class ParallelMarkerScoreWriter:
                 continue
             except Exception as e:
                 logger.error(f"Writer worker {worker_id} error: {e}")
-                raise
+                self.exception_queue.put((worker_id, e))
+                self.has_error.set()
+                self.stop_workers.set()  # Signal all workers to stop
+                break
         
         # Final flush before closing
         worker_memmap.flush()
@@ -470,6 +515,15 @@ class ParallelMarkerScoreWriter:
     def get_queue_size(self):
         """Get write queue size"""
         return self.write_queue.qsize()
+    
+    def check_errors(self):
+        """Check if any worker encountered an error"""
+        if self.has_error.is_set():
+            try:
+                worker_id, exception = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Writer worker {worker_id} failed: {exception}") from exception
+            except queue.Empty:
+                raise RuntimeError("Writer worker failed with unknown error")
     
     def close(self):
         """Close writer pool"""
@@ -612,7 +666,7 @@ class MarkerScorePipeline:
                 'batch_end': batch_end,
                 'batch_idx': batch_idx
             }
-            
+
             self.reader.submit_batch(batch_idx, batch_neighbors, batch_metadata)
     
     def _update_stats(self):
@@ -692,6 +746,11 @@ class MarkerScorePipeline:
             
             # Monitor progress
             while self.stats.completed_writes < self.n_batches:
+                # Check for errors in any component
+                self.reader.check_errors()
+                self.computer.check_errors()
+                self.writer.check_errors()
+                
                 self._update_stats()
                 
                 # Update progress bars
@@ -772,22 +831,16 @@ class MarkerScorePipeline:
             postfix=''
         )
         
-        # Start pipeline threads
-        reader_thread = threading.Thread(
-            target=self._reader_to_computer_worker,
-            args=(neighbor_weights, cell_indices_sorted, num_homogeneous),
-            daemon=True
-        )
-        computer_thread = threading.Thread(
-            target=self._computer_to_writer_worker,
-            daemon=True
-        )
-        
-        reader_thread.start()
-        computer_thread.start()
+        # Submit all batches to start the pipeline
+        self.submit_batches(neighbor_indices, neighbor_weights, cell_indices_sorted)
         
         # Monitor progress
         while self.stats.completed_writes < self.n_batches:
+            # Check for errors in any component
+            self.reader.check_errors()
+            self.computer.check_errors()
+            self.writer.check_errors()
+            
             self._update_stats()
             
             pbar.n = self.stats.completed_writes
@@ -939,7 +992,7 @@ class MarkerScoreCalculator:
         n_cells = len(cell_indices)
         
         # Check minimum cells
-        min_cells = getattr(self.config, 'min_cells_per_type', 21)
+        min_cells = self.config.min_cells_per_type
         if n_cells < min_cells:
             logger.warning(f"Skipping {cell_type}: only {n_cells} cells (min: {min_cells})")
             return None
@@ -959,26 +1012,8 @@ class MarkerScoreCalculator:
             k_adjacent=self.config.k_adjacent if hasattr(self.config, 'k_adjacent') else 7,
             n_adjacent_slices=self.config.n_adjacent_slices if hasattr(self.config, 'n_adjacent_slices') else 1
         )
-        
-        # Clear GPU memory if using JAX/CUDA for connectivity computation
-        if self.config.dataset_type in ['spatial2D', 'spatial3D']:
-            logger.info("Clearing GPU memory after connectivity computation...")
-            import gc
-            gc.collect()
-            
-            # Clear JAX device memory if available
-            try:
-                import jax
-                devices = jax.devices()
-                for device in devices:
-                    if 'gpu' in str(device).lower():
-                        # Force JAX to release GPU memory
-                        jax.clear_backends()
-                        logger.info("Cleared JAX GPU memory")
-                        break
-            except Exception as e:
-                logger.debug(f"Could not clear JAX memory: {e}")
-        
+        gc.collect()
+
         # Validate neighbor indices
         max_valid_idx = rank_shape[0] - 1
         assert neighbor_indices.max() <= max_valid_idx, \
@@ -1036,7 +1071,7 @@ class MarkerScoreCalculator:
         writer.reset_for_cell_type(cell_type)
         
         # Calculate batch parameters
-        batch_size = getattr(self.config, 'batch_size', 1000)
+        batch_size = self.config.mkscore_batch_size
         n_batches = (n_cells + batch_size - 1) // batch_size
         
         # Submit all read requests
@@ -1048,13 +1083,13 @@ class MarkerScoreCalculator:
             reader.submit_batch(batch_idx, batch_neighbors)
         
         # Optional profiling
-        use_profiling = True
-        # use_profiling = getattr(self.config, 'enable_profiling', False)
+        use_profiling = self.config.enable_profiling
         if use_profiling:
             import viztracer
             tracer = viztracer.VizTracer(
                 output_file=f"marker_score_{cell_type}_{n_batches}.json",
-                max_stack_depth=10
+                max_stack_depth=10,
+
             )
             tracer.start()
         
@@ -1068,19 +1103,27 @@ class MarkerScoreCalculator:
             n_cells=n_cells
         )
         
-        pipeline.run(
-            neighbor_indices=neighbor_indices,
-            neighbor_weights=neighbor_weights,
-            cell_indices_sorted=cell_indices_sorted,
-            num_homogeneous=self.config.num_homogeneous,
-            cell_type=cell_type
-        )
-        
-        # Stop profiling if enabled
-        if use_profiling:
-            tracer.stop()
-            tracer.save()
-            logger.info(f"Profiling saved to marker_score_{cell_type}_{n_batches}.json")
+        try:
+            pipeline.run(
+                neighbor_indices=neighbor_indices,
+                neighbor_weights=neighbor_weights,
+                cell_indices_sorted=cell_indices_sorted,
+                num_homogeneous=self.config.num_homogeneous,
+                cell_type=cell_type
+            )
+        except Exception as e:
+            logger.error(f"Pipeline failed for {cell_type}: {e}")
+            # Stop all workers to prevent hanging
+            reader.stop_workers.set()
+            computer.stop_workers.set()
+            writer.stop_workers.set()
+            raise
+        finally:
+            # Stop profiling if enabled
+            if use_profiling:
+                tracer.stop()
+                tracer.save()
+                logger.info(f"Profiling saved to marker_score_{cell_type}_{n_batches}.json")
         
         # Final garbage collection
         import gc
@@ -1108,7 +1151,7 @@ class MarkerScoreCalculator:
             Path to output marker score memory map file
         """
         logger.info("Starting marker score calculation...")
-        
+
         # Use config path if not specified
         if output_path is None:
             output_path = Path(self.config.marker_scores_memmap_path)
@@ -1218,9 +1261,9 @@ class MarkerScoreCalculator:
         # Initialize shared pools with directly connected queues
         logger.info("Initializing shared processing pools with direct queue connections...")
 
-        # Create shared queues to connect components
-        reader_to_computer_queue = queue.Queue(maxsize=getattr(self.config, 'compute_workers', 4) * 2)
-        computer_to_writer_queue = queue.Queue(maxsize=100)
+        # Create shared queues to connect components with configured sizes
+        reader_to_computer_queue = queue.Queue(maxsize=self.config.compute_workers * self.config.compute_input_queue_size)
+        computer_to_writer_queue = queue.Queue(maxsize=self.config.writer_queue_size)
         
         reader = ParallelRankReader(
             rank_memmap,
@@ -1232,7 +1275,7 @@ class MarkerScoreCalculator:
             global_log_gmean,
             global_expr_frac,
             self.config.num_homogeneous,
-            num_workers=getattr(self.config, 'compute_workers', 4),
+            num_workers=self.config.compute_workers,
             input_queue=reader_to_computer_queue,  # Input from reader
             output_queue=computer_to_writer_queue  # Output to writer
         )
@@ -1244,7 +1287,7 @@ class MarkerScoreCalculator:
         )
         
         logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
-                   f"{getattr(self.config, 'compute_workers', 4)} computers, "
+                   f"{self.config.compute_workers} computers, "
                    f"{self.config.mkscore_write_workers} writers")
         
         for cell_type in cell_types:
@@ -1290,7 +1333,7 @@ class MarkerScoreCalculator:
                 'k_adjacent': self.config.k_adjacent if hasattr(self.config, 'k_adjacent') else 7,
                 'n_adjacent_slices': self.config.n_adjacent_slices if hasattr(self.config, 'n_adjacent_slices') else 1,
                 'slice_id_key': self.config.slice_id_key if hasattr(self.config, 'slice_id_key') else None,
-                'batch_size': getattr(self.config, 'batch_size', 1000),
+                'batch_size': self.config.mkscore_batch_size,
                 'num_read_workers': self.config.rank_read_workers,
                 'mkscore_write_workers': self.config.mkscore_write_workers
             },
