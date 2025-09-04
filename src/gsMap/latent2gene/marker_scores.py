@@ -54,6 +54,7 @@ class ParallelRankReader:
         self,
         rank_memmap: Union[MemMapDense, str],
         num_workers: int = 4,
+        output_queue: queue.Queue = None,
         cache_size_mb: int = 1000
     ):
         # Store path and metadata for workers to open their own instances
@@ -75,7 +76,12 @@ class ParallelRankReader:
         
         # Queues for communication
         self.read_queue = queue.Queue()
-        self.result_queue = queue.Queue(maxsize=self.num_workers * 4)
+        # Use provided output queue or create own
+        self.result_queue = output_queue if output_queue else queue.Queue(maxsize=self.num_workers * 4)
+        
+        # Throughput tracking
+        self.throughput = ComponentThroughput()
+        self.throughput_lock = threading.Lock()
         
         # Start worker threads
         self.workers = []
@@ -97,7 +103,6 @@ class ParallelRankReader:
         """Worker thread for reading batches from memory map"""
         logger.info(f"Reader worker {worker_id} started")
         
-
         # Open worker's own memory map instance
         data_path = self.memmap_path.with_suffix('.dat')
         worker_memmap = np.memmap(
@@ -115,7 +120,10 @@ class ParallelRankReader:
                 if item is None:
                     break
                 
-                batch_id, neighbor_indices = item
+                batch_id, neighbor_indices, batch_metadata = item
+                
+                # Track timing
+                start_time = time.time()
                 
                 # Flatten and deduplicate indices for efficient reading
                 flat_indices = np.unique(neighbor_indices.flatten())
@@ -140,8 +148,13 @@ class ParallelRankReader:
                 flat_neighbors = neighbor_indices.flatten()
                 rank_indices = np.array([idx_map[neighbor_idx] for neighbor_idx in flat_neighbors])
                 
-                # Put result - send rank_data and rank_indices for main thread to combine
-                self.result_queue.put((batch_id, rank_data, rank_indices, neighbor_indices.shape))
+                # Track throughput
+                elapsed = time.time() - start_time
+                with self.throughput_lock:
+                    self.throughput.record_batch(elapsed)
+                
+                # Put result with metadata for computer
+                self.result_queue.put((batch_id, rank_data, rank_indices, neighbor_indices.shape, batch_metadata))
                 self.read_queue.task_done()
                 
             except queue.Empty:
@@ -155,9 +168,9 @@ class ParallelRankReader:
             del worker_memmap
             logger.info(f"Worker {worker_id} closed its memory map")
     
-    def submit_batch(self, batch_id: int, neighbor_indices: np.ndarray):
-        """Submit batch for reading"""
-        self.read_queue.put((batch_id, neighbor_indices))
+    def submit_batch(self, batch_id: int, neighbor_indices: np.ndarray, batch_metadata: dict = None):
+        """Submit batch for reading with metadata"""
+        self.read_queue.put((batch_id, neighbor_indices, batch_metadata or {}))
     
     def get_result(self):
         """Get next completed batch"""
@@ -189,7 +202,9 @@ class ParallelMarkerScoreComputer:
         global_log_gmean: np.ndarray,
         global_expr_frac: np.ndarray,
         num_homogeneous: int,
-        num_workers: int = 4
+        num_workers: int = 4,
+        input_queue: queue.Queue = None,
+        output_queue: queue.Queue = None
     ):
         """
         Initialize computer pool
@@ -199,6 +214,8 @@ class ParallelMarkerScoreComputer:
             global_expr_frac: Global expression fraction
             num_homogeneous: Number of homogeneous neighbors
             num_workers: Number of compute workers
+            input_queue: Optional input queue (from reader)
+            output_queue: Optional output queue (to writer)
         """
         self.num_workers = num_workers
         self.num_homogeneous = num_homogeneous
@@ -208,8 +225,18 @@ class ParallelMarkerScoreComputer:
         self.global_expr_frac = jnp.array(global_expr_frac)
         
         # Queues for communication
-        self.compute_queue = queue.Queue(maxsize=num_workers * 2)
-        self.result_queue = queue.Queue(maxsize=num_workers * 2)
+        self.compute_queue = input_queue if input_queue else queue.Queue(maxsize=num_workers * 2)
+        self.result_queue = output_queue if output_queue else queue.Queue(maxsize=num_workers * 2)
+        
+        # Throughput tracking
+        self.throughput = ComponentThroughput()
+        self.throughput_lock = threading.Lock()
+        
+        # Current processing context
+        self.neighbor_weights = None
+        self.cell_indices_sorted = None
+        self.batch_size = None
+        self.n_cells = None
         
         # Start worker threads
         self.workers = []
@@ -235,13 +262,29 @@ class ParallelMarkerScoreComputer:
         
         while not self.stop_workers.is_set():
             try:
-                # Get compute request
+                # Get data from reader
                 item = self.compute_queue.get(timeout=1)
                 if item is None:
                     break
                 
-                batch_idx, rank_data, rank_indices, neighbor_weights, cell_indices, batch_size = item
-                batch_start_time = time.time()
+                # Unpack data from reader
+                batch_idx, rank_data, rank_indices, original_shape, batch_metadata = item
+                
+                # Track timing
+                start_time = time.time()
+                
+                # Extract batch parameters from metadata
+                batch_start = batch_metadata.get('batch_start', batch_idx * self.batch_size)
+                batch_end = batch_metadata.get('batch_end', min(batch_start + self.batch_size, self.n_cells))
+                actual_batch_size = batch_end - batch_start
+                
+                # Verify shape
+                assert original_shape == (actual_batch_size, self.num_homogeneous), \
+                    f"Shape mismatch: expected {(actual_batch_size, self.num_homogeneous)}, got {original_shape}"
+                
+                # Get batch-specific data
+                batch_weights = self.neighbor_weights[batch_start:batch_end]
+                batch_cell_indices = self.cell_indices_sorted[batch_start:batch_end]
                 
                 # Convert to JAX for efficient computation
                 rank_data_jax = jnp.array(rank_data)
@@ -253,8 +296,8 @@ class ParallelMarkerScoreComputer:
                 # Compute marker scores using JAX
                 marker_scores = compute_marker_scores_jax(
                     batch_ranks,
-                    jnp.array(neighbor_weights),
-                    batch_size,
+                    jnp.array(batch_weights),
+                    self.batch_size,
                     self.num_homogeneous,
                     self.global_log_gmean,
                     self.global_expr_frac
@@ -263,11 +306,13 @@ class ParallelMarkerScoreComputer:
                 # Convert back to numpy
                 marker_scores_np = np.array(marker_scores)
                 
-                # Track processing time
-                batch_elapsed = time.time() - batch_start_time
+                # Track throughput
+                elapsed = time.time() - start_time
+                with self.throughput_lock:
+                    self.throughput.record_batch(elapsed)
                 
-                # Put result for writing with timing info
-                self.result_queue.put((batch_idx, marker_scores_np, cell_indices, batch_elapsed))
+                # Put result directly to writer queue
+                self.result_queue.put((batch_idx, marker_scores_np, batch_cell_indices))
                 self.compute_queue.task_done()
                 
             except queue.Empty:
@@ -278,29 +323,21 @@ class ParallelMarkerScoreComputer:
         
         logger.info(f"Compute worker {worker_id} stopped")
     
-    def submit_batch(self, batch_idx: int, rank_data: np.ndarray, rank_indices: np.ndarray,
-                    neighbor_weights: np.ndarray, cell_indices: np.ndarray, batch_size: int):
-        """Submit batch for computation"""
-        self.compute_queue.put((batch_idx, rank_data, rank_indices, neighbor_weights, cell_indices, batch_size))
-    
-    def get_result(self):
-        """Get computed marker scores with timing info"""
-        return self.result_queue.get()
+    def set_batch_context(self, neighbor_weights: np.ndarray, cell_indices_sorted: np.ndarray, 
+                         batch_size: int, n_cells: int):
+        """Set context for processing batches of current cell type"""
+        self.neighbor_weights = neighbor_weights
+        self.cell_indices_sorted = cell_indices_sorted
+        self.batch_size = batch_size
+        self.n_cells = n_cells
     
     def reset_for_cell_type(self, cell_type: str):
-        """Reset queues for processing a new cell type"""
+        """Reset for processing a new cell type"""
         self.active_cell_type = cell_type
-        # Clear any remaining items in queues
-        while not self.compute_queue.empty():
-            try:
-                self.compute_queue.get_nowait()
-            except queue.Empty:
-                break
-        while not self.result_queue.empty():
-            try:
-                self.result_queue.get_nowait()
-            except queue.Empty:
-                break
+        self.neighbor_weights = None
+        self.cell_indices_sorted = None
+        self.batch_size = None
+        self.n_cells = None
     
     def get_queue_sizes(self):
         """Get current queue sizes for progress tracking"""
@@ -322,7 +359,8 @@ class ParallelMarkerScoreWriter:
     def __init__(
         self,
         output_memmap: MemMapDense,
-        num_workers: int = 4
+        num_workers: int = 4,
+        input_queue: queue.Queue = None
     ):
         """
         Initialize writer pool
@@ -330,15 +368,23 @@ class ParallelMarkerScoreWriter:
         Args:
             output_memmap: Output memory map
             num_workers: Number of writer threads
+            input_queue: Optional input queue (from computer)
         """
-        self.output_memmap = output_memmap
+        # Store path and metadata for workers to open their own instances
+        self.memmap_path = output_memmap.path
+        self.shape = output_memmap.shape
+        self.dtype = output_memmap.dtype
         self.num_workers = num_workers
         
         # Queue for write requests
-        self.write_queue = queue.Queue(maxsize=100)
+        self.write_queue = input_queue if input_queue else queue.Queue(maxsize=100)
         self.completed_count = 0
         self.completed_lock = threading.Lock()
         self.active_cell_type = None  # Track current cell type being processed
+        
+        # Throughput tracking
+        self.throughput = ComponentThroughput()
+        self.throughput_lock = threading.Lock()
         
         # Start worker threads
         self.workers = []
@@ -361,6 +407,16 @@ class ParallelMarkerScoreWriter:
         """Writer worker thread"""
         logger.info(f"Writer worker {worker_id} started")
         
+        # Open worker's own memory map instance
+        data_path = self.memmap_path.with_suffix('.dat')
+        worker_memmap = np.memmap(
+            data_path,
+            dtype=self.dtype,
+            mode='r+',  # Read-write mode for writing
+            shape=self.shape
+        )
+        logger.info(f"Writer worker {worker_id} opened its own memory map at {data_path}")
+        
         while not self.stop_workers.is_set():
             try:
                 # Get write request
@@ -368,14 +424,19 @@ class ParallelMarkerScoreWriter:
                 if item is None:
                     break
                 
-                batch_idx, marker_scores, cell_indices, compute_time = item
-                write_start_time = time.time()
+                batch_idx, marker_scores, cell_indices = item
                 
-                # Write to memory map
-                self.output_memmap.write_batch(marker_scores, cell_indices)
+                # Track timing
+                start_time = time.time()
                 
-                # Track write time
-                write_elapsed = time.time() - write_start_time
+                # Write directly to worker's memory map
+                # cell_indices should be the absolute indices in the full matrix
+                worker_memmap[cell_indices] = marker_scores
+                
+                # Track throughput
+                elapsed = time.time() - start_time
+                with self.throughput_lock:
+                    self.throughput.record_batch(elapsed)
                 
                 # Update completed count
                 with self.completed_lock:
@@ -389,23 +450,17 @@ class ParallelMarkerScoreWriter:
                 logger.error(f"Writer worker {worker_id} error: {e}")
                 raise
         
-        logger.info(f"Writer worker {worker_id} stopped")
-    
-    def submit_batch(self, batch_idx: int, marker_scores: np.ndarray, cell_indices: np.ndarray, compute_time: float):
-        """Queue a batch for writing"""
-        self.write_queue.put((batch_idx, marker_scores, cell_indices, compute_time))
+        # Final flush before closing
+        worker_memmap.flush()
+        # Clean up worker's memory map
+        del worker_memmap
+        logger.info(f"Writer worker {worker_id} closed its memory map")
     
     def reset_for_cell_type(self, cell_type: str):
         """Reset for processing a new cell type"""
         self.active_cell_type = cell_type
         with self.completed_lock:
             self.completed_count = 0
-        # Clear any remaining items in queue
-        while not self.write_queue.empty():
-            try:
-                self.write_queue.get_nowait()
-            except queue.Empty:
-                break
     
     def get_completed_count(self):
         """Get number of completed writes"""
@@ -500,7 +555,7 @@ class PipelineStats:
 
 
 class MarkerScorePipeline:
-    """Coordinated pipeline for marker score calculation"""
+    """Streamlined pipeline for marker score calculation"""
     
     def __init__(
         self,
@@ -512,7 +567,7 @@ class MarkerScorePipeline:
         n_cells: int
     ):
         """
-        Initialize pipeline coordinator
+        Initialize pipeline
         
         Args:
             reader: Rank reader pool
@@ -529,105 +584,63 @@ class MarkerScorePipeline:
         self.batch_size = batch_size
         self.n_cells = n_cells
         self.stats = PipelineStats(total_batches=n_batches)
-        
-        # Control flags
-        self.stop_pipeline = threading.Event()
-        self.reader_done = threading.Event()
-        self.computer_done = threading.Event()
-        
-    def _reader_to_computer_worker(
-        self,
-        neighbor_weights: np.ndarray,
-        cell_indices_sorted: np.ndarray,
-        num_homogeneous: int
-    ):
-        """Worker thread to move data from reader to computer"""
-        try:
-            for batch_num in range(self.n_batches):
-                if self.stop_pipeline.is_set():
-                    break
-                    
-                # Track read timing
-                read_start_time = time.time()
-                
-                # Get batch from reader
-                result = self.reader.get_result()
-                batch_idx, rank_data, rank_indices, original_shape = result
-                
-                # Record read time
-                read_elapsed = time.time() - read_start_time
-                self.stats.reader_throughput.record_batch(read_elapsed)
-                
-                batch_start = batch_idx * self.batch_size
-                batch_end = min(batch_start + self.batch_size, self.n_cells)
-                actual_batch_size = batch_end - batch_start
-                
-                # Verify shape
-                assert original_shape == (actual_batch_size, num_homogeneous), \
-                    f"Shape mismatch: expected {(actual_batch_size, num_homogeneous)}, got {original_shape}"
-                
-                # Get batch-specific data
-                batch_weights = neighbor_weights[batch_start:batch_end]
-                batch_cell_indices = cell_indices_sorted[batch_start:batch_end]
-                
-                # Submit to computer
-                self.computer.submit_batch(
-                    batch_idx, rank_data, rank_indices,
-                    batch_weights, batch_cell_indices, actual_batch_size
-                )
-                
-                self.stats.completed_reads += 1
-                
-        except Exception as e:
-            logger.error(f"Reader-to-computer worker error: {e}")
-            self.stop_pipeline.set()
-            raise
-        finally:
-            self.reader_done.set()
     
-    def _computer_to_writer_worker(self):
-        """Worker thread to move data from computer to writer"""
-        try:
-            for _ in range(self.n_batches):
-                if self.stop_pipeline.is_set():
-                    break
-                    
-                # Get computed results with timing
-                batch_idx, marker_scores, cell_indices, compute_time = self.computer.get_result()
-                
-                # Record compute time
-                self.stats.computer_throughput.record_batch(compute_time)
-                
-                # Track write timing
-                write_start_time = time.time()
-                
-                # Submit to writer
-                self.writer.submit_batch(batch_idx, marker_scores, cell_indices, compute_time)
-                
-                # Record write submission time
-                write_submit_time = time.time() - write_start_time
-                self.stats.writer_throughput.record_batch(write_submit_time)
-                
-                self.stats.completed_computes += 1
-                
-        except Exception as e:
-            logger.error(f"Computer-to-writer worker error: {e}")
-            self.stop_pipeline.set()
-            raise
-        finally:
-            self.computer_done.set()
+    def submit_batches(
+        self,
+        neighbor_indices: np.ndarray,
+        neighbor_weights: np.ndarray,
+        cell_indices_sorted: np.ndarray
+    ):
+        """Submit all batches to the reader"""
+        # Set context for computer
+        self.computer.set_batch_context(
+            neighbor_weights=neighbor_weights,
+            cell_indices_sorted=cell_indices_sorted,
+            batch_size=self.batch_size,
+            n_cells=self.n_cells
+        )
+        
+        # Submit all batches with metadata
+        for batch_idx in range(self.n_batches):
+            batch_start = batch_idx * self.batch_size
+            batch_end = min(batch_start + self.batch_size, self.n_cells)
+            batch_neighbors = neighbor_indices[batch_start:batch_end]
+            
+            # Include metadata for computer
+            batch_metadata = {
+                'batch_start': batch_start,
+                'batch_end': batch_end,
+                'batch_idx': batch_idx
+            }
+            
+            self.reader.submit_batch(batch_idx, batch_neighbors, batch_metadata)
     
     def _update_stats(self):
         """Update pipeline statistics"""
+        # Update completed counts
         self.stats.completed_writes = self.writer.get_completed_count()
-        compute_pending, compute_ready = self.computer.get_queue_sizes()
-        self.stats.pending_compute = compute_pending + compute_ready
-        self.stats.pending_write = self.writer.get_queue_size()
+        
+        # Update queue sizes
         read_pending, read_ready = self.reader.get_queue_sizes()
         self.stats.pending_read = read_pending
+        
+        compute_pending, compute_ready = self.computer.get_queue_sizes()
+        self.stats.pending_compute = compute_pending
+        
+        self.stats.pending_write = self.writer.get_queue_size()
+        
+        # Update throughput stats
+        self.stats.reader_throughput = self.reader.throughput
+        self.stats.computer_throughput = self.computer.throughput
+        self.stats.writer_throughput = self.writer.throughput
+        
+        # Estimate completed reads and computes based on queue states
+        self.stats.completed_reads = self.n_batches - read_pending
+        self.stats.completed_computes = self.stats.completed_writes + self.stats.pending_write
     
     def run_with_rich_progress(
         self,
+        neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
         cell_indices_sorted: np.ndarray,
         num_homogeneous: int,
@@ -674,19 +687,8 @@ class MarkerScorePipeline:
                 f"[yellow]Writing results", total=self.n_batches
             )
             
-            # Start pipeline threads
-            reader_thread = threading.Thread(
-                target=self._reader_to_computer_worker,
-                args=(neighbor_weights, cell_indices_sorted, num_homogeneous),
-                daemon=True
-            )
-            computer_thread = threading.Thread(
-                target=self._computer_to_writer_worker,
-                daemon=True
-            )
-            
-            reader_thread.start()
-            computer_thread.start()
+            # Submit all batches to start the pipeline
+            self.submit_batches(neighbor_indices, neighbor_weights, cell_indices_sorted)
             
             # Monitor progress
             while self.stats.completed_writes < self.n_batches:
@@ -722,9 +724,7 @@ class MarkerScorePipeline:
             progress.update(compute_task, completed=self.n_batches)
             progress.update(write_task, completed=self.n_batches)
             
-        # Wait for threads
-        reader_thread.join(timeout=5)
-        computer_thread.join(timeout=5)
+        # No threads to wait for - processing happens in component worker threads
         
         # Print summary with component throughputs
         console.print(Panel.fit(
@@ -741,6 +741,7 @@ class MarkerScorePipeline:
     
     def run_with_tqdm_progress(
         self,
+        neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
         cell_indices_sorted: np.ndarray,
         num_homogeneous: int,
@@ -809,9 +810,7 @@ class MarkerScorePipeline:
         pbar.set_postfix_str('R:0 C:0 W:0')
         pbar.close()
         
-        # Wait for threads
-        reader_thread.join(timeout=5)
-        computer_thread.join(timeout=5)
+        # No threads to wait for - processing happens in component worker threads
         
         logger.info(
             f"Completed {cell_type}: {self.n_batches} batches in "
@@ -823,6 +822,7 @@ class MarkerScorePipeline:
     
     def run(
         self,
+        neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
         cell_indices_sorted: np.ndarray,
         num_homogeneous: int,
@@ -831,12 +831,12 @@ class MarkerScorePipeline:
         """Run pipeline with appropriate progress display"""
         if USE_RICH:
             self.run_with_rich_progress(
-                neighbor_weights, cell_indices_sorted,
+                neighbor_indices, neighbor_weights, cell_indices_sorted,
                 num_homogeneous, cell_type
             )
         else:
             self.run_with_tqdm_progress(
-                neighbor_weights, cell_indices_sorted,
+                neighbor_indices, neighbor_weights, cell_indices_sorted,
                 num_homogeneous, cell_type
             )
 
@@ -1048,7 +1048,8 @@ class MarkerScoreCalculator:
             reader.submit_batch(batch_idx, batch_neighbors)
         
         # Optional profiling
-        use_profiling = getattr(self.config, 'enable_profiling', False)
+        use_profiling = True
+        # use_profiling = getattr(self.config, 'enable_profiling', False)
         if use_profiling:
             import viztracer
             tracer = viztracer.VizTracer(
@@ -1068,6 +1069,7 @@ class MarkerScoreCalculator:
         )
         
         pipeline.run(
+            neighbor_indices=neighbor_indices,
             neighbor_weights=neighbor_weights,
             cell_indices_sorted=cell_indices_sorted,
             num_homogeneous=self.config.num_homogeneous,
@@ -1213,24 +1215,32 @@ class MarkerScoreCalculator:
         emb_indv_norm = np.linalg.norm(emb_indv, axis=1, keepdims=True)
         emb_indv = emb_indv / (emb_indv_norm + 1e-8)
         
-        # Initialize shared pools once for all cell types
-        logger.info("Initializing shared processing pools...")
+        # Initialize shared pools with directly connected queues
+        logger.info("Initializing shared processing pools with direct queue connections...")
 
+        # Create shared queues to connect components
+        reader_to_computer_queue = queue.Queue(maxsize=getattr(self.config, 'compute_workers', 4) * 2)
+        computer_to_writer_queue = queue.Queue(maxsize=100)
+        
         reader = ParallelRankReader(
             rank_memmap,
-            num_workers=self.config.rank_read_workers
+            num_workers=self.config.rank_read_workers,
+            output_queue=reader_to_computer_queue  # Direct connection to computer
         )
         
         computer = ParallelMarkerScoreComputer(
             global_log_gmean,
             global_expr_frac,
             self.config.num_homogeneous,
-            num_workers=getattr(self.config, 'compute_workers', 4)
+            num_workers=getattr(self.config, 'compute_workers', 4),
+            input_queue=reader_to_computer_queue,  # Input from reader
+            output_queue=computer_to_writer_queue  # Output to writer
         )
         
         writer = ParallelMarkerScoreWriter(
             output_memmap,
-            num_workers=self.config.mkscore_write_workers
+            num_workers=self.config.mkscore_write_workers,
+            input_queue=computer_to_writer_queue  # Input from computer
         )
         
         logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
