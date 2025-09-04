@@ -163,6 +163,10 @@ class ParallelRankReader:
         """Get next completed batch"""
         return self.result_queue.get()
     
+    def get_queue_sizes(self):
+        """Get current queue sizes for monitoring"""
+        return self.read_queue.qsize(), self.result_queue.qsize()
+    
     def close(self):
         """Clean up resources"""
         self.stop_workers.set()
@@ -178,7 +182,7 @@ class ParallelRankReader:
 
 
 class ParallelMarkerScoreComputer:
-    """Multi-threaded computer pool for marker score calculation"""
+    """Multi-threaded computer pool for marker score calculation (reusable across cell types)"""
     
     def __init__(
         self,
@@ -210,6 +214,7 @@ class ParallelMarkerScoreComputer:
         # Start worker threads
         self.workers = []
         self.stop_workers = threading.Event()
+        self.active_cell_type = None  # Track current cell type being processed
         self._start_workers()
     
     def _start_workers(self):
@@ -236,6 +241,7 @@ class ParallelMarkerScoreComputer:
                     break
                 
                 batch_idx, rank_data, rank_indices, neighbor_weights, cell_indices, batch_size = item
+                batch_start_time = time.time()
                 
                 # Convert to JAX for efficient computation
                 rank_data_jax = jnp.array(rank_data)
@@ -257,8 +263,11 @@ class ParallelMarkerScoreComputer:
                 # Convert back to numpy
                 marker_scores_np = np.array(marker_scores)
                 
-                # Put result for writing
-                self.result_queue.put((batch_idx, marker_scores_np, cell_indices))
+                # Track processing time
+                batch_elapsed = time.time() - batch_start_time
+                
+                # Put result for writing with timing info
+                self.result_queue.put((batch_idx, marker_scores_np, cell_indices, batch_elapsed))
                 self.compute_queue.task_done()
                 
             except queue.Empty:
@@ -275,8 +284,23 @@ class ParallelMarkerScoreComputer:
         self.compute_queue.put((batch_idx, rank_data, rank_indices, neighbor_weights, cell_indices, batch_size))
     
     def get_result(self):
-        """Get computed marker scores"""
+        """Get computed marker scores with timing info"""
         return self.result_queue.get()
+    
+    def reset_for_cell_type(self, cell_type: str):
+        """Reset queues for processing a new cell type"""
+        self.active_cell_type = cell_type
+        # Clear any remaining items in queues
+        while not self.compute_queue.empty():
+            try:
+                self.compute_queue.get_nowait()
+            except queue.Empty:
+                break
+        while not self.result_queue.empty():
+            try:
+                self.result_queue.get_nowait()
+            except queue.Empty:
+                break
     
     def get_queue_sizes(self):
         """Get current queue sizes for progress tracking"""
@@ -293,7 +317,7 @@ class ParallelMarkerScoreComputer:
 
 
 class ParallelMarkerScoreWriter:
-    """Multi-threaded writer pool for marker scores"""
+    """Multi-threaded writer pool for marker scores (reusable across cell types)"""
     
     def __init__(
         self,
@@ -314,6 +338,7 @@ class ParallelMarkerScoreWriter:
         self.write_queue = queue.Queue(maxsize=100)
         self.completed_count = 0
         self.completed_lock = threading.Lock()
+        self.active_cell_type = None  # Track current cell type being processed
         
         # Start worker threads
         self.workers = []
@@ -343,10 +368,14 @@ class ParallelMarkerScoreWriter:
                 if item is None:
                     break
                 
-                batch_idx, marker_scores, cell_indices = item
+                batch_idx, marker_scores, cell_indices, compute_time = item
+                write_start_time = time.time()
                 
                 # Write to memory map
                 self.output_memmap.write_batch(marker_scores, cell_indices)
+                
+                # Track write time
+                write_elapsed = time.time() - write_start_time
                 
                 # Update completed count
                 with self.completed_lock:
@@ -362,9 +391,21 @@ class ParallelMarkerScoreWriter:
         
         logger.info(f"Writer worker {worker_id} stopped")
     
-    def submit_batch(self, batch_idx: int, marker_scores: np.ndarray, cell_indices: np.ndarray):
+    def submit_batch(self, batch_idx: int, marker_scores: np.ndarray, cell_indices: np.ndarray, compute_time: float):
         """Queue a batch for writing"""
-        self.write_queue.put((batch_idx, marker_scores, cell_indices))
+        self.write_queue.put((batch_idx, marker_scores, cell_indices, compute_time))
+    
+    def reset_for_cell_type(self, cell_type: str):
+        """Reset for processing a new cell type"""
+        self.active_cell_type = cell_type
+        with self.completed_lock:
+            self.completed_count = 0
+        # Clear any remaining items in queue
+        while not self.write_queue.empty():
+            try:
+                self.write_queue.get_nowait()
+            except queue.Empty:
+                break
     
     def get_completed_count(self):
         """Get number of completed writes"""
@@ -397,6 +438,34 @@ class ParallelMarkerScoreWriter:
 
 
 @dataclass
+class ComponentThroughput:
+    """Track throughput for individual pipeline components"""
+    total_batches: int = 0
+    total_time: float = 0.0
+    last_batch_time: float = 0.0
+    
+    def record_batch(self, elapsed_time: float):
+        """Record a batch completion"""
+        self.total_batches += 1
+        self.total_time += elapsed_time
+        self.last_batch_time = elapsed_time
+    
+    @property
+    def average_time(self) -> float:
+        """Average time per batch"""
+        if self.total_batches > 0:
+            return self.total_time / self.total_batches
+        return 0.0
+    
+    @property
+    def throughput(self) -> float:
+        """Batches per second"""
+        if self.average_time > 0:
+            return 1.0 / self.average_time
+        return 0.0
+
+
+@dataclass
 class PipelineStats:
     """Statistics for pipeline monitoring"""
     total_batches: int
@@ -405,10 +474,19 @@ class PipelineStats:
     completed_writes: int = 0
     pending_compute: int = 0
     pending_write: int = 0
+    pending_read: int = 0
     start_time: float = 0
+    
+    # Component throughput tracking
+    reader_throughput: ComponentThroughput = None
+    computer_throughput: ComponentThroughput = None
+    writer_throughput: ComponentThroughput = None
     
     def __post_init__(self):
         self.start_time = time.time()
+        self.reader_throughput = ComponentThroughput()
+        self.computer_throughput = ComponentThroughput()
+        self.writer_throughput = ComponentThroughput()
     
     @property
     def elapsed_time(self):
@@ -469,9 +547,16 @@ class MarkerScorePipeline:
                 if self.stop_pipeline.is_set():
                     break
                     
+                # Track read timing
+                read_start_time = time.time()
+                
                 # Get batch from reader
                 result = self.reader.get_result()
                 batch_idx, rank_data, rank_indices, original_shape = result
+                
+                # Record read time
+                read_elapsed = time.time() - read_start_time
+                self.stats.reader_throughput.record_batch(read_elapsed)
                 
                 batch_start = batch_idx * self.batch_size
                 batch_end = min(batch_start + self.batch_size, self.n_cells)
@@ -507,11 +592,21 @@ class MarkerScorePipeline:
                 if self.stop_pipeline.is_set():
                     break
                     
-                # Get computed results
-                batch_idx, marker_scores, cell_indices = self.computer.get_result()
+                # Get computed results with timing
+                batch_idx, marker_scores, cell_indices, compute_time = self.computer.get_result()
+                
+                # Record compute time
+                self.stats.computer_throughput.record_batch(compute_time)
+                
+                # Track write timing
+                write_start_time = time.time()
                 
                 # Submit to writer
-                self.writer.submit_batch(batch_idx, marker_scores, cell_indices)
+                self.writer.submit_batch(batch_idx, marker_scores, cell_indices, compute_time)
+                
+                # Record write submission time
+                write_submit_time = time.time() - write_start_time
+                self.stats.writer_throughput.record_batch(write_submit_time)
                 
                 self.stats.completed_computes += 1
                 
@@ -528,6 +623,8 @@ class MarkerScorePipeline:
         compute_pending, compute_ready = self.computer.get_queue_sizes()
         self.stats.pending_compute = compute_pending + compute_ready
         self.stats.pending_write = self.writer.get_queue_size()
+        read_pending, read_ready = self.reader.get_queue_sizes()
+        self.stats.pending_read = read_pending
     
     def run_with_rich_progress(
         self,
@@ -538,6 +635,20 @@ class MarkerScorePipeline:
     ):
         """Run pipeline with rich progress display"""
         console = Console()
+        
+        # Define queue color mapping based on queue size
+        def get_queue_color(size: int) -> str:
+            """Get color based on queue size"""
+            if size == 0:
+                return "dim"
+            elif size < 5:
+                return "green"
+            elif size < 10:
+                return "yellow"
+            elif size < 20:
+                return "bright_yellow"
+            else:
+                return "red"
         
         # Create progress bars
         with Progress(
@@ -586,14 +697,22 @@ class MarkerScorePipeline:
                 progress.update(compute_task, completed=self.stats.completed_computes)
                 progress.update(write_task, completed=self.stats.completed_writes)
                 
-                # Add queue info to description
+                # Add queue info to description with color coding
+                read_color = get_queue_color(self.stats.pending_read)
+                compute_color = get_queue_color(self.stats.pending_compute)
+                write_color = get_queue_color(self.stats.pending_write)
+                
+                progress.update(
+                    read_task,
+                    description=f"[cyan]Reading ranks [{read_color}]Q:{self.stats.pending_read}[/{read_color}]"
+                )
                 progress.update(
                     compute_task,
-                    description=f"[green]Computing scores (queue: {self.stats.pending_compute})"
+                    description=f"[green]Computing scores [{compute_color}]Q:{self.stats.pending_compute}[/{compute_color}]"
                 )
                 progress.update(
                     write_task,
-                    description=f"[yellow]Writing results (queue: {self.stats.pending_write})"
+                    description=f"[yellow]Writing results [{write_color}]Q:{self.stats.pending_write}[/{write_color}]"
                 )
                 
                 time.sleep(0.1)
@@ -607,12 +726,16 @@ class MarkerScorePipeline:
         reader_thread.join(timeout=5)
         computer_thread.join(timeout=5)
         
-        # Print summary
+        # Print summary with component throughputs
         console.print(Panel.fit(
             f"[bold green]✓ Completed {cell_type}[/bold green]\n"
             f"Total batches: {self.n_batches}\n"
             f"Time elapsed: {self.stats.elapsed_time:.2f}s\n"
-            f"Throughput: {self.stats.throughput:.2f} batches/s",
+            f"Overall throughput: {self.stats.throughput:.2f} batches/s\n\n"
+            f"[bold]Component Throughputs:[/bold]\n"
+            f"  Reader:   {self.stats.reader_throughput.throughput:.2f} batches/s (avg: {self.stats.reader_throughput.average_time:.3f}s/batch)\n"
+            f"  Computer: {self.stats.computer_throughput.throughput:.2f} batches/s (avg: {self.stats.computer_throughput.average_time:.3f}s/batch)\n"
+            f"  Writer:   {self.stats.writer_throughput.throughput:.2f} batches/s (avg: {self.stats.writer_throughput.average_time:.3f}s/batch)",
             title="Pipeline Summary"
         ))
     
@@ -624,12 +747,28 @@ class MarkerScorePipeline:
         cell_type: str
     ):
         """Run pipeline with tqdm progress (fallback)"""
+        from colorama import init, Fore, Style
+        init(autoreset=True)
+        
+        # Define color mapping for queue sizes
+        def get_queue_color(size: int) -> str:
+            if size == 0:
+                return Style.DIM
+            elif size < 5:
+                return Fore.GREEN
+            elif size < 10:
+                return Fore.YELLOW
+            elif size < 20:
+                return Fore.LIGHTYELLOW_EX
+            else:
+                return Fore.RED
+        
         # Create progress bar
         pbar = tqdm(
             total=self.n_batches,
             desc=f"Processing {cell_type}",
-            bar_format='{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}] |{bar}| C:{postfix[0]} W:{postfix[1]}',
-            postfix=[0, 0]
+            bar_format='{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}] |{bar}| {postfix}',
+            postfix=''
         )
         
         # Start pipeline threads
@@ -651,14 +790,23 @@ class MarkerScorePipeline:
             self._update_stats()
             
             pbar.n = self.stats.completed_writes
-            pbar.postfix = [self.stats.pending_compute, self.stats.pending_write]
+            
+            # Format postfix with colored queue sizes
+            read_color = get_queue_color(self.stats.pending_read)
+            compute_color = get_queue_color(self.stats.pending_compute)
+            write_color = get_queue_color(self.stats.pending_write)
+            
+            postfix = (f"R:{read_color}{self.stats.pending_read}{Style.RESET_ALL} "
+                      f"C:{compute_color}{self.stats.pending_compute}{Style.RESET_ALL} "
+                      f"W:{write_color}{self.stats.pending_write}{Style.RESET_ALL}")
+            pbar.set_postfix_str(postfix)
             pbar.refresh()
             
             time.sleep(0.1)
         
         # Final update
         pbar.n = self.n_batches
-        pbar.postfix = [0, 0]
+        pbar.set_postfix_str('R:0 C:0 W:0')
         pbar.close()
         
         # Wait for threads
@@ -667,7 +815,10 @@ class MarkerScorePipeline:
         
         logger.info(
             f"Completed {cell_type}: {self.n_batches} batches in "
-            f"{self.stats.elapsed_time:.2f}s ({self.stats.throughput:.2f} batches/s)"
+            f"{self.stats.elapsed_time:.2f}s (Overall: {self.stats.throughput:.2f} batches/s, "
+            f"Reader: {self.stats.reader_throughput.throughput:.2f} batches/s, "
+            f"Computer: {self.stats.computer_throughput.throughput:.2f} batches/s, "
+            f"Writer: {self.stats.writer_throughput.throughput:.2f} batches/s)"
         )
     
     def run(
@@ -859,13 +1010,15 @@ class MarkerScoreCalculator:
         global_expr_frac: np.ndarray,
         rank_memmap,
         reader: ParallelRankReader,
+        computer: ParallelMarkerScoreComputer,
+        writer: ParallelMarkerScoreWriter,
         coords: Optional[np.ndarray],
         emb_gcn: Optional[np.ndarray],
         emb_indv: np.ndarray,
         annotation_key: str,
         slice_ids: Optional[np.ndarray] = None
     ):
-        """Process a single cell type with clean pipeline architecture"""
+        """Process a single cell type with shared pools"""
         
         # Prepare batch data
         batch_data = self._prepare_cell_batch_data(
@@ -878,6 +1031,10 @@ class MarkerScoreCalculator:
         
         neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells = batch_data
         
+        # Reset computer and writer for new cell type
+        computer.reset_for_cell_type(cell_type)
+        writer.reset_for_cell_type(cell_type)
+        
         # Calculate batch parameters
         batch_size = getattr(self.config, 'batch_size', 1000)
         n_batches = (n_cells + batch_size - 1) // batch_size
@@ -889,20 +1046,6 @@ class MarkerScoreCalculator:
             batch_end = min(batch_start + batch_size, n_cells)
             batch_neighbors = neighbor_indices[batch_start:batch_end]
             reader.submit_batch(batch_idx, batch_neighbors)
-        
-        # Create processing pools
-        logger.info("Initializing processing pools...")
-        computer = ParallelMarkerScoreComputer(
-            global_log_gmean,
-            global_expr_frac,
-            self.config.num_homogeneous,
-            num_workers=getattr(self.config, 'compute_workers', 4)
-        )
-        
-        writer = ParallelMarkerScoreWriter(
-            output_memmap,
-            num_workers=self.config.mkscore_write_workers
-        )
         
         # Optional profiling
         use_profiling = getattr(self.config, 'enable_profiling', False)
@@ -930,10 +1073,6 @@ class MarkerScoreCalculator:
             num_homogeneous=self.config.num_homogeneous,
             cell_type=cell_type
         )
-        
-        # Clean up
-        computer.close()
-        writer.close()
         
         # Stop profiling if enabled
         if use_profiling:
@@ -1074,13 +1213,29 @@ class MarkerScoreCalculator:
         emb_indv_norm = np.linalg.norm(emb_indv, axis=1, keepdims=True)
         emb_indv = emb_indv / (emb_indv_norm + 1e-8)
         
-        # Initialize parallel reader once for all cell types
-        logger.info("Initializing parallel reader...")
+        # Initialize shared pools once for all cell types
+        logger.info("Initializing shared processing pools...")
 
         reader = ParallelRankReader(
             rank_memmap,
             num_workers=self.config.rank_read_workers
         )
+        
+        computer = ParallelMarkerScoreComputer(
+            global_log_gmean,
+            global_expr_frac,
+            self.config.num_homogeneous,
+            num_workers=getattr(self.config, 'compute_workers', 4)
+        )
+        
+        writer = ParallelMarkerScoreWriter(
+            output_memmap,
+            num_workers=self.config.mkscore_write_workers
+        )
+        
+        logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
+                   f"{getattr(self.config, 'compute_workers', 4)} computers, "
+                   f"{self.config.mkscore_write_workers} writers")
         
         for cell_type in cell_types:
             self.process_cell_type(
@@ -1091,6 +1246,8 @@ class MarkerScoreCalculator:
                 global_expr_frac,
                 rank_memmap,
                 reader,
+                computer,
+                writer,
                 coords,
                 emb_gcn,
                 emb_indv,
@@ -1098,8 +1255,11 @@ class MarkerScoreCalculator:
                 slice_ids
             )
         
-        # Close the shared reader after all cell types are processed
+        # Close all shared pools after all cell types are processed
+        logger.info("Closing shared processing pools...")
         reader.close()
+        computer.close()
+        writer.close()
         
         # Close rank memory map
         rank_memmap.close()
