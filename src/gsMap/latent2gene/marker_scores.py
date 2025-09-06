@@ -980,7 +980,7 @@ class MarkerScoreCalculator:
         
         return global_log_gmean, global_expr_frac
 
-    def _prepare_cell_batch_data(
+    def _find_homogeneous_spots(
         self,
         adata: ad.AnnData,
         cell_type: str,
@@ -998,8 +998,8 @@ class MarkerScoreCalculator:
             Tuple of (neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells)
             or None if cell type should be skipped
         """
-        # Get cells of this type
-        cell_mask = adata.obs[annotation_key] == cell_type
+        # Get cells of this type, excluding NaN values
+        cell_mask = (adata.obs[annotation_key] == cell_type) & (adata.obs[annotation_key].notna())
         cell_indices = np.where(cell_mask)[0]
         n_cells = len(cell_indices)
         
@@ -1079,7 +1079,7 @@ class MarkerScoreCalculator:
         """Process a single cell type with shared pools"""
         
         # Prepare batch data
-        batch_data = self._prepare_cell_batch_data(
+        batch_data = self._find_homogeneous_spots(
             adata, cell_type, annotation_key, coords, emb_gcn,
             emb_indv, slice_ids, reader.shape
         )
@@ -1230,7 +1230,13 @@ class MarkerScoreCalculator:
         
         # Process each cell type
         if annotation_key and annotation_key in adata.obs.columns:
-            cell_types = adata.obs[annotation_key].unique()
+            # Get unique cell types, excluding NaN values
+            cell_types = adata.obs[annotation_key].dropna().unique()
+            
+            # Check if there are any NaN values and handle them
+            nan_count = adata.obs[annotation_key].isna().sum()
+            if nan_count > 0:
+                logger.warning(f"Found {nan_count} cells with NaN annotation in '{annotation_key}', these will be skipped")
         else:
             logger.warning(f"Annotation {annotation_key} not found, processing all cells as one type")
             cell_types = ["all"]

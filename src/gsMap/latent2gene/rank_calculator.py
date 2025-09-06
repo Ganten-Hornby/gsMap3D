@@ -212,13 +212,44 @@ class RankCalculator:
             # Apply same filtering logic as in main loop
             with h5py.File(h5ad_path, 'r') as f:
                 adata_temp_obs = read_elem(f['obs'])
-                if annotation_key and annotation_key in adata_temp_obs.columns:
-                    min_cells_per_type = getattr(self.config, 'num_anchor', 21)
-                    annotation_counts = adata_temp_obs[annotation_key].value_counts()
-                    valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
-                    if len(valid_annotations) < len(annotation_counts):
-                        mask = adata_temp_obs[annotation_key].isin(valid_annotations)
-                        adata_temp_obs = adata_temp_obs[mask].copy()
+                assert annotation_key and annotation_key in adata_temp_obs.columns, \
+                    f"Annotation key '{annotation_key}' not found in the obs of {sample_name}"
+                
+                n_cells_before = adata_temp_obs.shape[0]
+                
+                # Check for and handle NaN values
+                nan_count = adata_temp_obs[annotation_key].isna().sum()
+                if nan_count > 0:
+                    adata_temp_obs = adata_temp_obs[adata_temp_obs[annotation_key].notna()].copy()
+                
+                # Filter cells based on annotation group size
+                min_cells_per_type = getattr(self.config, 'num_anchor', 21)
+                annotation_counts = adata_temp_obs[annotation_key].value_counts()
+                valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
+                
+                if len(valid_annotations) < len(annotation_counts):
+                    # Log which groups will be removed
+                    removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
+                    logger.info(f"Sample {sample_name}: Removing groups with <{min_cells_per_type} cells: {removed_groups.to_dict()}")
+                    
+                    # Filter to valid annotations
+                    mask = adata_temp_obs[annotation_key].isin(valid_annotations)
+                    adata_temp_obs = adata_temp_obs[mask].copy()
+                
+                n_cells_after = adata_temp_obs.shape[0]
+                if n_cells_before != n_cells_after:
+                    logger.info(f"Sample {sample_name}: {n_cells_before} -> {n_cells_after} cells (removed {n_cells_before - n_cells_after})")
+                    if nan_count > 0:
+                        logger.warning(
+                            f"Sample {sample_name}: Found {nan_count} cells with NaN annotation in '{annotation_key}'"
+                        )
+                        logger.info(f"  - NaN annotation cells removed: {nan_count}")
+                    small_group_removed = n_cells_before - n_cells_after - nan_count
+                    if small_group_removed > 0:
+                        logger.info(f"  - Small group cells removed: {small_group_removed}")
+                else:
+                    logger.info(f"Sample {sample_name}: {n_cells_after} cells (no filtering needed)")
+                
                 total_cells_expected += adata_temp_obs.shape[0]
 
         logger.info(f"Expected total cells after filtering: {total_cells_expected}")
@@ -233,27 +264,21 @@ class RankCalculator:
             adata.obs['slice_id'] = st_id
             adata.obs['slice_name'] = sample_name
 
-            # Filter cells based on annotation group size if annotation is provided
+            # Apply the same filtering logic as in counting phase
             # This must be done BEFORE adding to rank zarr to maintain index consistency
             if annotation_key and annotation_key in adata.obs.columns:
-                min_cells_per_type = getattr(self.config, 'num_anchor', 21)  # Minimum number of homogeneous neighbors
+                # Check for and handle NaN values
+                nan_count = adata.obs[annotation_key].isna().sum()
+                if nan_count > 0:
+                    adata = adata[adata.obs[annotation_key].notna()].copy()
+                
+                # Filter cells based on annotation group size
+                min_cells_per_type = getattr(self.config, 'num_anchor', 21)
                 annotation_counts = adata.obs[annotation_key].value_counts()
                 valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
                 
-                # Check if any filtering is needed
                 if len(valid_annotations) < len(annotation_counts):
-                    n_cells_before = adata.n_obs
-                    mask = adata.obs[annotation_key].isin(valid_annotations)
-                    adata = adata[mask].copy()
-                    n_cells_after = adata.n_obs
-                    
-                    logger.info(f"  Filtered {sample_name} based on annotation group size (min={min_cells_per_type})")
-                    logger.info(f"    - Cells before: {n_cells_before}, after: {n_cells_after}, removed: {n_cells_before - n_cells_after}")
-                    
-                    # Log which groups were removed
-                    removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
-                    if len(removed_groups) > 0:
-                        logger.debug(f"    - Removed groups: {removed_groups.to_dict()}")
+                    adata = adata[adata.obs[annotation_key].isin(valid_annotations)].copy()
             
             # Get gene list (should be consistent across sections)
             if gene_list is None:
