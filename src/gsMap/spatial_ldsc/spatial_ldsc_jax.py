@@ -21,7 +21,7 @@ import pandas as pd
 import psutil
 from jax import jit, vmap
 from scipy.stats import norm
-from tqdm import tqdm
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
 import anndata as ad
 from ..config import SpatialLDSCConfig
@@ -571,7 +571,15 @@ def process_chunks_with_queue(config: SpatialLDSCConfig,
     n_chunks_processed = 0
 
     # Process chunks as they become available
-    with tqdm(total=len(chunk_indices), desc="Processing chunks") as pbar:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn()
+    ) as progress:
+        task = progress.add_task("Processing chunks", total=len(chunk_indices))
+        
         while n_chunks_processed < len(chunk_indices):
             # Get chunk from queue
             chunk_idx, chunk_data = loader.get_next_chunk()
@@ -585,7 +593,7 @@ def process_chunks_with_queue(config: SpatialLDSCConfig,
 
             if chunk_data is None:
                 logger.error(f"Skipping chunk {chunk_idx} due to loading error")
-                pbar.update(1)
+                progress.update(task, advance=1)
                 n_chunks_processed += 1
                 continue
 

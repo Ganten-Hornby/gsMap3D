@@ -8,7 +8,7 @@ import logging
 import re 
 from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
+from rich.progress import track
 from scipy.special import softmax
 from .GNN.GCN import GCN, build_spatial_graph
 from gsMap.config import FindLatentRepresentationsConfig
@@ -33,7 +33,8 @@ def find_common_hvg(spe_file_list, params: FindLatentRepresentationsConfig):
     annotation_list = []
 
     logger.info("Finding highly variable genes (HVGs)...")
-    for st_file in tqdm(spe_file_list, desc="Finding HVGs"):
+    
+    for st_file in track(spe_file_list, description="Finding HVGs"):
         adata_temp = sc.read_h5ad(st_file)
         # sc.pp.filter_genes(adata_temp, min_counts=1)
         

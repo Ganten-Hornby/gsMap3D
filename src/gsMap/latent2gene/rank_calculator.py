@@ -19,7 +19,7 @@ import pandas as pd
 import scanpy as sc
 from jax import jit
 from scipy.sparse import csr_matrix
-from tqdm import tqdm
+from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 import jax.scipy
 import anndata as ad
 from gsMap.config import LatentToGeneConfig
@@ -80,7 +80,15 @@ def rank_data_jax(X: csr_matrix, n_genes,
     # Setup progress bar
     study_name = metadata.get('name', 'unknown') if metadata else 'unknown'
 
-    with tqdm(total=n_rows, desc=f"Ranking {study_name}", unit="cells") as pbar:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn()
+    ) as progress:
+        task = progress.add_task(f"Ranking {study_name}", total=n_rows)
+        
         for start_idx in range(0, n_rows, chunk_size):
             end_idx = min(start_idx + chunk_size, n_rows)
 
@@ -119,7 +127,7 @@ def rank_data_jax(X: csr_matrix, n_genes,
                 pending_indices = []
 
             # Update progress bar
-            pbar.update(end_idx - start_idx)
+            progress.update(task, advance=end_idx - start_idx)
 
     # Write any remaining chunks
     if memmap_dense and pending_chunks:
@@ -212,55 +220,55 @@ class RankCalculator:
             # Apply same filtering logic as in main loop
             with h5py.File(h5ad_path, 'r') as f:
                 adata_temp_obs = read_elem(f['obs'])
-                assert annotation_key and annotation_key in adata_temp_obs.columns, \
-                    f"Annotation key '{annotation_key}' not found in the obs of {sample_name}"
-                
-                n_cells_before = adata_temp_obs.shape[0]
-                
-                # Check for and handle NaN values
-                nan_count = adata_temp_obs[annotation_key].isna().sum()
-                if nan_count > 0:
-                    adata_temp_obs = adata_temp_obs[adata_temp_obs[annotation_key].notna()].copy()
-                
-                # Filter cells based on annotation group size
-                min_cells_per_type = getattr(self.config, 'num_anchor', 21)
-                annotation_counts = adata_temp_obs[annotation_key].value_counts()
-                valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
-                
-                if len(valid_annotations) < len(annotation_counts):
-                    # Log which groups will be removed
-                    removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
-                    logger.info(f"Sample {sample_name}: Removing groups with <{min_cells_per_type} cells: {removed_groups.to_dict()}")
-                    
-                    # Filter to valid annotations
-                    mask = adata_temp_obs[annotation_key].isin(valid_annotations)
-                    adata_temp_obs = adata_temp_obs[mask].copy()
-                
-                n_cells_after = adata_temp_obs.shape[0]
-                if n_cells_before != n_cells_after:
-                    # Build detailed filtering message
-                    removal_details = []
-                    if nan_count > 0:
-                        removal_details.append(f"{nan_count} NaN cells")
+                if annotation_key is not None:
+                    assert annotation_key and annotation_key in adata_temp_obs.columns, \
+                        f"Annotation key '{annotation_key}' not found in the obs of {sample_name}"
 
-                    small_group_removed = n_cells_before - n_cells_after - nan_count
-                    if small_group_removed > 0:
-                        # Get the removed annotation groups for detailed logging
+                    n_cells_before = adata_temp_obs.shape[0]
+
+                    # Check for and handle NaN values
+                    nan_count = adata_temp_obs[annotation_key].isna().sum()
+                    if nan_count > 0:
+                        adata_temp_obs = adata_temp_obs[adata_temp_obs[annotation_key].notna()].copy()
+
+                    # Filter cells based on annotation group size
+                    min_cells_per_type = getattr(self.config, 'num_anchor', 21)
+                    annotation_counts = adata_temp_obs[annotation_key].value_counts()
+                    valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
+
+                    if len(valid_annotations) < len(annotation_counts):
+                        # Log which groups will be removed
                         removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
-                        removed_groups_str = ", ".join([f"{group}({count})" for group, count in removed_groups.items()])
-                        removal_details.append(f"{small_group_removed} cells from small groups (<{min_cells_per_type} cells): {removed_groups_str}")
-                    
-                    logger.info(f"Sample {sample_name}: {n_cells_before} -> {n_cells_after} cells (removed {n_cells_before - n_cells_after})")
-                    for detail in removal_details:
-                        logger.info(f"  - Removed {detail}")
-                else:
-                    logger.info(f"Sample {sample_name}: {n_cells_after} cells (no filtering needed)")
-                
+                        logger.info(f"Sample {sample_name}: Removing groups with <{min_cells_per_type} cells: {removed_groups.to_dict()}")
+
+                        # Filter to valid annotations
+                        mask = adata_temp_obs[annotation_key].isin(valid_annotations)
+                        adata_temp_obs = adata_temp_obs[mask].copy()
+
+                    n_cells_after = adata_temp_obs.shape[0]
+                    if n_cells_before != n_cells_after:
+                        # Build detailed filtering message
+                        removal_details = []
+                        if nan_count > 0:
+                            removal_details.append(f"{nan_count} NaN cells")
+
+                        small_group_removed = n_cells_before - n_cells_after - nan_count
+                        if small_group_removed > 0:
+                            # Get the removed annotation groups for detailed logging
+                            removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
+                            removed_groups_str = ", ".join([f"{group}({count})" for group, count in removed_groups.items()])
+                            removal_details.append(f"{small_group_removed} cells from small groups (<{min_cells_per_type} cells): {removed_groups_str}")
+
+                        logger.info(f"Sample {sample_name}: {n_cells_before} -> {n_cells_after} cells (removed {n_cells_before - n_cells_after})")
+                        for detail in removal_details:
+                            logger.info(f"  - Removed {detail}")
+                    else:
+                        logger.info(f"Sample {sample_name}: {n_cells_after} cells (no filtering needed)")
                 total_cells_expected += adata_temp_obs.shape[0]
 
         logger.info(f"Expected total cells after filtering: {total_cells_expected}")
         
-        for st_id, (sample_name, h5ad_path) in enumerate(tqdm(sample_h5ad_dict.items(), desc="Processing sections")):
+        for st_id, (sample_name, h5ad_path) in track(enumerate(sample_h5ad_dict.items()), description="Processing sections", total=len(sample_h5ad_dict)):
             logger.info(f"Processing {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})...")
             
             # Load the h5ad file (which should already contain latent representations)
@@ -272,20 +280,21 @@ class RankCalculator:
 
             # Apply the same filtering logic as in counting phase
             # This must be done BEFORE adding to rank zarr to maintain index consistency
-            if annotation_key and annotation_key in adata.obs.columns:
+            if annotation_key is not None:
+                assert annotation_key and annotation_key in adata.obs.columns
                 # Check for and handle NaN values
                 nan_count = adata.obs[annotation_key].isna().sum()
                 if nan_count > 0:
                     adata = adata[adata.obs[annotation_key].notna()].copy()
-                
+
                 # Filter cells based on annotation group size
                 min_cells_per_type = getattr(self.config, 'num_anchor', 21)
                 annotation_counts = adata.obs[annotation_key].value_counts()
                 valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
-                
+
                 if len(valid_annotations) < len(annotation_counts):
                     adata = adata[adata.obs[annotation_key].isin(valid_annotations)].copy()
-            
+
             # Get gene list (should be consistent across sections)
             if gene_list is None:
                 gene_list = adata.var_names.tolist()
@@ -306,13 +315,13 @@ class RankCalculator:
                 # Verify gene list consistency
                 assert adata.var_names.tolist() == gene_list, \
                     f"Gene list mismatch in section {st_id}"
-            
+
             # Get expression data for ranking
             if data_layer in adata.layers:
                 X = adata.layers[data_layer]
             else:
                 X = adata.X
-            
+
             # Efficient sparse matrix conversion
             if not hasattr(X, 'tocsr'):
                 X = csr_matrix(X, dtype=np.float32)
@@ -320,19 +329,19 @@ class RankCalculator:
                 X = X.tocsr()
                 if X.dtype != np.float32:
                     X = X.astype(np.float32)
-            
+
             # Pre-allocate output arrays for efficiency
             X.sort_indices()  # Sort indices for better cache performance
-            
+
             # Get number of cells after filtering
             n_cells = X.shape[0]
-            
+
             # Use JAX rank calculation with memory map
             logger.debug(f"Processing {n_cells} cells with JAX")
             metadata = {'name': sample_name, 'cells': n_cells, 'study_id': st_id}
-            
+
             batch_sum_log_ranks, batch_frac = rank_data_jax(
-                X, 
+                X,
                 n_genes,
                 memmap_dense=rank_memmap,
                 metadata=metadata,
@@ -340,13 +349,13 @@ class RankCalculator:
                 write_interval=self.config.rank_write_interval,  # Batch several chunks before writing
                 current_row_offset=current_row_offset  # Pass offset for proper indexing
             )
-            
+
             # Update global sums
             sum_log_ranks += batch_sum_log_ranks
             sum_frac += batch_frac
             total_cells += n_cells
             current_row_offset += n_cells  # Update offset for next section
-            
+
             # Create minimal AnnData with empty X matrix but keep obs and obsm
             minimal_adata = ad.AnnData(
                 X=csr_matrix((adata.n_obs, n_genes), dtype=np.float32),
@@ -354,14 +363,14 @@ class RankCalculator:
                 var=pd.DataFrame(index=gene_list),
                 obsm=adata.obsm.copy()  # Keep all latent representations
             )
-            
+
             adata_list.append(minimal_adata)
             n_total_cells += n_cells
-            
+
             # Clean up memory
             del adata, X, minimal_adata
             gc.collect()
-            
+
         # Close rank memory map
         rank_memmap.close()
         logger.info(f"Saved rank matrix to {rank_memmap_path}")

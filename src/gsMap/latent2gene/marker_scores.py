@@ -31,22 +31,17 @@ from .row_ordering import optimize_row_order
 logger = logging.getLogger(__name__)
 
 # Progress bar imports
-try:
-    from rich.progress import (
-        Progress, SpinnerColumn, TextColumn, BarColumn, 
-        TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn,
-        TimeElapsedColumn
-    )
-    from rich.console import Console
-    from rich.table import Table
-    from rich.live import Live
-    from rich.layout import Layout
-    from rich.panel import Panel
-    USE_RICH = True
-except ImportError:
-    from tqdm import tqdm
-    USE_RICH = False
-    logger.warning("Rich package not installed. Using tqdm for progress bars.")
+from rich.progress import (
+    Progress, SpinnerColumn, TextColumn, BarColumn, 
+    TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn,
+    TimeElapsedColumn
+)
+from rich.console import Console
+from rich.table import Table
+from rich.live import Live
+from rich.layout import Layout
+from rich.panel import Panel
+USE_RICH = True
 
 class ParallelRankReader:
     """Multi-threaded reader for log-rank data from memory-mapped storage"""
@@ -703,7 +698,7 @@ class MarkerScorePipeline:
         self.stats.completed_reads = self.n_batches - read_pending
         self.stats.completed_computes = self.stats.completed_writes + self.stats.pending_write
     
-    def run_with_rich_progress(
+    def run(
         self,
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
@@ -808,101 +803,7 @@ class MarkerScorePipeline:
             f"  Writer:   {self.stats.writer_throughput.throughput:.2f} batches/s × {self.writer.num_workers} workers ({writer_cells_per_sec:.0f} cells/s)",
             title="Pipeline Summary"
         ))
-    
-    def run_with_tqdm_progress(
-        self,
-        neighbor_indices: np.ndarray,
-        neighbor_weights: np.ndarray,
-        cell_indices_sorted: np.ndarray,
-        num_homogeneous: int,
-        cell_type: str
-    ):
-        """Run pipeline with tqdm progress (fallback)"""
-        from colorama import init, Fore, Style
-        init(autoreset=True)
-        
-        # Define color mapping for queue sizes
-        def get_queue_color(size: int) -> str:
-            if size == 0:
-                return Style.DIM
-            elif size < 5:
-                return Fore.GREEN
-            elif size < 10:
-                return Fore.YELLOW
-            elif size < 20:
-                return Fore.LIGHTYELLOW_EX
-            else:
-                return Fore.RED
-        
-        # Create progress bar
-        pbar = tqdm(
-            total=self.n_batches,
-            desc=f"Processing {cell_type}",
-            bar_format='{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}] |{bar}| {postfix}',
-            postfix=''
-        )
-        
-        # Submit all batches to start the pipeline
-        self.submit_batches(neighbor_indices, neighbor_weights, cell_indices_sorted)
-        
-        # Monitor progress
-        while self.stats.completed_writes < self.n_batches:
-            # Check for errors in any component
-            self.reader.check_errors()
-            self.computer.check_errors()
-            self.writer.check_errors()
-            
-            self._update_stats()
-            
-            pbar.n = self.stats.completed_writes
-            
-            # Format postfix with colored queue sizes
-            read_color = get_queue_color(self.stats.pending_read)
-            compute_color = get_queue_color(self.stats.pending_compute)
-            write_color = get_queue_color(self.stats.pending_write)
-            
-            postfix = (f"R:{read_color}{self.stats.pending_read}{Style.RESET_ALL} "
-                      f"C:{compute_color}{self.stats.pending_compute}{Style.RESET_ALL} "
-                      f"W:{write_color}{self.stats.pending_write}{Style.RESET_ALL}")
-            pbar.set_postfix_str(postfix)
-            pbar.refresh()
-            
-            time.sleep(0.1)
-        
-        # Final update
-        pbar.n = self.n_batches
-        pbar.set_postfix_str('R:0 C:0 W:0')
-        pbar.close()
-        
-        # No threads to wait for - processing happens in component worker threads
-        
-        logger.info(
-            f"Completed {cell_type}: {self.n_batches} batches in "
-            f"{self.stats.elapsed_time:.2f}s (Overall: {self.stats.throughput:.2f} batches/s, "
-            f"Reader: {self.stats.reader_throughput.throughput:.2f} batches/s, "
-            f"Computer: {self.stats.computer_throughput.throughput:.2f} batches/s, "
-            f"Writer: {self.stats.writer_throughput.throughput:.2f} batches/s)"
-        )
-    
-    def run(
-        self,
-        neighbor_indices: np.ndarray,
-        neighbor_weights: np.ndarray,
-        cell_indices_sorted: np.ndarray,
-        num_homogeneous: int,
-        cell_type: str
-    ):
-        """Run pipeline with appropriate progress display"""
-        if USE_RICH:
-            self.run_with_rich_progress(
-                neighbor_indices, neighbor_weights, cell_indices_sorted,
-                num_homogeneous, cell_type
-            )
-        else:
-            self.run_with_tqdm_progress(
-                neighbor_indices, neighbor_weights, cell_indices_sorted,
-                num_homogeneous, cell_type
-            )
+
 
 
 @partial(jit, static_argnums=(2, 3))
@@ -1229,7 +1130,8 @@ class MarkerScoreCalculator:
         )
         
         # Process each cell type
-        if annotation_key and annotation_key in adata.obs.columns:
+        if annotation_key is not None:
+            assert annotation_key in adata.obs.columns, f"Annotation key '{annotation_key}' not found in adata.obs"
             # Get unique cell types, excluding NaN values
             cell_types = adata.obs[annotation_key].dropna().unique()
             

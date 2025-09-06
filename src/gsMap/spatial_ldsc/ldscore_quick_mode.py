@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
-from tqdm import tqdm
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
 from ..config import SpatialLDSCConfig
 
@@ -345,7 +345,15 @@ class SpatialLDSCProcessor:
             n_workers_completed = 0
             n_chunks_processed = 0
             
-            with tqdm(total=self.total_chunks, desc="Processing chunks") as pbar:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn()
+            ) as progress:
+                task = progress.add_task("Processing chunks", total=self.total_chunks)
+                
                 while n_chunks_processed < self.total_chunks:
                     try:
                         result = self.result_queue.get(timeout=1.0)
@@ -364,7 +372,7 @@ class SpatialLDSCProcessor:
                     if not result.get('success', False):
                         logger.error(f"Skipping chunk {result.get('chunk_idx')} due to error")
                         n_chunks_processed += 1
-                        pbar.update(1)
+                        progress.update(task, advance=1)
                         continue
                     
                     # Process successful chunk
