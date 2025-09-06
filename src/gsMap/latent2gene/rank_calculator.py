@@ -238,15 +238,21 @@ class RankCalculator:
                 
                 n_cells_after = adata_temp_obs.shape[0]
                 if n_cells_before != n_cells_after:
-                    logger.info(f"Sample {sample_name}: {n_cells_before} -> {n_cells_after} cells (removed {n_cells_before - n_cells_after})")
+                    # Build detailed filtering message
+                    removal_details = []
                     if nan_count > 0:
-                        logger.warning(
-                            f"Sample {sample_name}: Found {nan_count} cells with NaN annotation in '{annotation_key}'"
-                        )
-                        logger.info(f"  - NaN annotation cells removed: {nan_count}")
+                        removal_details.append(f"{nan_count} NaN cells")
+
                     small_group_removed = n_cells_before - n_cells_after - nan_count
                     if small_group_removed > 0:
-                        logger.info(f"  - Small group cells removed: {small_group_removed}")
+                        # Get the removed annotation groups for detailed logging
+                        removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
+                        removed_groups_str = ", ".join([f"{group}({count})" for group, count in removed_groups.items()])
+                        removal_details.append(f"{small_group_removed} cells from small groups (<{min_cells_per_type} cells): {removed_groups_str}")
+                    
+                    logger.info(f"Sample {sample_name}: {n_cells_before} -> {n_cells_after} cells (removed {n_cells_before - n_cells_after})")
+                    for detail in removal_details:
+                        logger.info(f"  - Removed {detail}")
                 else:
                     logger.info(f"Sample {sample_name}: {n_cells_after} cells (no filtering needed)")
                 
@@ -331,7 +337,7 @@ class RankCalculator:
                 memmap_dense=rank_memmap,
                 metadata=metadata,
                 chunk_size=self.config.rank_batch_size,
-                write_interval=self.config.rank_write_interval,  # Batch 5 chunks before writing
+                write_interval=self.config.rank_write_interval,  # Batch several chunks before writing
                 current_row_offset=current_row_offset  # Pass offset for proper indexing
             )
             

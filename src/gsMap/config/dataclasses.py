@@ -718,6 +718,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     # -------- IO parameters
     rank_batch_size:int = 500
     mkscore_batch_size:int = 500
+    rank_write_interval = 10
 
     # Worker configurations
     rank_read_workers: Annotated[int, typer.Option(
