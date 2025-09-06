@@ -1046,6 +1046,17 @@ class MarkerScoreCalculator:
         neighbor_weights = neighbor_weights[row_order]
         cell_indices_sorted = cell_indices[row_order]
         
+        # Save neighbor indices and weights to obsm matrices
+        # Initialize matrices if they don't exist
+        if 'gsMap_homo_indices' not in adata.obsm.keys():
+            adata.obsm['gsMap_homo_indices'] = np.zeros((adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype)
+        if 'gsMap_homo_weights' not in adata.obsm.keys():
+            adata.obsm['gsMap_homo_weights'] = np.zeros((adata.n_obs, neighbor_weights.shape[1]), dtype=neighbor_weights.dtype)
+        
+        # Store the neighbor indices and weights for this cell type
+        adata.obsm['gsMap_homo_indices'][cell_indices_sorted] = neighbor_indices
+        adata.obsm['gsMap_homo_weights'][cell_indices_sorted] = neighbor_weights
+        
         return neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells
 
     def process_cell_type(
@@ -1316,6 +1327,10 @@ class MarkerScoreCalculator:
                 annotation_key,
                 slice_ids
             )
+        
+        # Save updated AnnData with neighbor matrices
+        logger.info(f"Saving updated AnnData with homogeneous spot matrices to {adata_path}")
+        adata.write_h5ad(adata_path)
         
         # Close all shared pools after all cell types are processed
         logger.info("Closing shared processing pools...")

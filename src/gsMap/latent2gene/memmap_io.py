@@ -266,6 +266,20 @@ class MemMapDense:
                 json.dump(meta, f, indent=2)
             
             logger.info(f"Marked MemMapDense at {self.path} as complete")
+    
+    @property
+    def is_complete(self) -> bool:
+        """Check if the memory map is marked as complete"""
+        if not self.meta_path.exists():
+            return False
+        
+        try:
+            with open(self.meta_path, 'r') as f:
+                meta = json.load(f)
+            return meta.get('complete', False)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not read metadata to check completion status: {e}")
+            return False
 
     def close(self):
         """Clean up resources"""

@@ -53,12 +53,48 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     }
     
     if all(Path(p).exists() for p in expected_outputs.values()):
-        logger.info("All outputs already exist. Loading metadata...")
-        with open(expected_outputs["metadata"], 'r') as f:
-            existing_metadata = json.load(f)
-        logger.info(f"Found existing results for {existing_metadata.get('n_cells', 'unknown')} cells "
-                   f"and {existing_metadata.get('n_genes', 'unknown')} genes")
-        return {k: str(v) for k, v in expected_outputs.items()}
+        logger.info("All outputs already exist. Checking completion status...")
+        
+        # Check if memory maps are properly completed
+        from .memmap_io import MemMapDense
+        
+        # Check rank memmap completion
+        rank_memmap_complete = False
+        try:
+            rank_memmap = MemMapDense(
+                path=expected_outputs["rank_memmap"],
+                shape=(1, 1),  # Dummy shape - will be overridden by metadata
+                mode='r'
+            )
+            rank_memmap_complete = rank_memmap.is_complete
+            rank_memmap.close()
+        except Exception as e:
+            logger.warning(f"Could not check rank memmap completion: {e}")
+        
+        # Check marker scores memmap completion
+        marker_scores_complete = False
+        try:
+            marker_scores_memmap = MemMapDense(
+                path=expected_outputs["marker_scores"],
+                shape=(1, 1),  # Dummy shape - will be overridden by metadata
+                mode='r'
+            )
+            marker_scores_complete = marker_scores_memmap.is_complete
+            marker_scores_memmap.close()
+        except Exception as e:
+            logger.warning(f"Could not check marker scores memmap completion: {e}")
+        
+        if rank_memmap_complete and marker_scores_complete:
+            logger.info("All memory maps are properly completed. Loading metadata...")
+            with open(expected_outputs["metadata"], 'r') as f:
+                existing_metadata = json.load(f)
+            logger.info(f"Found existing complete results for {existing_metadata.get('n_cells', 'unknown')} cells "
+                       f"and {existing_metadata.get('n_genes', 'unknown')} genes")
+            return {k: str(v) for k, v in expected_outputs.items()}
+        else:
+            logger.warning("Memory maps exist but are not properly completed. Re-running pipeline...")
+            logger.warning(f"Rank memmap complete: {rank_memmap_complete}")
+            logger.warning(f"Marker scores memmap complete: {marker_scores_complete}")
     
     # Step 1: Calculate ranks and concatenate
     logger.info("\n" + "-" * 40)
