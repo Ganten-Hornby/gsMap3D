@@ -28,7 +28,7 @@ def get_gsMap_logger(logger_name):
 
 logger = get_gsMap_logger("gsMap")
 
-def configure_jax_platform(use_gpu: bool):
+def configure_jax_platform(use_gpu: bool = True):
     """Configure JAX platform based on use_gpu flag.
     
     Args:
@@ -376,6 +376,12 @@ class RunAllModeConfig:
     gM_slices: Optional[str] = None
     sumstats_config_file: Optional[str] = None
     species: Optional[str] = None
+    
+    def __post_init__(self):
+        """Configure JAX platform based on use_jax setting."""
+        if self.use_jax:
+            # RunAllModeConfig doesn't have use_gpu flag, so default to trying GPU
+            configure_jax_platform(use_gpu=True)
 
 
 @dataclass
@@ -736,7 +742,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         help="Maximum size of compute input queue (multiplier of compute_workers)",
         min=1,
         max=10
-    )] = 2
+    )] = 5
     
     writer_queue_size: Annotated[int, typer.Option(
         help="Maximum size of writer input queue",
@@ -899,7 +905,11 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     def __post_init__(self):
         super().__post_init__()
         
-
+        # Configure JAX platform if use_jax is enabled
+        if self.use_jax:
+            # SpatialLDSC doesn't have use_gpu flag, so default to trying GPU
+            configure_jax_platform(use_gpu=True)
+        
         # Validate cell_indices_range is 0-based
         if self.cell_indices_range is not None:
             # Validate exclusivity between sample_name and cell_indices_range

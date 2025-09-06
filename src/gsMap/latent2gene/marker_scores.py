@@ -197,6 +197,12 @@ class ParallelRankReader:
             except queue.Empty:
                 raise RuntimeError("Reader worker failed with unknown error")
     
+    def reset_for_cell_type(self, cell_type: str):
+        """Reset throughput tracking for new cell type"""
+        with self.throughput_lock:
+            self.throughput = ComponentThroughput()
+        logger.debug(f"Reset reader throughput for {cell_type}")
+    
     def close(self):
         """Clean up resources"""
         self.stop_workers.set()
@@ -329,8 +335,8 @@ class ParallelMarkerScoreComputer:
                     self.global_expr_frac
                 )
                 
-                # Convert back to numpy
-                marker_scores_np = np.array(marker_scores)
+                # Convert back to numpy as float16 for memory efficiency
+                marker_scores_np = np.array(marker_scores, dtype=np.float16)
                 
                 # Track throughput
                 elapsed = time.time() - start_time
@@ -367,6 +373,9 @@ class ParallelMarkerScoreComputer:
         self.cell_indices_sorted = None
         self.batch_size = None
         self.n_cells = None
+        with self.throughput_lock:
+            self.throughput = ComponentThroughput()
+        logger.debug(f"Reset computer throughput for {cell_type}")
     
     def get_queue_sizes(self):
         """Get current queue sizes for progress tracking"""
@@ -506,6 +515,9 @@ class ParallelMarkerScoreWriter:
         self.active_cell_type = cell_type
         with self.completed_lock:
             self.completed_count = 0
+        with self.throughput_lock:
+            self.throughput = ComponentThroughput()
+        logger.debug(f"Reset writer throughput for {cell_type}")
     
     def get_completed_count(self):
         """Get number of completed writes"""
@@ -568,7 +580,6 @@ class ComponentThroughput:
     
     @property
     def throughput(self) -> float:
-        """Batches per second"""
         if self.average_time > 0:
             return 1.0 / self.average_time
         return 0.0
@@ -730,15 +741,9 @@ class MarkerScorePipeline:
             refresh_per_second=10
         ) as progress:
             
-            # Add tasks
-            read_task = progress.add_task(
-                f"[cyan]Reading ranks", total=self.n_batches
-            )
-            compute_task = progress.add_task(
-                f"[green]Computing scores", total=self.n_batches
-            )
-            write_task = progress.add_task(
-                f"[yellow]Writing results", total=self.n_batches
+            # Add single task for pipeline
+            pipeline_task = progress.add_task(
+                f"[bold]{cell_type}[/bold]", total=self.n_batches
             )
             
             # Submit all batches to start the pipeline
@@ -753,48 +758,54 @@ class MarkerScorePipeline:
                 
                 self._update_stats()
                 
-                # Update progress bars
-                progress.update(read_task, completed=self.stats.completed_reads)
-                progress.update(compute_task, completed=self.stats.completed_computes)
-                progress.update(write_task, completed=self.stats.completed_writes)
+                # Update progress based on completed writes (final stage)
+                progress.update(pipeline_task, completed=self.stats.completed_writes)
                 
-                # Add queue info to description with color coding
-                read_color = get_queue_color(self.stats.pending_read)
+                # Color code queue sizes based on fullness
                 compute_color = get_queue_color(self.stats.pending_compute)
                 write_color = get_queue_color(self.stats.pending_write)
                 
+                # Update description with queue information
                 progress.update(
-                    read_task,
-                    description=f"[cyan]Reading ranks [{read_color}]Q:{self.stats.pending_read}[/{read_color}]"
-                )
-                progress.update(
-                    compute_task,
-                    description=f"[green]Computing scores [{compute_color}]Q:{self.stats.pending_compute}[/{compute_color}]"
-                )
-                progress.update(
-                    write_task,
-                    description=f"[yellow]Writing results [{write_color}]Q:{self.stats.pending_write}[/{write_color}]"
+                    pipeline_task,
+                    description=(
+                        f"[bold]{cell_type}[/bold] | "
+                        f"Queues: [{compute_color}]R→C:{self.stats.pending_compute}[/{compute_color}] "
+                        f"[{write_color}]C→W:{self.stats.pending_write}[/{write_color}]"
+                    )
                 )
                 
                 time.sleep(0.1)
             
             # Final update
-            progress.update(read_task, completed=self.n_batches)
-            progress.update(compute_task, completed=self.n_batches)
-            progress.update(write_task, completed=self.n_batches)
+            progress.update(pipeline_task, completed=self.n_batches)
             
         # No threads to wait for - processing happens in component worker threads
         
         # Print summary with component throughputs
+        # Calculate effective pipeline throughput (limited by bottleneck)
+        bottleneck_throughput = min(
+            self.stats.reader_throughput.throughput * self.reader.num_workers if self.stats.reader_throughput.throughput > 0 else float('inf'),
+            self.stats.computer_throughput.throughput * self.computer.num_workers if self.stats.computer_throughput.throughput > 0 else float('inf'),
+            self.stats.writer_throughput.throughput * self.writer.num_workers if self.stats.writer_throughput.throughput > 0 else float('inf')
+        )
+
+        # Calculate cells per second for each component and pipeline
+        pipeline_cells_per_sec = self.stats.throughput * self.batch_size if self.stats.throughput > 0 else 0
+        reader_cells_per_sec = self.stats.reader_throughput.throughput * self.batch_size * self.reader.num_workers if self.stats.reader_throughput.throughput > 0 else 0
+        computer_cells_per_sec = self.stats.computer_throughput.throughput * self.batch_size * self.computer.num_workers if self.stats.computer_throughput.throughput > 0 else 0
+        writer_cells_per_sec = self.stats.writer_throughput.throughput * self.batch_size * self.writer.num_workers if self.stats.writer_throughput.throughput > 0 else 0
+        
         console.print(Panel.fit(
             f"[bold green]✓ Completed {cell_type}[/bold green]\n"
             f"Total batches: {self.n_batches}\n"
             f"Time elapsed: {self.stats.elapsed_time:.2f}s\n"
-            f"Overall throughput: {self.stats.throughput:.2f} batches/s\n\n"
-            f"[bold]Component Throughputs:[/bold]\n"
-            f"  Reader:   {self.stats.reader_throughput.throughput:.2f} batches/s (avg: {self.stats.reader_throughput.average_time:.3f}s/batch)\n"
-            f"  Computer: {self.stats.computer_throughput.throughput:.2f} batches/s (avg: {self.stats.computer_throughput.average_time:.3f}s/batch)\n"
-            f"  Writer:   {self.stats.writer_throughput.throughput:.2f} batches/s (avg: {self.stats.writer_throughput.average_time:.3f}s/batch)",
+            f"Pipeline throughput: {self.stats.throughput:.2f} batches/s ({pipeline_cells_per_sec:.0f} cells/s)\n"
+            # f"Theoretical max: {bottleneck_throughput:.2f} batches/s\n\n"
+            f"[bold]Component Performance (per worker):[/bold]\n"
+            f"  Reader:   {self.stats.reader_throughput.throughput:.2f} batches/s × {self.reader.num_workers} workers ({reader_cells_per_sec:.0f} cells/s)\n"
+            f"  Computer: {self.stats.computer_throughput.throughput:.2f} batches/s × {self.computer.num_workers} workers ({computer_cells_per_sec:.0f} cells/s)\n"
+            f"  Writer:   {self.stats.writer_throughput.throughput:.2f} batches/s × {self.writer.num_workers} workers ({writer_cells_per_sec:.0f} cells/s)",
             title="Pipeline Summary"
         ))
     
@@ -932,7 +943,8 @@ def compute_marker_scores_jax(
 
     marker_score = jnp.exp(marker_score ** 1.5) - 1.0
 
-    return marker_score
+    # Return as float16 for memory efficiency
+    return marker_score.astype(jnp.float16)
 
 
 class MarkerScoreCalculator:
@@ -1066,7 +1078,8 @@ class MarkerScoreCalculator:
         
         neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells = batch_data
         
-        # Reset computer and writer for new cell type
+        # Reset all components for new cell type
+        reader.reset_for_cell_type(cell_type)
         computer.reset_for_cell_type(cell_type)
         writer.reset_for_cell_type(cell_type)
         
@@ -1195,10 +1208,11 @@ class MarkerScoreCalculator:
             f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has {n_cells_rank} cells. " \
             f"This indicates the filtering was not applied consistently during rank calculation."
         
-        # Initialize output memory map
+        # Initialize output memory map with float16 for memory efficiency
         output_memmap = MemMapDense(
             output_path,
             shape=(n_cells, n_genes),
+            dtype=np.float16,  # Use float16 to save memory
             mode='w',
             num_write_workers=self.config.mkscore_write_workers
         )
