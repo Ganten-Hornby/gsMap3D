@@ -6,7 +6,23 @@ from functools import wraps
 from pathlib import Path
 from typing import Optional, Annotated, List
 import typer
+import logging
 
+def config_logger():
+    logger = logging.getLogger("gsMap")
+    # clean up existing handlers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("[{asctime}] {levelname:.5s} | {name} - {message}", style="{")
+    )
+    handler.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    return logger
+
+config_logger()
 
 def ensure_path_exists(func):
     """Decorator to ensure path exists when accessing properties."""

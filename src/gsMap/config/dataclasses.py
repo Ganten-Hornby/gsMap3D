@@ -15,21 +15,7 @@ import typer
 
 from .base import ConfigWithAutoPaths
 
-def config_logger():
-    logger = logging.getLogger("gsMap")
-    # clean up existing handlers
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter("[{asctime}] {levelname:.5s} | {name} - {message}", style="{")
-    )
-    handler.setLevel(logging.INFO)
-    logger.addHandler(handler)
-    return logger
 
-config_logger()
 
 logger = logging.getLogger("gsMap.config")
 

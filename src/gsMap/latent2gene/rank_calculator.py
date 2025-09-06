@@ -51,7 +51,8 @@ def rank_data_jax(X: csr_matrix, n_genes,
                   write_interval: int = 10,
                   current_row_offset: int = 0,
                   progress=None,
-                  progress_task=None):
+                  progress_task=None
+                  ):
     """JAX-optimized rank calculation with batched writing to memory-mapped storage.
 
     Args:
@@ -271,30 +272,27 @@ class RankCalculator:
 
         logger.info(f"Expected total cells after filtering: {total_cells_expected}")
         
-        # Create advanced progress tracking
+        # Create overall section progress tracking
         with Progress(
             SpinnerColumn(),
-            TextColumn("[bold blue]Ranking {task.fields[section_name]}"),
+            TextColumn("[bold blue]{task.description}"),
             BarColumn(bar_width=None),
             MofNCompleteColumn(),
             TaskProgressColumn(),
-            TextColumn("[bold green]{task.fields[speed]} cells/s"),
             TimeRemainingColumn(),
-            refresh_per_second=2
-        ) as progress:
-            # Overall progress task
-            overall_task = progress.add_task(
+            refresh_per_second=1
+        ) as section_progress:
+            # Overall section progress task
+            section_task = section_progress.add_task(
                 "Processing sections",
-                total=total_cells_expected,
-                section_name="sections",
-                speed="0"
+                total=len(sample_h5ad_dict)
             )
             
             processed_cells_total = 0
             
             for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items()):
                 
-                progress.console.log(f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})...")
+                section_progress.console.log(f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})...")
                 
                 # Load the h5ad file (which should already contain latent representations)
                 adata = sc.read_h5ad(h5ad_path)
@@ -361,31 +359,40 @@ class RankCalculator:
                 # Get number of cells after filtering
                 n_cells = X.shape[0]
                 
-                # Update progress display for current section
-                progress.update(
-                    overall_task,
-                    completed=processed_cells_total,
-                    section_name=f"{sample_name} ({n_cells} cells)",
-                    speed="0"
-                )
-                
-                # Track processing speed
-                start_time = time.time()
+                # Use nested progress bar for detailed chunk processing
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn(f"[bold blue]Ranking {sample_name} ({{task.fields[cells]}} cells)"),
+                    BarColumn(bar_width=None),
+                    MofNCompleteColumn(),
+                    TaskProgressColumn(),
+                    TextColumn("[bold green]{task.fields[speed]} cells/s"),
+                    TimeRemainingColumn(),
+                    refresh_per_second=2,
+                    transient=True
+                ) as chunk_progress:
+                    # Detailed chunk progress task
+                    chunk_task = chunk_progress.add_task(
+                        f"Processing chunks",
+                        total=n_cells,
+                        cells=n_cells,
+                        speed="0"
+                    )
+                    
+                    # Use JAX rank calculation with nested progress
+                    metadata = {'name': sample_name, 'cells': n_cells, 'study_id': st_id}
 
-                # Use JAX rank calculation with memory map
-                metadata = {'name': sample_name, 'cells': n_cells, 'study_id': st_id}
-
-                batch_sum_log_ranks, batch_frac = rank_data_jax(
-                    X,
-                    n_genes,
-                    memmap_dense=rank_memmap,
-                    metadata=metadata,
-                    chunk_size=self.config.rank_batch_size,
-                    write_interval=self.config.rank_write_interval,  # Batch several chunks before writing
-                    current_row_offset=current_row_offset,  # Pass offset for proper indexing
-                    progress=progress,
-                    progress_task=overall_task
-                )
+                    batch_sum_log_ranks, batch_frac = rank_data_jax(
+                        X,
+                        n_genes,
+                        memmap_dense=rank_memmap,
+                        metadata=metadata,
+                        chunk_size=self.config.rank_batch_size,
+                        write_interval=self.config.rank_write_interval,
+                        current_row_offset=current_row_offset,
+                        progress=chunk_progress,
+                        progress_task=chunk_task
+                    )
 
                 # Update global sums
                 sum_log_ranks += batch_sum_log_ranks
@@ -394,16 +401,8 @@ class RankCalculator:
                 current_row_offset += n_cells  # Update offset for next section
                 processed_cells_total += n_cells
                 
-                # Calculate processing speed
-                elapsed_time = time.time() - start_time
-                speed = n_cells / elapsed_time if elapsed_time > 0 else 0
-                
-                # Update overall progress
-                progress.update(
-                    overall_task,
-                    completed=processed_cells_total,
-                    speed=f"{speed:.0f}"
-                )
+                # Update section progress
+                section_progress.update(section_task, advance=1)
 
                 # Create minimal AnnData with empty X matrix but keep obs and obsm
                 minimal_adata = ad.AnnData(
@@ -423,7 +422,7 @@ class RankCalculator:
             # Close rank memory map
             if rank_memmap is not None:
                 rank_memmap.close()
-                progress.console.log(f"Saved rank matrix to {rank_memmap_path}")
+                section_progress.console.log(f"Saved rank matrix to {rank_memmap_path}")
         
         # Calculate mean log ranks and mean fraction
         mean_log_ranks = sum_log_ranks / total_cells
@@ -446,27 +445,27 @@ class RankCalculator:
         )
         logger.info(f"Mean fraction data saved to {mean_frac_path}")
         
-            # Concatenate all sections
-            progress.console.log("Concatenating latent representations...")
+        # Concatenate all sections
+        section_progress.console.log("Concatenating latent representations...")
         if adata_list:
             concatenated_adata = ad.concat(adata_list, axis=0, join='outer', merge='same')
-            
+
             # Ensure the var_names are the common genes
             concatenated_adata.var_names = gene_list
-            
+
             # Save concatenated adata
             concatenated_adata.write_h5ad(concat_adata_path)
-            progress.console.log(f"Saved concatenated latent representations to {concat_adata_path}")
-            progress.console.log(f"  - Total cells: {concatenated_adata.n_obs}")
-            progress.console.log(f"  - Total genes: {concatenated_adata.n_vars}")
-            progress.console.log(f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}")
+            section_progress.console.log(f"Saved concatenated latent representations to {concat_adata_path}")
+            section_progress.console.log(f"  - Total cells: {concatenated_adata.n_obs}")
+            section_progress.console.log(f"  - Total genes: {concatenated_adata.n_vars}")
+            section_progress.console.log(f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}")
             if 'slice_id' in concatenated_adata.obs.columns:
-                progress.console.log(f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}")
-            
+                section_progress.console.log(f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}")
+
             # Clean up
             del adata_list, concatenated_adata
             gc.collect()
-            
+
         # Final completion message
         logger.info("Rank calculation and concatenation completed successfully")
         
