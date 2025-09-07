@@ -49,7 +49,9 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         "rank_memmap": Path(config.rank_memmap_path),
         "mean_frac": Path(config.mean_frac_path),
         "marker_scores": Path(config.marker_scores_memmap_path),
-        "metadata": Path(config.latent2gene_metadata_path)
+        "metadata": Path(config.latent2gene_metadata_path),
+        "rank_meta": Path(config.rank_memmap_path).with_suffix('.meta.json'),
+        "marker_scores_meta": Path(config.marker_scores_memmap_path).with_suffix('.meta.json')
     }
     
     if all(Path(p).exists() for p in expected_outputs.values()):
@@ -61,26 +63,48 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         # Check rank memmap completion
         rank_memmap_complete = False
         try:
-            rank_memmap = MemMapDense(
-                path=expected_outputs["rank_memmap"],
-                shape=(1, 1),  # Dummy shape - will be overridden by metadata
-                mode='r'
-            )
-            rank_memmap_complete = rank_memmap.is_complete
-            rank_memmap.close()
+            # Read shape from metadata first
+            rank_meta_path = expected_outputs["rank_meta"]
+            if rank_meta_path.exists():
+                with open(rank_meta_path, 'r') as f:
+                    rank_meta = json.load(f)
+                rank_shape = tuple(rank_meta['shape'])
+                rank_dtype = rank_meta['dtype']
+                
+                rank_memmap = MemMapDense(
+                    path=expected_outputs["rank_memmap"],
+                    shape=rank_shape,
+                    dtype=rank_dtype,
+                    mode='r'
+                )
+                rank_memmap_complete = rank_memmap.is_complete
+                rank_memmap.close()
+            else:
+                logger.warning(f"Rank metadata file not found: {rank_meta_path}")
         except Exception as e:
             logger.warning(f"Could not check rank memmap completion: {e}")
         
         # Check marker scores memmap completion
         marker_scores_complete = False
         try:
-            marker_scores_memmap = MemMapDense(
-                path=expected_outputs["marker_scores"],
-                shape=(1, 1),  # Dummy shape - will be overridden by metadata
-                mode='r'
-            )
-            marker_scores_complete = marker_scores_memmap.is_complete
-            marker_scores_memmap.close()
+            # Read shape from metadata first
+            marker_meta_path = expected_outputs["marker_scores_meta"]
+            if marker_meta_path.exists():
+                with open(marker_meta_path, 'r') as f:
+                    marker_meta = json.load(f)
+                marker_shape = tuple(marker_meta['shape'])
+                marker_dtype = marker_meta['dtype']
+                
+                marker_scores_memmap = MemMapDense(
+                    path=expected_outputs["marker_scores"],
+                    shape=marker_shape,
+                    dtype=marker_dtype,
+                    mode='r'
+                )
+                marker_scores_complete = marker_scores_memmap.is_complete
+                marker_scores_memmap.close()
+            else:
+                logger.warning(f"Marker scores metadata file not found: {marker_meta_path}")
         except Exception as e:
             logger.warning(f"Could not check marker scores memmap completion: {e}")
         

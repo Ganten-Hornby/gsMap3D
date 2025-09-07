@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn
 
 from ..config import SpatialLDSCConfig
 
@@ -184,8 +184,10 @@ class SpatialLDSCProcessor:
             end_cell = min(end_cell, self.n_spots_filtered)
             self.chunk_starts = list(range(start_cell, end_cell, self.chunk_size))
             logger.info(f"Processing cell range [{start_cell}, {end_cell})")
+            self.total_cells_to_process = end_cell - start_cell
         else:
             self.chunk_starts = list(range(0, self.n_spots_filtered, self.chunk_size))
+            self.total_cells_to_process = self.n_spots_filtered
         
         self.total_chunks = len(self.chunk_starts)
         logger.info(f"Total chunks to process: {self.total_chunks}")
@@ -224,7 +226,7 @@ class SpatialLDSCProcessor:
         absolute_start = self.spot_indices[start] if start < len(self.spot_indices) else start
         absolute_end = self.spot_indices[end - 1] + 1 if end > 0 else absolute_start
         
-        return ldscore_chunk.astype(np.float32), spot_names, absolute_start, absolute_end
+        return ldscore_chunk.astype(np.float32, copy=False), spot_names, absolute_start, absolute_end
     
     def _worker_fetch_chunks(self, worker_id: int, chunk_indices: List[int]):
         """
@@ -344,16 +346,36 @@ class SpatialLDSCProcessor:
             # Process results as they come in
             n_workers_completed = 0
             n_chunks_processed = 0
+            n_cells_processed = 0
+
+            # Build description with sample name and range info
+            desc_parts = [f"Processing {self.total_chunks:,} chunks ({self.total_cells_to_process:,} cells)"]
+            
+            if hasattr(self.config, 'sample_name') and self.config.sample_name:
+                desc_parts.append(f"Sample: {self.config.sample_name}")
+            
+            if self.config.cell_indices_range:
+                start_cell, end_cell = self.config.cell_indices_range
+                desc_parts.append(f"Range: [{start_cell:,}-{end_cell:,})")
+            
+            description = " | ".join(desc_parts)
             
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
                 BarColumn(),
+                MofNCompleteColumn(),
                 TaskProgressColumn(),
-                TimeRemainingColumn()
+                TextColumn("[bold green]{task.fields[speed]} cells/s"),
+                TimeRemainingColumn(),
+                refresh_per_second=2
             ) as progress:
-                task = progress.add_task("Processing chunks", total=self.total_chunks)
-                
+                task = progress.add_task(
+                    description, 
+                    total=self.total_cells_to_process,
+                    speed="0"
+                )
+                start_time = time.time()
                 while n_chunks_processed < self.total_chunks:
                     try:
                         result = self.result_queue.get(timeout=1.0)
@@ -372,7 +394,6 @@ class SpatialLDSCProcessor:
                     if not result.get('success', False):
                         logger.error(f"Skipping chunk {result.get('chunk_idx')} due to error")
                         n_chunks_processed += 1
-                        progress.update(task, advance=1)
                         continue
                     
                     # Process successful chunk
@@ -413,11 +434,24 @@ class SpatialLDSCProcessor:
                         abs_start, abs_end
                     )
                     
+                    # Update processing statistics
+                    n_cell_in_chunk = abs_end - abs_start
+                    n_cells_processed += n_cell_in_chunk
+                    n_chunks_processed += 1
+                    
+                    # Calculate speed in cells/s
+                    elapsed_time = time.time() - start_time
+                    speed = n_cells_processed / elapsed_time if elapsed_time > 0 else 0
+                    
+                    # Update progress with actual cells processed
+                    progress.update(
+                        task,
+                        completed=n_cells_processed,
+                        speed=f"{speed:,.0f}"
+                    )
+                    
                     # Clean up
                     del spatial_ld_jax, betas, ses
-                    
-                    n_chunks_processed += 1
-                    pbar.update(1)
                     
                     # Periodic memory check
                     if n_chunks_processed % 100 == 0:

@@ -470,7 +470,7 @@ class ConnectivityMatrixBuilder:
         homogeneous_neighbors_list = []
         homogeneous_weights_list = []
         
-        for batch_start in track(range(0, n_masked, self.mkscore_batch_size), description="Finding homogeneous neighbors"):
+        for batch_start in track(range(0, n_masked, self.mkscore_batch_size), description="Finding homogeneous neighbors", transient=True):
             batch_end = min(batch_start + self.mkscore_batch_size, n_masked)
             batch_indices = slice(batch_start, batch_end)
             

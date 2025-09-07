@@ -7,19 +7,53 @@ from pathlib import Path
 from typing import Optional, Annotated, List
 import typer
 import logging
+from datetime import datetime
+from rich.logging import RichHandler
+from rich.console import Console
 
 def config_logger():
     logger = logging.getLogger("gsMap")
     # clean up existing handlers
     if logger.hasHandlers():
         logger.handlers.clear()
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter("[{asctime}] {levelname:.5s} | {name} - {message}", style="{")
+    
+    # Set logger to DEBUG to capture all messages
+    logger.setLevel(logging.DEBUG)
+    
+    # Create rich console handler for INFO level messages
+    console = Console()
+    rich_handler = RichHandler(
+        console=console,
+        show_time=True,
+        show_path=False,
+        rich_tracebacks=True,
+        tracebacks_show_locals=True
     )
-    handler.setLevel(logging.INFO)
-    logger.addHandler(handler)
+    rich_handler.setLevel(logging.INFO)
+    rich_handler.setFormatter(
+        logging.Formatter("{levelname:.5s} | {name} - {message}", style="{")
+    )
+    logger.addHandler(rich_handler)
+    
+    # Create file handler for DEBUG level messages with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / f"gsMap_{timestamp}.log"
+    
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter(
+            "[{asctime}] {levelname:.5s} | {name}:{funcName}:{lineno} - {message}", 
+            style="{"
+        )
+    )
+    logger.addHandler(file_handler)
+    
+    # Log the setup
+    logger.info(f"Logging configured - console: INFO+, file: DEBUG+ -> {log_file}")
+    
     return logger
 
 config_logger()

@@ -627,7 +627,7 @@ def process_chunks_with_queue(config: SpatialLDSCConfig,
             # Clean up GPU memory
             del spatial_ld_jax, betas, ses
 
-            pbar.update(1)
+            progress.update(1)
             n_chunks_processed += 1
 
             # Periodic memory monitoring
