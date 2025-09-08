@@ -210,6 +210,11 @@ class ParallelLDScoreComputer:
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
         
+        # Processing statistics
+        self.total_cells_processed = 0
+        self.total_chunks_processed = 0
+        self.stats_lock = threading.Lock()
+        
         # Exception handling
         self.exception_queue = queue.Queue()
         self.has_error = threading.Event()
@@ -310,10 +315,16 @@ class ParallelLDScoreComputer:
                 betas_np = np.array(betas)
                 ses_np = np.array(ses)
                 
-                # Track throughput
+                # Track throughput and statistics
                 elapsed = time.time() - start_time
+                n_cells_in_chunk = abs_end - abs_start
+                
                 with self.throughput_lock:
                     self.throughput.record_batch(elapsed)
+                
+                with self.stats_lock:
+                    self.total_cells_processed += n_cells_in_chunk
+                    self.total_chunks_processed += 1
                 
                 # Store result
                 with self.results_lock:
@@ -338,6 +349,11 @@ class ParallelLDScoreComputer:
     def get_queue_size(self):
         """Get compute queue size"""
         return self.compute_queue.qsize()
+    
+    def get_stats(self):
+        """Get processing statistics"""
+        with self.stats_lock:
+            return self.total_cells_processed, self.total_chunks_processed
     
     def check_errors(self):
         """Check if any worker encountered an error"""
@@ -581,10 +597,6 @@ class SpatialLDSCProcessor:
             for chunk_idx in range(self.total_chunks):
                 reader.submit_chunk(chunk_idx)
             
-            # Process chunks
-            n_chunks_processed = 0
-            n_cells_processed = 0
-            
             # Build description with sample name and range info
             desc_parts = [f"Processing {self.total_chunks:,} chunks ({self.total_cells_to_process:,} cells)"]
             
@@ -609,8 +621,6 @@ class SpatialLDSCProcessor:
                 TaskProgressColumn(),
                 TextColumn("[bold green]{task.fields[speed]} cells/s"),
                 TextColumn("[dim]R→C: {task.fields[r_to_c_queue]}"),
-                TextColumn("[dim]R: {task.fields[reader_throughput]:.1f}/s"),
-                TextColumn("[dim]C: {task.fields[computer_throughput]:.1f}/s"),
                 TimeRemainingColumn(),
                 refresh_per_second=2
             ) as progress:
@@ -618,29 +628,26 @@ class SpatialLDSCProcessor:
                     description, 
                     total=self.total_cells_to_process,
                     speed="0",
-                    r_to_c_queue="0",
-                    reader_throughput=0,
-                    computer_throughput=0
+                    r_to_c_queue="0"
                 )
                 
                 start_time = time.time()
                 last_update_time = start_time
+                last_chunks_processed = 0
                 
-                while n_chunks_processed < self.total_chunks:
+                while last_chunks_processed < self.total_chunks:
                     # Check for errors
                     reader.check_errors()
                     computer.check_errors()
+                    
+                    # Get current stats from computer
+                    n_cells_processed, n_chunks_processed = computer.get_stats()
                     
                     # Update progress periodically
                     current_time = time.time()
                     if current_time - last_update_time > 0.5:  # Update every 0.5 seconds
                         # Get queue sizes
                         r_pending, r_to_c = reader.get_queue_sizes()
-                        c_pending = computer.get_queue_size()
-                        
-                        # Calculate throughput
-                        reader_throughput = reader.throughput.throughput
-                        computer_throughput = computer.throughput.throughput
                         
                         # Calculate speed in cells/s
                         elapsed_time = current_time - start_time
@@ -651,29 +658,19 @@ class SpatialLDSCProcessor:
                             task,
                             completed=n_cells_processed,
                             speed=f"{speed:,.0f}",
-                            r_to_c_queue=f"{r_to_c}/{c_pending}",
-                            reader_throughput=reader_throughput,
-                            computer_throughput=computer_throughput
+                            r_to_c_queue=f"{r_to_c}"
                         )
                         last_update_time = current_time
                     
-                    # Check if any chunks have been processed
-                    if len(self.processed_chunks) > n_chunks_processed:
-                        new_processed = len(self.processed_chunks) - n_chunks_processed
-                        n_chunks_processed = len(self.processed_chunks)
-                        
-                        # Update cell count
-                        n_cells_processed = sum(
-                            result['abs_end'] - result['abs_start'] 
-                            for result in self.results
-                        )
+                    # Update last processed count
+                    if n_chunks_processed > last_chunks_processed:
+                        last_chunks_processed = n_chunks_processed
+                        # Periodic memory check
+                        if n_chunks_processed % 100 == 0:
+                            gc.collect()
                     
                     # Small sleep to prevent busy waiting
-                    time.sleep(0.01)
-                    
-                    # Periodic memory check
-                    if n_chunks_processed % 100 == 0 and n_chunks_processed > 0:
-                        gc.collect()
+                    time.sleep(0.1)
             
             if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
                 jax.profiler.stop_trace()
