@@ -610,8 +610,8 @@ class SpatialLDSCProcessor:
             description = " | ".join(desc_parts)
             
             # Start JAX profiling if needed
-            # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-            jax.profiler.start_trace("/tmp/jax-trace-ldsc")
+            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+                jax.profiler.start_trace("/tmp/jax-trace-ldsc")
             
             with Progress(
                 SpinnerColumn(),
@@ -666,8 +666,8 @@ class SpatialLDSCProcessor:
                     # Small sleep to prevent busy waiting
                     time.sleep(0.1)
             
-            # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-            jax.profiler.stop_trace()
+            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+                jax.profiler.stop_trace()
             logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
             
         finally:
