@@ -3,6 +3,7 @@ Configuration dataclasses for gsMap commands.
 """
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Optional, Annotated, List, Literal
 import yaml
@@ -592,6 +593,11 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         verify_homolog_file_format(self)
 
 
+class DatasetType(str, Enum):
+    SCRNA_SEQ = 'scRNA'
+    SPATIAL_2D = 'spatial2D'
+    SPATIAL_3D = 'spatial3D'
+
 @dataclass
 class LatentToGeneConfig(ConfigWithAutoPaths):
     """Configuration for latent to gene mapping."""
@@ -609,8 +615,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         help="Name of the project"
     )]
 
-    dataset_type: Annotated[Literal['scRNA-seq', 'spatial2D', 'spatial3D'], typer.Option(
-        help="Type of dataset: scRNA-seq (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)"
+    dataset_type: Annotated[DatasetType, typer.Option(
+        help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
+        case_sensitive=False
     )] = 'spatial2D'
 
     # --------input h5ad file paths which have the latent representations

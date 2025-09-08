@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn, TimeElapsedColumn
 
 from ..config import SpatialLDSCConfig
 
@@ -610,8 +610,8 @@ class SpatialLDSCProcessor:
             description = " | ".join(desc_parts)
             
             # Start JAX profiling if needed
-            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-                jax.profiler.start_trace("/tmp/jax-trace-ldsc")
+            # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+            jax.profiler.start_trace("/tmp/jax-trace-ldsc")
             
             with Progress(
                 SpinnerColumn(),
@@ -621,6 +621,7 @@ class SpatialLDSCProcessor:
                 TaskProgressColumn(),
                 TextColumn("[bold green]{task.fields[speed]} cells/s"),
                 TextColumn("[dim]R→C: {task.fields[r_to_c_queue]}"),
+                TimeElapsedColumn(),
                 TimeRemainingColumn(),
                 refresh_per_second=2
             ) as progress:
@@ -661,20 +662,13 @@ class SpatialLDSCProcessor:
                             r_to_c_queue=f"{r_to_c}"
                         )
                         last_update_time = current_time
-                    
-                    # Update last processed count
-                    if n_chunks_processed > last_chunks_processed:
-                        last_chunks_processed = n_chunks_processed
-                        # Periodic memory check
-                        if n_chunks_processed % 100 == 0:
-                            gc.collect()
-                    
+
                     # Small sleep to prevent busy waiting
                     time.sleep(0.1)
             
-            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-                jax.profiler.stop_trace()
-                logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
+            # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+            jax.profiler.stop_trace()
+            logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
             
         finally:
             # Clean up resources
