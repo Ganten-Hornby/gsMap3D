@@ -36,6 +36,7 @@ from .dataclasses import (
     VisualizeConfig,
     ThreeDCombineConfig,
     RunLinkModeConfig,
+    DatasetType
 )
 
 __all__ = [

@@ -582,13 +582,13 @@ class SpatialLDSCProcessor:
         # Create the reader-computer pipeline
         reader = ParallelLDScoreReader(
             processor=self,
-            num_workers=10,
+            num_workers=self.config.num_read_workers,
         )
         
         computer = ParallelLDScoreComputer(
             processor=self,
             process_chunk_jit_fn=process_chunk_jit_fn,
-            num_workers=2,
+            num_workers=self.config.ldsc_compute_workers,
             input_queue=reader.result_queue  # Connect reader output to computer input
         )
         
@@ -662,7 +662,14 @@ class SpatialLDSCProcessor:
                             r_to_c_queue=f"{r_to_c}"
                         )
                         last_update_time = current_time
-
+                    
+                    # Update last processed count
+                    if n_chunks_processed > last_chunks_processed:
+                        last_chunks_processed = n_chunks_processed
+                        # Periodic memory check
+                        if n_chunks_processed % 100 == 0:
+                            gc.collect()
+                    
                     # Small sleep to prevent busy waiting
                     time.sleep(0.1)
             

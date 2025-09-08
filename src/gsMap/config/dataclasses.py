@@ -883,8 +883,13 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     trait_name: str | None = None
     sumstats_file: str | None = None
     sumstats_config_file: str | None = None
+
     num_processes: int = 4
+    num_read_workers: int = 10
+    ldsc_compute_workers: int = 2
+
     not_M_5_50: bool = False
+
     n_blocks: int = 200
     chisq_max: int | None = None
     cell_indices_range: tuple[int, int] | None = None  # 0-based range [start, end) of cell indices to process
