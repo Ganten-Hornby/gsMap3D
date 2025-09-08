@@ -15,6 +15,7 @@ from typing import Tuple, Dict, List, Optional
 import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 import anndata as ad
 import jax
@@ -28,6 +29,333 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from ..config import SpatialLDSCConfig
 
 logger = logging.getLogger("gsMap.spatial_ldsc_processor")
+
+
+@dataclass
+class ComponentThroughput:
+    """Track throughput for individual pipeline components"""
+    total_batches: int = 0
+    total_time: float = 0.0
+    last_batch_time: float = 0.0
+    
+    def record_batch(self, elapsed_time: float):
+        """Record a batch completion"""
+        self.total_batches += 1
+        self.total_time += elapsed_time
+        self.last_batch_time = elapsed_time
+    
+    @property
+    def average_time(self) -> float:
+        """Average time per batch"""
+        if self.total_batches > 0:
+            return self.total_time / self.total_batches
+        return 0.0
+    
+    @property
+    def throughput(self) -> float:
+        """Batches per second"""
+        if self.average_time > 0:
+            return 1.0 / self.average_time
+        return 0.0
+
+
+class ParallelLDScoreReader:
+    """Multi-threaded reader for fetching LD score chunks from memory-mapped marker scores"""
+    
+    def __init__(
+        self,
+        processor,  # Reference to SpatialLDSCProcessor for data access
+        num_workers: int = 4,
+        output_queue: queue.Queue = None
+    ):
+        """Initialize reader pool"""
+        self.processor = processor
+        self.num_workers = num_workers
+        
+        # Queues for communication
+        self.read_queue = queue.Queue()
+        self.result_queue = output_queue if output_queue else queue.Queue(maxsize=num_workers * 4)
+        
+        # Throughput tracking
+        self.throughput = ComponentThroughput()
+        self.throughput_lock = threading.Lock()
+        
+        # Exception handling
+        self.exception_queue = queue.Queue()
+        self.has_error = threading.Event()
+        
+        # Start worker threads
+        self.workers = []
+        self.stop_workers = threading.Event()
+        self._start_workers()
+    
+    def _start_workers(self):
+        """Start worker threads"""
+        for i in range(self.num_workers):
+            worker = threading.Thread(
+                target=self._worker,
+                args=(i,),
+                daemon=True
+            )
+            worker.start()
+            self.workers.append(worker)
+        logger.info(f"Started {self.num_workers} reader threads")
+    
+    def _worker(self, worker_id: int):
+        """Worker thread for reading LD score chunks"""
+        logger.debug(f"Reader worker {worker_id} started")
+        
+        while not self.stop_workers.is_set():
+            try:
+                # Get chunk request
+                item = self.read_queue.get(timeout=1)
+                if item is None:
+                    break
+                
+                chunk_idx = item
+                
+                # Track timing
+                start_time = time.time()
+                
+                # Fetch the chunk using processor's method
+                ldscore, spot_names, abs_start, abs_end = self.processor._fetch_ldscore_chunk(chunk_idx)
+                
+                # Truncate to match SNP data
+                n_snps_used = self.processor.data_truncated.get('n_snps_used', ldscore.shape[0])
+                ldscore = ldscore[:n_snps_used]
+                
+                # Track throughput
+                elapsed = time.time() - start_time
+                with self.throughput_lock:
+                    self.throughput.record_batch(elapsed)
+                
+                # Put result for computer
+                self.result_queue.put({
+                    'chunk_idx': chunk_idx,
+                    'ldscore': ldscore,
+                    'spot_names': spot_names,
+                    'abs_start': abs_start,
+                    'abs_end': abs_end,
+                    'worker_id': worker_id,
+                    'success': True
+                })
+                self.read_queue.task_done()
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Reader worker {worker_id} error on chunk {chunk_idx}: {e}")
+                self.exception_queue.put((worker_id, e))
+                self.has_error.set()
+                self.result_queue.put({
+                    'chunk_idx': chunk_idx if 'chunk_idx' in locals() else -1,
+                    'worker_id': worker_id,
+                    'success': False,
+                    'error': str(e)
+                })
+                break
+        
+        logger.debug(f"Reader worker {worker_id} stopped")
+    
+    def submit_chunk(self, chunk_idx: int):
+        """Submit chunk for reading"""
+        self.read_queue.put(chunk_idx)
+    
+    def get_result(self):
+        """Get next completed chunk"""
+        return self.result_queue.get()
+    
+    def get_queue_sizes(self):
+        """Get current queue sizes for monitoring"""
+        return self.read_queue.qsize(), self.result_queue.qsize()
+    
+    def check_errors(self):
+        """Check if any worker encountered an error"""
+        if self.has_error.is_set():
+            try:
+                worker_id, exception = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}") from exception
+            except queue.Empty:
+                raise RuntimeError("Reader worker failed with unknown error")
+    
+    def close(self):
+        """Clean up resources"""
+        self.stop_workers.set()
+        for _ in range(self.num_workers):
+            self.read_queue.put(None)
+        for worker in self.workers:
+            worker.join(timeout=5)
+        logger.info("Reader pool closed")
+
+
+class ParallelLDScoreComputer:
+    """Multi-threaded computer for processing LD scores with JAX"""
+    
+    def __init__(
+        self,
+        processor,  # Reference to SpatialLDSCProcessor
+        process_chunk_jit_fn,  # JIT-compiled processing function
+        num_workers: int = 4,
+        input_queue: queue.Queue = None
+    ):
+        """Initialize computer pool"""
+        self.processor = processor
+        self.process_chunk_jit_fn = process_chunk_jit_fn
+        self.num_workers = num_workers
+        
+        # Queues for communication
+        self.compute_queue = input_queue if input_queue else queue.Queue(maxsize=num_workers * 2)
+        
+        # Throughput tracking
+        self.throughput = ComponentThroughput()
+        self.throughput_lock = threading.Lock()
+        
+        # Exception handling
+        self.exception_queue = queue.Queue()
+        self.has_error = threading.Event()
+        
+        # Results storage
+        self.results = []
+        self.results_lock = threading.Lock()
+        
+        # Prepare static JAX arrays
+        self._prepare_jax_arrays()
+        
+        # Start worker threads
+        self.workers = []
+        self.stop_workers = threading.Event()
+        self._start_workers()
+    
+    def _prepare_jax_arrays(self):
+        """Prepare static JAX arrays from data_truncated"""
+        n_snps_used = self.processor.data_truncated['n_snps_used']
+        
+        baseline_ann = (self.processor.data_truncated['baseline_ld'].values.astype(np.float32) * 
+                       self.processor.data_truncated['N'].reshape(-1, 1).astype(np.float32) / 
+                       self.processor.data_truncated['Nbar'])
+        baseline_ann = np.concatenate([baseline_ann, 
+                                      np.ones((n_snps_used, 1), dtype=np.float32)], axis=1)
+        
+        # Convert to JAX arrays
+        self.baseline_ld_sum_jax = jnp.asarray(self.processor.data_truncated['baseline_ld_sum'], dtype=jnp.float32)
+        self.chisq_jax = jnp.asarray(self.processor.data_truncated['chisq'], dtype=jnp.float32)
+        self.N_jax = jnp.asarray(self.processor.data_truncated['N'], dtype=jnp.float32)
+        self.baseline_ann_jax = jnp.asarray(baseline_ann, dtype=jnp.float32)
+        self.w_ld_jax = jnp.asarray(self.processor.data_truncated['w_ld'], dtype=jnp.float32)
+        self.Nbar = self.processor.data_truncated['Nbar']
+        
+        del baseline_ann
+        gc.collect()
+    
+    def _start_workers(self):
+        """Start compute worker threads"""
+        for i in range(self.num_workers):
+            worker = threading.Thread(
+                target=self._compute_worker,
+                args=(i,),
+                daemon=True
+            )
+            worker.start()
+            self.workers.append(worker)
+        logger.info(f"Started {self.num_workers} compute workers")
+    
+    def _compute_worker(self, worker_id: int):
+        """Compute worker thread"""
+        logger.debug(f"Compute worker {worker_id} started")
+        
+        while not self.stop_workers.is_set():
+            try:
+                # Get data from reader
+                item = self.compute_queue.get(timeout=1)
+                if item is None:
+                    break
+                
+                # Skip failed chunks
+                if not item.get('success', False):
+                    logger.error(f"Skipping chunk {item.get('chunk_idx')} due to read error")
+                    continue
+                
+                # Unpack data
+                chunk_idx = item['chunk_idx']
+                ldscore = item['ldscore']
+                spot_names = item['spot_names']
+                abs_start = item['abs_start']
+                abs_end = item['abs_end']
+                
+                # Track timing
+                start_time = time.time()
+                
+                # Convert to JAX and process
+                spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
+                
+                # Process with JIT function
+                batch_size = min(50, spot_names.shape[0])
+                betas, ses = self.process_chunk_jit_fn(
+                    self.processor.config.n_blocks,
+                    batch_size,
+                    spatial_ld_jax,
+                    self.baseline_ld_sum_jax,
+                    self.chisq_jax,
+                    self.N_jax,
+                    self.baseline_ann_jax,
+                    self.w_ld_jax,
+                    self.Nbar
+                )
+                
+                # Ensure computation completes
+                betas.block_until_ready()
+                ses.block_until_ready()
+                
+                # Convert to numpy
+                betas_np = np.array(betas)
+                ses_np = np.array(ses)
+                
+                # Track throughput
+                elapsed = time.time() - start_time
+                with self.throughput_lock:
+                    self.throughput.record_batch(elapsed)
+                
+                # Store result
+                with self.results_lock:
+                    self.processor._add_chunk_result(
+                        chunk_idx, betas_np, ses_np, spot_names,
+                        abs_start, abs_end
+                    )
+                
+                # Clean up
+                del spatial_ld_jax, betas, ses
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Compute worker {worker_id} error: {e}")
+                self.exception_queue.put((worker_id, e))
+                self.has_error.set()
+                break
+        
+        logger.debug(f"Compute worker {worker_id} stopped")
+    
+    def get_queue_size(self):
+        """Get compute queue size"""
+        return self.compute_queue.qsize()
+    
+    def check_errors(self):
+        """Check if any worker encountered an error"""
+        if self.has_error.is_set():
+            try:
+                worker_id, exception = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Compute worker {worker_id} failed: {exception}") from exception
+            except queue.Empty:
+                raise RuntimeError("Compute worker failed with unknown error")
+    
+    def close(self):
+        """Close compute pool"""
+        self.stop_workers.set()
+        for _ in range(self.num_workers):
+            self.compute_queue.put(None)
+        for worker in self.workers:
+            worker.join(timeout=5)
+        logger.info("Compute pool closed")
 
 
 class SpatialLDSCProcessor:
@@ -75,10 +403,6 @@ class SpatialLDSCProcessor:
         self.processed_chunks = set()
         self.min_spot_start = float('inf')
         self.max_spot_end = 0
-        
-        # Threading components
-        self.result_queue = queue.Queue(maxsize=n_loader_threads * 4)
-        self.workers = []
         
     def _initialize_quick_mode(self):
         """Initialize quick mode components for memory-mapped marker scores."""
@@ -228,84 +552,10 @@ class SpatialLDSCProcessor:
         
         return ldscore_chunk.astype(np.float32, copy=False), spot_names, absolute_start, absolute_end
     
-    def _worker_fetch_chunks(self, worker_id: int, chunk_indices: List[int]):
-        """
-        Worker function to fetch chunks in order (adjacent chunks for each worker).
-        
-        Args:
-            worker_id: ID of this worker
-            chunk_indices: List of chunk indices for this worker to process
-        """
-        logger.debug(f"Worker {worker_id} starting with {len(chunk_indices)} chunks")
-        
-        for chunk_idx in chunk_indices:
-            try:
-                # Fetch the chunk
-                ldscore, spot_names, abs_start, abs_end = self._fetch_ldscore_chunk(chunk_idx)
-                
-                # Truncate to match SNP data
-                n_snps_used = self.data_truncated.get('n_snps_used', ldscore.shape[0])
-                ldscore = ldscore[:n_snps_used]
-                
-                # Put result in queue
-                self.result_queue.put({
-                    'chunk_idx': chunk_idx,
-                    'ldscore': ldscore,
-                    'spot_names': spot_names,
-                    'abs_start': abs_start,
-                    'abs_end': abs_end,
-                    'worker_id': worker_id,
-                    'success': True
-                })
-                
-            except Exception as e:
-                logger.error(f"Worker {worker_id} error on chunk {chunk_idx}: {e}")
-                self.result_queue.put({
-                    'chunk_idx': chunk_idx,
-                    'worker_id': worker_id,
-                    'success': False,
-                    'error': str(e)
-                })
-        
-        # Signal completion
-        self.result_queue.put({
-            'worker_id': worker_id,
-            'completed': True
-        })
-    
-    def _distribute_chunks_to_workers(self) -> List[List[int]]:
-        """
-        Distribute chunks to workers ensuring adjacent chunks go to same worker.
-        
-        Returns:
-            List of chunk index lists, one per worker
-        """
-        total_chunks = self.total_chunks
-        n_workers = self.n_loader_threads
-        
-        # Calculate base chunks per worker and remainder
-        chunks_per_worker = total_chunks // n_workers
-        remainder = total_chunks % n_workers
-        
-        worker_chunks = []
-        start_idx = 0
-        
-        for i in range(n_workers):
-            # This worker gets one extra chunk if we have remainder
-            n_chunks = chunks_per_worker + (1 if i < remainder else 0)
-            if n_chunks == 0:
-                break
-                
-            # Assign contiguous chunk indices to this worker
-            end_idx = start_idx + n_chunks
-            worker_chunks.append(list(range(start_idx, end_idx)))
-            start_idx = end_idx
-        
-        return worker_chunks
     
     def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
         """
-        Process all chunks using parallel loading and computation.
+        Process all chunks using parallel reader-computer pipeline.
         
         Args:
             process_chunk_jit_fn: JIT-compiled function for processing chunks
@@ -313,41 +563,28 @@ class SpatialLDSCProcessor:
         Returns:
             Merged DataFrame with all results
         """
-        # Prepare static JAX arrays
-        n_snps_used = self.data_truncated['n_snps_used']
+        # Create the reader-computer pipeline
+        reader = ParallelLDScoreReader(
+            processor=self,
+            num_workers=10,
+        )
         
-        baseline_ann = (self.data_truncated['baseline_ld'].values.astype(np.float32) * 
-                       self.data_truncated['N'].reshape(-1, 1).astype(np.float32) / 
-                       self.data_truncated['Nbar'])
-        baseline_ann = np.concatenate([baseline_ann, 
-                                      np.ones((n_snps_used, 1), dtype=np.float32)], axis=1)
+        computer = ParallelLDScoreComputer(
+            processor=self,
+            process_chunk_jit_fn=process_chunk_jit_fn,
+            num_workers=2,
+            input_queue=reader.result_queue  # Connect reader output to computer input
+        )
         
-        # Convert to JAX arrays
-        baseline_ld_sum_jax = jnp.asarray(self.data_truncated['baseline_ld_sum'], dtype=jnp.float32)
-        chisq_jax = jnp.asarray(self.data_truncated['chisq'], dtype=jnp.float32)
-        N_jax = jnp.asarray(self.data_truncated['N'], dtype=jnp.float32)
-        baseline_ann_jax = jnp.asarray(baseline_ann, dtype=jnp.float32)
-        w_ld_jax = jnp.asarray(self.data_truncated['w_ld'], dtype=jnp.float32)
-        
-        del baseline_ann
-        gc.collect()
-        
-        # Distribute chunks to workers
-        worker_chunk_assignments = self._distribute_chunks_to_workers()
-        
-        # Start worker threads
-        with ThreadPoolExecutor(max_workers=len(worker_chunk_assignments)) as executor:
-            futures = []
-            for worker_id, chunk_indices in enumerate(worker_chunk_assignments):
-                if chunk_indices:  # Only start worker if it has chunks
-                    future = executor.submit(self._worker_fetch_chunks, worker_id, chunk_indices)
-                    futures.append(future)
+        try:
+            # Submit all chunks to reader
+            for chunk_idx in range(self.total_chunks):
+                reader.submit_chunk(chunk_idx)
             
-            # Process results as they come in
-            n_workers_completed = 0
+            # Process chunks
             n_chunks_processed = 0
             n_cells_processed = 0
-
+            
             # Build description with sample name and range info
             desc_parts = [f"Processing {self.total_chunks:,} chunks ({self.total_cells_to_process:,} cells)"]
             
@@ -360,6 +597,10 @@ class SpatialLDSCProcessor:
             
             description = " | ".join(desc_parts)
             
+            # Start JAX profiling if needed
+            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+                jax.profiler.start_trace("/tmp/jax-trace-ldsc")
+            
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
@@ -367,99 +608,81 @@ class SpatialLDSCProcessor:
                 MofNCompleteColumn(),
                 TaskProgressColumn(),
                 TextColumn("[bold green]{task.fields[speed]} cells/s"),
+                TextColumn("[dim]R→C: {task.fields[r_to_c_queue]}"),
+                TextColumn("[dim]R: {task.fields[reader_throughput]:.1f}/s"),
+                TextColumn("[dim]C: {task.fields[computer_throughput]:.1f}/s"),
                 TimeRemainingColumn(),
                 refresh_per_second=2
             ) as progress:
                 task = progress.add_task(
                     description, 
                     total=self.total_cells_to_process,
-                    speed="0"
+                    speed="0",
+                    r_to_c_queue="0",
+                    reader_throughput=0,
+                    computer_throughput=0
                 )
+                
                 start_time = time.time()
+                last_update_time = start_time
+                
                 while n_chunks_processed < self.total_chunks:
-                    try:
-                        result = self.result_queue.get(timeout=1.0)
-                    except queue.Empty:
-                        continue
+                    # Check for errors
+                    reader.check_errors()
+                    computer.check_errors()
                     
-                    # Check for worker completion
-                    if result.get('completed', False):
-                        n_workers_completed += 1
-                        logger.debug(f"Worker {result['worker_id']} completed")
-                        if n_workers_completed >= len(futures):
-                            break
-                        continue
+                    # Update progress periodically
+                    current_time = time.time()
+                    if current_time - last_update_time > 0.5:  # Update every 0.5 seconds
+                        # Get queue sizes
+                        r_pending, r_to_c = reader.get_queue_sizes()
+                        c_pending = computer.get_queue_size()
+                        
+                        # Calculate throughput
+                        reader_throughput = reader.throughput.throughput
+                        computer_throughput = computer.throughput.throughput
+                        
+                        # Calculate speed in cells/s
+                        elapsed_time = current_time - start_time
+                        speed = n_cells_processed / elapsed_time if elapsed_time > 0 else 0
+                        
+                        # Update progress bar
+                        progress.update(
+                            task,
+                            completed=n_cells_processed,
+                            speed=f"{speed:,.0f}",
+                            r_to_c_queue=f"{r_to_c}/{c_pending}",
+                            reader_throughput=reader_throughput,
+                            computer_throughput=computer_throughput
+                        )
+                        last_update_time = current_time
                     
-                    # Skip failed chunks
-                    if not result.get('success', False):
-                        logger.error(f"Skipping chunk {result.get('chunk_idx')} due to error")
-                        n_chunks_processed += 1
-                        continue
+                    # Check if any chunks have been processed
+                    if len(self.processed_chunks) > n_chunks_processed:
+                        new_processed = len(self.processed_chunks) - n_chunks_processed
+                        n_chunks_processed = len(self.processed_chunks)
+                        
+                        # Update cell count
+                        n_cells_processed = sum(
+                            result['abs_end'] - result['abs_start'] 
+                            for result in self.results
+                        )
                     
-                    # Process successful chunk
-                    chunk_idx = result['chunk_idx']
-                    ldscore = result['ldscore']
-                    spot_names = result['spot_names']
-                    abs_start = result['abs_start']
-                    abs_end = result['abs_end']
-                    
-                    # Convert to JAX and process
-                    spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
-                    
-                    # Process with JIT function
-                    batch_size = min(50, spot_names.shape[0])
-                    betas, ses = process_chunk_jit_fn(
-                        self.config.n_blocks,
-                        batch_size,
-                        spatial_ld_jax,
-                        baseline_ld_sum_jax,
-                        chisq_jax,
-                        N_jax,
-                        baseline_ann_jax,
-                        w_ld_jax,
-                        self.data_truncated['Nbar']
-                    )
-                    
-                    # Ensure computation completes
-                    betas.block_until_ready()
-                    ses.block_until_ready()
-                    
-                    # Convert to numpy
-                    betas_np = np.array(betas)
-                    ses_np = np.array(ses)
-                    
-                    # Add to results
-                    self._add_chunk_result(
-                        chunk_idx, betas_np, ses_np, spot_names,
-                        abs_start, abs_end
-                    )
-                    
-                    # Update processing statistics
-                    n_cell_in_chunk = abs_end - abs_start
-                    n_cells_processed += n_cell_in_chunk
-                    n_chunks_processed += 1
-                    
-                    # Calculate speed in cells/s
-                    elapsed_time = time.time() - start_time
-                    speed = n_cells_processed / elapsed_time if elapsed_time > 0 else 0
-                    
-                    # Update progress with actual cells processed
-                    progress.update(
-                        task,
-                        completed=n_cells_processed,
-                        speed=f"{speed:,.0f}"
-                    )
-                    
-                    # Clean up
-                    del spatial_ld_jax, betas, ses
+                    # Small sleep to prevent busy waiting
+                    time.sleep(0.01)
                     
                     # Periodic memory check
-                    if n_chunks_processed % 100 == 0:
+                    if n_chunks_processed % 100 == 0 and n_chunks_processed > 0:
                         gc.collect()
             
-            # Wait for all workers to complete
-            for future in futures:
-                future.result()
+            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+                jax.profiler.stop_trace()
+                logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
+            
+        finally:
+            # Clean up resources
+            reader.close()
+            computer.close()
         
         # Validate and merge results
         return self._validate_merge_and_save()
