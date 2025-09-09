@@ -278,25 +278,24 @@ class MarkerScoreMessageQueue:
             reader: Rank reader pool
             computer: Marker score computer pool
             writer: Marker score writer pool
+            batch_size: Size of each batch
         """
         self.reader = reader
         self.computer = computer
         self.writer = writer
+        self.batch_size = batch_size
         
         # Cell type specific parameters (set via reset_for_cell_type)
         self.n_batches = None
-        self.batch_size = None
         self.n_cells = None
         self.active_cell_type = None
         self.stats = None
     
-    def reset_for_cell_type(self, cell_type: str, n_batches: int, batch_size: int, n_cells: int):
+    def reset_for_cell_type(self, cell_type: str, n_cells: int):
         """Reset the queue for processing a new cell type
         
         Args:
             cell_type: Name of the cell type
-            n_batches: Total number of batches for this cell type
-            batch_size: Size of each batch
             n_cells: Total number of cells for this cell type
         """
         # Reset all components for new cell type
@@ -305,11 +304,10 @@ class MarkerScoreMessageQueue:
         self.writer.reset_for_cell_type(cell_type)
 
         self.active_cell_type = cell_type
-        self.n_batches = n_batches
-        self.batch_size = batch_size
         self.n_cells = n_cells
-        self.stats = PipelineStats(total_batches=n_batches)
-        logger.debug(f"Reset MarkerScoreMessageQueue for {cell_type}: {n_batches} batches, {n_cells} cells")
+        self.n_batches = (n_cells + self.batch_size - 1) // self.batch_size
+        self.stats = PipelineStats(total_batches=self.n_batches)
+        logger.debug(f"Reset MarkerScoreMessageQueue for {cell_type}: {self.n_batches} batches, {n_cells} cells")
     
     def _submit_batches(
         self,
@@ -368,13 +366,32 @@ class MarkerScoreMessageQueue:
         self,
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
-        cell_indices_sorted: np.ndarray
+        cell_indices_sorted: np.ndarray,
+        enable_profiling: bool = False
     ):
-        """Run pipeline with rich progress display"""
+        """Run pipeline with rich progress display
+        
+        Args:
+            neighbor_indices: Neighbor indices for each cell
+            neighbor_weights: Weights for each neighbor
+            cell_indices_sorted: Sorted cell indices
+            enable_profiling: Whether to enable profiling
+        """
         
         # Ensure the queue has been reset for this cell type
         if self.active_cell_type is None or self.stats is None:
             raise RuntimeError("MarkerScoreMessageQueue must be reset before starting. Call reset_for_cell_type first.")
+        
+        # Optional profiling
+        tracer = None
+        if enable_profiling:
+            import viztracer
+            tracer = viztracer.VizTracer(
+                output_file=f"marker_score_{self.active_cell_type}_{self.n_batches}.json",
+                max_stack_depth=10,
+            )
+            tracer.start()
+        
         console = Console()
         
         # Define queue color mapping based on queue size
@@ -391,57 +408,71 @@ class MarkerScoreMessageQueue:
             else:
                 return "red"
         
-        # Create progress bars
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            console=console,
-            refresh_per_second=10
-        ) as progress:
-            
-            # Add single task for pipeline
-            pipeline_task = progress.add_task(
-                f"[bold]{self.active_cell_type}[/bold]", total=self.n_batches
-            )
-            
-            # Submit all batches to start the pipeline
-            self._submit_batches(neighbor_indices, neighbor_weights, cell_indices_sorted)
-            
-            # Monitor progress
-            while self.stats.completed_writes < self.n_batches:
-                # Check for errors in any component
-                self.reader.check_errors()
-                self.computer.check_errors()
-                self.writer.check_errors()
+        try:
+            # Create progress bars
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=console,
+                refresh_per_second=10
+            ) as progress:
                 
-                self._update_stats()
-                
-                # Update progress based on completed writes (final stage)
-                progress.update(pipeline_task, completed=self.stats.completed_writes)
-                
-                # Color code queue sizes based on fullness
-                compute_color = get_queue_color(self.stats.pending_compute)
-                write_color = get_queue_color(self.stats.pending_write)
-                
-                # Update description with queue information
-                progress.update(
-                    pipeline_task,
-                    description=(
-                        f"[bold]{self.active_cell_type}[/bold] | "
-                        f"Queues: [{compute_color}]R→C:{self.stats.pending_compute}[/{compute_color}] "
-                        f"[{write_color}]C→W:{self.stats.pending_write}[/{write_color}]"
-                    )
+                # Add single task for pipeline
+                pipeline_task = progress.add_task(
+                    f"[bold]{self.active_cell_type}[/bold]", total=self.n_batches
                 )
                 
-                time.sleep(0.1)
-            
-            # Final update
-            progress.update(pipeline_task, completed=self.n_batches)
+                # Submit all batches to start the pipeline
+                self._submit_batches(neighbor_indices, neighbor_weights, cell_indices_sorted)
+                
+                # Monitor progress
+                while self.stats.completed_writes < self.n_batches:
+                    # Check for errors in any component
+                    self.reader.check_errors()
+                    self.computer.check_errors()
+                    self.writer.check_errors()
+                    
+                    self._update_stats()
+                    
+                    # Update progress based on completed writes (final stage)
+                    progress.update(pipeline_task, completed=self.stats.completed_writes)
+                    
+                    # Color code queue sizes based on fullness
+                    compute_color = get_queue_color(self.stats.pending_compute)
+                    write_color = get_queue_color(self.stats.pending_write)
+                    
+                    # Update description with queue information
+                    progress.update(
+                        pipeline_task,
+                        description=(
+                            f"[bold]{self.active_cell_type}[/bold] | "
+                            f"Queues: [{compute_color}]R→C:{self.stats.pending_compute}[/{compute_color}] "
+                            f"[{write_color}]C→W:{self.stats.pending_write}[/{write_color}]"
+                        )
+                    )
+                    
+                    time.sleep(0.1)
+                
+                # Final update
+                progress.update(pipeline_task, completed=self.n_batches)
+        
+        except Exception as e:
+            logger.error(f"Pipeline failed for {self.active_cell_type}: {e}")
+            # Stop all workers to prevent hanging
+            self.stop()
+            raise
+        
+        finally:
+            # Stop profiling if enabled
+            if tracer is not None:
+                tracer.stop()
+                tracer.save()
+                logger.info(f"Profiling saved to marker_score_{self.active_cell_type}_{self.n_batches}.json")
             
         # No threads to wait for - processing happens in component worker threads
         
@@ -471,6 +502,20 @@ class MarkerScoreMessageQueue:
             f"  Writer:   {self.stats.writer_throughput.throughput:.2f} batches/s × {self.writer.num_workers} workers ({writer_cells_per_sec:.0f} cells/s)",
             title="Pipeline Summary"
         ))
+        
+        # Final garbage collection
+        import gc
+        gc.collect()
+        
+        logger.info(f"✓ Completed processing {self.active_cell_type}")
+    
+    def stop(self):
+        """Stop all workers in the pipeline components"""
+        logger.info("Stopping MarkerScoreMessageQueue workers...")
+        self.reader.stop_workers.set()
+        self.computer.stop_workers.set()
+        self.writer.stop_workers.set()
+        logger.info("MarkerScoreMessageQueue workers stopped")
 
 
 
@@ -638,56 +683,22 @@ class MarkerScoreCalculator:
     ):
         """Process a single cell type with shared pools"""
         
-        # Prepare batch data
+        # Find homogeneous spots
         neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells  = self._find_homogeneous_spots(
             adata, cell_type, annotation_key, coords, emb_gcn,
             emb_indv, slice_ids, self.reader.shape
         )
         
-        # Calculate batch parameters
-        batch_size = self.config.mkscore_batch_size
-        n_batches = (n_cells + batch_size - 1) // batch_size
+        # Reset the message queue for this cell type
+        self.marker_score_queue.reset_for_cell_type(cell_type, n_cells)
         
-
-        self.marker_score_queue.reset_for_cell_type(cell_type, n_batches, batch_size, n_cells)
-        
-        # Optional profiling
-        use_profiling = self.config.enable_profiling
-        if use_profiling:
-            import viztracer
-            tracer = viztracer.VizTracer(
-                output_file=f"marker_score_{cell_type}_{n_batches}.json",
-                max_stack_depth=10,
-
-            )
-            tracer.start()
-        
-        try:
-            # Run the pipeline
-            self.marker_score_queue.start(
-                neighbor_indices=neighbor_indices,
-                neighbor_weights=neighbor_weights,
-                cell_indices_sorted=cell_indices_sorted
-            )
-        except Exception as e:
-            logger.error(f"Pipeline failed for {cell_type}: {e}")
-            # Stop all workers to prevent hanging
-            self.reader.stop_workers.set()
-            self.computer.stop_workers.set()
-            self.writer.stop_workers.set()
-            raise
-        finally:
-            # Stop profiling if enabled
-            if use_profiling:
-                tracer.stop()
-                tracer.save()
-                logger.info(f"Profiling saved to marker_score_{cell_type}_{n_batches}.json")
-        
-        # Final garbage collection
-        import gc
-        gc.collect()
-        
-        logger.info(f"✓ Completed processing {cell_type}")
+        # Run the marker_score_queue to compute marker score
+        self.marker_score_queue.start(
+            neighbor_indices=neighbor_indices,
+            neighbor_weights=neighbor_weights,
+            cell_indices_sorted=cell_indices_sorted,
+            enable_profiling=self.config.enable_profiling
+        )
     
     def calculate_marker_scores(
         self,
@@ -859,7 +870,8 @@ class MarkerScoreCalculator:
         self.marker_score_queue = MarkerScoreMessageQueue(
             reader=self.reader,
             computer=self.computer,
-            writer=self.writer
+            writer=self.writer,
+            batch_size=self.config.mkscore_batch_size
         )
         
         for cell_type in cell_types:
