@@ -11,14 +11,8 @@ This package contains all components for converting latent representations to ge
 from .rank_calculator import RankCalculator
 from .connectivity import ConnectivityMatrixBuilder
 from .marker_scores import MarkerScoreCalculator
-from .memmap_io import MemMapDense, ParallelMemMapReader
 from .entry_point import run_latent_to_gene
 
 __all__ = [
-    'RankCalculator',
-    'ConnectivityMatrixBuilder', 
-    'MarkerScoreCalculator',
-    'MemMapDense',
-    'ParallelMemMapReader',
     'run_latent_to_gene'
 ]

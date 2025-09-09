@@ -1,6 +1,6 @@
 ## Define the loss function
 import torch.nn.functional as F
-from .Distribution import NegativeBinomial, ZeroInflatedNegativeBinomial
+from .distribution import NegativeBinomial, ZeroInflatedNegativeBinomial
 
 def rec_loss(x_hat,x,logtheta,zi_logit,distribution):
     if distribution == 'nb':

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from .Encoder_Decoder import Encoder, Decoder
+from .encoder_decoder import Encoder, Decoder
 
 class StEmbeding(nn.Module):
     """

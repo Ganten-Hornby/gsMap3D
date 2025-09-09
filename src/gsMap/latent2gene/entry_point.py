@@ -30,7 +30,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
             - rank_memmap: Path to rank memory map file
             - mean_frac: Path to mean expression fraction
             - marker_scores: Path to marker scores memory map
-            - metadata: Path to metadata JSON
+            - metadata: Path to metadata YAML file
     """
     
     logger.info("=" * 60)

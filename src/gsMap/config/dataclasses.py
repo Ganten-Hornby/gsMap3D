@@ -821,7 +821,16 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             import yaml
             with open(self.find_latent_metadata_path, 'r') as f:
                 find_latent_metadata = yaml.safe_load(f)
-            self.sample_h5ad_dict = OrderedDict(find_latent_metadata['outputs']['latent_files'])
+            self.sample_h5ad_dict = OrderedDict(
+                {sample_name:Path(latent_file)
+                for sample_name, latent_file in
+                find_latent_metadata['outputs']['latent_files']
+                 })
+            # assert all files exist
+            for sample_name, latent_file in self.sample_h5ad_dict.items():
+                if not latent_file.exists():
+                    raise FileNotFoundError(f"Latent file not found for sample '{sample_name}': {latent_file}")
+            logger.info(f"Auto-detected {len(self.sample_h5ad_dict)} samples from find_latent_metadata_path: {self.find_latent_metadata_path}")
         else:
             self.sample_h5ad_dict = OrderedDict()
             latent_dir = self.latent_dir

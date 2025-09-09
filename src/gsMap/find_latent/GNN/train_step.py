@@ -3,7 +3,7 @@ import torch
 from tqdm import tqdm
 import torch.nn.functional as F
 
-from .Loss import rec_loss, ce_loss
+from .loss import rec_loss, ce_loss
 
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""

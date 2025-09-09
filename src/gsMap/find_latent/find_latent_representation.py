@@ -14,7 +14,7 @@ from torch.utils.data import (
 )
 from collections import OrderedDict
 
-from .GNN.TrainStep import ModelTrain
+from .GNN.train_step import ModelTrain
 from .GNN.STmodel import StEmbeding
 from .ST_process import TrainingData, find_common_hvg, InferenceData
 from ..config import FindLatentRepresentationsConfig
