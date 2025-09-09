@@ -4,7 +4,7 @@ Replaces Zarr-backed storage with NumPy memory maps for better performance
 """
 
 import logging
-import json
+import yaml
 import queue
 import shutil
 import threading
@@ -49,7 +49,7 @@ class MemMapDense:
         self.flush_interval = flush_interval
         # File paths
         self.data_path = self.path.with_suffix('.dat')
-        self.meta_path = self.path.with_suffix('.meta.json')
+        self.meta_path = self.path.with_suffix('.meta.yaml')
         
         # Initialize memory map
         if mode == 'w':
@@ -75,7 +75,7 @@ class MemMapDense:
         if self.meta_path.exists():
             try:
                 with open(self.meta_path, 'r') as f:
-                    meta = json.load(f)
+                    meta = yaml.safe_load(f)
                 if meta.get('complete', False):
                     raise ValueError(
                         f"MemMapDense at {self.path} already exists and is marked as complete. "
@@ -83,7 +83,7 @@ class MemMapDense:
                     )
                 else:
                     logger.warning(f"MemMapDense at {self.path} exists but is incomplete. Recreating.")
-            except (json.JSONDecodeError, KeyError):
+            except (yaml.YAMLError, KeyError):
                 logger.warning(f"Invalid metadata at {self.meta_path}. Recreating.")
         
         # Create new memory map
@@ -106,7 +106,7 @@ class MemMapDense:
             'created_at': time.time()
         }
         with open(self.meta_path, 'w') as f:
-            json.dump(meta, f, indent=2)
+            yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
         
         logger.info(f"Created MemMapDense at {self.data_path} with shape {self.shape}")
     
@@ -117,7 +117,7 @@ class MemMapDense:
         
         # Read metadata
         with open(self.meta_path, 'r') as f:
-            meta = json.load(f)
+            meta = yaml.safe_load(f)
         
         if not meta.get('complete', False):
             raise ValueError(f"MemMapDense at {self.path} is incomplete")
@@ -145,7 +145,7 @@ class MemMapDense:
         
         # Read metadata
         with open(self.meta_path, 'r') as f:
-            meta = json.load(f)
+            meta = yaml.safe_load(f)
         
         # Open memory map
         self.memmap = np.memmap(
@@ -257,14 +257,14 @@ class MemMapDense:
             
             # Update metadata
             with open(self.meta_path, 'r') as f:
-                meta = json.load(f)
+                meta = yaml.safe_load(f)
             meta['complete'] = True
             meta['completed_at'] = time.time()
             # Ensure dtype is properly serialized
             if 'dtype' in meta and not isinstance(meta['dtype'], str):
                 meta['dtype'] = np.dtype(self.dtype).name
             with open(self.meta_path, 'w') as f:
-                json.dump(meta, f, indent=2)
+                yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
             
             logger.info(f"Marked MemMapDense at {self.path} as complete")
     
@@ -276,9 +276,9 @@ class MemMapDense:
         
         try:
             with open(self.meta_path, 'r') as f:
-                meta = json.load(f)
+                meta = yaml.safe_load(f)
             return meta.get('complete', False)
-        except (json.JSONDecodeError, IOError) as e:
+        except (yaml.YAMLError, IOError) as e:
             logger.warning(f"Could not read metadata to check completion status: {e}")
             return False
 
@@ -316,7 +316,7 @@ class MemMapDense:
         
         if self.meta_path.exists():
             with open(self.meta_path, 'r') as f:
-                self._attrs = json.load(f)
+                self._attrs = yaml.safe_load(f)
         else:
             self._attrs = {}
         return self._attrs
@@ -374,7 +374,7 @@ class ParallelRankReader:
             self.memmap_path = Path(rank_memmap)
             meta_path = self.memmap_path.with_suffix('.meta.json')
             with open(meta_path, 'r') as f:
-                meta = json.load(f)
+                meta = yaml.safe_load(f)
             self.shape = tuple(meta['shape'])
             self.dtype = np.dtype(meta['dtype'])
         else:

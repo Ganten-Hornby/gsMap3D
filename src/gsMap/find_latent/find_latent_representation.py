@@ -3,13 +3,17 @@ import torch
 import numpy as np
 import logging
 import random
+import yaml
 from pathlib import Path
+from typing import Dict, Any
 from torch.utils.data import (
     DataLoader,
     random_split,
     TensorDataset,
     SubsetRandomSampler,
 )
+from collections import OrderedDict
+
 from .GNN.TrainStep import ModelTrain
 from .GNN.STmodel import StEmbeding
 from .ST_process import TrainingData, find_common_hvg, InferenceData
@@ -19,31 +23,6 @@ from operator import itemgetter
 
 logger = logging.getLogger(__name__)
 
-
-def _parse_spe_file_list(spe_file_list: str | list[str]):
-    if isinstance(spe_file_list, str):
-        spe_file_list = Path(spe_file_list)
-        if not spe_file_list.exists():
-            logger.error(f"Path not found: {spe_file_list}")
-            raise FileNotFoundError(f"Path not found: {spe_file_list}")
-        # -
-        if spe_file_list.is_dir():
-            final_list = [
-                spe_file_list / file_path for file_path in os.listdir(spe_file_list)
-            ]
-        elif spe_file_list.is_file():
-            with open(spe_file_list, "r") as f:
-                final_list = f.readlines()
-            final_list = [file.strip() for file in final_list]
-    elif isinstance(spe_file_list, list):
-        final_list = spe_file_list
-    else:
-        raise ValueError(
-            "Invalid type for spe_file_list,"
-            f"expected str or list, got {type(spe_file_list)}"
-        )
-    # -
-    return final_list
 
 
 def set_seed(seed_value):
@@ -71,25 +50,33 @@ def index_splitter(n, splits):
     return random_split(idx, splits_tensor)
 
 
-def run_find_latent_representation(args: FindLatentRepresentationsConfig):
-    logger.info(f'Project dir: {args.project_dir}')
+def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> Dict[str, Any]:
+    """
+    Run the find latent representation pipeline.
+    
+    Args:
+        config: FindLatentRepresentationsConfig object with all necessary parameters
+        
+    Returns:
+        Dictionary containing metadata about the run including config, model info,
+        training info, outputs, and annotation info
+    """
+    logger.info(f'Project dir: {config.project_dir}')
     set_seed(2024)
 
     # Find the hvg
-    # spe_file_list = args.h5ad_list_file
-    spe_file_list = list(args.sample_h5ad_dict.values())
-    hvg, n_cell_used, percent_annotation, gene_name_dict = find_common_hvg(spe_file_list, args)
+    hvg, n_cell_used, percent_annotation, gene_name_dict = find_common_hvg(config.sample_h5ad_dict, config)
     common_genes = np.array(list(gene_name_dict.keys()))
 
     # Prepare the trainning data
-    get_trainning_data = TrainingData(args)
-    get_trainning_data.prepare(spe_file_list, n_cell_used, hvg, percent_annotation)
+    get_trainning_data = TrainingData(config)
+    get_trainning_data.prepare(config.sample_h5ad_dict, n_cell_used, hvg, percent_annotation)
 
     # Configure the distribution
-    if args.data_layer in ["count", "counts"]:
-        distribution = args.distribution
+    if config.data_layer in ["count", "counts"]:
+        distribution = config.distribution
         variational = True
-        use_tf = args.use_tf
+        use_tf = config.use_tf
     else:
         distribution = "gaussian"
         variational = False
@@ -112,18 +99,18 @@ def run_find_latent_representation(args: FindLatentRepresentationsConfig):
     gsmap_lgcn_model = StEmbeding(
         # parameter of VAE
         input_size=input_size,
-        hidden_size=args.hidden_size,
-        embedding_size=args.embedding_size,
+        hidden_size=config.hidden_size,
+        embedding_size=config.embedding_size,
         batch_embedding_size=batch_embedding_size,
         out_put_size=out_size,
         batch_size=batch_size,
         class_size=class_size,
         # parameter of transformer
-        module_dim=args.module_dim,
-        hidden_gmf=args.hidden_gmf,
-        n_modules=args.n_modules,
-        nhead=args.nhead,
-        n_enc_layer=args.n_enc_layer,
+        module_dim=config.module_dim,
+        hidden_gmf=config.hidden_gmf,
+        n_modules=config.n_modules,
+        nhead=config.nhead,
+        n_enc_layer=config.n_enc_layer,
         # parameter of model structure
         distribution=distribution,
         use_tf=use_tf,
@@ -152,10 +139,10 @@ def run_find_latent_representation(args: FindLatentRepresentationsConfig):
         get_trainning_data.label_merge,
     )
     train_loader = DataLoader(
-        dataset=dataset, batch_size=args.batch_size, sampler=train_sampler
+        dataset=dataset, batch_size=config.batch_size, sampler=train_sampler
     )
     val_loader = DataLoader(
-        dataset=dataset, batch_size=args.batch_size, sampler=val_sampler
+        dataset=dataset, batch_size=config.batch_size, sampler=val_sampler
     )
 
     # Model trainning
@@ -165,39 +152,41 @@ def run_find_latent_representation(args: FindLatentRepresentationsConfig):
         distribution,
         mode="reconstruction",
         lr=1e-3,
-        model_path=args.model_path,
+        model_path=config.model_path,
     )
     gsMap_embedding_finder.set_loaders(train_loader, val_loader)
     print(gsMap_embedding_finder.model)
 
-    if not os.path.exists(args.model_path):
+    if not os.path.exists(config.model_path):
         # reconstruction
-        gsMap_embedding_finder.train(args.itermax, patience=args.patience)
+        gsMap_embedding_finder.train(config.itermax, patience=config.patience)
 
         # classification
-        if args.two_stage and args.annotation is not None:
-            gsMap_embedding_finder.model.load_state_dict(torch.load(args.model_path))
+        if config.two_stage and config.annotation is not None:
+            gsMap_embedding_finder.model.load_state_dict(torch.load(config.model_path))
             gsMap_embedding_finder.mode = "classification"
-            gsMap_embedding_finder.train(args.itermax, patience=args.patience)
+            gsMap_embedding_finder.train(config.itermax, patience=config.patience)
     else:
-        logger.info(f"Model found at {args.model_path}. Skipping training.")
+        logger.info(f"Model found at {config.model_path}. Skipping training.")
 
     # Load the best model
-    gsMap_embedding_finder.model.load_state_dict(torch.load(args.model_path))
+    gsMap_embedding_finder.model.load_state_dict(torch.load(config.model_path))
     gsmap_embedding_model = gsMap_embedding_finder.model
 
     # Configure the inference
-    infer = InferenceData(hvg, batch_size, gsmap_embedding_model, label_name, args)
+    infer = InferenceData(hvg, batch_size, gsmap_embedding_model, label_name, config)
 
 
-    for st_id, st_file in enumerate(spe_file_list):
-        st_name = (Path(st_file).name).split(".h5ad")[0]
+    output_h5ad_path_dict = OrderedDict(
+        {sample_name: config.latent_dir / f"{sample_name}_add_latent.h5ad"
+            for sample_name in config.sample_h5ad_dict.keys()}
+    )
+    for st_id, (sample_name, st_file) in enumerate(config.sample_h5ad_dict.items()):
 
-        output_path = args.latent_dir / f"{st_name}_add_latent.h5ad"
+        output_path = output_h5ad_path_dict[sample_name]
 
         # Infer the embedding
         adata = infer.infer_embedding_single(st_id, st_file)
-        # adata.obs_names = st_name + '_' + adata.obs_names
 
         # Transfer the gene name
         common_genes = np.array(list(gene_name_dict.keys()))
@@ -207,8 +196,61 @@ def run_find_latent_representation(args: FindLatentRepresentationsConfig):
 
 
         # Compute the depth
-        if args.data_layer in ["count", "counts"]:
-            adata.obs['depth'] = np.array(adata.layers[args.data_layer].sum(axis=1)).flatten()
+        if config.data_layer in ["count", "counts"]:
+            adata.obs['depth'] = np.array(adata.layers[config.data_layer].sum(axis=1)).flatten()
 
         # Save the ST data with embeddings
         adata.write_h5ad(output_path)
+
+        logger.info(f"Saved latent representation to {output_path}")
+
+    # Convert config to dict with all Path objects as strings
+    config_dict = config.to_dict_with_paths_as_strings()
+    
+    # Convert output_h5ad_path_dict to strings
+    output_h5ad_path_dict_str = {k: str(v) for k, v in output_h5ad_path_dict.items()}
+    
+    # Save metadata
+    metadata = {
+        "config": config_dict,
+        "model_info": {
+            "model_path": str(config.model_path),
+            "n_parameters": int(sum(p.numel() for p in gsmap_embedding_model.parameters())),
+            "input_size": [int(x) for x in input_size],
+            "hidden_size": int(config.hidden_size),
+            "embedding_size": int(config.embedding_size),
+            "batch_embedding_size": int(batch_embedding_size),
+            "class_size": int(class_size),
+            "distribution": distribution,
+            "variational": variational,
+            "use_tf": use_tf
+        },
+        "training_info": {
+            "n_cells_used": int(cell_size),
+            "n_genes_used": int(len(hvg)),
+            "n_common_genes": int(len(common_genes)),
+            "batch_size": int(config.batch_size),
+            "n_epochs": int(config.itermax),
+            "patience": int(config.patience),
+            "two_stage": config.two_stage
+        },
+        "outputs": {
+            "latent_files": output_h5ad_path_dict_str,
+            "n_sections": len(config.sample_h5ad_dict)
+        },
+        "annotation_info": {
+            "annotation_key": config.annotation,
+            "n_classes": int(class_size),
+            "label_names": label_name if isinstance(label_name, list) else label_name.tolist() if hasattr(label_name, 'tolist') else list(label_name),
+            "percent_annotation": float(percent_annotation) if percent_annotation is not None else None
+        }
+    }
+    
+    # Save metadata to YAML file
+    metadata_path = config.find_latent_metadata_path
+    with open(metadata_path, 'w') as f:
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+    
+    logger.info(f"Saved metadata to {metadata_path}")
+    
+    return metadata

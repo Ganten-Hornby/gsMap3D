@@ -756,30 +756,6 @@ class MarkerScoreCalculator:
             batch_size=self.config.mkscore_batch_size
         )
     
-    def _save_metadata(
-        self,
-        output_path: Path,
-        n_cells: int,
-        n_genes: int,
-        global_log_gmean: np.ndarray,
-        global_expr_frac: np.ndarray
-    ):
-        """Save metadata for the marker score calculation"""
-        metadata = {
-            'n_cells': n_cells,
-            'n_genes': n_genes,
-            'config': {
-                **asdict(self.config)
-            },
-
-        }
-        
-        metadata_path = output_path.parent / f'{output_path.stem}_metadata.json'
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        logger.info(f"Metadata saved to {metadata_path}")
-
     def _find_homogeneous_spots(
         self,
         adata: ad.AnnData,
@@ -890,7 +866,7 @@ class MarkerScoreCalculator:
         adata_path: str,
         rank_memmap_path: str,
         mean_frac_path: str,
-        output_path: Optional[str] = None
+        output_path: Optional[str | Path] = None
     ) -> Union[str, Path]:
         """
         Main execution function for marker score calculation
@@ -963,9 +939,7 @@ class MarkerScoreCalculator:
         output_memmap.close()
         logger.info("Marker score calculation complete!")
         
-        # Save metadata
-        self._save_metadata(output_path, n_cells, n_genes, global_log_gmean, global_expr_frac)
-        
+
         logger.info(f"Results saved to {output_path}")
         
         return str(output_path)

@@ -15,16 +15,13 @@ from gsMap.config import FindLatentRepresentationsConfig
 
 logger = logging.getLogger(__name__)
 
-# sys.path.append("/storage/yangjianLab/songliyang/SpatialData/gsMap_software/gsMap_V2/GNN")
-# from GCN import GCN, build_spatial_graph
-
-def find_common_hvg(spe_file_list, params: FindLatentRepresentationsConfig):
+def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     """
     Identifies common highly variable genes (HVGs) across multiple ST datasets and calculates
     the number of cells to sample from each dataset.
 
     Args:
-        spe_file_list (list): List of file paths to ST datasets.
+        sample_h5ad_dict (dict): Dictionary mapping sample names to file paths of ST datasets.
         params (object): Parameter object containing attributes.
     """
 
@@ -34,7 +31,7 @@ def find_common_hvg(spe_file_list, params: FindLatentRepresentationsConfig):
 
     logger.info("Finding highly variable genes (HVGs)...")
     
-    for st_file in track(spe_file_list, description="Finding HVGs"):
+    for sample_name, st_file in track(sample_h5ad_dict.items(), description="Finding HVGs"):
         adata_temp = sc.read_h5ad(st_file)
         # sc.pp.filter_genes(adata_temp, min_counts=1)
         
@@ -117,8 +114,7 @@ def find_common_hvg(spe_file_list, params: FindLatentRepresentationsConfig):
         )
     
     hvg = df.iloc[: params.feat_cell,].index.tolist()
-    # df.to_parquet('/storage/yangjianLab/songliyang/SpatialData/gsMap_analysis/MouseEmbryo_spateo/E11.5/E11_heart_hvg.parquet')
-    
+
     # Find the number of sampling cells for each batch
     total_cell = np.sum(cell_number)
     total_cell_training = np.minimum(total_cell, params.n_cell_training)
@@ -174,13 +170,13 @@ class TrainingData(object):
         self.batches_onehot = None
              
  
-    def prepare(self, spe_file_list, n_cell_used, hvg, percent_annotation):
-        for st_id, st_file in enumerate(spe_file_list):
+    def prepare(self, sample_h5ad_dict, n_cell_used, hvg, percent_annotation):
+        for st_id, (sample_name, st_file) in enumerate(sample_h5ad_dict.items()):
             
             # Load the data
-            logger.info(f"Loading ST data of {st_file}...")
+            logger.info(f"Loading ST data of {sample_name} from {st_file}...")
             adata = sc.read_h5ad(st_file)
-            st_name = (Path(st_file).name).split(".h5ad")[0]
+            st_name = sample_name
              
             # Set data layers
             if not hasattr(adata, 'layers') or self.params.data_layer not in adata.layers:

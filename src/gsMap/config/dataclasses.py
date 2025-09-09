@@ -5,7 +5,9 @@ Configuration dataclasses for gsMap commands.
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Annotated, List, Literal, OrderedDict
+from typing import Optional, Annotated, List, Literal
+from collections import OrderedDict
+
 import yaml
 import logging
 from pathlib import Path
@@ -185,8 +187,7 @@ def process_h5ad_inputs(config, input_options):
     Returns:
         OrderedDict of {sample_name: h5ad_path}
     """
-    from collections import OrderedDict
-    
+
     sample_h5ad_dict = OrderedDict()
     
     # Check which options are provided
@@ -774,8 +775,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     def __post_init__(self):
         """Initialize and validate configuration"""
         super().__post_init__()
-        from collections import OrderedDict
-        
+
         # Step 1: Configure JAX platform
         configure_jax_platform(self.use_gpu)
         
@@ -794,8 +794,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     
     def _process_h5ad_inputs(self):
         """Process h5ad inputs from various sources"""
-        from collections import OrderedDict
-        
+
         # Define input options
         input_options = {
             'h5ad_yaml': ('h5ad_yaml', 'yaml'),
@@ -818,29 +817,36 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     
     def _auto_detect_h5ad_files(self):
         """Auto-detect h5ad files from latent directory"""
-        from collections import OrderedDict
-        
-        self.sample_h5ad_dict = OrderedDict()
-        latent_dir = self.latent_dir
-        logger.info(f"No input options provided. Auto-detecting h5ad files from latent directory: {latent_dir}")
-        
-        # Look for latent files with different naming patterns
-        latent_files = list(latent_dir.glob("*_latent_adata.h5ad"))
-        if not latent_files:
-            latent_files = list(latent_dir.glob("*_add_latent.h5ad"))
-        
-        if not latent_files:
-            raise ValueError(
-                f"No h5ad files found in latent directory {latent_dir}. "
-                f"Please run the find latent representation first. "
-                f"Or provide one of: h5ad_yaml, h5ad, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
-            )
-        
-        # Extract sample names from file names
-        for latent_file in latent_files:
-            sample_name = self._extract_sample_name(latent_file)
-            self.sample_h5ad_dict[sample_name] = latent_file
-            
+        if self.find_latent_metadata_path.exists():
+            import yaml
+            with open(self.find_latent_metadata_path, 'r') as f:
+                find_latent_metadata = yaml.safe_load(f)
+            self.sample_h5ad_dict = OrderedDict(find_latent_metadata['outputs']['latent_files'])
+        else:
+            self.sample_h5ad_dict = OrderedDict()
+            latent_dir = self.latent_dir
+            logger.info(f"No input options provided. Auto-detecting h5ad files from latent directory: {latent_dir}")
+
+            # Look for latent files with different naming patterns
+            latent_files = list(latent_dir.glob("*_latent_adata.h5ad"))
+            if not latent_files:
+                latent_files = list(latent_dir.glob("*_add_latent.h5ad"))
+
+            if not latent_files:
+                raise ValueError(
+                    f"No h5ad files found in latent directory {latent_dir}. "
+                    f"Please run the find latent representation first. "
+                    f"Or provide one of: h5ad_yaml, h5ad, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
+                )
+
+            # Extract sample names from file names
+            for latent_file in latent_files:
+                sample_name = self._extract_sample_name(latent_file)
+                self.sample_h5ad_dict[sample_name] = latent_file
+
+            # sort by sample name
+            self.sample_h5ad_dict = OrderedDict(sorted(self.sample_h5ad_dict.items()))
+
         logger.info(f"Auto-detected {len(self.sample_h5ad_dict)} samples from latent directory")
     
     def _extract_sample_name(self, latent_file):

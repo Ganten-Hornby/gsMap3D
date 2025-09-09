@@ -3,10 +3,9 @@ Main entry point for the latent2gene subpackage
 """
 
 import logging
-from dataclasses import asdict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import json
+import yaml
 
 from .rank_calculator import RankCalculator
 from .marker_scores import MarkerScoreCalculator
@@ -50,8 +49,8 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         "mean_frac": Path(config.mean_frac_path),
         "marker_scores": Path(config.marker_scores_memmap_path),
         "metadata": Path(config.latent2gene_metadata_path),
-        "rank_meta": Path(config.rank_memmap_path).with_suffix('.meta.json'),
-        "marker_scores_meta": Path(config.marker_scores_memmap_path).with_suffix('.meta.json')
+        "rank_meta": Path(config.rank_memmap_path).with_suffix('.meta.yaml'),
+        "marker_scores_meta": Path(config.marker_scores_memmap_path).with_suffix('.meta.yaml')
     }
     
     if all(Path(p).exists() for p in expected_outputs.values()):
@@ -67,7 +66,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
             rank_meta_path = expected_outputs["rank_meta"]
             if rank_meta_path.exists():
                 with open(rank_meta_path, 'r') as f:
-                    rank_meta = json.load(f)
+                    rank_meta = yaml.safe_load(f)
                 rank_shape = tuple(rank_meta['shape'])
                 rank_dtype = rank_meta['dtype']
                 
@@ -91,7 +90,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
             marker_meta_path = expected_outputs["marker_scores_meta"]
             if marker_meta_path.exists():
                 with open(marker_meta_path, 'r') as f:
-                    marker_meta = json.load(f)
+                    marker_meta = yaml.safe_load(f)
                 marker_shape = tuple(marker_meta['shape'])
                 marker_dtype = marker_meta['dtype']
                 
@@ -111,7 +110,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         if rank_memmap_complete and marker_scores_complete:
             logger.info("All memory maps are properly completed. Loading metadata...")
             with open(expected_outputs["metadata"], 'r') as f:
-                existing_metadata = json.load(f)
+                existing_metadata = yaml.safe_load(f)
             logger.info(f"Found existing complete results for {existing_metadata.get('n_cells', 'unknown')} cells "
                        f"and {existing_metadata.get('n_genes', 'unknown')} genes")
             return {k: str(v) for k, v in expected_outputs.items()}
@@ -150,12 +149,12 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         output_path=expected_outputs["marker_scores"]
     )
     
+    # Convert config to dict with all Path objects as strings
+    config_dict = config.to_dict_with_paths_as_strings()
+    
     # Create overall metadata
     metadata = {
-        "config":
-            {
-            **asdict(config)
-        },
+        "config": config_dict,
         "outputs": {
             "concatenated_latent_adata": str(rank_outputs["concatenated_latent_adata"]),
             "rank_memmap": str(rank_outputs["rank_memmap"]),
@@ -165,16 +164,9 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         "n_sections": len(config.sample_h5ad_dict)
     }
     
-    # Load marker scores metadata if it exists
-    marker_metadata_path = Path(marker_scores_path).parent / f"{Path(marker_scores_path).stem}_metadata.json"
-    if marker_metadata_path.exists():
-        with open(marker_metadata_path, 'r') as f:
-            marker_metadata = json.load(f)
-            metadata = {**marker_metadata, **metadata}
-    
-    # Save overall metadata
+    # Save overall metadata in YAML format
     with open(expected_outputs["metadata"], 'w') as f:
-        json.dump(metadata, f, indent=2)
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
     
     logger.info("\n" + "=" * 60)
     logger.info("Latent to gene conversion complete!")

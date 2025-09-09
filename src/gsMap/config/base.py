@@ -1,10 +1,10 @@
 """
 Base configuration classes and utilities for gsMap.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from functools import wraps
 from pathlib import Path
-from typing import Optional, Annotated, List
+from typing import Optional, Annotated, List, Dict, Any
 import typer
 import logging
 from datetime import datetime
@@ -92,6 +92,33 @@ class ConfigWithAutoPaths:
             raise ValueError('workdir must be provided.')
         work_dir = Path(self.workdir)
         self.project_dir = work_dir / self.project_name
+    
+    def to_dict_with_paths_as_strings(self) -> Dict[str, Any]:
+        """
+        Convert the config object to a dictionary with all Path objects converted to strings.
+        Also handles OrderedDict with Path values (like sample_h5ad_dict).
+        
+        Returns:
+            Dictionary representation of the config with all Path objects as strings
+        """
+        # Convert config to dict
+        config_dict = asdict(self)
+        
+        # Convert sample_h5ad_dict (OrderedDict with Path values) to proper format
+        if hasattr(self, 'sample_h5ad_dict') and self.sample_h5ad_dict:
+            sample_h5ad_dict_str = {k: str(v) for k, v in self.sample_h5ad_dict.items()}
+            config_dict['sample_h5ad_dict'] = sample_h5ad_dict_str
+        
+        # Convert all Path objects in config to strings
+        for key, value in config_dict.items():
+            if isinstance(value, Path):
+                config_dict[key] = str(value)
+            elif isinstance(value, dict):
+                config_dict[key] = {k: str(v) if isinstance(v, Path) else v for k, v in value.items()}
+            elif isinstance(value, list):
+                config_dict[key] = [str(v) if isinstance(v, Path) else v for v in value]
+        
+        return config_dict
 
     ## ---- Find latent representation paths
     @property
@@ -100,9 +127,12 @@ class ConfigWithAutoPaths:
         return self.project_dir / "find_latent_representations"
 
     @property
-    @ensure_path_exists
     def model_path(self) -> Path:
         return self.latent_dir / 'LGCN_model/gsMap_LGCN_.pt'
+
+    @property
+    def find_latent_metadata_path(self) -> Path:
+        return self.latent_dir / 'find_latent_metadata.yaml'
 
     ## ---- Latent to gene paths
 
@@ -113,34 +143,29 @@ class ConfigWithAutoPaths:
         return self.project_dir / "latent_to_gene"
     
     @property
-    @ensure_path_exists
     def concatenated_latent_adata_path(self) -> Path:
         """Path to concatenated latent representations"""
         return self.latent2gene_dir / "concatenated_latent_adata.h5ad"
     
     @property
-    @ensure_path_exists
     def rank_memmap_path(self) -> Path:
         """Path to rank zarr file"""
         return self.latent2gene_dir / "ranks.dat"
     
     @property
-    @ensure_path_exists
     def mean_frac_path(self) -> Path:
         """Path to mean expression fraction parquet"""
         return self.latent2gene_dir / "mean_frac.parquet"
     
     @property
-    @ensure_path_exists
     def marker_scores_memmap_path(self) -> Path:
         """Path to marker scores zarr"""
         return self.latent2gene_dir / "marker_scores.dat"
     
     @property
-    @ensure_path_exists
     def latent2gene_metadata_path(self) -> Path:
-        """Path to latent2gene metadata JSON"""
-        return self.latent2gene_dir / "metadata.json"
+        """Path to latent2gene metadata YAML"""
+        return self.latent2gene_dir / "metadata.yaml"
 
     ## ---- LD score paths
 
