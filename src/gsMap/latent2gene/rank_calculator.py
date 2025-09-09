@@ -422,7 +422,7 @@ class RankCalculator:
             # Close rank memory map
             if rank_memmap is not None:
                 rank_memmap.close()
-                section_progress.console.log(f"Saved rank matrix to {rank_memmap_path}")
+                logger.info(f"Saved rank matrix to {rank_memmap_path}")
         
         # Calculate mean log ranks and mean fraction
         mean_log_ranks = sum_log_ranks / total_cells
@@ -446,7 +446,7 @@ class RankCalculator:
         logger.info(f"Mean fraction data saved to {mean_frac_path}")
         
         # Concatenate all sections
-        section_progress.console.log("Concatenating latent representations...")
+        logger.info("Concatenating latent representations...")
         if adata_list:
             concatenated_adata = ad.concat(adata_list, axis=0, join='outer', merge='same')
 
@@ -455,12 +455,12 @@ class RankCalculator:
 
             # Save concatenated adata
             concatenated_adata.write_h5ad(concat_adata_path)
-            section_progress.console.log(f"Saved concatenated latent representations to {concat_adata_path}")
-            section_progress.console.log(f"  - Total cells: {concatenated_adata.n_obs}")
-            section_progress.console.log(f"  - Total genes: {concatenated_adata.n_vars}")
-            section_progress.console.log(f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}")
+            logger.info(f"Saved concatenated latent representations to {concat_adata_path}")
+            logger.info(f"  - Total cells: {concatenated_adata.n_obs}")
+            logger.info(f"  - Total genes: {concatenated_adata.n_vars}")
+            logger.info(f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}")
             if 'slice_id' in concatenated_adata.obs.columns:
-                section_progress.console.log(f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}")
+                logger.info(f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}")
 
             # Clean up
             del adata_list, concatenated_adata

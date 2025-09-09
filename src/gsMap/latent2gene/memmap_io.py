@@ -4,7 +4,7 @@ Replaces Zarr-backed storage with NumPy memory maps for better performance
 """
 
 import logging
-import yaml
+import json
 import queue
 import shutil
 import threading
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class MemMapDense:
     """Dense matrix storage using NumPy memory maps with async multi-threaded writing"""
-    
+
     def __init__(
         self,
         path: Union[str, Path],
@@ -33,7 +33,7 @@ class MemMapDense:
     ):
         """
         Initialize a memory-mapped dense matrix.
-        
+
         Args:
             path: Path to the memory-mapped file (without extension)
             shape: Shape of the matrix (n_rows, n_cols)
@@ -49,8 +49,8 @@ class MemMapDense:
         self.flush_interval = flush_interval
         # File paths
         self.data_path = self.path.with_suffix('.dat')
-        self.meta_path = self.path.with_suffix('.meta.yaml')
-        
+        self.meta_path = self.path.with_suffix('.meta.json')
+
         # Initialize memory map
         if mode == 'w':
             self._create_memmap()
@@ -60,7 +60,7 @@ class MemMapDense:
             self._open_memmap_readwrite()
         else:
             raise ValueError(f"Invalid mode: {mode}. Must be 'w', 'r', or 'r+'")
-        
+
         # Async writing setup (only for write modes)
         self.write_queue = queue.Queue(maxsize=100)
         self.writer_threads = []
@@ -68,14 +68,14 @@ class MemMapDense:
 
         if mode in ('w', 'r+'):
             self._start_writer_threads()
-    
+
     def _create_memmap(self):
         """Create a new memory-mapped file"""
         # Check if already exists and is complete
         if self.meta_path.exists():
             try:
                 with open(self.meta_path, 'r') as f:
-                    meta = yaml.safe_load(f)
+                    meta = json.load(f)
                 if meta.get('complete', False):
                     raise ValueError(
                         f"MemMapDense at {self.path} already exists and is marked as complete. "
@@ -83,9 +83,9 @@ class MemMapDense:
                     )
                 else:
                     logger.warning(f"MemMapDense at {self.path} exists but is incomplete. Recreating.")
-            except (yaml.YAMLError, KeyError):
+            except (json.JSONDecodeError, KeyError):
                 logger.warning(f"Invalid metadata at {self.meta_path}. Recreating.")
-        
+
         # Create new memory map
         self.memmap = np.memmap(
             self.data_path,
@@ -93,11 +93,11 @@ class MemMapDense:
             mode='w+',
             shape=self.shape
         )
-        
+
         # # Initialize to zeros
         # self.memmap[:] = 0
         # self.memmap.flush()
-        
+
         # Write metadata
         meta = {
             'shape': self.shape,
@@ -106,28 +106,28 @@ class MemMapDense:
             'created_at': time.time()
         }
         with open(self.meta_path, 'w') as f:
-            yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
-        
+            json.dump(meta, f, indent=2)
+
         logger.info(f"Created MemMapDense at {self.data_path} with shape {self.shape}")
-    
+
     def _open_memmap_readonly(self):
         """Open an existing memory-mapped file in read-only mode"""
         if not self.meta_path.exists():
             raise FileNotFoundError(f"Metadata file not found: {self.meta_path}")
-        
+
         # Read metadata
         with open(self.meta_path, 'r') as f:
-            meta = yaml.safe_load(f)
-        
+            meta = json.load(f)
+
         if not meta.get('complete', False):
             raise ValueError(f"MemMapDense at {self.path} is incomplete")
-        
+
         # Validate shape and dtype
         if tuple(meta['shape']) != self.shape:
             raise ValueError(
                 f"Shape mismatch: expected {self.shape}, got {tuple(meta['shape'])}"
             )
-        
+
         # Open memory map
         self.memmap = np.memmap(
             self.data_path,
@@ -135,18 +135,18 @@ class MemMapDense:
             mode='r',
             shape=self.shape
         )
-        
+
         logger.info(f"Opened MemMapDense at {self.data_path} in read-only mode")
-    
+
     def _open_memmap_readwrite(self):
         """Open an existing memory-mapped file in read-write mode"""
         if not self.meta_path.exists():
             raise FileNotFoundError(f"Metadata file not found: {self.meta_path}")
-        
+
         # Read metadata
         with open(self.meta_path, 'r') as f:
-            meta = yaml.safe_load(f)
-        
+            meta = json.load(f)
+
         # Open memory map
         self.memmap = np.memmap(
             self.data_path,
@@ -154,21 +154,21 @@ class MemMapDense:
             mode='r+',
             shape=tuple(meta['shape'])
         )
-        
+
         logger.info(f"Opened MemMapDense at {self.data_path} in read-write mode")
-    
+
     def _start_writer_threads(self):
         """Start multiple background writer threads"""
         def writer_worker(worker_id):
             last_flush_time = time.time()  # Track last flush time for worker 0
-            
+
             while not self.stop_writer.is_set():
                 try:
                     item = self.write_queue.get(timeout=1)
                     if item is None:
                         break
                     data, row_indices, col_slice = item
-                    
+
                     # Write data with thread safety
                     if isinstance(row_indices, slice):
                         self.memmap[row_indices, col_slice] = data
@@ -194,17 +194,17 @@ class MemMapDense:
                 except Exception as e:
                     logger.error(f"Writer thread {worker_id} error: {e}")
                     raise
-        
+
         # Start multiple writer threads
         for i in range(self.num_write_workers):
             thread = threading.Thread(target=writer_worker, args=(i,), daemon=True)
             thread.start()
             self.writer_threads.append(thread)
         logger.info(f"Started {self.num_write_workers} writer threads for MemMapDense")
-    
+
     def write_batch(self, data: np.ndarray, row_indices: Union[int, slice, np.ndarray], col_slice=slice(None)):
         """Queue batch for async writing
-        
+
         Args:
             data: Data to write
             row_indices: Either a single row index, slice, or array of row indices
@@ -213,16 +213,16 @@ class MemMapDense:
         if self.mode not in ('w', 'r+'):
             logger.warning("Cannot write to read-only MemMapDense")
             return
-        
+
         self.write_queue.put((data, row_indices, col_slice))
-    
+
     def read_batch(self, row_indices: Union[int, slice, np.ndarray], col_slice=slice(None)) -> np.ndarray:
         """Read batch of data
-        
+
         Args:
             row_indices: Row indices to read
             col_slice: Column slice (default: all columns)
-            
+
         Returns:
             NumPy array with the requested data
         """
@@ -230,17 +230,17 @@ class MemMapDense:
             return self.memmap[row_indices:row_indices+1, col_slice].copy()
         else:
             return self.memmap[row_indices, col_slice].copy()
-    
+
     def __getitem__(self, key):
         """Direct array access for compatibility"""
         return self.memmap[key]
-    
+
     def __setitem__(self, key, value):
         """Direct array access for compatibility"""
         if self.mode not in ('w', 'r+'):
             raise ValueError("Cannot write to read-only MemMapDense")
         self.memmap[key] = value
-    
+
     def mark_complete(self):
         """Mark the memory map as complete"""
         if self.mode in ('w', 'r+'):
@@ -249,36 +249,36 @@ class MemMapDense:
             if self.writer_threads and not self.write_queue.empty():
                 logger.info("Waiting for remaining writes before marking complete...")
                 self.write_queue.join()
-            
+
             # Flush memory map to disk
             logger.info("Flushing memmap to disk...")
             self.memmap.flush()
             logger.info("Memmap flush complete")
-            
+
             # Update metadata
             with open(self.meta_path, 'r') as f:
-                meta = yaml.safe_load(f)
+                meta = json.load(f)
             meta['complete'] = True
             meta['completed_at'] = time.time()
             # Ensure dtype is properly serialized
             if 'dtype' in meta and not isinstance(meta['dtype'], str):
                 meta['dtype'] = np.dtype(self.dtype).name
             with open(self.meta_path, 'w') as f:
-                yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
-            
+                json.dump(meta, f, indent=2)
+
             logger.info(f"Marked MemMapDense at {self.path} as complete")
-    
+
     @property
     def is_complete(self) -> bool:
         """Check if the memory map is marked as complete"""
         if not self.meta_path.exists():
             return False
-        
+
         try:
             with open(self.meta_path, 'r') as f:
-                meta = yaml.safe_load(f)
+                meta = json.load(f)
             return meta.get('complete', False)
-        except (yaml.YAMLError, IOError) as e:
+        except (json.JSONDecodeError, IOError) as e:
             logger.warning(f"Could not read metadata to check completion status: {e}")
             return False
 
@@ -313,14 +313,14 @@ class MemMapDense:
         """Compatibility property for accessing metadata"""
         if hasattr(self, '_attrs'):
             return self._attrs
-        
+
         if self.meta_path.exists():
             with open(self.meta_path, 'r') as f:
-                self._attrs = yaml.safe_load(f)
+                self._attrs = json.load(f)
         else:
             self._attrs = {}
         return self._attrs
-    
+
     def delete(self):
         """Delete the memory-mapped files"""
         self.close()
@@ -374,7 +374,7 @@ class ParallelRankReader:
             self.memmap_path = Path(rank_memmap)
             meta_path = self.memmap_path.with_suffix('.meta.json')
             with open(meta_path, 'r') as f:
-                meta = yaml.safe_load(f)
+                meta = json.load(f)
             self.shape = tuple(meta['shape'])
             self.dtype = np.dtype(meta['dtype'])
         else:
