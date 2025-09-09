@@ -772,8 +772,25 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         super().__post_init__()
         from collections import OrderedDict
         
-        # Configure JAX platform
+        # Step 1: Configure JAX platform
         configure_jax_platform(self.use_gpu)
+        
+        # Step 2: Process and validate h5ad inputs
+        self._process_h5ad_inputs()
+        
+        # Step 3: Set up validation fields and validate structure
+        self._setup_and_validate_fields()
+        
+        # Step 4: Configure dataset-specific parameters
+        self._configure_dataset_parameters()
+        
+        # Step 5: Validate spatial dataset constraints
+        self._validate_spatial_constraints()
+
+    
+    def _process_h5ad_inputs(self):
+        """Process h5ad inputs from various sources"""
+        from collections import OrderedDict
         
         # Define input options
         input_options = {
@@ -787,39 +804,56 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         
         # Auto-detect from latent directory if no inputs provided
         if not self.sample_h5ad_dict:
-            self.sample_h5ad_dict = OrderedDict()
-            latent_dir = self.latent_dir
-            logger.info(f"No input options provided. Auto-detecting h5ad files from latent directory: {latent_dir}")
+            self._auto_detect_h5ad_files()
             
-            # Look for latent files and derive sample names
-            latent_files = list(latent_dir.glob("*_latent_adata.h5ad"))
-            if not latent_files:
-                # Try alternative pattern
-                latent_files = list(latent_dir.glob("*_add_latent.h5ad"))
+        # Validate at least one sample exists
+        if len(self.sample_h5ad_dict) == 0:
+            raise ValueError("No valid samples found in the provided input")
             
-            if not latent_files:
-                raise ValueError(
-                    f"No h5ad files found in latent directory {latent_dir}. "
-                    f"Please run the find latent representation first. "
-                    f"Or provide one of: h5ad_yaml, h5ad, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
-                )
-            
-            for latent_file in latent_files:
-                # Extract sample name by removing suffix patterns
-                filename = latent_file.stem
-                if filename.endswith("_latent_adata"):
-                    sample_name = filename[:-len("_latent_adata")]
-                elif filename.endswith("_add_latent"):
-                    sample_name = filename[:-len("_add_latent")]
-                else:
-                    sample_name = filename
-                
-                # Use the latent file itself as the h5ad path
-                self.sample_h5ad_dict[sample_name] = latent_file
-                
-            logger.info(f"Auto-detected {len(self.sample_h5ad_dict)} samples from latent directory")
+        logger.info(f"Loaded and validated {len(self.sample_h5ad_dict)} samples")
+    
+    def _auto_detect_h5ad_files(self):
+        """Auto-detect h5ad files from latent directory"""
+        from collections import OrderedDict
         
-        # Define required and optional fields for validation
+        self.sample_h5ad_dict = OrderedDict()
+        latent_dir = self.latent_dir
+        logger.info(f"No input options provided. Auto-detecting h5ad files from latent directory: {latent_dir}")
+        
+        # Look for latent files with different naming patterns
+        latent_files = list(latent_dir.glob("*_latent_adata.h5ad"))
+        if not latent_files:
+            latent_files = list(latent_dir.glob("*_add_latent.h5ad"))
+        
+        if not latent_files:
+            raise ValueError(
+                f"No h5ad files found in latent directory {latent_dir}. "
+                f"Please run the find latent representation first. "
+                f"Or provide one of: h5ad_yaml, h5ad, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
+            )
+        
+        # Extract sample names from file names
+        for latent_file in latent_files:
+            sample_name = self._extract_sample_name(latent_file)
+            self.sample_h5ad_dict[sample_name] = latent_file
+            
+        logger.info(f"Auto-detected {len(self.sample_h5ad_dict)} samples from latent directory")
+    
+    def _extract_sample_name(self, latent_file):
+        """Extract sample name from latent file path"""
+        filename = latent_file.stem
+        
+        # Remove known suffixes
+        suffixes_to_remove = ["_latent_adata", "_add_latent"]
+        for suffix in suffixes_to_remove:
+            if filename.endswith(suffix):
+                return filename[:-len(suffix)]
+        
+        return filename
+    
+    def _setup_and_validate_fields(self):
+        """Set up required/optional fields and validate h5ad structure"""
+        # Define required fields
         required_fields = {
             'latent_representation_cell': ('obsm', self.latent_representation_cell, 'Latent representation of cell identity'),
             'spatial_key': ('obsm', self.spatial_key, 'Spatial key'),
@@ -829,36 +863,51 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         if self.annotation:
             required_fields['annotation'] = ('obs', self.annotation, 'Annotation')
         
-        # Optional fields
+        # Add niche representation as required if provided
         if self.latent_representation_niche:
-            required_fields['latent_representation_niche'] = ('obsm', self.latent_representation_niche, 'Latent representation of spatial niche')
+            required_fields['latent_representation_niche'] = (
+                'obsm', 
+                self.latent_representation_niche, 
+                'Latent representation of spatial niche'
+            )
         
         # Validate h5ad structure
-        validate_h5ad_structure(self.sample_h5ad_dict, required_fields,)
+        validate_h5ad_structure(self.sample_h5ad_dict, required_fields)
+    
+    def _configure_dataset_parameters(self):
+        """Configure parameters based on dataset type"""
+        if self.dataset_type == DatasetType.SPATIAL_2D:
+            self._configure_spatial_2d()
+        elif self.dataset_type == DatasetType.SPATIAL_3D:
+            self._configure_spatial_3d()
+        elif self.dataset_type == DatasetType.SCRNA_SEQ:
+            self._configure_scrna_seq()
         
-        # Log final sample count
-        logger.info(f"Loaded and validated {len(self.sample_h5ad_dict)} samples")
-        
-        # Check if at least one sample is provided
-        if len(self.sample_h5ad_dict) == 0:
-            raise ValueError("No valid samples found in the provided input")
-        
-        # Auto-configure based on dataset_type
-        if self.dataset_type == 'spatial2D':
-            # spatial2D can have multiple slices but doesn't search across them
-            if self.n_adjacent_slices != 0:
-                self.n_adjacent_slices = 0
-                logger.info("Dataset type is spatial2D, setting n_adjacent_slices=0 (no cross-slice search)")
-        elif self.dataset_type == 'spatial3D':
-            if self.n_adjacent_slices == 0:
-                logger.warning("Dataset type is spatial3D, but n_adjacent_slices=0. Setting to 1 to enable cross-slice search.")
-
-        else:  # scRNA
-            self.n_adjacent_slices = 0
-
+        # Adjust num_homogeneous based on adjacent slices
         self.num_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
-        # Validate configuration constraints for spatial datasets
-        if self.dataset_type in ['spatial2D', 'spatial3D']:
+    
+    def _configure_spatial_2d(self):
+        """Configure parameters for spatial 2D datasets"""
+        # spatial2D can have multiple slices but doesn't search across them
+        if self.n_adjacent_slices != 0:
+            self.n_adjacent_slices = 0
+            logger.info("Dataset type is spatial2D, setting n_adjacent_slices=0 (no cross-slice search)")
+    
+    def _configure_spatial_3d(self):
+        """Configure parameters for spatial 3D datasets"""
+        if self.n_adjacent_slices == 0:
+            logger.warning(
+                "Dataset type is spatial3D, but n_adjacent_slices=0. "
+                "Consider setting n_adjacent_slices to 1 or higher to enable cross-slice search."
+            )
+    
+    def _configure_scrna_seq(self):
+        """Configure parameters for scRNA-seq datasets"""
+        self.n_adjacent_slices = 0
+    
+    def _validate_spatial_constraints(self):
+        """Validate configuration constraints for spatial datasets"""
+        if self.dataset_type in [DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D]:
             assert self.num_homogeneous <= self.num_anchor, \
                 f"num_homogeneous ({self.num_homogeneous}) must be <= num_anchor ({self.num_anchor})"
             assert self.num_anchor <= self.num_neighbour_spatial, \

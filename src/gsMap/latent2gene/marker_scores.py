@@ -594,6 +594,209 @@ class MarkerScoreCalculator:
         logger.info(f"Loaded global stats for {len(global_log_gmean)} genes")
         
         return global_log_gmean, global_expr_frac
+    
+    def _load_input_data(
+        self, 
+        adata_path: str, 
+        rank_memmap_path: str, 
+        mean_frac_path: str
+    ) -> Tuple[ad.AnnData, MemMapDense, np.ndarray, np.ndarray, int, int]:
+        """Load input data: AnnData, rank memory map, and global statistics
+        
+        Returns:
+            Tuple of (adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes)
+        """
+        # Load concatenated AnnData
+        logger.info(f"Loading concatenated AnnData from {adata_path}")
+        if not Path(adata_path).exists():
+            raise FileNotFoundError(f"Concatenated AnnData not found: {adata_path}")
+        adata = sc.read_h5ad(adata_path)
+        
+        # Load pre-calculated global statistics
+        global_log_gmean, global_expr_frac = self.load_global_stats(mean_frac_path)
+        
+        # Open rank memory map and get dimensions
+        rank_memmap_path = Path(rank_memmap_path)
+        meta_path = rank_memmap_path.with_suffix('.meta.json')
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        
+        rank_memmap = MemMapDense(
+            path=rank_memmap_path,
+            shape=tuple(meta['shape']),
+            dtype=np.dtype(meta['dtype']),
+            mode='r'
+        )
+        
+        logger.info(f"Opened rank memory map from {rank_memmap_path}")
+        n_cells = adata.n_obs
+        n_cells_rank = rank_memmap.shape[0]
+        n_genes = rank_memmap.shape[1]
+        
+        logger.info(f"AnnData dimensions: {n_cells} cells × {adata.n_vars} genes")
+        logger.info(f"Rank MemMap dimensions: {n_cells_rank} cells × {n_genes} genes")
+        
+        # Cells should match exactly since filtering is done before rank memmap creation
+        assert n_cells == n_cells_rank, \
+            f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has {n_cells_rank} cells. " \
+            f"This indicates the filtering was not applied consistently during rank calculation."
+        
+        return adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes
+    
+    def _prepare_embeddings(
+        self, 
+        adata: ad.AnnData
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], np.ndarray, Optional[np.ndarray]]:
+        """Prepare and normalize embeddings based on dataset type
+        
+        Returns:
+            Tuple of (coords, emb_gcn, emb_indv, slice_ids)
+        """
+        logger.info("Loading shared data structures...")
+        
+        coords = None
+        emb_gcn = None
+        slice_ids = None
+        
+        if self.config.dataset_type in ['spatial2D', 'spatial3D']:
+            # Load spatial coordinates for spatial datasets
+            coords = adata.obsm[self.config.spatial_key]
+            # Load niche embeddings for spatial datasets (float16 for memory efficiency)
+            emb_gcn = adata.obsm[self.config.latent_representation_niche].astype(np.float16)
+            
+            # Load slice IDs if provided (for both spatial2D and spatial3D)
+            if hasattr(self.config, 'slice_id_key') and self.config.slice_id_key:
+                if self.config.slice_id_key in adata.obs.columns:
+                    slice_ids = adata.obs[self.config.slice_id_key].values.astype(np.int32)
+                    if self.config.dataset_type == 'spatial2D':
+                        logger.info(f"Loading slice IDs from {self.config.slice_id_key} for 2D multi-slice data (no cross-slice search)")
+                    else:  # spatial3D
+                        logger.info(f"Loading slice IDs from {self.config.slice_id_key} for 3D neighbor search (with cross-slice search)")
+                else:
+                    logger.warning(f"Slice ID key '{self.config.slice_id_key}' not found in adata.obs")
+        
+        # Load cell embeddings for all dataset types
+        emb_indv = adata.obsm[self.config.latent_representation_cell].astype(np.float16)
+        
+        # Normalize embeddings
+        logger.info("Normalizing embeddings...")
+        
+        # L2 normalize niche embeddings (only for spatial datasets)
+        if emb_gcn is not None:
+            emb_gcn_norm = np.linalg.norm(emb_gcn, axis=1, keepdims=True)
+            emb_gcn = emb_gcn / (emb_gcn_norm + 1e-8)
+        
+        # L2 normalize individual embeddings
+        emb_indv_norm = np.linalg.norm(emb_indv, axis=1, keepdims=True)
+        emb_indv = emb_indv / (emb_indv_norm + 1e-8)
+        
+        return coords, emb_gcn, emb_indv, slice_ids
+    
+    def _get_cell_types(self, adata: ad.AnnData) -> np.ndarray:
+        """Get cell types from annotation key
+        
+        Returns:
+            Array of unique cell types
+        """
+        annotation_key = self.config.annotation
+        
+        if annotation_key is not None:
+            assert annotation_key in adata.obs.columns, f"Annotation key '{annotation_key}' not found in adata.obs"
+            # Get unique cell types, excluding NaN values
+            cell_types = adata.obs[annotation_key].dropna().unique()
+            
+            # Check if there are any NaN values and handle them
+            nan_count = adata.obs[annotation_key].isna().sum()
+            if nan_count > 0:
+                logger.warning(f"Found {nan_count} cells with NaN annotation in '{annotation_key}', these will be skipped")
+        else:
+            logger.warning(f"Annotation {annotation_key} not found, processing all cells as one type")
+            cell_types = ["all"]
+            adata.obs[annotation_key] = "all"
+        
+        logger.info(f"Processing {len(cell_types)} cell types")
+        return cell_types
+    
+    def _initialize_pipeline(
+        self,
+        rank_memmap: MemMapDense,
+        output_memmap: MemMapDense,
+        global_log_gmean: np.ndarray,
+        global_expr_frac: np.ndarray
+    ):
+        """Initialize the processing pipeline with shared pools and queues"""
+        logger.info("Initializing shared processing pools with direct queue connections...")
+
+        # Create shared queues to connect components with configured sizes
+        reader_to_computer_queue = queue.Queue(maxsize=self.config.compute_workers * self.config.compute_input_queue_size)
+        computer_to_writer_queue = queue.Queue(maxsize=self.config.writer_queue_size)
+        
+        self.reader = ParallelRankReader(
+            rank_memmap,
+            num_workers=self.config.rank_read_workers,
+            output_queue=reader_to_computer_queue  # Direct connection to computer
+        )
+        
+        self.computer = ParallelMarkerScoreComputer(
+            global_log_gmean,
+            global_expr_frac,
+            self.config.num_homogeneous,
+            num_workers=self.config.compute_workers,
+            input_queue=reader_to_computer_queue,  # Input from reader
+            output_queue=computer_to_writer_queue  # Output to writer
+        )
+        
+        self.writer = ParallelMarkerScoreWriter(
+            output_memmap,
+            num_workers=self.config.mkscore_write_workers,
+            input_queue=computer_to_writer_queue  # Input from computer
+        )
+
+        logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
+                   f"{self.config.compute_workers} computers, "
+                   f"{self.config.mkscore_write_workers} writers")
+        
+        self.marker_score_queue = MarkerScoreMessageQueue(
+            reader=self.reader,
+            computer=self.computer,
+            writer=self.writer,
+            batch_size=self.config.mkscore_batch_size
+        )
+    
+    def _save_metadata(
+        self,
+        output_path: Path,
+        n_cells: int,
+        n_genes: int,
+        global_log_gmean: np.ndarray,
+        global_expr_frac: np.ndarray
+    ):
+        """Save metadata for the marker score calculation"""
+        metadata = {
+            'n_cells': n_cells,
+            'n_genes': n_genes,
+            'config': {
+                'dataset_type': self.config.dataset_type,
+                'num_neighbour_spatial': self.config.num_neighbour_spatial if self.config.dataset_type != 'scRNA-seq' else None,
+                'num_anchor': self.config.num_anchor if self.config.dataset_type != 'scRNA-seq' else None,
+                'num_homogeneous': self.config.num_homogeneous,
+                'similarity_threshold': self.config.similarity_threshold if hasattr(self.config, 'similarity_threshold') else 0.0,
+                'k_adjacent': self.config.k_adjacent if hasattr(self.config, 'k_adjacent') else 7,
+                'n_adjacent_slices': self.config.n_adjacent_slices if hasattr(self.config, 'n_adjacent_slices') else 1,
+                'slice_id_key': self.config.slice_id_key if hasattr(self.config, 'slice_id_key') else None,
+                'batch_size': self.config.mkscore_batch_size,
+                'num_read_workers': self.config.rank_read_workers,
+                'mkscore_write_workers': self.config.mkscore_write_workers
+            },
+            'global_log_gmean': global_log_gmean.tolist(),
+            'global_expr_frac': global_expr_frac.tolist()
+        }
+        
+        metadata_path = output_path.parent / f'{output_path.stem}_metadata.json'
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        logger.info(f"Metadata saved to {metadata_path}")
 
     def _find_homogeneous_spots(
         self,
@@ -727,49 +930,12 @@ class MarkerScoreCalculator:
         else:
             output_path = Path(output_path)
         
-        # Load concatenated AnnData
-        logger.info(f"Loading concatenated AnnData from {adata_path}")
-        
-        if not Path(adata_path).exists():
-            raise FileNotFoundError(f"Concatenated AnnData not found: {adata_path}")
-        
-        adata = sc.read_h5ad(adata_path)
-        
-        # Load pre-calculated global statistics
-        global_log_gmean, global_expr_frac = self.load_global_stats(mean_frac_path)
-        
-        # Get annotation key
-        annotation_key = self.config.annotation
-        
-        # Open rank memory map and get dimensions
-        rank_memmap_path = Path(rank_memmap_path)
-        
-        # Get metadata to determine shape
-        meta_path = rank_memmap_path.with_suffix('.meta.json')
-        with open(meta_path, 'r') as f:
-            meta = json.load(f)
-        
-        rank_memmap = MemMapDense(
-            path=rank_memmap_path,
-            shape=tuple(meta['shape']),
-            dtype=np.dtype(meta['dtype']),
-            mode='r'
+        # Load all input data
+        adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes = self._load_input_data(
+            adata_path, rank_memmap_path, mean_frac_path
         )
         
-        logger.info(f"Opened rank memory map from {rank_memmap_path}")
-        n_cells = adata.n_obs
-        n_cells_rank = rank_memmap.shape[0]
-        n_genes = rank_memmap.shape[1]
-        
-        logger.info(f"AnnData dimensions: {n_cells} cells × {adata.n_vars} genes")
-        logger.info(f"Rank MemMap dimensions: {n_cells_rank} cells × {n_genes} genes")
-        
-        # Cells should match exactly since filtering is done before rank memmap creation
-        assert n_cells == n_cells_rank, \
-            f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has {n_cells_rank} cells. " \
-            f"This indicates the filtering was not applied consistently during rank calculation."
-        
-        # Initialize output memory map with float16 for memory efficiency
+        # Initialize output memory map
         output_memmap = MemMapDense(
             output_path,
             shape=(n_cells, n_genes),
@@ -778,102 +944,17 @@ class MarkerScoreCalculator:
             num_write_workers=self.config.mkscore_write_workers
         )
         
+        # Get cell types to process
+        cell_types = self._get_cell_types(adata)
+        annotation_key = self.config.annotation
+        
+        # Prepare embeddings
+        coords, emb_gcn, emb_indv, slice_ids = self._prepare_embeddings(adata)
+        
+        # Initialize processing pipeline
+        self._initialize_pipeline(rank_memmap, output_memmap, global_log_gmean, global_expr_frac)
+        
         # Process each cell type
-        if annotation_key is not None:
-            assert annotation_key in adata.obs.columns, f"Annotation key '{annotation_key}' not found in adata.obs"
-            # Get unique cell types, excluding NaN values
-            cell_types = adata.obs[annotation_key].dropna().unique()
-            
-            # Check if there are any NaN values and handle them
-            nan_count = adata.obs[annotation_key].isna().sum()
-            if nan_count > 0:
-                logger.warning(f"Found {nan_count} cells with NaN annotation in '{annotation_key}', these will be skipped")
-        else:
-            logger.warning(f"Annotation {annotation_key} not found, processing all cells as one type")
-            cell_types = ["all"]
-            adata.obs[annotation_key] = "all"
-        
-        logger.info(f"Processing {len(cell_types)} cell types")
-        
-        # Load shared data structures once
-        logger.info("Loading shared data structures...")
-        
-        # Load embeddings based on dataset type
-        coords = None
-        emb_gcn = None
-        slice_ids = None
-        
-        if self.config.dataset_type in ['spatial2D', 'spatial3D']:
-            # Load spatial coordinates for spatial datasets
-            coords = adata.obsm[self.config.spatial_key]
-            # Load niche embeddings for spatial datasets (float16 for memory efficiency)
-            emb_gcn = adata.obsm[self.config.latent_representation_niche].astype(np.float16)
-            
-            # Load slice IDs if provided (for both spatial2D and spatial3D)
-            if hasattr(self.config, 'slice_id_key') and self.config.slice_id_key:
-                if self.config.slice_id_key in adata.obs.columns:
-                    slice_ids = adata.obs[self.config.slice_id_key].values.astype(np.int32)
-                    if self.config.dataset_type == 'spatial2D':
-                        logger.info(f"Loading slice IDs from {self.config.slice_id_key} for 2D multi-slice data (no cross-slice search)")
-                    else:  # spatial3D
-                        logger.info(f"Loading slice IDs from {self.config.slice_id_key} for 3D neighbor search (with cross-slice search)")
-                else:
-                    logger.warning(f"Slice ID key '{self.config.slice_id_key}' not found in adata.obs")
-        
-        # Load cell embeddings for all dataset types
-        emb_indv = adata.obsm[self.config.latent_representation_cell].astype(np.float16)
-        
-        # Normalize embeddings
-        logger.info("Normalizing embeddings...")
-        
-        # L2 normalize niche embeddings (only for spatial datasets)
-        if emb_gcn is not None:
-            emb_gcn_norm = np.linalg.norm(emb_gcn, axis=1, keepdims=True)
-            emb_gcn = emb_gcn / (emb_gcn_norm + 1e-8)
-        
-        # L2 normalize individual embeddings
-        emb_indv_norm = np.linalg.norm(emb_indv, axis=1, keepdims=True)
-        emb_indv = emb_indv / (emb_indv_norm + 1e-8)
-        
-        # Initialize shared pools with directly connected queues
-        logger.info("Initializing shared processing pools with direct queue connections...")
-
-        # Create shared queues to connect components with configured sizes
-        reader_to_computer_queue = queue.Queue(maxsize=self.config.compute_workers * self.config.compute_input_queue_size)
-        computer_to_writer_queue = queue.Queue(maxsize=self.config.writer_queue_size)
-        
-        self.reader = ParallelRankReader(
-            rank_memmap,
-            num_workers=self.config.rank_read_workers,
-            output_queue=reader_to_computer_queue  # Direct connection to computer
-        )
-        
-        self.computer = ParallelMarkerScoreComputer(
-            global_log_gmean,
-            global_expr_frac,
-            self.config.num_homogeneous,
-            num_workers=self.config.compute_workers,
-            input_queue=reader_to_computer_queue,  # Input from reader
-            output_queue=computer_to_writer_queue  # Output to writer
-        )
-        
-        self.writer = ParallelMarkerScoreWriter(
-            output_memmap,
-            num_workers=self.config.mkscore_write_workers,
-            input_queue=computer_to_writer_queue  # Input from computer
-        )
-
-        logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
-                   f"{self.config.compute_workers} computers, "
-                   f"{self.config.mkscore_write_workers} writers")
-        
-        self.marker_score_queue = MarkerScoreMessageQueue(
-            reader=self.reader,
-            computer=self.computer,
-            writer=self.writer,
-            batch_size=self.config.mkscore_batch_size
-        )
-        
         for cell_type in cell_types:
             self._calculate_marker_scores_by_cell_type(
                 adata,
@@ -895,38 +976,14 @@ class MarkerScoreCalculator:
         self.computer.close()
         self.writer.close()
         
-        # Close rank memory map
+        # Close memory maps
         rank_memmap.close()
-        
         output_memmap.close()
         logger.info("Marker score calculation complete!")
         
         # Save metadata
-        metadata = {
-            'n_cells': n_cells,
-            'n_genes': n_genes,
-            'config': {
-                'dataset_type': self.config.dataset_type,
-                'num_neighbour_spatial': self.config.num_neighbour_spatial if self.config.dataset_type != 'scRNA-seq' else None,
-                'num_anchor': self.config.num_anchor if self.config.dataset_type != 'scRNA-seq' else None,
-                'num_homogeneous': self.config.num_homogeneous,
-                'similarity_threshold': self.config.similarity_threshold if hasattr(self.config, 'similarity_threshold') else 0.0,
-                'k_adjacent': self.config.k_adjacent if hasattr(self.config, 'k_adjacent') else 7,
-                'n_adjacent_slices': self.config.n_adjacent_slices if hasattr(self.config, 'n_adjacent_slices') else 1,
-                'slice_id_key': self.config.slice_id_key if hasattr(self.config, 'slice_id_key') else None,
-                'batch_size': self.config.mkscore_batch_size,
-                'num_read_workers': self.config.rank_read_workers,
-                'mkscore_write_workers': self.config.mkscore_write_workers
-            },
-            'global_log_gmean': global_log_gmean.tolist(),
-            'global_expr_frac': global_expr_frac.tolist()
-        }
-        
-        metadata_path = output_path.parent / f'{output_path.stem}_metadata.json'
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
+        self._save_metadata(output_path, n_cells, n_genes, global_log_gmean, global_expr_frac)
         
         logger.info(f"Results saved to {output_path}")
-        logger.info(f"Metadata saved to {metadata_path}")
         
         return str(output_path)
