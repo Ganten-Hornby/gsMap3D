@@ -853,6 +853,10 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             if self.n_adjacent_slices == 0:
                 logger.warning("Dataset type is spatial3D, but n_adjacent_slices=0. Setting to 1 to enable cross-slice search.")
 
+        else:  # scRNA
+            self.n_adjacent_slices = 0
+
+        self.num_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
         # Validate configuration constraints for spatial datasets
         if self.dataset_type in ['spatial2D', 'spatial3D']:
             assert self.num_homogeneous <= self.num_anchor, \

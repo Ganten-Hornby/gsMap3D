@@ -183,45 +183,30 @@ def _find_anchors_and_homogeneous_batch_jit(
     # Use a safe index (0) for invalid neighbors, will mask them later
     safe_neighbors = jnp.where(spatial_neighbors >= 0, spatial_neighbors, 0)
     spatial_emb_gcn_norm = all_emb_gcn_norm[safe_neighbors]  # (batch_size, k1, d1)
+    spatial_emb_indv_norm = all_emb_indv_norm[safe_neighbors]  # (batch_size, k1, d2)
     
-    # Step 2: Find spatial anchors via cosine similarity
-    # Compute similarities (embeddings are already normalized)
+    # Step 2: Compute both GCN and individual similarities for spatial neighbors
+    # Compute GCN similarities (embeddings are already normalized)
     anchor_sims = jnp.einsum('bd,bkd->bk', emb_gcn_batch_norm, spatial_emb_gcn_norm)
     
-    # Mask out invalid neighbors by setting their similarities to -inf
-    anchor_sims = jnp.where(spatial_neighbors >= 0, anchor_sims, -jnp.inf)
+    # Compute individual/cell similarities (embeddings are already normalized)
+    cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, spatial_emb_indv_norm)
     
-    # Select top anchors
-    top_anchor_idx = jnp.argsort(-anchor_sims, axis=1)[:, :num_anchor]
+    # Apply threshold to both similarities (set to 0 if below threshold)
+    anchor_sims_thresholded = jnp.where(anchor_sims >= similarity_threshold, anchor_sims, 0.0)
+    cell_sims_thresholded = jnp.where(cell_sims >= similarity_threshold, cell_sims, 0.0)
+    
+    # Multiply the thresholded similarities
+    combined_sims = anchor_sims_thresholded * cell_sims_thresholded
+    
+    # Mask out invalid neighbors by setting their similarities to -0
+    combined_sims = jnp.where(spatial_neighbors >= 0, combined_sims, 0)
+    
+    # Select top homogeneous neighbors based on combined similarity
+    top_homo_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous]
     batch_idx = jnp.arange(batch_size)[:, None]
-    spatial_anchors = spatial_neighbors[batch_idx, top_anchor_idx]  # (batch_size, num_anchor)
-    
-    # Step 3: Find homogeneous neighbors from anchors
-    # Extract anchor embeddings (already normalized)
-    # Use a safe index (0) for invalid anchors, will mask them later
-    safe_anchors = jnp.where(spatial_anchors >= 0, spatial_anchors, 0)
-    anchor_emb_indv_norm = all_emb_indv_norm[safe_anchors]  # (batch_size, num_anchor, d2)
-    
-    # Compute similarities (embeddings are already normalized)
-    homo_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, anchor_emb_indv_norm)
-    
-    # Mask out invalid anchors by setting their similarities to -inf
-    homo_sims = jnp.where(spatial_anchors >= 0, homo_sims, -jnp.inf)
-    
-    # Select top homogeneous neighbors
-    top_homo_idx = jnp.argsort(-homo_sims, axis=1)[:, :num_homogeneous]
-    homogeneous_neighbors = spatial_anchors[batch_idx, top_homo_idx]  # (batch_size, num_homogeneous)
-    homogeneous_weights = homo_sims[batch_idx, top_homo_idx]
-    
-    # Apply similarity threshold: set similarities below threshold to -inf before softmax
-    homogeneous_weights = jnp.where(
-        (homogeneous_weights >= similarity_threshold),
-        homogeneous_weights,
-        -jnp.inf
-    )
-    
-    # Use softmax to normalize weights (values with -inf will become 0)
-    homogeneous_weights = jax.nn.softmax(homogeneous_weights, axis=1)
+    homogeneous_neighbors = spatial_neighbors[batch_idx, top_homo_idx]  # (batch_size, num_homogeneous)
+    homogeneous_weights = combined_sims[batch_idx, top_homo_idx]
     
     return homogeneous_neighbors, homogeneous_weights
 

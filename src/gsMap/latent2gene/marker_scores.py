@@ -827,6 +827,7 @@ def compute_marker_scores_jax(
     log_ranks_3d = log_ranks.reshape(batch_size, num_neighbors, n_genes)
     
     # Compute weighted geometric mean in log space
+    weights = weights / weights.sum(axis=1, keepdims=True)  # Normalize weights
     weighted_log_mean = jnp.einsum('bn,bng->bg', weights, log_ranks_3d)
     
     # Compute expression fraction (mean of is_expressed across neighbors)
@@ -931,9 +932,7 @@ class MarkerScoreCalculator:
         max_valid_idx = rank_shape[0] - 1
         assert neighbor_indices.max() <= max_valid_idx, \
             f"Neighbor indices exceed bounds (max: {neighbor_indices.max()}, limit: {max_valid_idx})"
-        assert neighbor_indices.min() >= 0, \
-            f"Found negative neighbor indices (min: {neighbor_indices.min()})"
-        
+
         # Optimize row order
         logger.info("Optimizing row order for cache efficiency...")
         row_order = optimize_row_order(
@@ -949,9 +948,9 @@ class MarkerScoreCalculator:
         
         # Save neighbor indices and weights to obsm matrices
         # Initialize matrices if they don't exist
-        if 'gsMap_homo_indices' not in adata.obsm.keys():
+        if 'gsMap_homo_indices' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_indices'].shape[1] != neighbor_indices.shape[1]):
             adata.obsm['gsMap_homo_indices'] = np.zeros((adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype)
-        if 'gsMap_homo_weights' not in adata.obsm.keys():
+        if 'gsMap_homo_weights' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_indices'].shape[1] != neighbor_indices.shape[1]):
             adata.obsm['gsMap_homo_weights'] = np.zeros((adata.n_obs, neighbor_weights.shape[1]), dtype=neighbor_weights.dtype)
         
         # Store the neighbor indices and weights for this cell type
