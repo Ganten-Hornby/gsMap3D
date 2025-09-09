@@ -37,179 +37,8 @@ from rich.progress import (
     TimeElapsedColumn
 )
 from rich.console import Console
-from rich.table import Table
-from rich.live import Live
-from rich.layout import Layout
 from rich.panel import Panel
-USE_RICH = True
-
-class ParallelRankReader:
-    """Multi-threaded reader for log-rank data from memory-mapped storage"""
-    
-    def __init__(
-        self,
-        rank_memmap: Union[MemMapDense, str],
-        num_workers: int = 4,
-        output_queue: queue.Queue = None,
-        cache_size_mb: int = 1000
-    ):
-        # Store path and metadata for workers to open their own instances
-        if isinstance(rank_memmap, str):
-            self.memmap_path = Path(rank_memmap)
-            meta_path = self.memmap_path.with_suffix('.meta.json')
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-            self.shape = tuple(meta['shape'])
-            self.dtype = np.dtype(meta['dtype'])
-        else:
-            # If MemMapDense instance, extract path and metadata
-            assert hasattr(rank_memmap, 'path')
-            self.memmap_path = rank_memmap.path
-            self.shape = rank_memmap.shape
-            self.dtype = rank_memmap.dtype
-
-        self.num_workers = num_workers
-        
-        # Queues for communication
-        self.read_queue = queue.Queue()
-        # Use provided output queue or create own
-        self.result_queue = output_queue if output_queue else queue.Queue(maxsize=self.num_workers * 4)
-        
-        # Throughput tracking
-        self.throughput = ComponentThroughput()
-        self.throughput_lock = threading.Lock()
-        
-        # Exception handling
-        self.exception_queue = queue.Queue()
-        self.has_error = threading.Event()
-        
-        # Start worker threads
-        self.workers = []
-        self.stop_workers = threading.Event()
-        self._start_workers()
-    
-    def _start_workers(self):
-        """Start worker threads"""
-        for i in range(self.num_workers):
-            worker = threading.Thread(
-                target=self._worker,
-                args=(i,),
-                daemon=True
-            )
-            worker.start()
-            self.workers.append(worker)
-    
-    def _worker(self, worker_id: int):
-        """Worker thread for reading batches from memory map"""
-        logger.info(f"Reader worker {worker_id} started")
-        
-        # Open worker's own memory map instance
-        data_path = self.memmap_path.with_suffix('.dat')
-        worker_memmap = np.memmap(
-            data_path,
-            dtype=self.dtype,
-            mode='r',
-            shape=self.shape
-        )
-        logger.info(f"Worker {worker_id} opened its own memory map at {data_path}")
-
-        while not self.stop_workers.is_set():
-            try:
-                # Get batch request
-                item = self.read_queue.get()
-                if item is None:
-                    break
-                
-                batch_id, neighbor_indices, batch_metadata = item
-                
-                # Track timing
-                start_time = time.time()
-                
-                # Flatten and deduplicate indices for efficient reading
-                flat_indices = np.unique(neighbor_indices.flatten())
-                
-                # Validate indices are within bounds
-                max_idx = self.shape[0] - 1
-                assert flat_indices.max() <= max_idx, \
-                    f"Worker {worker_id}: Indices exceed bounds (max: {flat_indices.max()}, limit: {max_idx})"
-                
-                # Read from worker's own memory map (direct array access)
-                # Memory map stores log-ranks directly
-                rank_data = worker_memmap[flat_indices]
-                
-                # Ensure we have a numpy array
-                if not isinstance(rank_data, np.ndarray):
-                    rank_data = np.array(rank_data)
-                
-                # Create mapping for reconstruction
-                idx_map = {idx: i for i, idx in enumerate(flat_indices)}
-                
-                # Map neighbor indices to rank_data indices
-                flat_neighbors = neighbor_indices.flatten()
-                rank_indices = np.array([idx_map[neighbor_idx] for neighbor_idx in flat_neighbors])
-                
-                # Track throughput
-                elapsed = time.time() - start_time
-                with self.throughput_lock:
-                    self.throughput.record_batch(elapsed)
-                
-                # Put result with metadata for computer
-                self.result_queue.put((batch_id, rank_data, rank_indices, neighbor_indices.shape, batch_metadata))
-                self.read_queue.task_done()
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Reader worker {worker_id} error: {e}")
-                self.exception_queue.put((worker_id, e))
-                self.has_error.set()
-                self.stop_workers.set()  # Signal all workers to stop
-                break
-        
-        # Clean up worker's memory map if it was opened
-        if self.memmap_path is not None and 'worker_memmap' in locals():
-            del worker_memmap
-            logger.info(f"Worker {worker_id} closed its memory map")
-    
-    def submit_batch(self, batch_id: int, neighbor_indices: np.ndarray, batch_metadata: dict = None):
-        """Submit batch for reading with metadata"""
-        self.read_queue.put((batch_id, neighbor_indices, batch_metadata or {}))
-    
-    def get_result(self):
-        """Get next completed batch"""
-        return self.result_queue.get()
-    
-    def get_queue_sizes(self):
-        """Get current queue sizes for monitoring"""
-        return self.read_queue.qsize(), self.result_queue.qsize()
-    
-    def check_errors(self):
-        """Check if any worker encountered an error"""
-        if self.has_error.is_set():
-            try:
-                worker_id, exception = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}") from exception
-            except queue.Empty:
-                raise RuntimeError("Reader worker failed with unknown error")
-    
-    def reset_for_cell_type(self, cell_type: str):
-        """Reset throughput tracking for new cell type"""
-        with self.throughput_lock:
-            self.throughput = ComponentThroughput()
-        logger.debug(f"Reset reader throughput for {cell_type}")
-    
-    def close(self):
-        """Clean up resources"""
-        self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.read_queue.put(None)
-        for worker in self.workers:
-            worker.join(timeout=5)
-        
-        # No need to close individual worker memmaps as they're cleaned up in _worker
-        # Only close if we have a shared rank_memmap (fallback mode)
-        if hasattr(self, 'rank_memmap') and hasattr(self.rank_memmap, 'close'):
-            self.rank_memmap.close()
+from .memmap_io import ComponentThroughput, ParallelMarkerScoreWriter,ParallelRankReader
 
 
 class ParallelMarkerScoreComputer:
@@ -395,189 +224,7 @@ class ParallelMarkerScoreComputer:
         logger.info("Compute pool closed")
 
 
-class ParallelMarkerScoreWriter:
-    """Multi-threaded writer pool for marker scores (reusable across cell types)"""
-    
-    def __init__(
-        self,
-        output_memmap: MemMapDense,
-        num_workers: int = 4,
-        input_queue: queue.Queue = None
-    ):
-        """
-        Initialize writer pool
-        
-        Args:
-            output_memmap: Output memory map
-            num_workers: Number of writer threads
-            input_queue: Optional input queue (from computer)
-        """
-        # Store path and metadata for workers to open their own instances
-        self.memmap_path = output_memmap.path
-        self.shape = output_memmap.shape
-        self.dtype = output_memmap.dtype
-        self.num_workers = num_workers
-        
-        # Queue for write requests
-        self.write_queue = input_queue if input_queue else queue.Queue(maxsize=100)
-        self.completed_count = 0
-        self.completed_lock = threading.Lock()
-        self.active_cell_type = None  # Track current cell type being processed
-        
-        # Throughput tracking
-        self.throughput = ComponentThroughput()
-        self.throughput_lock = threading.Lock()
-        
-        # Exception handling
-        self.exception_queue = queue.Queue()
-        self.has_error = threading.Event()
-        
-        # Start worker threads
-        self.workers = []
-        self.stop_workers = threading.Event()
-        self._start_workers()
-    
-    def _start_workers(self):
-        """Start writer worker threads"""
-        for i in range(self.num_workers):
-            worker = threading.Thread(
-                target=self._writer_worker,
-                args=(i,),
-                daemon=True
-            )
-            worker.start()
-            self.workers.append(worker)
-        logger.info(f"Started {self.num_workers} writer threads")
-    
-    def _writer_worker(self, worker_id: int):
-        """Writer worker thread"""
-        logger.info(f"Writer worker {worker_id} started")
-        
-        # Open worker's own memory map instance
-        data_path = self.memmap_path.with_suffix('.dat')
-        worker_memmap = np.memmap(
-            data_path,
-            dtype=self.dtype,
-            mode='r+',  # Read-write mode for writing
-            shape=self.shape
-        )
-        logger.info(f"Writer worker {worker_id} opened its own memory map at {data_path}")
-        
-        while not self.stop_workers.is_set():
-            try:
-                # Get write request
-                item = self.write_queue.get(timeout=1)
-                if item is None:
-                    break
-                
-                batch_idx, marker_scores, cell_indices = item
-                
-                # Track timing
-                start_time = time.time()
-                
-                # Write directly to worker's memory map
-                # cell_indices should be the absolute indices in the full matrix
-                worker_memmap[cell_indices] = marker_scores
-                
-                # Track throughput
-                elapsed = time.time() - start_time
-                with self.throughput_lock:
-                    self.throughput.record_batch(elapsed)
-                
-                # Update completed count
-                with self.completed_lock:
-                    self.completed_count += 1
-                
-                self.write_queue.task_done()
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Writer worker {worker_id} error: {e}")
-                self.exception_queue.put((worker_id, e))
-                self.has_error.set()
-                self.stop_workers.set()  # Signal all workers to stop
-                break
-        
-        # Final flush before closing
-        worker_memmap.flush()
-        # Clean up worker's memory map
-        del worker_memmap
-        logger.info(f"Writer worker {worker_id} closed its memory map")
-    
-    def reset_for_cell_type(self, cell_type: str):
-        """Reset for processing a new cell type"""
-        self.active_cell_type = cell_type
-        with self.completed_lock:
-            self.completed_count = 0
-        with self.throughput_lock:
-            self.throughput = ComponentThroughput()
-        logger.debug(f"Reset writer throughput for {cell_type}")
-    
-    def get_completed_count(self):
-        """Get number of completed writes"""
-        with self.completed_lock:
-            return self.completed_count
-    
-    def get_queue_size(self):
-        """Get write queue size"""
-        return self.write_queue.qsize()
-    
-    def check_errors(self):
-        """Check if any worker encountered an error"""
-        if self.has_error.is_set():
-            try:
-                worker_id, exception = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Writer worker {worker_id} failed: {exception}") from exception
-            except queue.Empty:
-                raise RuntimeError("Writer worker failed with unknown error")
-    
-    def close(self):
-        """Close writer pool"""
-        logger.info("Closing writer pool...")
-        
-        # Wait for queue to empty
-        if not self.write_queue.empty():
-            logger.info("Waiting for remaining writes...")
-            self.write_queue.join()
-        
-        # Stop workers
-        self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.write_queue.put(None)
-        
-        # Wait for workers to finish
-        for worker in self.workers:
-            worker.join(timeout=5)
-        
-        logger.info("Writer pool closed")
 
-
-@dataclass
-class ComponentThroughput:
-    """Track throughput for individual pipeline components"""
-    total_batches: int = 0
-    total_time: float = 0.0
-    last_batch_time: float = 0.0
-    
-    def record_batch(self, elapsed_time: float):
-        """Record a batch completion"""
-        self.total_batches += 1
-        self.total_time += elapsed_time
-        self.last_batch_time = elapsed_time
-    
-    @property
-    def average_time(self) -> float:
-        """Average time per batch"""
-        if self.total_batches > 0:
-            return self.total_time / self.total_batches
-        return 0.0
-    
-    @property
-    def throughput(self) -> float:
-        if self.average_time > 0:
-            return 1.0 / self.average_time
-        return 0.0
 
 
 @dataclass
@@ -614,7 +261,7 @@ class PipelineStats:
         return 0
 
 
-class MarkerScorePipeline:
+class MarkerScoreMessageQueue:
     """Streamlined pipeline for marker score calculation"""
     
     def __init__(
@@ -645,7 +292,7 @@ class MarkerScorePipeline:
         self.n_cells = n_cells
         self.stats = PipelineStats(total_batches=n_batches)
     
-    def submit_batches(
+    def _submit_batches(
         self,
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
@@ -698,7 +345,7 @@ class MarkerScorePipeline:
         self.stats.completed_reads = self.n_batches - read_pending
         self.stats.completed_computes = self.stats.completed_writes + self.stats.pending_write
     
-    def run(
+    def start(
         self,
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
@@ -742,7 +389,7 @@ class MarkerScorePipeline:
             )
             
             # Submit all batches to start the pipeline
-            self.submit_batches(neighbor_indices, neighbor_weights, cell_indices_sorted)
+            self._submit_batches(neighbor_indices, neighbor_weights, cell_indices_sorted)
             
             # Monitor progress
             while self.stats.completed_writes < self.n_batches:
@@ -909,8 +556,7 @@ class MarkerScoreCalculator:
         min_cells = self.config.min_cells_per_type
         if n_cells < min_cells:
             logger.warning(f"Skipping {cell_type}: only {n_cells} cells (min: {min_cells})")
-            return None
-        
+
         logger.info(f"Processing {cell_type}: {n_cells} cells")
         
         # Build connectivity matrix
@@ -959,17 +605,10 @@ class MarkerScoreCalculator:
         
         return neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells
 
-    def process_cell_type(
+    def _calculate_marker_scores_by_cell_type(
         self,
         adata: ad.AnnData,
         cell_type: str,
-        output_memmap: MemMapDense,
-        global_log_gmean: np.ndarray,
-        global_expr_frac: np.ndarray,
-        rank_memmap,
-        reader: ParallelRankReader,
-        computer: ParallelMarkerScoreComputer,
-        writer: ParallelMarkerScoreWriter,
         coords: Optional[np.ndarray],
         emb_gcn: Optional[np.ndarray],
         emb_indv: np.ndarray,
@@ -979,28 +618,22 @@ class MarkerScoreCalculator:
         """Process a single cell type with shared pools"""
         
         # Prepare batch data
-        batch_data = self._find_homogeneous_spots(
+        neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells  = self._find_homogeneous_spots(
             adata, cell_type, annotation_key, coords, emb_gcn,
-            emb_indv, slice_ids, reader.shape
+            emb_indv, slice_ids, self.reader.shape
         )
         
-        if batch_data is None:
-            return
-        
-        neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells = batch_data
-        
+
         # Reset all components for new cell type
-        reader.reset_for_cell_type(cell_type)
-        computer.reset_for_cell_type(cell_type)
-        writer.reset_for_cell_type(cell_type)
+        self.reader.reset_for_cell_type(cell_type)
+        self.computer.reset_for_cell_type(cell_type)
+        self.writer.reset_for_cell_type(cell_type)
         
         # Calculate batch parameters
         batch_size = self.config.mkscore_batch_size
         n_batches = (n_cells + batch_size - 1) // batch_size
         
-        # Set batch context for computer (will be set by pipeline.submit_batches)
-        # Note: Pipeline will handle batch submission and context setting
-        
+
         # Optional profiling
         use_profiling = self.config.enable_profiling
         if use_profiling:
@@ -1013,17 +646,17 @@ class MarkerScoreCalculator:
             tracer.start()
         
         # Create and run pipeline
-        pipeline = MarkerScorePipeline(
-            reader=reader,
-            computer=computer,
-            writer=writer,
+        cell_type_marker_score_queue = MarkerScoreMessageQueue(
+            reader=self.reader,
+            computer=self.computer,
+            writer=self.writer,
             n_batches=n_batches,
             batch_size=batch_size,
             n_cells=n_cells
         )
         
         try:
-            pipeline.run(
+            cell_type_marker_score_queue.start(
                 neighbor_indices=neighbor_indices,
                 neighbor_weights=neighbor_weights,
                 cell_indices_sorted=cell_indices_sorted,
@@ -1033,9 +666,9 @@ class MarkerScoreCalculator:
         except Exception as e:
             logger.error(f"Pipeline failed for {cell_type}: {e}")
             # Stop all workers to prevent hanging
-            reader.stop_workers.set()
-            computer.stop_workers.set()
-            writer.stop_workers.set()
+            self.reader.stop_workers.set()
+            self.computer.stop_workers.set()
+            self.writer.stop_workers.set()
             raise
         finally:
             # Stop profiling if enabled
@@ -1192,13 +825,13 @@ class MarkerScoreCalculator:
         reader_to_computer_queue = queue.Queue(maxsize=self.config.compute_workers * self.config.compute_input_queue_size)
         computer_to_writer_queue = queue.Queue(maxsize=self.config.writer_queue_size)
         
-        reader = ParallelRankReader(
+        self.reader = ParallelRankReader(
             rank_memmap,
             num_workers=self.config.rank_read_workers,
             output_queue=reader_to_computer_queue  # Direct connection to computer
         )
         
-        computer = ParallelMarkerScoreComputer(
+        self.computer = ParallelMarkerScoreComputer(
             global_log_gmean,
             global_expr_frac,
             self.config.num_homogeneous,
@@ -1207,27 +840,20 @@ class MarkerScoreCalculator:
             output_queue=computer_to_writer_queue  # Output to writer
         )
         
-        writer = ParallelMarkerScoreWriter(
+        self.writer = ParallelMarkerScoreWriter(
             output_memmap,
             num_workers=self.config.mkscore_write_workers,
             input_queue=computer_to_writer_queue  # Input from computer
         )
-        
+
         logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
                    f"{self.config.compute_workers} computers, "
                    f"{self.config.mkscore_write_workers} writers")
         
         for cell_type in cell_types:
-            self.process_cell_type(
+            self._calculate_marker_scores_by_cell_type(
                 adata,
                 cell_type,
-                output_memmap,
-                global_log_gmean,
-                global_expr_frac,
-                rank_memmap,
-                reader,
-                computer,
-                writer,
                 coords,
                 emb_gcn,
                 emb_indv,
@@ -1241,9 +867,9 @@ class MarkerScoreCalculator:
         
         # Close all shared pools after all cell types are processed
         logger.info("Closing shared processing pools...")
-        reader.close()
-        computer.close()
-        writer.close()
+        self.reader.close()
+        self.computer.close()
+        self.writer.close()
         
         # Close rank memory map
         rank_memmap.close()

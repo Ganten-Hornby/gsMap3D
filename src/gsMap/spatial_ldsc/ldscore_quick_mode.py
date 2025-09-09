@@ -666,9 +666,11 @@ class SpatialLDSCProcessor:
                     # Update last processed count
                     if n_chunks_processed > last_chunks_processed:
                         last_chunks_processed = n_chunks_processed
-                        # Periodic memory check
-                        if n_chunks_processed % 100 == 0:
-                            gc.collect()
+
+                        # This would block all threads, so we avoid it
+                        # # Periodic memory check
+                        # if n_chunks_processed % 100 == 0:
+                        #     gc.collect()
                     
                     # Small sleep to prevent busy waiting
                     time.sleep(0.1)
