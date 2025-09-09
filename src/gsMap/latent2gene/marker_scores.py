@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, Any
 from functools import partial
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 import numpy as np
 import pandas as pd
@@ -665,16 +665,9 @@ class MarkerScoreCalculator:
             emb_gcn = adata.obsm[self.config.latent_representation_niche].astype(np.float16)
             
             # Load slice IDs if provided (for both spatial2D and spatial3D)
-            if hasattr(self.config, 'slice_id_key') and self.config.slice_id_key:
-                if self.config.slice_id_key in adata.obs.columns:
-                    slice_ids = adata.obs[self.config.slice_id_key].values.astype(np.int32)
-                    if self.config.dataset_type == 'spatial2D':
-                        logger.info(f"Loading slice IDs from {self.config.slice_id_key} for 2D multi-slice data (no cross-slice search)")
-                    else:  # spatial3D
-                        logger.info(f"Loading slice IDs from {self.config.slice_id_key} for 3D neighbor search (with cross-slice search)")
-                else:
-                    logger.warning(f"Slice ID key '{self.config.slice_id_key}' not found in adata.obs")
-        
+            assert 'slice_id' in adata.obs.columns
+            slice_ids = adata.obs['slice_id'].values.astype(np.int32)
+
         # Load cell embeddings for all dataset types
         emb_indv = adata.obsm[self.config.latent_representation_cell].astype(np.float16)
         
@@ -776,20 +769,9 @@ class MarkerScoreCalculator:
             'n_cells': n_cells,
             'n_genes': n_genes,
             'config': {
-                'dataset_type': self.config.dataset_type,
-                'num_neighbour_spatial': self.config.num_neighbour_spatial if self.config.dataset_type != 'scRNA-seq' else None,
-                'num_anchor': self.config.num_anchor if self.config.dataset_type != 'scRNA-seq' else None,
-                'num_homogeneous': self.config.num_homogeneous,
-                'similarity_threshold': self.config.similarity_threshold if hasattr(self.config, 'similarity_threshold') else 0.0,
-                'k_adjacent': self.config.k_adjacent if hasattr(self.config, 'k_adjacent') else 7,
-                'n_adjacent_slices': self.config.n_adjacent_slices if hasattr(self.config, 'n_adjacent_slices') else 1,
-                'slice_id_key': self.config.slice_id_key if hasattr(self.config, 'slice_id_key') else None,
-                'batch_size': self.config.mkscore_batch_size,
-                'num_read_workers': self.config.rank_read_workers,
-                'mkscore_write_workers': self.config.mkscore_write_workers
+                **asdict(self.config)
             },
-            'global_log_gmean': global_log_gmean.tolist(),
-            'global_expr_frac': global_expr_frac.tolist()
+
         }
         
         metadata_path = output_path.parent / f'{output_path.stem}_metadata.json'

@@ -5,7 +5,7 @@ Configuration dataclasses for gsMap commands.
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Annotated, List, Literal
+from typing import Optional, Annotated, List, Literal, OrderedDict
 import yaml
 import logging
 from pathlib import Path
@@ -417,6 +417,8 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         dir_okay = False,
     )] = None
 
+    sample_h5ad_dict: Optional[OrderedDict] = None
+
     data_layer: Annotated[str, typer.Option(
         help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
     )] = "X"
@@ -593,6 +595,7 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         verify_homolog_file_format(self)
 
 
+
 class DatasetType(str, Enum):
     SCRNA_SEQ = 'scRNA'
     SPATIAL_2D = 'spatial2D'
@@ -621,7 +624,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     )] = 'spatial2D'
 
     # --------input h5ad file paths which have the latent representations
-    h5ad: Annotated[Optional[List[Path]], typer.Option(
+    h5ad_path: Annotated[Optional[List[Path]], typer.Option(
         help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
         exists=True,
         file_okay=True,
@@ -641,6 +644,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         dir_okay = False,
     )] = None
 
+    sample_h5ad_dict: Optional[OrderedDict] = None
 
     # --------input h5ad obs, obsm, layers keys
 
@@ -709,9 +713,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         max=5
     )] = 1
 
-    slice_id_key: Annotated[Optional[str], typer.Option(
-        help="Key in adata.obs for slice IDs. For 3D data, should contain sequential integers representing z-axis order (0, 1, 2, ...). If None, assumes single 2D slice"
-    )] = 'slice_id'
+    # slice_id_key: Annotated[Optional[str], typer.Option(
+    #     help="Key in adata.obs for slice IDs. For 3D data, should contain sequential integers representing z-axis order (0, 1, 2, ...). If None, assumes single 2D slice"
+    # )] = 'slice_id'
 
     # -------- IO parameters
     rank_batch_size:int = 500
@@ -778,11 +782,11 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         # Step 2: Process and validate h5ad inputs
         self._process_h5ad_inputs()
         
-        # Step 3: Set up validation fields and validate structure
-        self._setup_and_validate_fields()
-        
-        # Step 4: Configure dataset-specific parameters
+        # Step 3: Configure dataset-specific parameters first
         self._configure_dataset_parameters()
+        
+        # Step 4: Set up validation fields and validate structure (after dataset config)
+        self._setup_and_validate_fields()
         
         # Step 5: Validate spatial dataset constraints
         self._validate_spatial_constraints()
@@ -870,10 +874,10 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
                 self.latent_representation_niche, 
                 'Latent representation of spatial niche'
             )
-        
+
         # Validate h5ad structure
         validate_h5ad_structure(self.sample_h5ad_dict, required_fields)
-    
+
     def _configure_dataset_parameters(self):
         """Configure parameters based on dataset type"""
         if self.dataset_type == DatasetType.SPATIAL_2D:
@@ -882,17 +886,17 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             self._configure_spatial_3d()
         elif self.dataset_type == DatasetType.SCRNA_SEQ:
             self._configure_scrna_seq()
-        
+
         # Adjust num_homogeneous based on adjacent slices
         self.num_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
-    
+
     def _configure_spatial_2d(self):
         """Configure parameters for spatial 2D datasets"""
         # spatial2D can have multiple slices but doesn't search across them
         if self.n_adjacent_slices != 0:
             self.n_adjacent_slices = 0
-            logger.info("Dataset type is spatial2D, setting n_adjacent_slices=0 (no cross-slice search)")
-    
+            logger.info("Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting n_adjacent_slices=0.")
+
     def _configure_spatial_3d(self):
         """Configure parameters for spatial 3D datasets"""
         if self.n_adjacent_slices == 0:
@@ -900,11 +904,15 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
                 "Dataset type is spatial3D, but n_adjacent_slices=0. "
                 "Consider setting n_adjacent_slices to 1 or higher to enable cross-slice search."
             )
-    
+        else:
+            logger.info(f"Dataset type is spatial3D, using n_adjacent_slices={self.n_adjacent_slices} for cross-slice search")
+            logger.info(f"The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
+            logger.info(f"{' -> '.join(list(self.sample_h5ad_dict.keys()))}")
+
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
         self.n_adjacent_slices = 0
-    
+
     def _validate_spatial_constraints(self):
         """Validate configuration constraints for spatial datasets"""
         if self.dataset_type in [DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D]:

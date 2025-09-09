@@ -154,7 +154,6 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     metadata = {
         "config":
             {
-            "samples": list(config.sample_h5ad_dict.keys()),
             **asdict(config)
         },
         "outputs": {
@@ -171,7 +170,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     if marker_metadata_path.exists():
         with open(marker_metadata_path, 'r') as f:
             marker_metadata = json.load(f)
-            metadata.update(marker_metadata)
+            metadata = {**marker_metadata, **metadata}
     
     # Save overall metadata
     with open(expected_outputs["metadata"], 'w') as f:
