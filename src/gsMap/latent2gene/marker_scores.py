@@ -262,35 +262,54 @@ class PipelineStats:
 
 
 class MarkerScoreMessageQueue:
-    """Streamlined pipeline for marker score calculation"""
+    """Streamlined pipeline for marker score calculation (reusable across cell types)"""
     
     def __init__(
         self,
         reader: ParallelRankReader,
         computer: ParallelMarkerScoreComputer,
         writer: ParallelMarkerScoreWriter,
-        n_batches: int,
         batch_size: int,
-        n_cells: int
     ):
         """
-        Initialize pipeline
+        Initialize pipeline with shared pools
         
         Args:
             reader: Rank reader pool
             computer: Marker score computer pool
             writer: Marker score writer pool
-            n_batches: Total number of batches
-            batch_size: Size of each batch
-            n_cells: Total number of cells
         """
         self.reader = reader
         self.computer = computer
         self.writer = writer
+        
+        # Cell type specific parameters (set via reset_for_cell_type)
+        self.n_batches = None
+        self.batch_size = None
+        self.n_cells = None
+        self.active_cell_type = None
+        self.stats = None
+    
+    def reset_for_cell_type(self, cell_type: str, n_batches: int, batch_size: int, n_cells: int):
+        """Reset the queue for processing a new cell type
+        
+        Args:
+            cell_type: Name of the cell type
+            n_batches: Total number of batches for this cell type
+            batch_size: Size of each batch
+            n_cells: Total number of cells for this cell type
+        """
+        # Reset all components for new cell type
+        self.reader.reset_for_cell_type(cell_type)
+        self.computer.reset_for_cell_type(cell_type)
+        self.writer.reset_for_cell_type(cell_type)
+
+        self.active_cell_type = cell_type
         self.n_batches = n_batches
         self.batch_size = batch_size
         self.n_cells = n_cells
         self.stats = PipelineStats(total_batches=n_batches)
+        logger.debug(f"Reset MarkerScoreMessageQueue for {cell_type}: {n_batches} batches, {n_cells} cells")
     
     def _submit_batches(
         self,
@@ -349,11 +368,13 @@ class MarkerScoreMessageQueue:
         self,
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
-        cell_indices_sorted: np.ndarray,
-        num_homogeneous: int,
-        cell_type: str
+        cell_indices_sorted: np.ndarray
     ):
         """Run pipeline with rich progress display"""
+        
+        # Ensure the queue has been reset for this cell type
+        if self.active_cell_type is None or self.stats is None:
+            raise RuntimeError("MarkerScoreMessageQueue must be reset before starting. Call reset_for_cell_type first.")
         console = Console()
         
         # Define queue color mapping based on queue size
@@ -385,7 +406,7 @@ class MarkerScoreMessageQueue:
             
             # Add single task for pipeline
             pipeline_task = progress.add_task(
-                f"[bold]{cell_type}[/bold]", total=self.n_batches
+                f"[bold]{self.active_cell_type}[/bold]", total=self.n_batches
             )
             
             # Submit all batches to start the pipeline
@@ -411,7 +432,7 @@ class MarkerScoreMessageQueue:
                 progress.update(
                     pipeline_task,
                     description=(
-                        f"[bold]{cell_type}[/bold] | "
+                        f"[bold]{self.active_cell_type}[/bold] | "
                         f"Queues: [{compute_color}]R→C:{self.stats.pending_compute}[/{compute_color}] "
                         f"[{write_color}]C→W:{self.stats.pending_write}[/{write_color}]"
                     )
@@ -439,7 +460,7 @@ class MarkerScoreMessageQueue:
         writer_cells_per_sec = self.stats.writer_throughput.throughput * self.batch_size * self.writer.num_workers if self.stats.writer_throughput.throughput > 0 else 0
         
         console.print(Panel.fit(
-            f"[bold green]✓ Completed {cell_type}[/bold green]\n"
+            f"[bold green]✓ Completed {self.active_cell_type}[/bold green]\n"
             f"Total batches: {self.n_batches}\n"
             f"Time elapsed: {self.stats.elapsed_time:.2f}s\n"
             f"Pipeline throughput: {self.stats.throughput:.2f} batches/s ({pipeline_cells_per_sec:.0f} cells/s)\n"
@@ -623,17 +644,13 @@ class MarkerScoreCalculator:
             emb_indv, slice_ids, self.reader.shape
         )
         
-
-        # Reset all components for new cell type
-        self.reader.reset_for_cell_type(cell_type)
-        self.computer.reset_for_cell_type(cell_type)
-        self.writer.reset_for_cell_type(cell_type)
-        
         # Calculate batch parameters
         batch_size = self.config.mkscore_batch_size
         n_batches = (n_cells + batch_size - 1) // batch_size
         
 
+        self.marker_score_queue.reset_for_cell_type(cell_type, n_batches, batch_size, n_cells)
+        
         # Optional profiling
         use_profiling = self.config.enable_profiling
         if use_profiling:
@@ -645,23 +662,12 @@ class MarkerScoreCalculator:
             )
             tracer.start()
         
-        # Create and run pipeline
-        cell_type_marker_score_queue = MarkerScoreMessageQueue(
-            reader=self.reader,
-            computer=self.computer,
-            writer=self.writer,
-            n_batches=n_batches,
-            batch_size=batch_size,
-            n_cells=n_cells
-        )
-        
         try:
-            cell_type_marker_score_queue.start(
+            # Run the pipeline
+            self.marker_score_queue.start(
                 neighbor_indices=neighbor_indices,
                 neighbor_weights=neighbor_weights,
-                cell_indices_sorted=cell_indices_sorted,
-                num_homogeneous=self.config.num_homogeneous,
-                cell_type=cell_type
+                cell_indices_sorted=cell_indices_sorted
             )
         except Exception as e:
             logger.error(f"Pipeline failed for {cell_type}: {e}")
@@ -849,6 +855,12 @@ class MarkerScoreCalculator:
         logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
                    f"{self.config.compute_workers} computers, "
                    f"{self.config.mkscore_write_workers} writers")
+        
+        self.marker_score_queue = MarkerScoreMessageQueue(
+            reader=self.reader,
+            computer=self.computer,
+            writer=self.writer
+        )
         
         for cell_type in cell_types:
             self._calculate_marker_scores_by_cell_type(
