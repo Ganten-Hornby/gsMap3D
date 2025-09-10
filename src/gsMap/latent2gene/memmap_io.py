@@ -7,6 +7,7 @@ import logging
 import json
 import queue
 import threading
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -474,8 +475,9 @@ class ParallelRankReader:
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"Reader worker {worker_id} error: {e}")
-                self.exception_queue.put((worker_id, e))
+                error_trace = traceback.format_exc()
+                logger.error(f"Reader worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
+                self.exception_queue.put((worker_id, e, error_trace))
                 self.has_error.set()
                 self.stop_workers.set()  # Signal all workers to stop
                 break
@@ -501,8 +503,8 @@ class ParallelRankReader:
         """Check if any worker encountered an error"""
         if self.has_error.is_set():
             try:
-                worker_id, exception = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}") from exception
+                worker_id, exception, error_trace = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}") from exception
             except queue.Empty:
                 raise RuntimeError("Reader worker failed with unknown error")
 
@@ -624,8 +626,9 @@ class ParallelMarkerScoreWriter:
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"Writer worker {worker_id} error: {e}")
-                self.exception_queue.put((worker_id, e))
+                error_trace = traceback.format_exc()
+                logger.error(f"Writer worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
+                self.exception_queue.put((worker_id, e, error_trace))
                 self.has_error.set()
                 self.stop_workers.set()  # Signal all workers to stop
                 break
@@ -658,8 +661,8 @@ class ParallelMarkerScoreWriter:
         """Check if any worker encountered an error"""
         if self.has_error.is_set():
             try:
-                worker_id, exception = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Writer worker {worker_id} failed: {exception}") from exception
+                worker_id, exception, error_trace = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Writer worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}") from exception
             except queue.Empty:
                 raise RuntimeError("Writer worker failed with unknown error")
 

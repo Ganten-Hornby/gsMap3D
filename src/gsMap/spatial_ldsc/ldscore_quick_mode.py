@@ -8,6 +8,7 @@ import logging
 import os
 import queue
 import threading
+import traceback
 import multiprocessing as mp
 from multiprocessing import Queue, Process
 from pathlib import Path
@@ -144,8 +145,9 @@ class ParallelLDScoreReader:
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"Reader worker {worker_id} error on chunk {chunk_idx}: {e}")
-                self.exception_queue.put((worker_id, e))
+                error_trace = traceback.format_exc()
+                logger.error(f"Reader worker {worker_id} error on chunk {chunk_idx}: {e}\nTraceback:\n{error_trace}")
+                self.exception_queue.put((worker_id, e, error_trace))
                 self.has_error.set()
                 self.result_queue.put({
                     'chunk_idx': chunk_idx if 'chunk_idx' in locals() else -1,
@@ -173,8 +175,8 @@ class ParallelLDScoreReader:
         """Check if any worker encountered an error"""
         if self.has_error.is_set():
             try:
-                worker_id, exception = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}") from exception
+                worker_id, exception, error_trace = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}") from exception
             except queue.Empty:
                 raise RuntimeError("Reader worker failed with unknown error")
     
@@ -339,8 +341,9 @@ class ParallelLDScoreComputer:
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"Compute worker {worker_id} error: {e}")
-                self.exception_queue.put((worker_id, e))
+                error_trace = traceback.format_exc()
+                logger.error(f"Compute worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
+                self.exception_queue.put((worker_id, e, error_trace))
                 self.has_error.set()
                 break
         
@@ -359,8 +362,8 @@ class ParallelLDScoreComputer:
         """Check if any worker encountered an error"""
         if self.has_error.is_set():
             try:
-                worker_id, exception = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Compute worker {worker_id} failed: {exception}") from exception
+                worker_id, exception, error_trace = self.exception_queue.get_nowait()
+                raise RuntimeError(f"Compute worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}") from exception
             except queue.Empty:
                 raise RuntimeError("Compute worker failed with unknown error")
     
