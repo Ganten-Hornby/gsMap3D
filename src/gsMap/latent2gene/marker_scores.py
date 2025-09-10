@@ -178,7 +178,7 @@ class ParallelMarkerScoreComputer:
                         batch_ranks,
                         batch_weights,
                         actual_batch_size,
-                        self.num_homogeneous,
+                        self.num_homogeneous * self.n_slices,
                         self.global_log_gmean,
                         self.global_expr_frac
                     )
