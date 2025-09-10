@@ -51,7 +51,10 @@ class ParallelMarkerScoreComputer:
         num_homogeneous: int,
         num_workers: int = 4,
         input_queue: queue.Queue = None,
-        output_queue: queue.Queue = None
+        output_queue: queue.Queue = None,
+        cross_slice_strategy: str = None,
+        n_slices: int = 1,
+        num_homogeneous_per_slice: int = None
     ):
         """
         Initialize computer pool
@@ -63,9 +66,15 @@ class ParallelMarkerScoreComputer:
             num_workers: Number of compute workers
             input_queue: Optional input queue (from reader)
             output_queue: Optional output queue (to writer)
+            cross_slice_strategy: Strategy for 3D ('mean_pooling' or 'max_pooling')
+            n_slices: Number of slices for 3D data
+            num_homogeneous_per_slice: Neighbors per slice for 3D strategies
         """
         self.num_workers = num_workers
         self.num_homogeneous = num_homogeneous
+        self.cross_slice_strategy = cross_slice_strategy
+        self.n_slices = n_slices
+        self.num_homogeneous_per_slice = num_homogeneous_per_slice or num_homogeneous
         
         # Store global statistics as JAX arrays
         self.global_log_gmean = jnp.array(global_log_gmean)
@@ -149,15 +158,28 @@ class ParallelMarkerScoreComputer:
                 # Use JAX fancy indexing
                 batch_ranks = rank_data_jax[rank_indices_jax]
                 
-                # Compute marker scores using JAX
-                marker_scores = compute_marker_scores_jax(
-                    batch_ranks,
-                    jnp.array(batch_weights),
-                    actual_batch_size,  # Use actual batch size, not self.batch_size
-                    self.num_homogeneous,
-                    self.global_log_gmean,
-                    self.global_expr_frac
-                )
+                # Compute marker scores using appropriate strategy
+                if self.cross_slice_strategy == 'max_pooling':
+                    # Use max pooling for 3D data
+                    marker_scores = compute_marker_scores_3d_max_pooling_jax(
+                        batch_ranks,
+                        batch_weights,
+                        actual_batch_size,
+                        self.n_slices,
+                        self.num_homogeneous_per_slice,
+                        self.global_log_gmean,
+                        self.global_expr_frac
+                    )
+                else:
+                    # Use standard computation (includes mean pooling via weights)
+                    marker_scores = compute_marker_scores_jax(
+                        batch_ranks,
+                        batch_weights,
+                        actual_batch_size,
+                        self.num_homogeneous,
+                        self.global_log_gmean,
+                        self.global_expr_frac
+                    )
                 
                 # Convert back to numpy as float16 for memory efficiency
                 marker_scores_np = np.array(marker_scores, dtype=np.float16)
@@ -185,7 +207,7 @@ class ParallelMarkerScoreComputer:
     def set_batch_context(self, neighbor_weights: np.ndarray, cell_indices_sorted: np.ndarray, 
                          batch_size: int, n_cells: int):
         """Set context for processing batches of current cell type"""
-        self.neighbor_weights = neighbor_weights
+        self.neighbor_weights = jnp.asarray(neighbor_weights) # transfer to jax array only once
         self.cell_indices_sorted = cell_indices_sorted
         self.batch_size = batch_size
         self.n_cells = n_cells
@@ -562,6 +584,74 @@ def compute_marker_scores_jax(
     return marker_score.astype(jnp.float16)
 
 
+@partial(jit, static_argnums=(2, 3, 4))
+def compute_marker_scores_3d_max_pooling_jax(
+    log_ranks: jnp.ndarray,  # (B*N) × G matrix where N = n_slices * num_homogeneous_per_slice
+    weights: jnp.ndarray,  # B × N weight matrix
+    batch_size: int,
+    n_slices: int,
+    num_homogeneous_per_slice: int,
+    global_log_gmean: jnp.ndarray,  # G-dimensional vector
+    global_expr_frac: jnp.ndarray  # G-dimensional vector
+) -> jnp.ndarray:
+    """
+    JAX-accelerated marker score computation with max pooling for 3D spatial data.
+    Computes marker scores independently for each slice and takes the maximum.
+    
+    Args:
+        log_ranks: Flattened log ranks (batch_size * total_neighbors, n_genes)
+        weights: Flattened weights (batch_size, total_neighbors)
+        batch_size: Number of cells in batch
+        n_slices: Number of slices (1 + 2 * n_adjacent_slices)
+        num_homogeneous_per_slice: Number of homogeneous neighbors per slice
+        global_log_gmean: Global log geometric mean
+        global_expr_frac: Global expression fraction
+    
+    Returns:
+        (batch_size, n_genes) marker scores using max pooling across slices
+    """
+    n_genes = log_ranks.shape[1]
+    total_neighbors = n_slices * num_homogeneous_per_slice
+    
+    # Reshape to separate slices: (batch_size, n_slices, num_homogeneous_per_slice, n_genes)
+    log_ranks_4d = log_ranks.reshape(batch_size, n_slices, num_homogeneous_per_slice, n_genes)
+    
+    # Reshape weights: (batch_size, n_slices, num_homogeneous_per_slice)
+    weights_3d = weights.reshape(batch_size, n_slices, num_homogeneous_per_slice)
+    
+    # Normalize weights within each slice (sum to 1 along num_homogeneous_per_slice axis)
+    weights_sum = weights_3d.sum(axis=2, keepdims=True)
+    weights_normalized = weights_3d / jnp.where(weights_sum > 0, weights_sum, 1.0)
+    
+    # Compute weighted geometric mean in log space for each slice
+    # Result: (batch_size, n_slices, n_genes)
+    weighted_log_mean = jnp.einsum('bsn,bsng->bsg', weights_normalized, log_ranks_4d)
+    
+    # Compute expression fraction for each slice
+    # Treat min log rank as non-expressed
+    min_log_rank = log_ranks_4d.min(axis=-1, keepdims=True)
+    is_expressed = (log_ranks_4d != min_log_rank)
+    # Mean across neighbors within each slice: (batch_size, n_slices, n_genes)
+    expr_frac = is_expressed.astype(jnp.float16).mean(axis=2)
+    
+    # Calculate marker score for each slice
+    marker_score_per_slice = jnp.exp(weighted_log_mean - global_log_gmean[None, None, :])
+    marker_score_per_slice = jnp.where(marker_score_per_slice < 1.0, 0.0, marker_score_per_slice)
+    
+    # Apply expression fraction filter for each slice
+    frac_mask = expr_frac > global_expr_frac[None, None, :]
+    marker_score_per_slice = jnp.where(frac_mask, marker_score_per_slice, 0.0)
+    
+    marker_score_per_slice = jnp.exp(marker_score_per_slice ** 1.5) - 1.0
+    
+    # Max pooling across slices: take the maximum score across all slices
+    # Result: (batch_size, n_genes)
+    marker_score = marker_score_per_slice.max(axis=1)
+    
+    # Return as float16 for memory efficiency
+    return marker_score.astype(jnp.float16)
+
+
 class MarkerScoreCalculator:
     """Main class for calculating marker scores"""
     
@@ -730,13 +820,31 @@ class MarkerScoreCalculator:
             output_queue=reader_to_computer_queue  # Direct connection to computer
         )
         
+        # Determine 3D strategy parameters
+        cross_slice_strategy = None
+        n_slices = 1
+        num_homogeneous_per_slice = self.config.num_homogeneous
+        
+        if (self.config.dataset_type == 'spatial3D' and 
+            hasattr(self.config, 'cross_slice_marker_score_strategy') and
+            self.config.cross_slice_marker_score_strategy in ['mean_pooling', 'max_pooling'] and
+            hasattr(self.config, 'n_adjacent_slices') and self.config.n_adjacent_slices > 0):
+            
+            cross_slice_strategy = self.config.cross_slice_marker_score_strategy
+            n_slices = 1 + 2 * self.config.n_adjacent_slices
+            # For pooling strategies, num_homogeneous is per slice
+            num_homogeneous_per_slice = self.config.num_homogeneous
+        
         self.computer = ParallelMarkerScoreComputer(
             global_log_gmean,
             global_expr_frac,
             self.config.num_homogeneous,
             num_workers=self.config.compute_workers,
             input_queue=reader_to_computer_queue,  # Input from reader
-            output_queue=computer_to_writer_queue  # Output to writer
+            output_queue=computer_to_writer_queue,  # Output to writer
+            cross_slice_strategy=cross_slice_strategy,
+            n_slices=n_slices,
+            num_homogeneous_per_slice=num_homogeneous_per_slice
         )
         
         self.writer = ParallelMarkerScoreWriter(
