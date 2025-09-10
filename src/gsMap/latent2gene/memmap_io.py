@@ -6,7 +6,6 @@ Replaces Zarr-backed storage with NumPy memory maps for better performance
 import logging
 import json
 import queue
-import shutil
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +13,6 @@ from typing import Optional, Tuple, Union
 import time
 
 import numpy as np
-from scipy.sparse import csr_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +415,7 @@ class ParallelRankReader:
 
     def _worker(self, worker_id: int):
         """Worker thread for reading batches from memory map"""
-        logger.info(f"Reader worker {worker_id} started")
+        logger.debug(f"Reader worker {worker_id} started")
 
         # Open worker's own memory map instance
         data_path = self.memmap_path.with_suffix('.dat')
@@ -427,7 +425,7 @@ class ParallelRankReader:
             mode='r',
             shape=self.shape
         )
-        logger.info(f"Worker {worker_id} opened its own memory map at {data_path}")
+        logger.debug(f"Worker {worker_id} opened its own memory map at {data_path}")
 
         while not self.stop_workers.is_set():
             try:
@@ -485,7 +483,7 @@ class ParallelRankReader:
         # Clean up worker's memory map if it was opened
         if self.memmap_path is not None and 'worker_memmap' in locals():
             del worker_memmap
-            logger.info(f"Worker {worker_id} closed its memory map")
+            logger.debug(f"Worker {worker_id} closed its memory map")
 
     def submit_batch(self, batch_id: int, neighbor_indices: np.ndarray, batch_metadata: dict = None):
         """Submit batch for reading with metadata"""
@@ -580,11 +578,11 @@ class ParallelMarkerScoreWriter:
             )
             worker.start()
             self.workers.append(worker)
-        logger.info(f"Started {self.num_workers} writer threads")
+        logger.debug(f"Started {self.num_workers} writer threads")
 
     def _writer_worker(self, worker_id: int):
         """Writer worker thread"""
-        logger.info(f"Writer worker {worker_id} started")
+        logger.debug(f"Writer worker {worker_id} started")
 
         # Open worker's own memory map instance
         data_path = self.memmap_path.with_suffix('.dat')
@@ -594,7 +592,7 @@ class ParallelMarkerScoreWriter:
             mode='r+',  # Read-write mode for writing
             shape=self.shape
         )
-        logger.info(f"Writer worker {worker_id} opened its own memory map at {data_path}")
+        logger.debug(f"Writer worker {worker_id} opened its own memory map at {data_path}")
 
         while not self.stop_workers.is_set():
             try:
@@ -636,7 +634,7 @@ class ParallelMarkerScoreWriter:
         worker_memmap.flush()
         # Clean up worker's memory map
         del worker_memmap
-        logger.info(f"Writer worker {worker_id} closed its memory map")
+        logger.debug(f"Writer worker {worker_id} closed its memory map")
 
     def reset_for_cell_type(self, cell_type: str):
         """Reset for processing a new cell type"""
