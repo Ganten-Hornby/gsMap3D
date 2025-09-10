@@ -645,7 +645,7 @@ class ConnectivityMatrixBuilder:
                     spatial_neighbors_batch,
                     all_emb_gcn_norm_jax,
                     all_emb_indv_norm_jax,
-                    self.config.num_homogeneous,
+                    self.config.total_homogeneous_neighbor_per_cell,
                     self.config.similarity_threshold
                 )
                 

@@ -781,6 +781,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         help="Use GPU for JAX computations (requires sufficient GPU memory)"
     )] = True
     
+    @property
+    def total_homogeneous_neighbor_per_cell(self):
+        return self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
 
     def __post_init__(self):
         """Initialize and validate configuration"""
@@ -942,7 +945,8 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         # Only multiply for 'similarity_only' strategy (original behavior)
         # For 'mean_pooling' and 'max_pooling', num_homogeneous represents per-slice count
 
-
+        num_homogeneous = self.num_homogeneous
+        n_adjacent_slices = self.n_adjacent_slices
         # Check if we should use fix number of homogeneous neighbors per slice
         if  self.cross_slice_marker_score_strategy in [
                 MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING,
@@ -950,18 +954,19 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             ]:
 
             self.fix_cross_slice_homogenous_neighbors = True
-            logger.info(f"Using {self.cross_slice_marker_score_strategy} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.num_homogeneous} per slice")
+            logger.info(f"Using {self.cross_slice_marker_score_strategy.value} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.num_homogeneous} per slice.")
+
 
         elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.SIMILARITY_ONLY:
-            logger.info(f"Using similarity_only strategy, adjusted num_homogeneous to {self.num_homogeneous * (1 + 2 * self.n_adjacent_slices) = }. This strategy will select top homogeneous neighbors from all adjacent slices combined based on similarity scores.")
-            logger.info(f"Adjusted num_homogeneous to {self.num_homogeneous} for `{self.cross_slice_marker_score_strategy}` strategy with {self.n_adjacent_slices} adjacent slices")
-            self.num_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
+            logger.info(f"Using similarity_only strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
 
+        logger.info(f"Each focal cell will select {num_homogeneous * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {1 + 2 * n_adjacent_slices = } slices.")
 
 
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
         self.n_adjacent_slices = 0
+
 
 
 

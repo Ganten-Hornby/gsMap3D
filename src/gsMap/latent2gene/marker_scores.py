@@ -145,9 +145,9 @@ class ParallelMarkerScoreComputer:
                 actual_batch_size = batch_end - batch_start
                 
                 # Verify shape
-                assert original_shape == (actual_batch_size, self.num_homogeneous), \
-                    f"Shape mismatch: expected {(actual_batch_size, self.num_homogeneous)}, got {original_shape}"
-                
+                assert original_shape == (actual_batch_size, self.num_homogeneous * self.n_slices), \
+                    f"Unexpected rank data shape: {original_shape}, expected ({actual_batch_size}, {self.num_homogeneous * self.n_slices})"
+
                 # Get batch-specific data
                 batch_weights = self.neighbor_weights[batch_start:batch_end]
                 batch_cell_indices = self.cell_indices_sorted[batch_start:batch_end]
