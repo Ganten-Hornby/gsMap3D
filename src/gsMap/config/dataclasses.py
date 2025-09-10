@@ -713,6 +713,11 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         min=0,
         max=5
     )] = 1
+    
+    cross_slice_marker_score_strategy: Annotated[str, typer.Option(
+        help="Strategy for computing marker scores across slices: 'mean_pooling' (average scores from each slice)",
+        case_sensitive=False
+    )] = "mean_pooling"
 
     # slice_id_key: Annotated[Optional[str], typer.Option(
     #     help="Key in adata.obs for slice IDs. For 3D data, should contain sequential integers representing z-axis order (0, 1, 2, ...). If None, assumes single 2D slice"

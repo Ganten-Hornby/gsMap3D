@@ -677,7 +677,7 @@ class SpatialLDSCProcessor:
             
             if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
                 jax.profiler.stop_trace()
-            logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
+                logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
             
         finally:
             # Clean up resources

@@ -211,6 +211,139 @@ def _find_anchors_and_homogeneous_batch_jit(
     return homogeneous_neighbors, homogeneous_weights
 
 
+@partial(jit, static_argnums=(5, 6, 7, 8, 9))
+def _find_anchors_and_homogeneous_batch_3d_jit(
+    emb_gcn_batch_norm: jnp.ndarray,      # (batch_size, d1) - pre-normalized
+    emb_indv_batch_norm: jnp.ndarray,      # (batch_size, d2) - pre-normalized
+    spatial_neighbors: jnp.ndarray,        # (batch_size, k_total)
+    all_emb_gcn_norm: jnp.ndarray,         # (n_all, d1) - pre-normalized
+    all_emb_indv_norm: jnp.ndarray,        # (n_all, d2) - pre-normalized
+    num_anchor: int,
+    num_homogeneous_per_slice: int,
+    k_central: int,
+    k_adjacent: int,
+    n_adjacent_slices: int,
+    similarity_threshold: float = 0.0
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    JIT-compiled function for 3D spatial data with per-slice homogeneous neighbor constraints.
+    Ensures each slice (central and adjacent) contributes exactly num_homogeneous_per_slice neighbors.
+    
+    Args:
+        spatial_neighbors: All spatial neighbors with structure:
+                          [central_slice_neighbors | adjacent_slice_1 | adjacent_slice_2 | ...]
+        num_homogeneous_per_slice: Number of homogeneous neighbors to select from each slice
+        k_central: Number of neighbors in central slice
+        k_adjacent: Number of neighbors per adjacent slice
+        n_adjacent_slices: Number of adjacent slices above and below
+        similarity_threshold: Minimum similarity threshold
+    
+    Returns:
+        homogeneous_neighbors: (batch_size, total_homogeneous) where 
+                               total_homogeneous = num_homogeneous_per_slice * (1 + 2*n_adjacent_slices)
+        homogeneous_weights: Corresponding weights
+    """
+    batch_size = emb_gcn_batch_norm.shape[0]
+    n_slices = 1 + 2 * n_adjacent_slices
+    total_homogeneous = num_homogeneous_per_slice * n_slices
+    
+    # Process central slice
+    central_neighbors = spatial_neighbors[:, :k_central]
+    safe_neighbors = jnp.where(central_neighbors >= 0, central_neighbors, 0)
+    central_emb_gcn = all_emb_gcn_norm[safe_neighbors]
+    central_emb_indv = all_emb_indv_norm[safe_neighbors]
+    
+    # Compute similarities for central slice
+    anchor_sims = jnp.einsum('bd,bkd->bk', emb_gcn_batch_norm, central_emb_gcn)
+    cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, central_emb_indv)
+    anchor_sims = jnp.where(anchor_sims >= similarity_threshold, anchor_sims, 0.0)
+    cell_sims = jnp.where(cell_sims >= similarity_threshold, cell_sims, 0.0)
+    combined_sims = anchor_sims * cell_sims
+    combined_sims = jnp.where(central_neighbors >= 0, combined_sims, -jnp.inf)
+    
+    # Select top k from central slice
+    top_k_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous_per_slice]
+    batch_idx = jnp.arange(batch_size)[:, None]
+    central_homo_neighbors = central_neighbors[batch_idx, top_k_idx]
+    central_homo_weights = combined_sims[batch_idx, top_k_idx]
+    central_homo_weights = jnp.where(central_homo_weights == -jnp.inf, 0.0, central_homo_weights)
+    
+    # Initialize lists for concatenation
+    all_homo_neighbors = [central_homo_neighbors]
+    all_homo_weights = [central_homo_weights]
+    
+    # Process adjacent slices if n_adjacent_slices > 0
+    # For simplicity with JIT, we'll handle n_adjacent_slices=1 case explicitly
+    # (can be extended for more slices if needed)
+    if n_adjacent_slices == 1:
+        # Process first adjacent slice (e.g., slice above)
+        offset = k_central
+        adj1_neighbors = spatial_neighbors[:, offset:offset+k_adjacent]
+        safe_neighbors = jnp.where(adj1_neighbors >= 0, adj1_neighbors, 0)
+        adj1_emb_gcn = all_emb_gcn_norm[safe_neighbors]
+        adj1_emb_indv = all_emb_indv_norm[safe_neighbors]
+        
+        anchor_sims = jnp.einsum('bd,bkd->bk', emb_gcn_batch_norm, adj1_emb_gcn)
+        cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, adj1_emb_indv)
+        anchor_sims = jnp.where(anchor_sims >= similarity_threshold, anchor_sims, 0.0)
+        cell_sims = jnp.where(cell_sims >= similarity_threshold, cell_sims, 0.0)
+        combined_sims = anchor_sims * cell_sims
+        combined_sims = jnp.where(adj1_neighbors >= 0, combined_sims, -jnp.inf)
+        
+        top_k_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous_per_slice]
+        batch_idx = jnp.arange(batch_size)[:, None]
+        adj1_homo_neighbors = adj1_neighbors[batch_idx, top_k_idx]
+        adj1_homo_weights = combined_sims[batch_idx, top_k_idx]
+        adj1_homo_weights = jnp.where(adj1_homo_weights == -jnp.inf, 0.0, adj1_homo_weights)
+        
+        all_homo_neighbors.append(adj1_homo_neighbors)
+        all_homo_weights.append(adj1_homo_weights)
+        
+        # Process second adjacent slice (e.g., slice below)
+        offset = k_central + k_adjacent
+        adj2_neighbors = spatial_neighbors[:, offset:offset+k_adjacent]
+        safe_neighbors = jnp.where(adj2_neighbors >= 0, adj2_neighbors, 0)
+        adj2_emb_gcn = all_emb_gcn_norm[safe_neighbors]
+        adj2_emb_indv = all_emb_indv_norm[safe_neighbors]
+        
+        anchor_sims = jnp.einsum('bd,bkd->bk', emb_gcn_batch_norm, adj2_emb_gcn)
+        cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, adj2_emb_indv)
+        anchor_sims = jnp.where(anchor_sims >= similarity_threshold, anchor_sims, 0.0)
+        cell_sims = jnp.where(cell_sims >= similarity_threshold, cell_sims, 0.0)
+        combined_sims = anchor_sims * cell_sims
+        combined_sims = jnp.where(adj2_neighbors >= 0, combined_sims, -jnp.inf)
+        
+        top_k_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous_per_slice]
+        batch_idx = jnp.arange(batch_size)[:, None]
+        adj2_homo_neighbors = adj2_neighbors[batch_idx, top_k_idx]
+        adj2_homo_weights = combined_sims[batch_idx, top_k_idx]
+        adj2_homo_weights = jnp.where(adj2_homo_weights == -jnp.inf, 0.0, adj2_homo_weights)
+        
+        all_homo_neighbors.append(adj2_homo_neighbors)
+        all_homo_weights.append(adj2_homo_weights)
+    
+    # Concatenate results from all slices
+    homogeneous_neighbors = jnp.concatenate(all_homo_neighbors, axis=1)
+    homogeneous_weights = jnp.concatenate(all_homo_weights, axis=1)
+    
+    # Normalize weights using mean pooling across slices
+    # Each slice gets equal weight (1/n_slices)
+    weights_reshaped = homogeneous_weights.reshape(batch_size, n_slices, num_homogeneous_per_slice)
+    
+    # Normalize within each slice
+    slice_sums = weights_reshaped.sum(axis=2, keepdims=True)
+    slice_sums = jnp.where(slice_sums > 0, slice_sums, 1.0)
+    weights_normalized = weights_reshaped / slice_sums
+    
+    # Apply mean pooling weight (1/n_slices per slice)
+    weights_normalized = weights_normalized / n_slices
+    
+    # Reshape back
+    homogeneous_weights = weights_normalized.reshape(batch_size, total_homogeneous)
+    
+    return homogeneous_neighbors, homogeneous_weights
+
+
 def build_scrna_connectivity(
     emb_cell: np.ndarray,
     cell_mask: Optional[np.ndarray] = None,
@@ -450,35 +583,78 @@ class ConnectivityMatrixBuilder:
         emb_gcn_masked_jax = all_emb_gcn_norm_jax[masked_cell_indices]
         emb_indv_masked_jax = all_emb_indv_norm_jax[masked_cell_indices]
         
-
-        # Process in batches to avoid GPU OOM
-        homogeneous_neighbors_list = []
-        homogeneous_weights_list = []
+        # Check if we should use the 3D-specific function with per-slice constraints
+        use_3d_constrained = (
+            self.dataset_type == 'spatial3D' and
+            n_adjacent_slices > 0 and
+            hasattr(self.config, 'cross_slice_marker_score_strategy') and
+            self.config.cross_slice_marker_score_strategy == 'mean_pooling'
+        )
         
-        for batch_start in track(range(0, n_masked, self.mkscore_batch_size), description="Finding homogeneous neighbors", transient=True):
-            batch_end = min(batch_start + self.mkscore_batch_size, n_masked)
-            batch_indices = slice(batch_start, batch_end)
+        if use_3d_constrained:
+            logger.info(f"Using 3D constrained selection with mean pooling (ensuring {self.config.num_homogeneous} neighbors per slice)")
             
-            # Get batch data directly from JAX arrays (no GPU movement)
-            emb_gcn_batch_norm = emb_gcn_masked_jax[batch_indices]
-            emb_indv_batch_norm = emb_indv_masked_jax[batch_indices]
-            spatial_neighbors_batch = spatial_neighbors_jax[batch_indices]
+            # Process in batches to avoid GPU OOM
+            homogeneous_neighbors_list = []
+            homogeneous_weights_list = []
             
-            # Process batch with single JIT-compiled function
-            homo_neighbors_batch, homo_weights_batch = _find_anchors_and_homogeneous_batch_jit(
-                emb_gcn_batch_norm,
-                emb_indv_batch_norm,
-                spatial_neighbors_batch,
-                all_emb_gcn_norm_jax,
-                all_emb_indv_norm_jax,
-                self.config.num_anchor,
-                self.config.num_homogeneous,
-                self.config.similarity_threshold
-            )
+            for batch_start in track(range(0, n_masked, self.mkscore_batch_size), description="Finding homogeneous neighbors (3D constrained)", transient=True):
+                batch_end = min(batch_start + self.mkscore_batch_size, n_masked)
+                batch_indices = slice(batch_start, batch_end)
+                
+                # Get batch data directly from JAX arrays (no GPU movement)
+                emb_gcn_batch_norm = emb_gcn_masked_jax[batch_indices]
+                emb_indv_batch_norm = emb_indv_masked_jax[batch_indices]
+                spatial_neighbors_batch = spatial_neighbors_jax[batch_indices]
+                
+                # Process batch with 3D-specific JIT-compiled function
+                homo_neighbors_batch, homo_weights_batch = _find_anchors_and_homogeneous_batch_3d_jit(
+                    emb_gcn_batch_norm,
+                    emb_indv_batch_norm,
+                    spatial_neighbors_batch,
+                    all_emb_gcn_norm_jax,
+                    all_emb_indv_norm_jax,
+                    self.config.num_anchor,
+                    self.config.num_homogeneous,  # This is per-slice
+                    k_central,
+                    k_adjacent,
+                    n_adjacent_slices,
+                    self.config.similarity_threshold
+                )
+                
+                # Convert back to numpy and append
+                homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
+                homogeneous_weights_list.append(np.array(homo_weights_batch))
+        else:
+            # Use the standard function (2D or 3D without constraints)
+            # Process in batches to avoid GPU OOM
+            homogeneous_neighbors_list = []
+            homogeneous_weights_list = []
             
-            # Convert back to numpy and append
-            homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
-            homogeneous_weights_list.append(np.array(homo_weights_batch))
+            for batch_start in track(range(0, n_masked, self.mkscore_batch_size), description="Finding homogeneous neighbors", transient=True):
+                batch_end = min(batch_start + self.mkscore_batch_size, n_masked)
+                batch_indices = slice(batch_start, batch_end)
+                
+                # Get batch data directly from JAX arrays (no GPU movement)
+                emb_gcn_batch_norm = emb_gcn_masked_jax[batch_indices]
+                emb_indv_batch_norm = emb_indv_masked_jax[batch_indices]
+                spatial_neighbors_batch = spatial_neighbors_jax[batch_indices]
+                
+                # Process batch with single JIT-compiled function
+                homo_neighbors_batch, homo_weights_batch = _find_anchors_and_homogeneous_batch_jit(
+                    emb_gcn_batch_norm,
+                    emb_indv_batch_norm,
+                    spatial_neighbors_batch,
+                    all_emb_gcn_norm_jax,
+                    all_emb_indv_norm_jax,
+                    self.config.num_anchor,
+                    self.config.num_homogeneous,
+                    self.config.similarity_threshold
+                )
+                
+                # Convert back to numpy and append
+                homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
+                homogeneous_weights_list.append(np.array(homo_weights_batch))
         
         # Concatenate all batches
         homogeneous_neighbors = np.vstack(homogeneous_neighbors_list)
