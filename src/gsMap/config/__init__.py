@@ -36,7 +36,8 @@ from .dataclasses import (
     VisualizeConfig,
     ThreeDCombineConfig,
     RunLinkModeConfig,
-    DatasetType
+    DatasetType,
+    MarkerScoreCrossSliceStrategy,
 )
 
 __all__ = [

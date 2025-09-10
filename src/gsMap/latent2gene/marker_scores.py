@@ -935,7 +935,7 @@ class MarkerScoreCalculator:
         # Initialize matrices if they don't exist
         if 'gsMap_homo_indices' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_indices'].shape[1] != neighbor_indices.shape[1]):
             adata.obsm['gsMap_homo_indices'] = np.zeros((adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype)
-        if 'gsMap_homo_weights' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_indices'].shape[1] != neighbor_indices.shape[1]):
+        if 'gsMap_homo_weights' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_weights'].shape[1] != neighbor_indices.shape[1]):
             adata.obsm['gsMap_homo_weights'] = np.zeros((adata.n_obs, neighbor_weights.shape[1]), dtype=neighbor_weights.dtype)
         
         # Store the neighbor indices and weights for this cell type

@@ -194,14 +194,14 @@ class RankCalculator:
         mean_frac_path = Path(self.config.mean_frac_path)
         
         # Check if outputs already exist
-        if concat_adata_path.exists() and rank_memmap_path.with_suffix('.dat').exists() and mean_frac_path.exists():
+        if concat_adata_path.exists() and mean_frac_path.exists() and MemMapDense.check_complete(rank_memmap_path)[0]:
             logger.info(f"Rank outputs already exist in {self.output_dir}")
             return {
                 "concatenated_latent_adata": str(concat_adata_path),
                 "rank_memmap": str(rank_memmap_path),
                 "mean_frac": str(mean_frac_path)
             }
-        
+
         logger.info("Starting rank calculation and concatenation...")
         logger.info(f"Processing {len(sample_h5ad_dict)} samples")
         

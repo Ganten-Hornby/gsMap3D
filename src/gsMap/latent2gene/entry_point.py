@@ -10,6 +10,8 @@ import yaml
 from .rank_calculator import RankCalculator
 from .marker_scores import MarkerScoreCalculator
 from ..config import LatentToGeneConfig
+from .memmap_io import MemMapDense
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,56 +58,22 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     if all(Path(p).exists() for p in expected_outputs.values()):
         logger.info("All outputs already exist. Checking completion status...")
         
-        # Check if memory maps are properly completed
-        from .memmap_io import MemMapDense
-        
-        # Check rank memmap completion
-        rank_memmap_complete = False
-        try:
-            # Read shape from metadata first
-            rank_meta_path = expected_outputs["rank_meta"]
-            if rank_meta_path.exists():
-                with open(rank_meta_path, 'r') as f:
-                    rank_meta = yaml.safe_load(f)
-                rank_shape = tuple(rank_meta['shape'])
-                rank_dtype = rank_meta['dtype']
-                
-                rank_memmap = MemMapDense(
-                    path=expected_outputs["rank_memmap"],
-                    shape=rank_shape,
-                    dtype=rank_dtype,
-                    mode='r'
-                )
-                rank_memmap_complete = rank_memmap.is_complete
-                rank_memmap.close()
+
+        # Check rank memmap completion using the new class method
+        rank_memmap_complete, rank_meta = MemMapDense.check_complete(expected_outputs["rank_memmap"])
+        if not rank_memmap_complete:
+            if rank_meta:
+                logger.warning("Rank memmap exists but is not marked as complete")
             else:
-                logger.warning(f"Rank metadata file not found: {rank_meta_path}")
-        except Exception as e:
-            logger.warning(f"Could not check rank memmap completion: {e}")
+                logger.warning("Could not read rank memmap metadata")
         
-        # Check marker scores memmap completion
-        marker_scores_complete = False
-        try:
-            # Read shape from metadata first
-            marker_meta_path = expected_outputs["marker_scores_meta"]
-            if marker_meta_path.exists():
-                with open(marker_meta_path, 'r') as f:
-                    marker_meta = yaml.safe_load(f)
-                marker_shape = tuple(marker_meta['shape'])
-                marker_dtype = marker_meta['dtype']
-                
-                marker_scores_memmap = MemMapDense(
-                    path=expected_outputs["marker_scores"],
-                    shape=marker_shape,
-                    dtype=marker_dtype,
-                    mode='r'
-                )
-                marker_scores_complete = marker_scores_memmap.is_complete
-                marker_scores_memmap.close()
+        # Check marker scores memmap completion using the new class method
+        marker_scores_complete, marker_meta = MemMapDense.check_complete(expected_outputs["marker_scores"])
+        if not marker_scores_complete:
+            if marker_meta:
+                logger.warning("Marker scores memmap exists but is not marked as complete")
             else:
-                logger.warning(f"Marker scores metadata file not found: {marker_meta_path}")
-        except Exception as e:
-            logger.warning(f"Could not check marker scores memmap completion: {e}")
+                logger.warning("Could not read marker scores memmap metadata")
         
         if rank_memmap_complete and marker_scores_complete:
             logger.info("All memory maps are properly completed. Loading metadata...")
@@ -116,9 +84,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
             return {k: str(v) for k, v in expected_outputs.items()}
         else:
             logger.warning("Memory maps exist but are not properly completed. Re-running pipeline...")
-            logger.warning(f"Rank memmap complete: {rank_memmap_complete}")
-            logger.warning(f"Marker scores memmap complete: {marker_scores_complete}")
-    
+
     # Step 1: Calculate ranks and concatenate
     logger.info("\n" + "-" * 40)
     logger.info("Step 1: Rank calculation and concatenation")

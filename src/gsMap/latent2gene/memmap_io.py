@@ -281,6 +281,43 @@ class MemMapDense:
             logger.warning(f"Could not read metadata to check completion status: {e}")
             return False
 
+    @classmethod
+    def check_complete(cls, memmap_path: Union[str, Path], meta_path: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[dict]]:
+        """
+        Check if a memory map file is complete without opening it.
+        
+        Args:
+            memmap_path: Path to the memory-mapped file (without extension)
+            meta_path: Optional path to metadata file. If not provided, will be derived from memmap_path
+            
+        Returns:
+            Tuple of (is_complete, metadata_dict). metadata_dict is None if file doesn't exist or can't be read.
+        """
+        memmap_path = Path(memmap_path)
+        
+        if meta_path is None:
+            # Derive metadata path from memmap path
+            if memmap_path.suffix == '.dat':
+                meta_path = memmap_path.with_suffix('.meta.json')
+            elif memmap_path.suffix == '.meta.json':
+                meta_path = memmap_path
+            else:
+                # Assume no extension, add .meta.json
+                meta_path = memmap_path.with_suffix('.meta.json')
+        else:
+            meta_path = Path(meta_path)
+            
+        if not meta_path.exists():
+            return False, None
+            
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+            return meta.get('complete', False), meta
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not read metadata from {meta_path}: {e}")
+            return False, None
+
     def close(self):
         """Clean up resources"""
         logger.info("MemMapDense.close() called")
