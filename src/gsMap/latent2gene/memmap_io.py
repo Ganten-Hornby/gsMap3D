@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union
 import time
+import shutil
+import tempfile
+import uuid
 
 import numpy as np
 
@@ -29,6 +32,7 @@ class MemMapDense:
         mode: str = 'w',
         num_write_workers: int = 4,
         flush_interval: float = 30,
+        tmp_dir: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize a memory-mapped dense matrix.
@@ -39,13 +43,26 @@ class MemMapDense:
             dtype: Data type of the matrix
             mode: 'w' for write (create/overwrite), 'r' for read, 'r+' for read/write
             num_write_workers: Number of worker threads for async writing
+            tmp_dir: Optional temporary directory for faster I/O on slow filesystems.
+                    If provided, files will be created/copied to tmp_dir for operations
+                    and synced back to the original path on close.
         """
-        self.path = Path(path)
+        self.original_path = Path(path)
         self.shape = shape
         self.dtype = dtype
         self.mode = mode
         self.num_write_workers = num_write_workers
         self.flush_interval = flush_interval
+        self.tmp_dir = Path(tmp_dir) if tmp_dir else None
+        self.using_tmp = False
+        self.tmp_path = None
+        
+        # Set up paths based on whether tmp_dir is provided
+        if self.tmp_dir:
+            self._setup_tmp_paths()
+        else:
+            self.path = self.original_path
+            
         # File paths
         self.data_path = self.path.with_suffix('.dat')
         self.meta_path = self.path.with_suffix('.meta.json')
@@ -68,6 +85,62 @@ class MemMapDense:
         if mode in ('w', 'r+'):
             self._start_writer_threads()
 
+    def _setup_tmp_paths(self):
+        """Set up temporary paths for memory-mapped files"""
+        # Create a unique subdirectory in tmp_dir to avoid conflicts
+        unique_id = str(uuid.uuid4())[:8]
+        self.tmp_subdir = self.tmp_dir / f"memmap_{unique_id}"
+        self.tmp_subdir.mkdir(parents=True, exist_ok=True)
+        
+        # Create tmp path with same structure as original
+        self.tmp_path = self.tmp_subdir / self.original_path.name
+        self.path = self.tmp_path
+        self.using_tmp = True
+        
+        logger.info(f"Using temporary directory for memmap: {self.tmp_subdir}")
+        
+        # If reading, copy existing files to tmp directory
+        if self.mode in ('r', 'r+'):
+            original_data_path = self.original_path.with_suffix('.dat')
+            original_meta_path = self.original_path.with_suffix('.meta.json')
+            
+            if original_data_path.exists() and original_meta_path.exists():
+                tmp_data_path = self.tmp_path.with_suffix('.dat')
+                tmp_meta_path = self.tmp_path.with_suffix('.meta.json')
+                
+                logger.info(f"Copying memmap files to temporary directory for faster access...")
+                shutil.copy2(original_data_path, tmp_data_path)
+                shutil.copy2(original_meta_path, tmp_meta_path)
+                logger.info(f"Memmap files copied to {self.tmp_subdir}")
+    
+    def _sync_tmp_to_original(self):
+        """Sync temporary files back to original location"""
+        if not self.using_tmp:
+            return
+            
+        tmp_data_path = self.tmp_path.with_suffix('.dat')
+        tmp_meta_path = self.tmp_path.with_suffix('.meta.json')
+        original_data_path = self.original_path.with_suffix('.dat')
+        original_meta_path = self.original_path.with_suffix('.meta.json')
+        
+        if tmp_data_path.exists():
+            logger.info(f"Syncing memmap data from tmp to original location...")
+            shutil.move(str(tmp_data_path), str(original_data_path))
+            
+        if tmp_meta_path.exists():
+            shutil.move(str(tmp_meta_path), str(original_meta_path))
+            
+        logger.info(f"Memmap files synced to {self.original_path}")
+    
+    def _cleanup_tmp(self):
+        """Clean up temporary directory"""
+        if self.using_tmp and self.tmp_subdir and self.tmp_subdir.exists():
+            try:
+                shutil.rmtree(self.tmp_subdir)
+                logger.debug(f"Cleaned up temporary directory: {self.tmp_subdir}")
+            except Exception as e:
+                logger.warning(f"Could not clean up temporary directory {self.tmp_subdir}: {e}")
+    
     def _create_memmap(self):
         """Create a new memory-mapped file"""
         # Check if already exists and is complete
@@ -267,20 +340,6 @@ class MemMapDense:
 
             logger.info(f"Marked MemMapDense at {self.path} as complete")
 
-    @property
-    def is_complete(self) -> bool:
-        """Check if the memory map is marked as complete"""
-        if not self.meta_path.exists():
-            return False
-
-        try:
-            with open(self.meta_path, 'r') as f:
-                meta = json.load(f)
-            return meta.get('complete', False)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Could not read metadata to check completion status: {e}")
-            return False
-
     @classmethod
     def check_complete(cls, memmap_path: Union[str, Path], meta_path: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[dict]]:
         """
@@ -340,6 +399,11 @@ class MemMapDense:
         # Final flush
         if self.mode in ('w', 'r+'):
             self.mark_complete()
+        
+        # Sync tmp files back to original location if using tmp
+        if self.using_tmp:
+            self._sync_tmp_to_original()
+            self._cleanup_tmp()
 
     def __enter__(self):
         return self
@@ -356,15 +420,6 @@ class MemMapDense:
         else:
             self._attrs = {}
         return self._attrs
-
-    def delete(self):
-        """Delete the memory-mapped files"""
-        self.close()
-        if self.data_path.exists():
-            self.data_path.unlink()
-        if self.meta_path.exists():
-            self.meta_path.unlink()
-        logger.info(f"Deleted MemMapDense files at {self.path}")
 
 
 @dataclass

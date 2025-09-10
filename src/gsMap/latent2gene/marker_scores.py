@@ -718,7 +718,8 @@ class MarkerScoreCalculator:
             path=rank_memmap_path,
             shape=tuple(meta['shape']),
             dtype=np.dtype(meta['dtype']),
-            mode='r'
+            mode='r',
+            tmp_dir=self.config.memmap_tmp_dir
         )
         
         logger.info(f"Opened rank memory map from {rank_memmap_path}")
@@ -1011,7 +1012,8 @@ class MarkerScoreCalculator:
             shape=(n_cells, n_genes),
             dtype=np.float16,  # Use float16 to save memory
             mode='w',
-            num_write_workers=self.config.mkscore_write_workers
+            num_write_workers=self.config.mkscore_write_workers,
+            tmp_dir=self.config.memmap_tmp_dir
         )
         
         # Get cell types to process

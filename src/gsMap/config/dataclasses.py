@@ -781,6 +781,15 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         help="Use GPU for JAX computations (requires sufficient GPU memory)"
     )] = True
     
+    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
+        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
+             "If provided, memory maps will be copied to this directory for faster random access during computation.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True
+    )] = None
+    
     @property
     def total_homogeneous_neighbor_per_cell(self):
         return self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
@@ -960,7 +969,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.SIMILARITY_ONLY:
             logger.info(f"Using similarity_only strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
 
-        logger.info(f"Each focal cell will select {num_homogeneous * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {1 + 2 * n_adjacent_slices = } slices.")
+        logger.info(f"Each focal cell will select {num_homogeneous * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
 
 
     def _configure_scrna_seq(self):
