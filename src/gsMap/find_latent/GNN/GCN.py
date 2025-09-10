@@ -8,7 +8,7 @@ from torch_geometric.utils import add_remaining_self_loops, degree
 def build_spatial_graph(
         coords: np.ndarray,
         n_neighbors: int,
-        undirected: bool = False
+        undirected: bool = True
 ) -> np.ndarray:
     """
 
