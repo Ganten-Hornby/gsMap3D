@@ -26,6 +26,7 @@ from jax import jit
 from .memmap_io import MemMapDense
 from .connectivity import ConnectivityMatrixBuilder
 from .row_ordering import optimize_row_order
+from gsMap.config.dataclasses import MarkerScoreCrossSliceStrategy, DatasetType
 
 
 logger = logging.getLogger(__name__)
@@ -825,8 +826,11 @@ class MarkerScoreCalculator:
         n_slices = 1
         num_homogeneous_per_slice = self.config.num_homogeneous
         
-        if (self.config.dataset_type == 'spatial3D' and 
-            self.config.cross_slice_marker_score_strategy in ['weighted_mean_pooling', 'max_pooling']):
+        if (self.config.dataset_type == DatasetType.SPATIAL_3D and 
+            self.config.cross_slice_marker_score_strategy in [
+                MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING,
+                MarkerScoreCrossSliceStrategy.MAX_POOLING
+            ]):
             
             cross_slice_strategy = self.config.cross_slice_marker_score_strategy
             n_slices = 1 + 2 * self.config.n_adjacent_slices

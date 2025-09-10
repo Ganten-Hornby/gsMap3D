@@ -18,6 +18,7 @@ import scanpy as sc
 import anndata as ad
 
 from gsMap.config import LatentToGeneConfig
+from gsMap.config.dataclasses import MarkerScoreCrossSliceStrategy, DatasetType
 
 logger = logging.getLogger(__name__)
 
@@ -479,7 +480,7 @@ class ConnectivityMatrixBuilder:
             Connectivity matrix (sparse or dense format)
         """
         # Check dataset type and call appropriate method
-        if self.dataset_type == 'scRNA-seq':
+        if self.dataset_type == DatasetType.SCRNA_SEQ:
             logger.info("Building connectivity for scRNA-seq dataset")
             if emb_indv is None:
                 raise ValueError("emb_indv (cell embeddings) required for scRNA-seq dataset")
@@ -504,13 +505,13 @@ class ConnectivityMatrixBuilder:
             if k_adjacent is None:
                 k_adjacent = self.config.k_adjacent
             if n_adjacent_slices is None:
-                if self.dataset_type == 'spatial2D':
+                if self.dataset_type == DatasetType.SPATIAL_2D:
                     n_adjacent_slices = 0
                 else:  # spatial3D
                     n_adjacent_slices = self.config.n_adjacent_slices
             
             # For spatial2D, ensure no cross-slice search (but can still have slice_ids)
-            if self.dataset_type == 'spatial2D':
+            if self.dataset_type == DatasetType.SPATIAL_2D:
                 n_adjacent_slices = 0  # No cross-slice search, but keep slice_ids if provided
             
             return self._build_spatial_connectivity(
@@ -589,13 +590,7 @@ class ConnectivityMatrixBuilder:
         emb_gcn_masked_jax = all_emb_gcn_norm_jax[masked_cell_indices]
         emb_indv_masked_jax = all_emb_indv_norm_jax[masked_cell_indices]
         
-        # Check if we should use the 3D-specific function with per-slice constraints
-        use_3d_constrained = (
-            self.dataset_type == 'spatial3D' and
-            self.config.cross_slice_marker_score_strategy in ['weighted_mean_pooling', 'max_pooling']
-        )
-        
-        if use_3d_constrained:
+        if self.config.fix_cross_slice_homogenous_neighbors:
             logger.info(f"Using 3D constrained selection (ensuring {self.config.num_homogeneous} neighbors per slice)")
             
             # Process in batches to avoid GPU OOM
@@ -629,7 +624,7 @@ class ConnectivityMatrixBuilder:
                 homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
                 homogeneous_weights_list.append(np.array(homo_weights_batch))
         else:
-            # Use the standard function (2D or 3D without constraints)
+            # Use the standard function (2D or 3D without fix_cross_slice_homogenous_neighbors)
             # Process in batches to avoid GPU OOM
             homogeneous_neighbors_list = []
             homogeneous_weights_list = []

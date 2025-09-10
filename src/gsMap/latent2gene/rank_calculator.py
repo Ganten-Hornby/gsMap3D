@@ -236,7 +236,7 @@ class RankCalculator:
                         adata_temp_obs = adata_temp_obs[adata_temp_obs[annotation_key].notna()].copy()
 
                     # Filter cells based on annotation group size
-                    min_cells_per_type = getattr(self.config, 'num_anchor', 21)
+                    min_cells_per_type = self.config.num_homogeneous
                     annotation_counts = adata_temp_obs[annotation_key].value_counts()
                     valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
 
@@ -311,7 +311,7 @@ class RankCalculator:
                         adata = adata[adata.obs[annotation_key].notna()].copy()
 
                     # Filter cells based on annotation group size
-                    min_cells_per_type = getattr(self.config, 'num_anchor', 21)
+                    min_cells_per_type = self.config.num_homogeneous
                     annotation_counts = adata.obs[annotation_key].value_counts()
                     valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
 

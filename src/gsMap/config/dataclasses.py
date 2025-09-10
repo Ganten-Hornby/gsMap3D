@@ -683,12 +683,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         max=500
     )] = 201
 
-    num_anchor: Annotated[int, typer.Option(
-        help="k2: Number of spatial anchors per cell",
-        min=10,
-        max=200
-    )] = 51
-    
+
     num_homogeneous: Annotated[int, typer.Option(
         help="k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)",
         min=1,
@@ -726,6 +721,8 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
              "'max_pooling': Select fixed number of homogeneous neighbors per slice, take maximum marker score across slices.",
         case_sensitive=False
     )] = MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING
+
+    fix_cross_slice_homogenous_neighbors: bool = False
 
     # slice_id_key: Annotated[Optional[str], typer.Option(
     #     help="Key in adata.obs for slice IDs. For 3D data, should contain sequential integers representing z-axis order (0, 1, 2, ...). If None, assumes single 2D slice"
@@ -939,10 +936,23 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         # Adjust num_homogeneous based on adjacent slices and strategy
         # Only multiply for 'similarity_only' strategy (original behavior)
         # For 'mean_pooling' and 'max_pooling', num_homogeneous represents per-slice count
-        if (self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.SIMILARITY_ONLY and
-            self.n_adjacent_slices > 0):
+
+
+        # Check if we should use fix number of homogeneous neighbors per slice
+        if  self.cross_slice_marker_score_strategy in [
+                MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING,
+                MarkerScoreCrossSliceStrategy.MAX_POOLING
+            ]:
+
+            self.fix_cross_slice_homogenous_neighbors = True
+            logger.info(f"Using {self.cross_slice_marker_score_strategy} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.num_homogeneous} per slice")
+
+        elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.SIMILARITY_ONLY:
+            logger.info(f"Using similarity_only strategy, adjusted num_homogeneous to {self.num_homogeneous * (1 + 2 * self.n_adjacent_slices) = }. This strategy will select top homogeneous neighbors from all adjacent slices combined based on similarity scores.")
+            logger.info(f"Adjusted num_homogeneous to {self.num_homogeneous} for `{self.cross_slice_marker_score_strategy}` strategy with {self.n_adjacent_slices} adjacent slices")
             self.num_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
-            logger.info(f"Adjusted num_homogeneous to {self.num_homogeneous} for `similarity_only` strategy with {self.n_adjacent_slices} adjacent slices")
+
+
 
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
@@ -952,7 +962,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         """Validate configuration constraints for spatial datasets"""
         if self.dataset_type in [DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D]:
             # For pooling strategies, check per-slice constraint
-            if self.cross_slice_marker_score_strategy in [MarkerScoreCrossSliceStrategy.MEAN_POOLING, 
+            if self.cross_slice_marker_score_strategy in [MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING, 
                                                           MarkerScoreCrossSliceStrategy.MAX_POOLING]:
                 assert self.num_homogeneous <= self.num_neighbour_spatial, \
                     f"num_homogeneous per slice ({self.num_homogeneous}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"
