@@ -797,9 +797,6 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         
         # Step 4: Set up validation fields and validate structure (after dataset config)
         self._setup_and_validate_fields()
-        
-        # Step 5: Validate spatial dataset constraints
-        self._validate_spatial_constraints()
 
     
     def _process_h5ad_inputs(self):
@@ -920,6 +917,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             self.n_adjacent_slices = 0
             logger.info("Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting n_adjacent_slices=0.")
 
+        assert self.num_homogeneous <= self.num_neighbour_spatial, \
+            f"num_homogeneous ({self.num_homogeneous}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial}) for spatial2D datasets"
+
     def _configure_spatial_3d(self):
         """Configure parameters for spatial 3D datasets"""
         if self.n_adjacent_slices == 0:
@@ -928,6 +928,11 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
                 "You must set n_adjacent_slices to 1 or higher to enable cross-slice search. "
                 "If you don't want cross-slice search, use dataset_type='spatial2D' instead."
             )
+
+        assert self.k_adjacent <= self.num_neighbour_spatial, \
+            f"k_adjacent ({self.k_adjacent}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"
+        assert self.num_homogeneous <= self.k_adjacent, \
+            f"num_homogeneous ({self.num_homogeneous}) must be <= k_adjacent ({self.k_adjacent})"
 
         logger.info(f"Dataset type is spatial3D, using n_adjacent_slices={self.n_adjacent_slices} for cross-slice search")
         logger.info(f"The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
@@ -957,21 +962,6 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
         self.n_adjacent_slices = 0
-
-    def _validate_spatial_constraints(self):
-        """Validate configuration constraints for spatial datasets"""
-        if self.dataset_type in [DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D]:
-            # For pooling strategies, check per-slice constraint
-            if self.cross_slice_marker_score_strategy in [MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING, 
-                                                          MarkerScoreCrossSliceStrategy.MAX_POOLING]:
-                assert self.num_homogeneous <= self.num_neighbour_spatial, \
-                    f"num_homogeneous per slice ({self.num_homogeneous}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"
-            else:
-                # For similarity_only, check total after multiplication
-                total_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices) if self.n_adjacent_slices > 0 else self.num_homogeneous
-                total_spatial = self.num_neighbour_spatial + 2 * self.n_adjacent_slices * self.k_adjacent if self.n_adjacent_slices > 0 else self.num_neighbour_spatial
-                assert total_homogeneous <= total_spatial, \
-                    f"Total homogeneous ({total_homogeneous}) must be <= total spatial neighbors ({total_spatial})"
 
 
 
