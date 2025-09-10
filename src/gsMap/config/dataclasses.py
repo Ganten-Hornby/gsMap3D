@@ -908,7 +908,10 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             self._configure_scrna_seq()
 
         # Adjust num_homogeneous based on adjacent slices
-        self.num_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
+        # Only multiply if NOT using mean_pooling strategy (which handles per-slice constraints internally)
+        if not (hasattr(self, 'cross_slice_marker_score_strategy') and 
+                self.cross_slice_marker_score_strategy == 'mean_pooling'):
+            self.num_homogeneous = self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
 
     def _configure_spatial_2d(self):
         """Configure parameters for spatial 2D datasets"""

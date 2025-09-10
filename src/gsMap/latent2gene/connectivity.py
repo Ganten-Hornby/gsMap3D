@@ -273,54 +273,57 @@ def _find_anchors_and_homogeneous_batch_3d_jit(
     all_homo_weights = [central_homo_weights]
     
     # Process adjacent slices if n_adjacent_slices > 0
-    # For simplicity with JIT, we'll handle n_adjacent_slices=1 case explicitly
-    # (can be extended for more slices if needed)
-    if n_adjacent_slices == 1:
-        # Process first adjacent slice (e.g., slice above)
+    # Generalized implementation using matrix operations for any n_adjacent_slices
+    if n_adjacent_slices > 0:
+        # Reshape adjacent neighbors into (batch, 2*n_adjacent_slices, k_adjacent)
         offset = k_central
-        adj1_neighbors = spatial_neighbors[:, offset:offset+k_adjacent]
-        safe_neighbors = jnp.where(adj1_neighbors >= 0, adj1_neighbors, 0)
-        adj1_emb_gcn = all_emb_gcn_norm[safe_neighbors]
-        adj1_emb_indv = all_emb_indv_norm[safe_neighbors]
+        total_adjacent = 2 * n_adjacent_slices
         
-        anchor_sims = jnp.einsum('bd,bkd->bk', emb_gcn_batch_norm, adj1_emb_gcn)
-        cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, adj1_emb_indv)
+        # Extract all adjacent slice neighbors at once
+        adjacent_neighbors = spatial_neighbors[:, offset:offset + total_adjacent * k_adjacent]
+        # Reshape to (batch_size, total_adjacent, k_adjacent)
+        adjacent_neighbors = adjacent_neighbors.reshape(batch_size, total_adjacent, k_adjacent)
+        
+        # Handle invalid neighbors
+        safe_neighbors = jnp.where(adjacent_neighbors >= 0, adjacent_neighbors, 0)
+        
+        # Get embeddings for all adjacent slices: (batch, total_adjacent, k_adjacent, d)
+        adj_emb_gcn = all_emb_gcn_norm[safe_neighbors]
+        adj_emb_indv = all_emb_indv_norm[safe_neighbors]
+        
+        # Compute similarities for all adjacent slices at once
+        # Expand batch embeddings for broadcasting: (batch, 1, 1, d)
+        emb_gcn_expanded = emb_gcn_batch_norm[:, None, None, :]
+        emb_indv_expanded = emb_indv_batch_norm[:, None, None, :]
+        
+        # Compute similarities: (batch, total_adjacent, k_adjacent)
+        anchor_sims = jnp.sum(emb_gcn_expanded * adj_emb_gcn, axis=-1)
+        cell_sims = jnp.sum(emb_indv_expanded * adj_emb_indv, axis=-1)
+        
+        # Apply threshold
         anchor_sims = jnp.where(anchor_sims >= similarity_threshold, anchor_sims, 0.0)
         cell_sims = jnp.where(cell_sims >= similarity_threshold, cell_sims, 0.0)
         combined_sims = anchor_sims * cell_sims
-        combined_sims = jnp.where(adj1_neighbors >= 0, combined_sims, -jnp.inf)
         
-        top_k_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous_per_slice]
-        batch_idx = jnp.arange(batch_size)[:, None]
-        adj1_homo_neighbors = adj1_neighbors[batch_idx, top_k_idx]
-        adj1_homo_weights = combined_sims[batch_idx, top_k_idx]
-        adj1_homo_weights = jnp.where(adj1_homo_weights == -jnp.inf, 0.0, adj1_homo_weights)
+        # Mask invalid neighbors
+        combined_sims = jnp.where(adjacent_neighbors >= 0, combined_sims, -jnp.inf)
         
-        all_homo_neighbors.append(adj1_homo_neighbors)
-        all_homo_weights.append(adj1_homo_weights)
-        
-        # Process second adjacent slice (e.g., slice below)
-        offset = k_central + k_adjacent
-        adj2_neighbors = spatial_neighbors[:, offset:offset+k_adjacent]
-        safe_neighbors = jnp.where(adj2_neighbors >= 0, adj2_neighbors, 0)
-        adj2_emb_gcn = all_emb_gcn_norm[safe_neighbors]
-        adj2_emb_indv = all_emb_indv_norm[safe_neighbors]
-        
-        anchor_sims = jnp.einsum('bd,bkd->bk', emb_gcn_batch_norm, adj2_emb_gcn)
-        cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, adj2_emb_indv)
-        anchor_sims = jnp.where(anchor_sims >= similarity_threshold, anchor_sims, 0.0)
-        cell_sims = jnp.where(cell_sims >= similarity_threshold, cell_sims, 0.0)
-        combined_sims = anchor_sims * cell_sims
-        combined_sims = jnp.where(adj2_neighbors >= 0, combined_sims, -jnp.inf)
-        
-        top_k_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous_per_slice]
-        batch_idx = jnp.arange(batch_size)[:, None]
-        adj2_homo_neighbors = adj2_neighbors[batch_idx, top_k_idx]
-        adj2_homo_weights = combined_sims[batch_idx, top_k_idx]
-        adj2_homo_weights = jnp.where(adj2_homo_weights == -jnp.inf, 0.0, adj2_homo_weights)
-        
-        all_homo_neighbors.append(adj2_homo_neighbors)
-        all_homo_weights.append(adj2_homo_weights)
+        # For each adjacent slice, select top k neighbors
+        # Process each slice separately to maintain per-slice constraint
+        for slice_idx in range(total_adjacent):
+            slice_sims = combined_sims[:, slice_idx, :]  # (batch, k_adjacent)
+            slice_neighbors = adjacent_neighbors[:, slice_idx, :]  # (batch, k_adjacent)
+            
+            # Select top k
+            top_k_idx = jnp.argsort(-slice_sims, axis=1)[:, :num_homogeneous_per_slice]
+            batch_idx = jnp.arange(batch_size)[:, None]
+            
+            homo_neighbors = slice_neighbors[batch_idx, top_k_idx]
+            homo_weights = slice_sims[batch_idx, top_k_idx]
+            homo_weights = jnp.where(homo_weights == -jnp.inf, 0.0, homo_weights)
+            
+            all_homo_neighbors.append(homo_neighbors)
+            all_homo_weights.append(homo_weights)
     
     # Concatenate results from all slices
     homogeneous_neighbors = jnp.concatenate(all_homo_neighbors, axis=1)
