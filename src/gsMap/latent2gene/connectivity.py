@@ -157,14 +157,13 @@ def find_spatial_neighbors_with_slices(
     return spatial_neighbors
 
 
-@partial(jit, static_argnums=(5, 6, 7))
+@partial(jit, static_argnums=(5, 6))
 def _find_anchors_and_homogeneous_batch_jit(
     emb_gcn_batch_norm: jnp.ndarray,      # (batch_size, d1) - pre-normalized
     emb_indv_batch_norm: jnp.ndarray,      # (batch_size, d2) - pre-normalized
     spatial_neighbors: jnp.ndarray,   # (batch_size, k1)
     all_emb_gcn_norm: jnp.ndarray,         # (n_all, d1) - pre-normalized
     all_emb_indv_norm: jnp.ndarray,        # (n_all, d2) - pre-normalized
-    num_anchor: int,
     num_homogeneous: int,
     similarity_threshold: float = 0.0
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -218,7 +217,6 @@ def _find_anchors_and_homogeneous_batch_3d_jit(
     spatial_neighbors: jnp.ndarray,        # (batch_size, k_total)
     all_emb_gcn_norm: jnp.ndarray,         # (n_all, d1) - pre-normalized
     all_emb_indv_norm: jnp.ndarray,        # (n_all, d2) - pre-normalized
-    num_anchor: int,
     num_homogeneous_per_slice: int,
     k_central: int,
     k_adjacent: int,
@@ -594,13 +592,11 @@ class ConnectivityMatrixBuilder:
         # Check if we should use the 3D-specific function with per-slice constraints
         use_3d_constrained = (
             self.dataset_type == 'spatial3D' and
-            n_adjacent_slices > 0 and
-            hasattr(self.config, 'cross_slice_marker_score_strategy') and
-            self.config.cross_slice_marker_score_strategy == 'mean_pooling'
+            self.config.cross_slice_marker_score_strategy in ['weighted_mean_pooling', 'max_pooling']
         )
         
         if use_3d_constrained:
-            logger.info(f"Using 3D constrained selection with mean pooling (ensuring {self.config.num_homogeneous} neighbors per slice)")
+            logger.info(f"Using 3D constrained selection (ensuring {self.config.num_homogeneous} neighbors per slice)")
             
             # Process in batches to avoid GPU OOM
             homogeneous_neighbors_list = []
@@ -622,7 +618,6 @@ class ConnectivityMatrixBuilder:
                     spatial_neighbors_batch,
                     all_emb_gcn_norm_jax,
                     all_emb_indv_norm_jax,
-                    self.config.num_anchor,
                     self.config.num_homogeneous,  # This is per-slice
                     k_central,
                     k_adjacent,
@@ -655,7 +650,6 @@ class ConnectivityMatrixBuilder:
                     spatial_neighbors_batch,
                     all_emb_gcn_norm_jax,
                     all_emb_indv_norm_jax,
-                    self.config.num_anchor,
                     self.config.num_homogeneous,
                     self.config.similarity_threshold
                 )

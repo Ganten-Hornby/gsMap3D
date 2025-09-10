@@ -66,7 +66,7 @@ class ParallelMarkerScoreComputer:
             num_workers: Number of compute workers
             input_queue: Optional input queue (from reader)
             output_queue: Optional output queue (to writer)
-            cross_slice_strategy: Strategy for 3D ('mean_pooling' or 'max_pooling')
+            cross_slice_strategy: Strategy for 3D ('weighted_mean_pooling' or 'max_pooling')
             n_slices: Number of slices for 3D data
             num_homogeneous_per_slice: Neighbors per slice for 3D strategies
         """
@@ -826,9 +826,7 @@ class MarkerScoreCalculator:
         num_homogeneous_per_slice = self.config.num_homogeneous
         
         if (self.config.dataset_type == 'spatial3D' and 
-            hasattr(self.config, 'cross_slice_marker_score_strategy') and
-            self.config.cross_slice_marker_score_strategy in ['mean_pooling', 'max_pooling'] and
-            hasattr(self.config, 'n_adjacent_slices') and self.config.n_adjacent_slices > 0):
+            self.config.cross_slice_marker_score_strategy in ['weighted_mean_pooling', 'max_pooling']):
             
             cross_slice_strategy = self.config.cross_slice_marker_score_strategy
             n_slices = 1 + 2 * self.config.n_adjacent_slices
