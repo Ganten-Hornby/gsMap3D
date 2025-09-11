@@ -13,7 +13,8 @@ import jax.numpy as jnp
 from jax import jit
 from scipy.spatial import cKDTree
 from scipy.sparse import csr_matrix
-from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn
+from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, \
+    TimeRemainingColumn, MofNCompleteColumn, TimeElapsedColumn
 import scanpy as sc
 import anndata as ad
 
@@ -389,15 +390,16 @@ def _find_homogeneous_3d_memory_efficient(
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=None),
+        BarColumn(),
         MofNCompleteColumn(),
         TaskProgressColumn(),
         TimeRemainingColumn(),
+        TimeElapsedColumn(),
         refresh_per_second=1
     ) as slice_progress:
         # Overall slice progress task
         slice_task = slice_progress.add_task(
-            "Processing slices",
+            "Finding homogeneous neighbors (3D cross-slice)...",
             total=total_slices
         )
         
@@ -562,7 +564,7 @@ class ConnectivityMatrixBuilder:
         """
         self.config = config
         # Use configured batch size for GPU processing
-        self.find_homogeneous_batch_size = config.mkscore_batch_size
+        self.find_homogeneous_batch_size = config.find_homogeneous_batch_size
         self.dataset_type = config.dataset_type
     
     def build_connectivity_matrix(

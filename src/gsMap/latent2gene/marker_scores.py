@@ -56,7 +56,8 @@ class ParallelMarkerScoreComputer:
         output_queue: queue.Queue = None,
         cross_slice_strategy: str = None,
         n_slices: int = 1,
-        num_homogeneous_per_slice: int = None
+        num_homogeneous_per_slice: int = None,
+        no_expression_fraction: bool = False
     ):
         """
         Initialize computer pool
@@ -71,12 +72,14 @@ class ParallelMarkerScoreComputer:
             cross_slice_strategy: Strategy for 3D ('weighted_mean_pooling' or 'max_pooling')
             n_slices: Number of slices for 3D data
             num_homogeneous_per_slice: Neighbors per slice for 3D strategies
+            no_expression_fraction: Skip expression fraction filtering if True
         """
         self.num_workers = num_workers
         self.num_homogeneous = num_homogeneous
         self.cross_slice_strategy = cross_slice_strategy
         self.n_slices = n_slices
         self.num_homogeneous_per_slice = num_homogeneous_per_slice or num_homogeneous
+        self.no_expression_fraction = no_expression_fraction
         
         # Store global statistics as JAX arrays
         self.global_log_gmean = jnp.array(global_log_gmean)
@@ -170,7 +173,8 @@ class ParallelMarkerScoreComputer:
                         self.n_slices,
                         self.num_homogeneous_per_slice,
                         self.global_log_gmean,
-                        self.global_expr_frac
+                        self.global_expr_frac,
+                        self.no_expression_fraction
                     )
                 else:
                     # Use standard computation (includes mean pooling via weights)
@@ -180,7 +184,8 @@ class ParallelMarkerScoreComputer:
                         actual_batch_size,
                         self.num_homogeneous * self.n_slices,
                         self.global_log_gmean,
-                        self.global_expr_frac
+                        self.global_expr_frac,
+                        self.no_expression_fraction
                     )
                 
                 # Convert back to numpy as float16 for memory efficiency
@@ -544,14 +549,15 @@ class MarkerScoreMessageQueue:
 
 
 
-@partial(jit, static_argnums=(2, 3))
+@partial(jit, static_argnums=(2, 3, 7))
 def compute_marker_scores_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix
     weights: jnp.ndarray,  # B × N weight matrix
     batch_size: int,
     num_neighbors: int,
     global_log_gmean: jnp.ndarray,  # G-dimensional vector
-    global_expr_frac: jnp.ndarray  # G-dimensional vector
+    global_expr_frac: jnp.ndarray,  # G-dimensional vector
+    no_expression_fraction: bool = False  # Skip expression fraction filtering if True
 ) -> jnp.ndarray:
     """
     JAX-accelerated marker score computation
@@ -568,18 +574,32 @@ def compute_marker_scores_jax(
     weights = weights / weights.sum(axis=1, keepdims=True)  # Normalize weights
     weighted_log_mean = jnp.einsum('bn,bng->bg', weights, log_ranks_3d)
     
-    # Compute expression fraction (mean of is_expressed across neighbors)
-    # Treat min log rank as non-expressed
-    is_expressed = (log_ranks_3d != log_ranks_3d.min(axis=-1, keepdims=True))
-    expr_frac = is_expressed.astype(jnp.float16).mean(axis=1)  # Mean across neighbors (float16 for memory)
-
     # Calculate marker score
     marker_score = jnp.exp(weighted_log_mean - global_log_gmean)
     marker_score = jnp.where(marker_score < 1.0, 0.0, marker_score)
 
-    # Apply expression fraction filter
-    frac_mask = expr_frac > global_expr_frac
-    marker_score = jnp.where(frac_mask, marker_score, 0.0)
+    # Apply expression fraction filter (only if not disabled)
+    if not no_expression_fraction:
+        # Compute expression fraction (mean of is_expressed across neighbors)
+        # Treat min log rank as non-expressed
+        is_expressed = (log_ranks_3d != log_ranks_3d.min(axis=-1, keepdims=True))
+        
+        # Create mask for valid neighbors (where weights > 0)
+        valid_mask = weights > 0  # Shape: (batch_size, num_neighbors)
+        
+        # Apply mask and compute mean only for valid neighbors
+        is_expressed_masked = jnp.where(valid_mask[:, :, None], is_expressed, 0)
+        valid_counts = valid_mask.sum(axis=1, keepdims=True)  # Count of valid neighbors per cell
+        
+        # Compute mean only over valid neighbors (avoid division by zero)
+        expr_frac = jnp.where(
+            valid_counts > 0,
+            is_expressed_masked.astype(jnp.float16).sum(axis=1) / valid_counts,
+            0.0
+        )
+        
+        frac_mask = expr_frac > global_expr_frac
+        marker_score = jnp.where(frac_mask, marker_score, 0.0)
 
     marker_score = jnp.exp(marker_score ** 1.5) - 1.0
 
@@ -587,7 +607,7 @@ def compute_marker_scores_jax(
     return marker_score.astype(jnp.float16)
 
 
-@partial(jit, static_argnums=(2, 3, 4))
+@partial(jit, static_argnums=(2, 3, 4, 8))
 def compute_marker_scores_3d_max_pooling_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix where N = n_slices * num_homogeneous_per_slice
     weights: jnp.ndarray,  # B × N weight matrix
@@ -595,7 +615,8 @@ def compute_marker_scores_3d_max_pooling_jax(
     n_slices: int,
     num_homogeneous_per_slice: int,
     global_log_gmean: jnp.ndarray,  # G-dimensional vector
-    global_expr_frac: jnp.ndarray  # G-dimensional vector
+    global_expr_frac: jnp.ndarray,  # G-dimensional vector
+    no_expression_fraction: bool = False  # Skip expression fraction filtering if True
 ) -> jnp.ndarray:
     """
     JAX-accelerated marker score computation with max pooling for 3D spatial data.
@@ -630,20 +651,34 @@ def compute_marker_scores_3d_max_pooling_jax(
     # Result: (batch_size, n_slices, n_genes)
     weighted_log_mean = jnp.einsum('bsn,bsng->bsg', weights_normalized, log_ranks_4d)
     
-    # Compute expression fraction for each slice
-    # Treat min log rank as non-expressed
-    min_log_rank = log_ranks_4d.min(axis=-1, keepdims=True)
-    is_expressed = (log_ranks_4d != min_log_rank)
-    # Mean across neighbors within each slice: (batch_size, n_slices, n_genes)
-    expr_frac = is_expressed.astype(jnp.float16).mean(axis=2)
-    
     # Calculate marker score for each slice
     marker_score_per_slice = jnp.exp(weighted_log_mean - global_log_gmean[None, None, :])
     marker_score_per_slice = jnp.where(marker_score_per_slice < 1.0, 0.0, marker_score_per_slice)
     
-    # Apply expression fraction filter for each slice
-    frac_mask = expr_frac > global_expr_frac[None, None, :]
-    marker_score_per_slice = jnp.where(frac_mask, marker_score_per_slice, 0.0)
+    # Apply expression fraction filter for each slice (only if not disabled)
+    if not no_expression_fraction:
+        # Compute expression fraction for each slice
+        # Treat min log rank as non-expressed
+        min_log_rank = log_ranks_4d.min(axis=-1, keepdims=True)
+        is_expressed = (log_ranks_4d != min_log_rank)
+        
+        # Create mask for valid neighbors within each slice (where weights > 0)
+        valid_mask = weights_3d > 0  # Shape: (batch_size, n_slices, num_homogeneous_per_slice)
+        
+        # Apply mask and compute mean only for valid neighbors within each slice
+        is_expressed_masked = jnp.where(valid_mask[:, :, :, None], is_expressed, 0)
+        valid_counts = valid_mask.sum(axis=2, keepdims=True)  # Count of valid neighbors per slice
+        
+        # Compute mean only over valid neighbors (avoid division by zero)
+        # Result: (batch_size, n_slices, n_genes)
+        expr_frac = jnp.where(
+            valid_counts > 0,
+            is_expressed_masked.astype(jnp.float16).sum(axis=2) / valid_counts.squeeze(axis=2),
+            0.0
+        )
+        
+        frac_mask = expr_frac > global_expr_frac[None, None, :]
+        marker_score_per_slice = jnp.where(frac_mask, marker_score_per_slice, 0.0)
     
     marker_score_per_slice = jnp.exp(marker_score_per_slice ** 1.5) - 1.0
     
@@ -849,7 +884,8 @@ class MarkerScoreCalculator:
             output_queue=computer_to_writer_queue,  # Output to writer
             cross_slice_strategy=cross_slice_strategy,
             n_slices=n_slices,
-            num_homogeneous_per_slice=num_homogeneous_per_slice
+            num_homogeneous_per_slice=num_homogeneous_per_slice,
+            no_expression_fraction=self.config.no_expression_fraction
         )
         
         self.writer = ParallelMarkerScoreWriter(
@@ -866,7 +902,7 @@ class MarkerScoreCalculator:
             reader=self.reader,
             computer=self.computer,
             writer=self.writer,
-            batch_size=self.config.find_homogeneous_batch_size
+            batch_size=self.config.mkscore_batch_size
         )
     
     def _find_homogeneous_spots(
