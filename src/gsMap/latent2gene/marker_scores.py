@@ -922,8 +922,8 @@ class MarkerScoreCalculator:
         # Optimize row order using JAX implementation
         logger.info("Optimizing row order for cache efficiency...")
         row_order = optimize_row_order_jax(
-            neighbor_indices,
-            cell_indices=cell_indices[:,:self.config.num_homogeneous],
+            cell_indices=cell_indices,
+            neighbor_indices = neighbor_indices[:,:self.config.num_homogeneous],
             neighbor_weights=neighbor_weights[:,:self.config.num_homogeneous],
         )
         

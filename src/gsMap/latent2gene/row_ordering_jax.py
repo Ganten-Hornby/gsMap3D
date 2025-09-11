@@ -135,10 +135,14 @@ def optimize_row_order_jax(
     n_cells, k = neighbor_indices.shape
     
     # Convert to JAX arrays on CPU to avoid CUDA memory issues
-    cpu_device = jax.devices('cpu')[0]
-    
-    # Create arrays directly on CPU device
-    with jax.default_device(cpu_device):
+    # test gpu if available
+    if device is None:
+        if jax.devices('gpu'):
+            device = 'gpu'
+        else:
+            device = 'cpu'
+
+    with jax.default_device(device):
         neighbor_indices_jax = jnp.asarray(neighbor_indices)
         neighbor_weights_jax = jnp.asarray(neighbor_weights)
         cell_indices_jax = jnp.asarray(cell_indices)
