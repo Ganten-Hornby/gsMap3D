@@ -26,7 +26,7 @@ from jax import jit
 
 from .memmap_io import MemMapDense
 from .connectivity import ConnectivityMatrixBuilder
-from .row_ordering import optimize_row_order
+from .row_ordering_jax import optimize_row_order_jax
 from gsMap.config.dataclasses import MarkerScoreCrossSliceStrategy, DatasetType
 
 
@@ -919,13 +919,13 @@ class MarkerScoreCalculator:
         assert neighbor_indices.max() <= max_valid_idx, \
             f"Neighbor indices exceed bounds (max: {neighbor_indices.max()}, limit: {max_valid_idx})"
 
-        # Optimize row order
+        # Optimize row order using JAX implementation
         logger.info("Optimizing row order for cache efficiency...")
-        row_order = optimize_row_order(
+        row_order = optimize_row_order_jax(
             neighbor_indices,
             cell_indices=cell_indices,
-            method=None,
-            neighbor_weights=neighbor_weights
+            neighbor_weights=neighbor_weights,
+            method=None  # Auto-select method based on dataset size
         )
         
         neighbor_indices = neighbor_indices[row_order]
