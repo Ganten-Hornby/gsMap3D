@@ -11,7 +11,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import jit
-from sklearn.neighbors import NearestNeighbors
+from scipy.spatial import cKDTree
 from scipy.sparse import csr_matrix
 from rich.progress import track
 import scanpy as sc
@@ -65,14 +65,12 @@ def find_spatial_neighbors_with_slices(
     # If no slice_ids provided, perform standard 2D KNN
     if slice_ids is None:
         logger.info(f"No slice IDs provided, performing standard 2D KNN with k={k_central}")
-        nbrs = NearestNeighbors(
-            n_neighbors=min(k_central, n_masked),
-            metric='euclidean',
-            algorithm='kd_tree',
-            n_jobs=8,
+        tree = cKDTree(coords[cell_mask])
+        _, spatial_neighbors = tree.query(
+            coords[cell_mask], 
+            k=min(k_central, n_masked),
+            workers=-1  # Use all available cores
         )
-        nbrs.fit(coords[cell_mask])
-        _, spatial_neighbors = nbrs.kneighbors(coords[cell_mask])
         return cell_indices[spatial_neighbors]
     
     # Slice-aware neighbor search with fixed-size arrays
@@ -92,18 +90,13 @@ def find_spatial_neighbors_with_slices(
     unique_slices = np.unique(masked_slice_ids)
     slice_to_indices = {s: np.where(masked_slice_ids == s)[0] for s in unique_slices}
     
-    # Pre-compute KNN for each slice
+    # Pre-compute KDTree for each slice
     slice_knn_models = {}
     for slice_id, slice_local_indices in slice_to_indices.items():
         if len(slice_local_indices) >= max(k_central, k_adjacent):
             slice_coords = masked_coords[slice_local_indices]
-            nbrs = NearestNeighbors(
-                n_neighbors=max(k_central, k_adjacent),
-                metric='euclidean',
-                algorithm='kd_tree'
-            )
-            nbrs.fit(slice_coords)
-            slice_knn_models[slice_id] = (nbrs, slice_local_indices)
+            tree = cKDTree(slice_coords)
+            slice_knn_models[slice_id] = (tree, slice_local_indices)
     
     # Batch process all cells
     for slice_id in unique_slices:
@@ -114,8 +107,8 @@ def find_spatial_neighbors_with_slices(
             query_coords = masked_coords[cells_on_slice]
 
             # Central slice neighbors (fixed k_central)
-            nbrs, slice_local_indices = slice_knn_models[slice_id]
-            _, local_neighbors = nbrs.kneighbors(query_coords, n_neighbors=k_central)
+            tree, slice_local_indices = slice_knn_models[slice_id]
+            _, local_neighbors = tree.query(query_coords, k=k_central,workers=-1)
             global_neighbors = cell_indices[slice_local_indices[local_neighbors]]
             spatial_neighbors[cells_on_slice, :k_central] = global_neighbors
 
@@ -125,8 +118,8 @@ def find_spatial_neighbors_with_slices(
                 for direction in [1, -1]:
                     adjacent_slice = slice_id + direction * offset
                     if adjacent_slice in slice_knn_models:
-                        nbrs_adj, adj_local_indices = slice_knn_models[adjacent_slice]
-                        _, adj_local_neighbors = nbrs_adj.kneighbors(query_coords, n_neighbors=k_adjacent)
+                        tree_adj, adj_local_indices = slice_knn_models[adjacent_slice]
+                        _, adj_local_neighbors = tree_adj.query(query_coords, k=k_adjacent,workers=-1)
                         adj_global_neighbors = cell_indices[adj_local_indices[adj_local_neighbors]]
                         spatial_neighbors[cells_on_slice, col_offset:col_offset+k_adjacent] = adj_global_neighbors
                     # If adjacent slice doesn't exist, already filled with -1
@@ -142,13 +135,10 @@ def find_spatial_neighbors_with_slices(
             if n_cells_on_slice > 1:
                 # Few cells on slice - use all available as neighbors, rest already -1
                 slice_coords = masked_coords[slice_local_indices]
-                nbrs = NearestNeighbors(
-                    n_neighbors=min(n_cells_on_slice, k_central),
-                    metric='euclidean',
-                    algorithm='kd_tree'
-                )
-                nbrs.fit(slice_coords)
-                _, local_neighbors = nbrs.kneighbors(slice_coords)
+                tree = cKDTree(slice_coords)
+                _, local_neighbors = tree.query(
+                    slice_coords,
+                    k=min(n_cells_on_slice, k_central), workers=-1)
                 global_neighbors = cell_indices[slice_local_indices[local_neighbors]]
                 
                 # Fill what we can, rest remains -1
