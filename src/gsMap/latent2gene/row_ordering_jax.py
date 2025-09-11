@@ -127,7 +127,6 @@ def optimize_row_order_jax(
         neighbor_indices: (n_cells, k) neighbor indices (global)
         cell_indices: (n_cells,) global cell indices
         neighbor_weights: (n_cells, k) neighbor weights
-        method: Ignored, always uses scan-based weighted method
         device: 'gpu', 'cpu', or None (auto-detect)
     
     Returns:
@@ -135,18 +134,22 @@ def optimize_row_order_jax(
     """
     n_cells, k = neighbor_indices.shape
     
-    # Convert to JAX arrays
-    neighbor_indices_jax = jnp.asarray(neighbor_indices,)
-    neighbor_weights_jax = jnp.asarray(neighbor_weights,)
-    cell_indices_jax = jnp.asarray(cell_indices,)
+    # Convert to JAX arrays on CPU to avoid CUDA memory issues
+    cpu_device = jax.devices('cpu')[0]
     
-    # Run optimized weighted ordering
-    logger.debug(f"Running JAX scan-based weighted ordering for {n_cells} cells")
-    ordered_jax = _optimize_weighted_scan(
-        neighbor_indices_jax,
-        neighbor_weights_jax,
-        cell_indices_jax,
-        k
-    )
+    # Create arrays directly on CPU device
+    with jax.default_device(cpu_device):
+        neighbor_indices_jax = jnp.asarray(neighbor_indices)
+        neighbor_weights_jax = jnp.asarray(neighbor_weights)
+        cell_indices_jax = jnp.asarray(cell_indices)
+    
+        # Run optimized weighted ordering (already on CPU)
+        logger.debug(f"Running JAX scan-based weighted ordering for {n_cells} cells on CPU")
+        ordered_jax = _optimize_weighted_scan(
+            neighbor_indices_jax,
+            neighbor_weights_jax,
+            cell_indices_jax,
+            k
+        )
     
     return np.array(ordered_jax)
