@@ -731,6 +731,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     # -------- IO parameters
     rank_batch_size:int = 500
     mkscore_batch_size:int = 500
+    find_homogeneous_batch_size:int = 100
     rank_write_interval = 10
 
     # Worker configurations

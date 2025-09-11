@@ -434,7 +434,7 @@ class ConnectivityMatrixBuilder:
         """
         self.config = config
         # Use configured batch size for GPU processing
-        self.mkscore_batch_size = config.mkscore_batch_size
+        self.find_homogeneous_batch_size = config.mkscore_batch_size
         self.dataset_type = config.dataset_type
     
     def build_connectivity_matrix(
@@ -568,7 +568,7 @@ class ConnectivityMatrixBuilder:
         )
         
         # Step 2 & 3: Find anchors and homogeneous neighbors in batches
-        logger.info(f"Finding anchors and homogeneous neighbors (batch size: {self.mkscore_batch_size})...")
+        logger.info(f"Finding anchors and homogeneous neighbors (batch size: {self.find_homogeneous_batch_size})...")
 
         # Convert to JAX arrays once with float16 for memory efficiency
         # Note: float16 provides sufficient precision for normalized embeddings
@@ -588,8 +588,8 @@ class ConnectivityMatrixBuilder:
             homogeneous_neighbors_list = []
             homogeneous_weights_list = []
             
-            for batch_start in track(range(0, n_masked, self.mkscore_batch_size), description="Finding homogeneous neighbors (3D constrained)", transient=True):
-                batch_end = min(batch_start + self.mkscore_batch_size, n_masked)
+            for batch_start in track(range(0, n_masked, self.find_homogeneous_batch_size), description="Finding homogeneous neighbors (3D constrained)", transient=True):
+                batch_end = min(batch_start + self.find_homogeneous_batch_size, n_masked)
                 batch_indices = slice(batch_start, batch_end)
                 
                 # Get batch data directly from JAX arrays (no GPU movement)
@@ -620,8 +620,8 @@ class ConnectivityMatrixBuilder:
             homogeneous_neighbors_list = []
             homogeneous_weights_list = []
             
-            for batch_start in track(range(0, n_masked, self.mkscore_batch_size), description="Finding homogeneous neighbors", transient=True):
-                batch_end = min(batch_start + self.mkscore_batch_size, n_masked)
+            for batch_start in track(range(0, n_masked, self.find_homogeneous_batch_size), description="Finding homogeneous neighbors", transient=True):
+                batch_end = min(batch_start + self.find_homogeneous_batch_size, n_masked)
                 batch_indices = slice(batch_start, batch_end)
                 
                 # Get batch data directly from JAX arrays (no GPU movement)

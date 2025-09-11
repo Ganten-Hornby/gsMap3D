@@ -866,7 +866,7 @@ class MarkerScoreCalculator:
             reader=self.reader,
             computer=self.computer,
             writer=self.writer,
-            batch_size=self.config.mkscore_batch_size
+            batch_size=self.config.find_homogeneous_batch_size
         )
     
     def _find_homogeneous_spots(
@@ -923,8 +923,8 @@ class MarkerScoreCalculator:
         logger.info("Optimizing row order for cache efficiency...")
         row_order = optimize_row_order_jax(
             neighbor_indices,
-            cell_indices=cell_indices,
-            neighbor_weights=neighbor_weights,
+            cell_indices=cell_indices[:,:self.config.num_homogeneous],
+            neighbor_weights=neighbor_weights[:,:self.config.num_homogeneous],
         )
         
         neighbor_indices = neighbor_indices[row_order]
