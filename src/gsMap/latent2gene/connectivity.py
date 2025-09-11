@@ -68,7 +68,8 @@ def find_spatial_neighbors_with_slices(
         nbrs = NearestNeighbors(
             n_neighbors=min(k_central, n_masked),
             metric='euclidean',
-            algorithm='kd_tree'
+            algorithm='kd_tree',
+            n_jobs=8,
         )
         nbrs.fit(coords[cell_mask])
         _, spatial_neighbors = nbrs.kneighbors(coords[cell_mask])

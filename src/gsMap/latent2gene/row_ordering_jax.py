@@ -33,15 +33,29 @@ def _optimize_weighted_scan(
     n_cells = len(neighbor_indices)
 
     # Pre-compute global to local mapping
-    max_global_idx = jnp.max(cell_indices)
+    # Handle -1 values in neighbor_indices (invalid neighbors)
+    valid_mask = neighbor_indices >= 0
+    max_global_idx = jnp.max(jnp.where(valid_mask, neighbor_indices, 0))
+    
+    # Create inverse mapping from global to local indices
     inverse_map = jnp.full(max_global_idx + 1, -1, dtype=jnp.int32)
     inverse_map = inverse_map.at[cell_indices].set(jnp.arange(n_cells))
-
-    # Convert to local indices
-    local_neighbor_indices = inverse_map[neighbor_indices.ravel()].reshape(n_cells, k)
+    
+    # Convert to local indices, preserving -1 for invalid neighbors
+    neighbor_indices_flat = neighbor_indices.ravel()
+    # For invalid indices (-1), keep them as -1
+    # For valid indices, map them through inverse_map
+    local_indices_flat = jnp.where(
+        neighbor_indices_flat >= 0,
+        inverse_map[jnp.where(neighbor_indices_flat >= 0, neighbor_indices_flat, 0)],
+        -1
+    )
+    local_neighbor_indices = local_indices_flat.reshape(n_cells, k)
 
     # Initialize with highest weight cell
-    max_weights = jnp.max(neighbor_weights, axis=1)
+    # Only consider valid neighbors when computing max weights
+    weights_masked = jnp.where(valid_mask, neighbor_weights, 0)
+    max_weights = jnp.max(weights_masked, axis=1)
     start_node = jnp.argmax(max_weights)
 
     # Initial state for scan
@@ -63,8 +77,10 @@ def _optimize_weighted_scan(
         neighbors = state["local_neighbor_indices"][current]
         weights = state["neighbor_weights"][current]
         
+        # Handle -1 values: create a mask for valid neighbors
         is_valid = neighbors != -1
-        is_unvisited = ~visited[neighbors]
+        # For invalid neighbors, use False for is_unvisited to avoid indexing with -1
+        is_unvisited = jnp.where(is_valid, ~visited[jnp.where(is_valid, neighbors, 0)], False)
         mask = is_valid & is_unvisited
         
         neighbor_scores = jnp.where(mask, weights, -jnp.inf)
@@ -101,8 +117,7 @@ def _optimize_weighted_scan(
 def optimize_row_order_jax(
         neighbor_indices: np.ndarray,
         cell_indices: np.ndarray,
-        neighbor_weights: Optional[np.ndarray] = None,
-        method: Optional[str] = None,
+        neighbor_weights: Optional[np.ndarray],
         device: Optional[str] = None
 ) -> np.ndarray:
     """
@@ -120,26 +135,10 @@ def optimize_row_order_jax(
     """
     n_cells, k = neighbor_indices.shape
     
-    # Validate inputs
-    if neighbor_weights is None:
-        # Generate uniform weights if not provided
-        neighbor_weights = np.ones_like(neighbor_indices, dtype=np.float32)
-        logger.info("No weights provided, using uniform weights")
-    
-    # Auto-detect device if not specified
-    if device is None:
-        try:
-            _ = jax.devices('gpu')[0]
-            device = 'gpu'
-            logger.debug(f"Using GPU for {n_cells} cells")
-        except:
-            device = 'cpu'
-            logger.debug(f"Using CPU with JAX for {n_cells} cells")
-    
     # Convert to JAX arrays
-    neighbor_indices_jax = jnp.asarray(neighbor_indices, dtype=jnp.int32)
-    neighbor_weights_jax = jnp.asarray(neighbor_weights, dtype=jnp.float32)
-    cell_indices_jax = jnp.asarray(cell_indices, dtype=jnp.int32)
+    neighbor_indices_jax = jnp.asarray(neighbor_indices,)
+    neighbor_weights_jax = jnp.asarray(neighbor_weights,)
+    cell_indices_jax = jnp.asarray(cell_indices,)
     
     # Run optimized weighted ordering
     logger.debug(f"Running JAX scan-based weighted ordering for {n_cells} cells")
@@ -148,6 +147,6 @@ def optimize_row_order_jax(
         neighbor_weights_jax,
         cell_indices_jax,
         k
-    ).block_until_ready()
+    )
     
     return np.array(ordered_jax)

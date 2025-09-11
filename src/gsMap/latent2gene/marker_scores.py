@@ -925,7 +925,6 @@ class MarkerScoreCalculator:
             neighbor_indices,
             cell_indices=cell_indices,
             neighbor_weights=neighbor_weights,
-            method=None  # Auto-select method based on dataset size
         )
         
         neighbor_indices = neighbor_indices[row_order]
