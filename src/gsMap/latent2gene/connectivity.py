@@ -333,20 +333,20 @@ def _find_anchors_and_homogeneous_batch_3d_jit(
         homogeneous_neighbors = central_homo_neighbors
         homogeneous_weights = central_homo_weights
     
-    # Normalize weights using mean pooling across slices
-    # Each slice gets equal weight (1/n_slices)
-    weights_reshaped = homogeneous_weights.reshape(batch_size, n_slices, num_homogeneous_per_slice)
-    
-    # Normalize within each slice
-    slice_sums = weights_reshaped.sum(axis=2, keepdims=True)
-    slice_sums = jnp.where(slice_sums > 0, slice_sums, 1.0)
-    weights_normalized = weights_reshaped / slice_sums
-    
-    # Apply mean pooling weight (1/n_slices per slice)
-    weights_normalized = weights_normalized / n_slices
-    
-    # Reshape back
-    homogeneous_weights = weights_normalized.reshape(batch_size, total_homogeneous)
+    # # Normalize weights using mean pooling across slices
+    # # Each slice gets equal weight (1/n_slices)
+    # weights_reshaped = homogeneous_weights.reshape(batch_size, n_slices, num_homogeneous_per_slice)
+    #
+    # # Normalize within each slice
+    # slice_sums = weights_reshaped.sum(axis=2, keepdims=True)
+    # slice_sums = jnp.where(slice_sums > 0, slice_sums, 1.0)
+    # weights_normalized = weights_reshaped / slice_sums
+    #
+    # # Apply mean pooling weight (1/n_slices per slice)
+    # weights_normalized = weights_normalized / n_slices
+    #
+    # # Reshape back
+    # homogeneous_weights = weights_normalized.reshape(batch_size, total_homogeneous)
     
     return homogeneous_neighbors, homogeneous_weights
 
