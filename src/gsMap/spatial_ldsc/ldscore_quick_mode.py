@@ -459,8 +459,8 @@ class SpatialLDSCProcessor:
         self.spot_names_all = concat_adata.obs_names.to_numpy()
         
         # Filter by sample if specified
-        if self.config.sample_name:
-            logger.info(f"Filtering spots by sample_name: {self.config.sample_name}")
+        if self.config.sample_filter:
+            logger.info(f"Filtering spots by sample: {self.config.sample_filter}")
             sample_info = concat_adata.obs.get('sample', concat_adata.obs.get('sample_name', None))
             
             if sample_info is None:
@@ -468,7 +468,7 @@ class SpatialLDSCProcessor:
                 raise ValueError("No 'sample' or 'sample_name' column found in obs")
             
             sample_info = sample_info.to_numpy()
-            self.spot_indices = np.where(sample_info == self.config.sample_name)[0]
+            self.spot_indices = np.where(sample_info == self.config.sample_filter)[0]
             
             # Verify spots are contiguous for efficient slicing
             expected_range = list(range(self.spot_indices[0], self.spot_indices[-1] + 1))
@@ -478,7 +478,7 @@ class SpatialLDSCProcessor:
             
             self.sample_start_offset = self.spot_indices[0]
             self.spot_names_filtered = self.spot_names_all[self.spot_indices]
-            logger.info(f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_name}'")
+            logger.info(f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_filter}'")
         else:
             self.spot_indices = np.arange(n_spots_memmap)
             self.spot_names_filtered = self.spot_names_all
@@ -603,8 +603,8 @@ class SpatialLDSCProcessor:
             # Build description with sample name and range info
             desc_parts = [f"Processing {self.total_chunks:,} chunks ({self.total_cells_to_process:,} cells)"]
             
-            if hasattr(self.config, 'sample_name') and self.config.sample_name:
-                desc_parts.append(f"Sample: {self.config.sample_name}")
+            if hasattr(self.config, 'sample_filter') and self.config.sample_filter:
+                desc_parts.append(f"Sample: {self.config.sample_filter}")
             
             if self.config.cell_indices_range:
                 start_cell, end_cell = self.config.cell_indices_range
@@ -781,8 +781,8 @@ class SpatialLDSCProcessor:
         if self.min_spot_start == 0 and self.max_spot_end == self.n_spots:
             return f"{base_name}.csv.gz"
 
-        if self.config.sample_name:
-            return f"{base_name}_{self.config.sample_name}_start{self.min_spot_start}_end{self.max_spot_end}_total{self.n_spots}.csv.gz"
+        if self.config.sample_filter:
+            return f"{base_name}_{self.config.sample_filter}_start{self.min_spot_start}_end{self.max_spot_end}_total{self.n_spots}.csv.gz"
         
         # Partial coverage without explicit range
         return f"{base_name}_start{self.min_spot_start}_end{self.max_spot_end}_total{self.n_spots}.csv.gz"

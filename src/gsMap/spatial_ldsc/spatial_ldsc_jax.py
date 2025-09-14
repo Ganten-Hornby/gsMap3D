@@ -296,8 +296,8 @@ def run_spatial_ldsc_single_trait(config: SpatialLDSCConfig,
     logger.info("=" * 70)
     logger.info(f"Running Spatial LDSC (Unified Processor Version)")
     logger.info(f"Project: {config.project_name}, Trait: {trait_name}")
-    if config.sample_name:
-        logger.info(f"Filtering by sample: {config.sample_name}")
+    if config.sample_filter:
+        logger.info(f"Filtering by sample: {config.sample_filter}")
     if config.cell_indices_range:
         logger.info(f"Cell indices range: {config.cell_indices_range}")
     logger.info("=" * 70)

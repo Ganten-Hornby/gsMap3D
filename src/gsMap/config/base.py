@@ -174,14 +174,35 @@ class ConfigWithAutoPaths:
 
     @property
     @ensure_path_exists
-    def ldsc_dir(self) -> Path:
-        return self.project_dir / "spatial_ldsc"
-    
-    @property
-    @ensure_path_exists
     def ldsc_save_dir(self) -> Path:
         """Directory for spatial LDSC results"""
         return self.project_dir / "spatial_ldsc"
+
+    @ensure_path_exists
+    def get_ldsc_result_file(self, trait_name: str) -> Path:
+        return Path(f"{self.ldsc_save_dir}/{self.project_name}_{trait_name}.csv.gz")
+    #
+    # #
+    # # @property
+    # # @ensure_path_exists
+    # # def ldscore_save_dir(self) -> Path:
+    # #     return Path(f"{self.workdir}/{self.sample_name}/generate_ldscore")
+    #
+    # @property
+    # @ensure_path_exists
+    # def cauchy_save_dir(self) -> Path:
+    #     return Path(f"{self.workdir}/{self.project_name}/cauchy_combination")
+    #
+    # @ensure_path_exists
+    # def get_report_dir(self, trait_name: str) -> Path:
+    #     return Path(f"{self.workdir}/{self.project_name}/report/{trait_name}")
+    #
+    # def get_gsMap_report_file(self, trait_name: str) -> Path:
+    #     return (
+    #         self.get_report_dir(trait_name) / f"{self.project_name}_{trait_name}_gsMap_Report.html"
+    #     )
+
+
 
     #
     #

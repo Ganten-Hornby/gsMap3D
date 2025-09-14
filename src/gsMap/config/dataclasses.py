@@ -188,6 +188,9 @@ def process_h5ad_inputs(config, input_options):
         OrderedDict of {sample_name: h5ad_path}
     """
 
+    if config.sample_h5ad_dict  is not None:
+        return OrderedDict(config.sample_h5ad_dict)
+
     sample_h5ad_dict = OrderedDict()
     
     # Check which options are provided
@@ -844,7 +847,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             self.sample_h5ad_dict = OrderedDict(
                 {sample_name:Path(latent_file)
                 for sample_name, latent_file in
-                find_latent_metadata['outputs']['latent_files']
+                find_latent_metadata['outputs']['latent_files'].items()
                  })
             # assert all files exist
             for sample_name, latent_file in self.sample_h5ad_dict.items():
@@ -946,6 +949,10 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             f"k_adjacent ({self.k_adjacent}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"
         assert self.num_homogeneous <= self.k_adjacent, \
             f"num_homogeneous ({self.num_homogeneous}) must be <= k_adjacent ({self.k_adjacent})"
+        n_slices = 1 + 2 * self.n_adjacent_slices
+        assert n_slices<=len(self.sample_h5ad_dict), \
+            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above + {self.n_adjacent_slices} below). " \
+            f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce n_adjacent_slices."
 
         logger.info(f"Dataset type is spatial3D, using n_adjacent_slices={self.n_adjacent_slices} for cross-slice search")
         logger.info(f"The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
@@ -1011,7 +1018,7 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     n_blocks: int = 200
     chisq_max: int | None = None
     cell_indices_range: tuple[int, int] | None = None  # 0-based range [start, end) of cell indices to process
-    sample_name: str | None = None  # Field for filtering by sample name
+    sample_filter: str | None = None  # Field for filtering processing to a specific sample
 
     ldscore_save_format: Literal["feather", "quick_mode"] = "feather"
 
@@ -1034,12 +1041,12 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         
         # Validate cell_indices_range is 0-based
         if self.cell_indices_range is not None:
-            # Validate exclusivity between sample_name and cell_indices_range
+            # Validate exclusivity between sample_filter and cell_indices_range
 
-            if self.sample_name is not None:
+            if self.sample_filter is not None:
                 raise ValueError(
-                    "Only one of sample_name or cell_indices_range can be provided, not both. "
-                    "Use sample_name to filter by sample, or cell_indices_range to process specific cell indices."
+                    "Only one of sample_filter or cell_indices_range can be provided, not both. "
+                    "Use sample_filter to filter by sample, or cell_indices_range to process specific cell indices."
                 )
 
             start, end = self.cell_indices_range
@@ -1156,6 +1163,13 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
                         f"baseline.{chrom}.annot.gz is not found in {additional_baseline_annotation}."
                     )
         return None
+
+
+@dataclass
+class gsMapPipelineConfig(ConfigWithAutoPaths):
+    find_latent: FindLatentRepresentationsConfig
+    latent2gene: LatentToGeneConfig
+    spatial_ldsc: SpatialLDSCConfig
 
 
 @dataclass

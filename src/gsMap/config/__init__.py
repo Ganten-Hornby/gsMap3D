@@ -38,6 +38,7 @@ from .dataclasses import (
     RunLinkModeConfig,
     DatasetType,
     MarkerScoreCrossSliceStrategy,
+    gsMapPipelineConfig
 )
 
 __all__ = [
