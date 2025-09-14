@@ -242,7 +242,6 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
             "annotation_key": config.annotation,
             "n_classes": int(class_size),
             "label_names": label_name if isinstance(label_name, list) else label_name.tolist() if hasattr(label_name, 'tolist') else list(label_name),
-            "percent_annotation": float(percent_annotation) if percent_annotation is not None else None
         }
     }
     
