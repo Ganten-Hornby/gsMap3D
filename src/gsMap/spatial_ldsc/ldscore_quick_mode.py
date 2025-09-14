@@ -780,6 +780,9 @@ class SpatialLDSCProcessor:
         # Check if we have complete coverage
         if self.min_spot_start == 0 and self.max_spot_end == self.n_spots:
             return f"{base_name}.csv.gz"
+
+        if self.config.sample_name:
+            return f"{base_name}_{self.config.sample_name}_start{self.min_spot_start}_end{self.max_spot_end}_total{self.n_spots}.csv.gz"
         
         # Partial coverage without explicit range
         return f"{base_name}_start{self.min_spot_start}_end{self.max_spot_end}_total{self.n_spots}.csv.gz"
