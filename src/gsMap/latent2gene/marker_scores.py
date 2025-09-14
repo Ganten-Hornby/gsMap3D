@@ -549,7 +549,7 @@ class MarkerScoreMessageQueue:
 
 
 
-@partial(jit, static_argnums=(2, 3, 7))
+@partial(jit, static_argnums=(2, 3, 6))
 def compute_marker_scores_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix
     weights: jnp.ndarray,  # B × N weight matrix
@@ -607,7 +607,7 @@ def compute_marker_scores_jax(
     return marker_score.astype(jnp.float16)
 
 
-@partial(jit, static_argnums=(2, 3, 4, 8))
+@partial(jit, static_argnums=(2, 3, 4, 7))
 def compute_marker_scores_3d_max_pooling_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix where N = n_slices * num_homogeneous_per_slice
     weights: jnp.ndarray,  # B × N weight matrix
@@ -671,9 +671,10 @@ def compute_marker_scores_3d_max_pooling_jax(
         
         # Compute mean only over valid neighbors (avoid division by zero)
         # Result: (batch_size, n_slices, n_genes)
+        # valid_counts has shape (batch_size, n_slices, 1), need to broadcast properly
         expr_frac = jnp.where(
             valid_counts > 0,
-            is_expressed_masked.astype(jnp.float16).sum(axis=2) / valid_counts.squeeze(axis=2),
+            is_expressed_masked.astype(jnp.float16).sum(axis=2) / valid_counts,
             0.0
         )
         

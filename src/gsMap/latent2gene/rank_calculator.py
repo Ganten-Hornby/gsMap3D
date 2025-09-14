@@ -301,6 +301,10 @@ class RankCalculator:
                 adata.obs['slice_id'] = st_id
                 adata.obs['slice_name'] = sample_name
 
+                # make unique index
+                adata.obs_names_make_unique()
+                adata.obs_names = adata.obs_names.astype(str) +'|'+ adata.obs['slice_name'].astype(str)
+
                 # Apply the same filtering logic as in counting phase
                 # This must be done BEFORE adding to rank zarr to maintain index consistency
                 if annotation_key is not None:

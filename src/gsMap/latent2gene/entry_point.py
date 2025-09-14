@@ -38,6 +38,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     logger.info("=" * 60)
     logger.info("Starting latent to gene conversion pipeline")
     logger.info("=" * 60)
+    logger.info(f"Using configuration: {config}")
 
     
     # Setup output directory using config paths
