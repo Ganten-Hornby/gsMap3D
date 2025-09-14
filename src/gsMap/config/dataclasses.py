@@ -1205,9 +1205,7 @@ class ReportConfig(ConfigWithAutoPaths):
         resolve_path=True
     )]
     
-    # Optional - must be after required fields
-    project_name: str = None
-    
+
     top_corr_genes: Annotated[int, typer.Option(
         help="Number of top correlated genes to display",
         min=1,
@@ -1259,10 +1257,7 @@ class MaxPoolingConfig(ConfigWithAutoPaths):
     spe_file_list: Annotated[str, typer.Option(
         help="List of input ST (.h5ad) files"
     )]
-    
-    # Optional - must be after required fields
-    project_name: str = None
-    
+
     annotation: Annotated[Optional[str], typer.Option(
         help="Annotation in adata.obs to use"
     )] = None
@@ -1312,9 +1307,6 @@ class GenerateLDScoreConfig(ConfigWithAutoPaths):
         help="Name of the sample"
     )] = None
 
-    # Optional - must be after required fields
-    project_name: str = None
-    
     keep_snp_root: Optional[str] = None  # Internal field
     
     gene_window_size: Annotated[int, typer.Option(
@@ -1379,7 +1371,8 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
         dir_okay=True,
         resolve_path=True
     )]
-    
+
+
     trait_name: Annotated[str, typer.Option(
         help="Name of the trait being analyzed"
     )]
@@ -1387,10 +1380,7 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
     annotation: Annotated[str, typer.Option(
         help="Name of the annotation in adata.obs to use"
     )]
-    
-    # Optional - must be after required fields
-    sample_name: str = None
-    project_name: str = None
+
     
     sample_name_list: Annotated[Optional[str], typer.Option(
         help="Space-separated list of sample names"
@@ -1639,7 +1629,7 @@ class DiagnosisConfig(ConfigWithAutoPaths):
         dir_okay=True,
         resolve_path=True
     )]
-    
+
     sample_name: Annotated[str, typer.Option(
         help="Name of the sample"
     )]
@@ -1658,10 +1648,7 @@ class DiagnosisConfig(ConfigWithAutoPaths):
         file_okay=True,
         dir_okay=False
     )]
-    
-    # Optional - must be after required fields
-    project_name: str = None
-    
+
     plot_type: Annotated[str, typer.Option(
         help="Type of diagnostic plot to generate",
         case_sensitive=False
@@ -1731,10 +1718,7 @@ class VisualizeConfig(ConfigWithAutoPaths):
     trait_name: Annotated[str, typer.Option(
         help="Name of the trait"
     )]
-    
-    # Optional - must be after required fields
-    project_name: str = None
-    
+
     annotation: Annotated[Optional[str], typer.Option(
         help="Annotation layer name"
     )] = None
@@ -1790,10 +1774,7 @@ class RunLinkModeConfig(ConfigWithAutoPaths):
         dir_okay=True,
         resolve_path=True
     )]
-    
-    # Optional - must be after required fields
-    project_name: str = None
-    
+
     annotation: Annotated[Optional[str], typer.Option(
         help="Annotation in adata.obs to use"
     )] = None
