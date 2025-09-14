@@ -1167,9 +1167,31 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
 
 @dataclass
 class gsMapPipelineConfig(ConfigWithAutoPaths):
-    find_latent: FindLatentRepresentationsConfig
-    latent2gene: LatentToGeneConfig
-    spatial_ldsc: SpatialLDSCConfig
+    """Unified configuration for the complete gsMap pipeline"""
+
+    # Component configurations
+    find_latent: FindLatentRepresentationsConfig = None
+    latent2gene: LatentToGeneConfig = None
+    spatial_ldsc: SpatialLDSCConfig = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Initialize component configs if they weren't provided
+        if self.find_latent is None:
+            self.find_latent = FindLatentRepresentationsConfig(
+                workdir=self.workdir,
+                project_name=self.project_name
+            )
+        if self.latent2gene is None:
+            self.latent2gene = LatentToGeneConfig(
+                workdir=self.workdir,
+                project_name=self.project_name
+            )
+        if self.spatial_ldsc is None:
+            self.spatial_ldsc = SpatialLDSCConfig(
+                workdir=self.workdir,
+                project_name=self.project_name
+            )
 
 
 @dataclass
