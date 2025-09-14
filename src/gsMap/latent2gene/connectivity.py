@@ -735,19 +735,14 @@ class ConnectivityMatrixBuilder:
                 self.find_homogeneous_batch_size
             )
             
-            # Skip the normal batching process
-            homogeneous_neighbors_list = [homogeneous_neighbors]
-            homogeneous_weights_list = [homogeneous_weights]
         else:
             # Convert spatial_neighbors to JAX array for regular processing
             spatial_neighbors_jax = jnp.array(spatial_neighbors, dtype=jnp.int32)
-            
+            homogeneous_neighbors_list = []
+            homogeneous_weights_list = []
+
             if self.config.fix_cross_slice_homogenous_neighbors:
                 logger.info(f"Using 3D constrained selection (ensuring {self.config.num_homogeneous} neighbors per slice)")
-                
-                # Process in batches to avoid GPU OOM
-                homogeneous_neighbors_list = []
-                homogeneous_weights_list = []
                 
                 for batch_start in track(range(0, n_masked, self.find_homogeneous_batch_size), description="Finding homogeneous neighbors (3D constrained)", transient=True):
                     batch_end = min(batch_start + self.find_homogeneous_batch_size, n_masked)
@@ -776,11 +771,8 @@ class ConnectivityMatrixBuilder:
                     homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
                     homogeneous_weights_list.append(np.array(homo_weights_batch))
             else:
+
                 # Use the standard function (2D or 3D without fix_cross_slice_homogenous_neighbors)
-                # Process in batches to avoid GPU OOM
-                homogeneous_neighbors_list = []
-                homogeneous_weights_list = []
-                
                 for batch_start in track(range(0, n_masked, self.find_homogeneous_batch_size), description="Finding homogeneous neighbors", transient=True):
                     batch_end = min(batch_start + self.find_homogeneous_batch_size, n_masked)
                     batch_indices = slice(batch_start, batch_end)
@@ -801,16 +793,10 @@ class ConnectivityMatrixBuilder:
                         self.config.similarity_threshold
                 )
                 
-                # Convert back to numpy and append
-                homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
-                homogeneous_weights_list.append(np.array(homo_weights_batch))
-        
-        # Concatenate all batches
-        if len(homogeneous_neighbors_list) == 1:
-            # Memory-efficient version returns a single array
-            homogeneous_neighbors = homogeneous_neighbors_list[0]
-            homogeneous_weights = homogeneous_weights_list[0]
-        else:
+                    # Convert back to numpy and append
+                    homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
+                    homogeneous_weights_list.append(np.array(homo_weights_batch))
+
             # Regular batched processing
             homogeneous_neighbors = np.vstack(homogeneous_neighbors_list)
             homogeneous_weights = np.vstack(homogeneous_weights_list)

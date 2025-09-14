@@ -946,8 +946,8 @@ class MarkerScoreCalculator:
             slice_ids=slice_ids,
             return_dense=True,
             k_central=self.config.num_neighbour_spatial,
-            k_adjacent=self.config.k_adjacent if hasattr(self.config, 'k_adjacent') else 7,
-            n_adjacent_slices=self.config.n_adjacent_slices if hasattr(self.config, 'n_adjacent_slices') else 1
+            k_adjacent=self.config.k_adjacent,
+            n_adjacent_slices=self.config.n_adjacent_slices
         )
         gc.collect()
 
@@ -959,8 +959,8 @@ class MarkerScoreCalculator:
         # Optimize row order using JAX implementation
         logger.info("Optimizing row order for cache efficiency...")
         row_order = optimize_row_order_jax(
+            neighbor_indices=neighbor_indices[:,:self.config.num_homogeneous],
             cell_indices=cell_indices,
-            neighbor_indices = neighbor_indices[:,:self.config.num_homogeneous],
             neighbor_weights=neighbor_weights[:,:self.config.num_homogeneous],
         )
         
