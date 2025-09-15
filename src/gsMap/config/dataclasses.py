@@ -949,9 +949,10 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             f"k_adjacent ({self.k_adjacent}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"
         assert self.num_homogeneous <= self.k_adjacent, \
             f"num_homogeneous ({self.num_homogeneous}) must be <= k_adjacent ({self.k_adjacent})"
-        n_slices = 1 + 2 * self.n_adjacent_slices
+
+        n_slices = 1 + self.n_adjacent_slices # only focal + above slices
         assert n_slices<=len(self.sample_h5ad_dict), \
-            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above + {self.n_adjacent_slices} below). " \
+            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). " \
             f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce n_adjacent_slices."
 
         logger.info(f"Dataset type is spatial3D, using n_adjacent_slices={self.n_adjacent_slices} for cross-slice search")
