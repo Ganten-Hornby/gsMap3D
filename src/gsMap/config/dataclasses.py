@@ -779,10 +779,15 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         "--enable-profiling/--no-profiling",
         help="Enable viztracer profiling for performance analysis"
     )] = False
-    
+
     use_gpu: Annotated[bool, typer.Option(
         "--use-gpu/--no-gpu",
         help="Use GPU for JAX computations (requires sufficient GPU memory)"
+    )] = True
+
+    find_neighbor_within_high_quality: Annotated[bool, typer.Option(
+        "--find-neighbor-within-high-quality/--no-high-quality-filter",
+        help="Only find neighbors within high quality cells (requires High_quality column in obs)"
     )] = True
     
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
@@ -900,18 +905,22 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             'latent_representation_cell': ('obsm', self.latent_representation_cell, 'Latent representation of cell identity'),
             'spatial_key': ('obsm', self.spatial_key, 'Spatial key'),
         }
-        
+
         # Add annotation as required if provided
         if self.annotation:
             required_fields['annotation'] = ('obs', self.annotation, 'Annotation')
-        
+
         # Add niche representation as required if provided
         if self.latent_representation_niche:
             required_fields['latent_representation_niche'] = (
-                'obsm', 
-                self.latent_representation_niche, 
+                'obsm',
+                self.latent_representation_niche,
                 'Latent representation of spatial niche'
             )
+
+        # Add High_quality as required if find_neighbor_within_high_quality is enabled
+        if self.find_neighbor_within_high_quality:
+            required_fields['High_quality'] = ('obs', 'High_quality', 'High quality cell indicator')
 
         # Validate h5ad structure
         validate_h5ad_structure(self.sample_h5ad_dict, required_fields)

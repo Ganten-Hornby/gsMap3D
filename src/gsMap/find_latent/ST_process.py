@@ -451,8 +451,8 @@ def apply_module_score_qc(adata, annotation_key, module_score_threshold_dict):
     """
     logger.info("Applying module score-based quality control...")
 
-    # Initialize QC column
-    adata.obs['QC'] = 'High_quality'
+    # Initialize High_quality column as boolean (True = high quality)
+    adata.obs['High_quality'] = True
 
     # Check if we have the annotation key
     if annotation_key not in adata.obs.columns:
@@ -468,9 +468,9 @@ def apply_module_score_qc(adata, annotation_key, module_score_threshold_dict):
             annotation_mask = adata.obs[annotation_key] == annotation
             low_score_mask = adata.obs[module_score_col] < threshold
 
-            # Set QC to Low_quality for cells that match both conditions
+            # Set High_quality to False for cells that match both conditions (low quality)
             low_quality_mask = annotation_mask & low_score_mask
-            adata.obs.loc[low_quality_mask, 'QC'] = 'Low_quality'
+            adata.obs.loc[low_quality_mask, 'High_quality'] = False
 
             n_low_quality = low_quality_mask.sum()
             n_annotation_cells = annotation_mask.sum()
@@ -480,7 +480,7 @@ def apply_module_score_qc(adata, annotation_key, module_score_threshold_dict):
         else:
             logger.warning(f"Module score column '{module_score_col}' not found in adata.obs")
 
-    total_low_quality = (adata.obs['QC'] == 'Low_quality').sum()
+    total_low_quality = (~adata.obs['High_quality']).sum()
     logger.info(f"Total low quality cells: {total_low_quality}/{adata.n_obs}")
 
     return adata
