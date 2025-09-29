@@ -725,15 +725,15 @@ class MarkerScoreCalculator:
         return global_log_gmean, global_expr_frac
     
     def _load_input_data(
-        self, 
-        adata_path: str, 
-        rank_memmap_path: str, 
+        self,
+        adata_path: str,
+        rank_memmap_path: str,
         mean_frac_path: str
-    ) -> Tuple[ad.AnnData, MemMapDense, np.ndarray, np.ndarray, int, int]:
-        """Load input data: AnnData, rank memory map, and global statistics
-        
+    ) -> Tuple[ad.AnnData, MemMapDense, np.ndarray, np.ndarray, int, int, np.ndarray]:
+        """Load input data: AnnData, rank memory map, global statistics, and high quality mask
+
         Returns:
-            Tuple of (adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes)
+            Tuple of (adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes, high_quality_mask)
         """
         # Load concatenated AnnData
         logger.info(f"Loading concatenated AnnData from {adata_path}")
@@ -770,8 +770,19 @@ class MarkerScoreCalculator:
         assert n_cells == n_cells_rank, \
             f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has {n_cells_rank} cells. " \
             f"This indicates the filtering was not applied consistently during rank calculation."
-        
-        return adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes
+
+        # Load high quality mask based on configuration
+        if self.config.find_neighbor_within_high_quality:
+            if 'High_quality' not in adata.obs.columns:
+                raise ValueError("High_quality column not found in AnnData obs. Please ensure QC was applied during find_latent_representation step.")
+            high_quality_mask = adata.obs['High_quality'].values.astype(bool)
+            logger.info(f"Loaded high quality mask: {high_quality_mask.sum()}/{len(high_quality_mask)} cells marked as high quality")
+        else:
+            # Create all-True mask when high quality filtering is disabled
+            high_quality_mask = np.ones(n_cells, dtype=bool)
+            logger.info("High quality filtering disabled - using all cells")
+
+        return adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes, high_quality_mask
     
     def _prepare_embeddings(
         self, 
@@ -1038,7 +1049,7 @@ class MarkerScoreCalculator:
             output_path = Path(output_path)
         
         # Load all input data
-        adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes = self._load_input_data(
+        adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes, high_quality_mask = self._load_input_data(
             adata_path, rank_memmap_path, mean_frac_path
         )
         
