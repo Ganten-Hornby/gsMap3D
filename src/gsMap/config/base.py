@@ -128,8 +128,9 @@ class ConfigWithAutoPaths:
         return self.project_dir / "find_latent_representations"
 
     @property
+    @ensure_path_exists
     def model_path(self) -> Path:
-        return self.latent_dir / 'LGCN_model/gsMap_LGCN_.pt'
+        return self.latent_dir / 'LGCN_model' / 'gsMap_LGCN_.pt'
 
     @property
     def find_latent_metadata_path(self) -> Path:

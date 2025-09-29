@@ -16,7 +16,7 @@ from collections import OrderedDict
 
 from .GNN.train_step import ModelTrain
 from .GNN.STmodel import StEmbeding
-from .ST_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData
+from .ST_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData, calculate_module_score, apply_module_score_qc, calculate_module_scores_from_degs
 from ..config import FindLatentRepresentationsConfig
 
 from operator import itemgetter
@@ -184,12 +184,54 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
         {sample_name: config.latent_dir / f"{sample_name}_add_latent.h5ad"
             for sample_name in config.sample_h5ad_dict.keys()}
     )
+    # Do the DEG in the training adata if annotation is provided
+    module_score_threshold_dict = {}
+    if config.annotation is not None:
+        # Calculate module scores for training data
+        training_adata = calculate_module_score(training_adata, config.annotation)
+
+        # Calculate thresholds for each annotation
+        for label in training_adata.obs[config.annotation].cat.categories:
+            scores = training_adata.obs.loc[training_adata.obs[config.annotation] == label, f"{label}_module_score"]
+            median_module_score = np.median(scores)
+            IQR = np.percentile(scores, 75) - np.percentile(scores, 25)
+            threshold = median_module_score - 3 * IQR
+            module_score_threshold_dict[label] = threshold
+            logger.info(f"Module score threshold for {label}: {threshold:.3f}")
+
+    training_adata.uns['module_score_thresholds'] = module_score_threshold_dict
+
+    # Apply QC to training data as well
+    training_adata = apply_module_score_qc(training_adata, config.annotation, module_score_threshold_dict)
+
+    # save the training adata
+    training_adata_path = config.find_latent_metadata_path.parent / "training_adata.h5ad"
+    training_adata.write_h5ad(training_adata_path)
+    logger.info(f"Saved training adata to {training_adata_path}")
+
     for st_id, (sample_name, st_file) in enumerate(config.sample_h5ad_dict.items()):
 
         output_path = output_h5ad_path_dict[sample_name]
 
         # Infer the embedding
         adata = infer.infer_embedding_single(st_id, st_file)
+
+        # Calculate module scores and apply QC for each annotation
+        if config.annotation is not None:
+            # Calculate module scores for this sample using the same DEGs from training
+            logger.info(f"Calculating module scores for {sample_name}...")
+
+            # Get DEG results from training data
+            deg_results = training_adata.uns['rank_genes_groups']
+
+            # Calculate module scores using existing DEG results
+            adata = calculate_module_scores_from_degs(adata, deg_results, config.annotation)
+
+            # Apply QC based on module score thresholds
+            if config.annotation in adata.obs.columns:
+                adata = apply_module_score_qc(adata, config.annotation, module_score_threshold_dict)
+            else:
+                logger.warning(f"Annotation '{config.annotation}' not found in {sample_name}, skipping QC")
 
         # Transfer the gene name
         common_genes = np.array(list(gene_name_dict.keys()))

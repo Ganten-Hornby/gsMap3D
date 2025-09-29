@@ -196,9 +196,9 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
                 target_cells_per_annotation = (sample_annotation_proportions * target_total_cells).astype(int)
 
                 logger.info(f"Downsampling {sample_name} to {target_total_cells} cells...")
-                logger.info("---Sample-specific annotation distribution-----")
+                logger.debug("---Sample-specific annotation distribution-----")
                 for ann, count in target_cells_per_annotation.items():
-                    logger.info(f"{ann}: {count} cells")
+                    logger.debug(f"{ann}: {count} cells")
 
                 # Perform stratified sampling
                 sampled_cells = (
@@ -239,6 +239,198 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
     logger.info(f"Final concatenated adata: {concatenated_adata.n_obs} cells, {concatenated_adata.n_vars} genes")
 
     return concatenated_adata
+
+
+def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=0.05, lfc_threshold=0.5, max_genes=50):
+    """
+    Filter DEGs based on statistical significance and fold change criteria.
+
+    Args:
+        deg_results: DEG results from scanpy rank_genes_groups
+        annotation: Annotation label to get DEGs for
+        adata: Optional adata to check gene existence
+        pval_threshold: P-value threshold (default: 0.05)
+        lfc_threshold: Log fold change threshold (default: 0.5)
+        max_genes: Maximum number of genes to return (default: 50)
+
+    Returns:
+        list: Filtered list of significant DEG gene names
+    """
+    gene_names = deg_results['names'][annotation]
+    pvals_adj = deg_results['pvals_adj'][annotation]
+    logfoldchanges = deg_results['logfoldchanges'][annotation]
+
+    # Filter genes based on significance and fold change
+    annotation_genes = []
+    for gene, pval, lfc in zip(gene_names, pvals_adj, logfoldchanges):
+        if gene is not None and pval < pval_threshold and abs(lfc) > lfc_threshold:
+            annotation_genes.append(gene)
+
+    # Limit to max genes if we have more
+    if len(annotation_genes) > max_genes:
+        annotation_genes = annotation_genes[:max_genes]
+
+    # Ensure genes exist in adata if provided
+    if adata is not None:
+        annotation_genes = [gene for gene in annotation_genes if gene in adata.var_names]
+
+    return annotation_genes
+
+
+def calculate_module_scores_from_degs(adata, deg_results, annotation_key):
+    """
+    Calculate module scores using existing DEG results.
+
+    Args:
+        adata: AnnData object to calculate scores for
+        deg_results: DEG results from scanpy rank_genes_groups
+        annotation_key: Column name in obs containing annotation labels
+
+    Returns:
+        adata: Updated adata with module score columns
+    """
+
+    logger.info("Calculating module scores using existing DEG results...")
+
+    # Ensure annotation is categorical if it exists
+    if annotation_key in adata.obs.columns:
+        adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
+        available_annotations = adata.obs[annotation_key].cat.categories
+    else:
+        # If annotation doesn't exist, use all annotations from DEG results
+        available_annotations = list(deg_results['names'].dtype.names)
+
+    # Calculate module score for each annotation
+    for annotation in available_annotations:
+        if annotation in deg_results['names'].dtype.names:
+            # Get significant DEGs for this annotation
+            annotation_genes = filter_significant_degs(deg_results, annotation, adata)
+
+            if len(annotation_genes) > 0:
+                logger.info(f"Calculating module score for {annotation} using {len(annotation_genes)} genes")
+
+                # Calculate module score
+                sc.tl.score_genes(
+                    adata,
+                    gene_list=annotation_genes,
+                    score_name=f"{annotation}_module_score",
+                    use_raw=False
+                )
+            else:
+                logger.warning(f"No valid DEGs found for {annotation}")
+                adata.obs[f"{annotation}_module_score"] = 0.0
+        else:
+            logger.warning(f"Annotation {annotation} not found in DEG results")
+            adata.obs[f"{annotation}_module_score"] = 0.0
+
+    return adata
+
+
+def calculate_module_score(training_adata, annotation_key):
+    """
+    Perform DEG analysis for each annotation and calculate module scores.
+
+    Args:
+        training_adata: Concatenated training adata with annotation information
+        annotation_key: Column name in obs containing annotation labels
+
+    Returns:
+        training_adata: Updated adata with module scores for each annotation
+    """
+
+    logger.info("Performing DEG analysis for each annotation...")
+
+    # Make a copy to avoid modifying the original
+    adata = training_adata.copy()
+
+    # Ensure annotation is categorical
+    adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
+
+    # Perform DEG analysis
+    sc.tl.rank_genes_groups(
+        adata,
+        groupby=annotation_key,
+        method='wilcoxon',
+        use_raw=False,
+        n_genes=20
+    )
+
+    logger.info("Calculating module scores for each annotation...")
+
+    # Get DEG results
+    deg_results = adata.uns['rank_genes_groups']
+
+    # Calculate module score for each annotation
+    for annotation in adata.obs[annotation_key].cat.categories:
+
+        # Get significant DEGs for this annotation
+        annotation_genes = filter_significant_degs(deg_results, annotation, adata)
+
+        if len(annotation_genes) > 0:
+            logger.info(f"Calculating module score for {annotation} using {len(annotation_genes)} genes")
+
+            # Calculate module score
+            sc.tl.score_genes(
+                adata,
+                gene_list=annotation_genes,
+                score_name=f"{annotation}_module_score",
+                use_raw=False
+            )
+        else:
+            logger.warning(f"No valid DEGs found for {annotation}")
+            adata.obs[f"{annotation}_module_score"] = 0.0
+
+    logger.info("Module score calculation completed")
+    return adata
+
+
+def apply_module_score_qc(adata, annotation_key, module_score_threshold_dict):
+    """
+    Apply quality control based on module scores.
+
+    Args:
+        adata: AnnData object to apply QC to
+        annotation_key: Column name in obs containing annotation labels
+        module_score_threshold_dict: Dictionary mapping annotation to threshold values
+
+    Returns:
+        adata: Updated adata with QC information
+    """
+    logger.info("Applying module score-based quality control...")
+
+    # Initialize QC column
+    adata.obs['QC'] = 'High_quality'
+
+    # Check if we have the annotation key
+    if annotation_key not in adata.obs.columns:
+        logger.warning(f"Annotation key '{annotation_key}' not found in adata.obs. Skipping module score QC.")
+        return adata
+
+    # Apply QC for each annotation
+    for annotation, threshold in module_score_threshold_dict.items():
+        module_score_col = f"{annotation}_module_score"
+
+        if module_score_col in adata.obs.columns:
+            # Find cells of this annotation with low module scores
+            annotation_mask = adata.obs[annotation_key] == annotation
+            low_score_mask = adata.obs[module_score_col] < threshold
+
+            # Set QC to Low_quality for cells that match both conditions
+            low_quality_mask = annotation_mask & low_score_mask
+            adata.obs.loc[low_quality_mask, 'QC'] = 'Low_quality'
+
+            n_low_quality = low_quality_mask.sum()
+            n_annotation_cells = annotation_mask.sum()
+
+            logger.info(f"{annotation}: {n_low_quality}/{n_annotation_cells} cells marked as low quality "
+                       f"(threshold: {threshold:.3f})")
+        else:
+            logger.warning(f"Module score column '{module_score_col}' not found in adata.obs")
+
+    total_low_quality = (adata.obs['QC'] == 'Low_quality').sum()
+    logger.info(f"Total low quality cells: {total_low_quality}/{adata.n_obs}")
+
+    return adata
 
 
 # prepare the trainning data
