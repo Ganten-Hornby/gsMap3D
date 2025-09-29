@@ -286,7 +286,7 @@ def normalize_for_analysis(adata, is_count_data, preserve_raw=True):
     return adata
 
 
-def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=0.05, lfc_threshold=0.5, max_genes=50):
+def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=0.05, lfc_threshold=0.25, max_genes=100):
     """
     Filter DEGs based on statistical significance and fold change criteria.
 
@@ -295,8 +295,8 @@ def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=
         annotation: Annotation label to get DEGs for
         adata: Optional adata to check gene existence
         pval_threshold: P-value threshold (default: 0.05)
-        lfc_threshold: Log fold change threshold (default: 0.5)
-        max_genes: Maximum number of genes to return (default: 50)
+        lfc_threshold: Log fold change threshold (default: 0.25)
+        max_genes: Maximum number of genes to return (default: 100)
 
     Returns:
         list: Filtered list of significant DEG gene names
@@ -399,14 +399,19 @@ def calculate_module_score(training_adata, annotation_key):
     is_count_data = adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)
     adata = normalize_for_analysis(adata, is_count_data, preserve_raw=True)
 
-    # Perform DEG analysis
-    sc.tl.rank_genes_groups(
-        adata,
-        groupby=annotation_key,
-        method='wilcoxon',
-        use_raw=False,
-        n_genes=20
-    )
+    # Perform DEG analysis with DataFrame fragmentation warnings suppressed
+    # These warnings are harmless and come from Scanpy's internal implementation
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning,
+                              message='DataFrame is highly fragmented')
+        sc.tl.rank_genes_groups(
+            adata,
+            groupby=annotation_key,
+            method='wilcoxon',
+            use_raw=False,
+            n_genes=100
+        )
 
     logger.info("Calculating module scores for each annotation...")
 
