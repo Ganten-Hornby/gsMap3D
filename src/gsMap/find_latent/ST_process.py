@@ -38,26 +38,11 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
         adata_temp = adata_temp[:,gene_keep].copy()
 
-        # Set data layer
-        # print(params.data_layer)
-        if params.data_layer not in adata_temp.layers:
-            if adata_temp.X is not None and np.issubdtype(
-                adata_temp.X.dtype,
-                np.integer
-            ):
-                logger.info(
-                    f'Data layer {params.data_layer} not found or not integer'
-                    f', falling back to adata.X'
-                )
-                adata_temp.layers[params.data_layer] = adata_temp.X.copy()
-                params.data_layer = 'count'
-            else:
-                params.data_layer = None
-        else:
-            adata_temp.X = adata_temp.layers[params.data_layer]
+        # Setup data layer consistently
+        is_count_data, actual_data_layer = setup_data_layer(adata_temp, params.data_layer)
 
         # Identify highly variable genes
-        flavor = "seurat_v3" if params.data_layer in ["count", "counts", "impute_count"] else "seurat"
+        flavor = "seurat_v3" if is_count_data else "seurat"
         sc.pp.highly_variable_genes(
             adata_temp, n_top_genes=params.feat_cell, subset=False, flavor=flavor
         )
@@ -158,18 +143,8 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
         gene_keep = ~adata.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
         adata = adata[:,gene_keep].copy()
 
-        # Set data layers
-        if params.data_layer not in adata.layers:
-            if adata.X is not None and np.issubdtype(adata.X.dtype, np.integer):
-                logger.info(
-                    f'Data layer {params.data_layer} not found, falling back to adata.X'
-                )
-                adata.layers[params.data_layer] = adata.X.copy()
-                params.data_layer = 'count'
-            else:
-                params.data_layer = None
-        else:
-            adata.X = adata.layers[params.data_layer]
+        # Setup data layer consistently
+        is_count_data, actual_data_layer = setup_data_layer(adata, params.data_layer)
 
         # Filter cells based on annotation if provided
         if params.annotation is not None:
@@ -242,6 +217,75 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
     return concatenated_adata
 
 
+def setup_data_layer(adata, data_layer):
+    """
+    Setup and validate data layer for adata object.
+
+    Args:
+        adata: AnnData object
+        data_layer: Requested data layer name
+
+    Returns:
+        tuple: (is_count_data, actual_data_layer)
+            - is_count_data: Boolean indicating if data is count data
+            - actual_data_layer: The actual layer name to use ("X" if using adata.X)
+    """
+    # Check if the requested data layer exists in layers
+    if  data_layer in adata.layers:
+        # Use the specified layer
+        adata.X = adata.layers[data_layer]
+        actual_data_layer = data_layer
+        logger.info(f"Using data layer: {data_layer}")
+    else:
+        # Fall back to adata.X
+        if data_layer != "X":
+            logger.warning(f"Data layer '{data_layer}' not found, using adata.X")
+        actual_data_layer = "X"
+
+    # Determine if this is count data
+    is_count_data = actual_data_layer in ["count", "counts", "impute_count"] or \
+                   (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer))
+
+    if is_count_data:
+        logger.info("Detected count data")
+    else:
+        logger.info("Data appears to be normalized/log-transformed")
+
+    return is_count_data, actual_data_layer
+
+
+def normalize_for_analysis(adata, is_count_data, preserve_raw=True):
+    """
+    Normalize data for DEG analysis or module scoring if needed.
+
+    Args:
+        adata: AnnData object
+        is_count_data: Boolean indicating if data is count data
+        preserve_raw: Whether to preserve raw data in adata.raw
+
+    Returns:
+        adata: AnnData object with normalized data
+    """
+    if is_count_data:
+        logger.info("Normalizing and log-transforming count data...")
+
+        # Store raw counts if requested and not already stored
+        if preserve_raw and adata.raw is None:
+            adata.raw = adata
+
+        # Normalize to 10,000 reads per cell
+        sc.pp.normalize_total(adata, target_sum=1e4)
+
+        # Log-transform (log1p)
+        sc.pp.log1p(adata)
+
+        logger.info("Data normalized and log-transformed")
+    else:
+        logger.info("Using data as-is (already normalized/log-transformed)")
+
+    return adata
+
+
 def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=0.05, lfc_threshold=0.5, max_genes=50):
     """
     Filter DEGs based on statistical significance and fold change criteria.
@@ -293,29 +337,9 @@ def calculate_module_scores_from_degs(adata, deg_results, annotation_key):
 
     logger.info("Calculating module scores using existing DEG results...")
 
-    # Check if we need to normalize and log-transform the data for module scoring
-    is_count_data = hasattr(adata, 'layers') and any(
-        layer_name in ["count", "counts", "impute_count"]
-        for layer_name in adata.layers.keys()
-    )
-
-    # If X contains count data (integer values), normalize and log-transform
-    if is_count_data or (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)):
-        logger.info("Detected count data. Normalizing and log-transforming for module score calculation...")
-
-        # Store raw counts if not already stored
-        if adata.raw is None:
-            adata.raw = adata
-
-        # Normalize to 10,000 reads per cell
-        sc.pp.normalize_total(adata, target_sum=1e4)
-
-        # Log-transform (log1p)
-        sc.pp.log1p(adata)
-
-        logger.info("Data normalized and log-transformed for module scoring")
-    else:
-        logger.info("Data appears to be already normalized/log-transformed")
+    # Detect count data and normalize if needed
+    is_count_data = adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)
+    adata = normalize_for_analysis(adata, is_count_data, preserve_raw=False)
 
     # Ensure annotation is categorical if it exists
     if annotation_key in adata.obs.columns:
@@ -371,29 +395,9 @@ def calculate_module_score(training_adata, annotation_key):
     # Ensure annotation is categorical
     adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
 
-    # Check if we need to normalize and log-transform the data
-    # Determine if we're working with count data based on data layer name
-    is_count_data = hasattr(adata, 'layers') and any(
-        layer_name in ["count", "counts", "impute_count"]
-        for layer_name in adata.layers.keys()
-    )
-
-    # If X contains count data (integer values), normalize and log-transform
-    if is_count_data or (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)):
-        logger.info("Detected count data. Normalizing and log-transforming for DEG analysis...")
-
-        # Store raw counts
-        adata.raw = adata
-
-        # Normalize to 10,000 reads per cell
-        sc.pp.normalize_total(adata, target_sum=1e4)
-
-        # Log-transform (log1p)
-        sc.pp.log1p(adata)
-
-        logger.info("Data normalized and log-transformed")
-    else:
-        logger.info("Data appears to be already normalized/log-transformed")
+    # Detect count data and normalize if needed
+    is_count_data = adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)
+    adata = normalize_for_analysis(adata, is_count_data, preserve_raw=True)
 
     # Perform DEG analysis
     sc.tl.rank_genes_groups(
@@ -596,16 +600,8 @@ class InferenceData(object):
         adata = sc.read_h5ad(st_file)
         # sc.pp.filter_genes(adata, min_counts=1)
         
-        # Set data layers
-        if not hasattr(adata, 'layers') or self.params.data_layer not in adata.layers:
-            if adata.X is not None and np.issubdtype(adata.X.dtype, np.integer):
-                logger.info(
-                    f'Data layer {self.params.data_layer} not found in layers or layers missing, '
-                    f'falling back to adata.X'
-                )
-                adata.X = adata.X  # Use adata.X directly
-        else:
-            adata.X = adata.layers[self.params.data_layer]
+        # Setup data layer consistently
+        is_count_data, actual_data_layer = setup_data_layer(adata, self.params.data_layer)
         
         # print(adata.shape)
         # Convert expression data to torch.Tensor
