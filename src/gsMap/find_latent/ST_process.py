@@ -202,12 +202,13 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
 
                 # Perform stratified sampling
                 sampled_cells = (
-                    adata.obs.groupby(params.annotation, group_keys=False)
+                    adata.obs.groupby(params.annotation, group_keys=False, observed=True)
                     .apply(
                         lambda x: x.sample(
                             max(min(target_cells_per_annotation.get(x.name, 0), len(x)), 1),
                             replace=False,
-                        )
+                        ),
+                        include_groups=False
                     )
                     .index
                 )
@@ -292,6 +293,30 @@ def calculate_module_scores_from_degs(adata, deg_results, annotation_key):
 
     logger.info("Calculating module scores using existing DEG results...")
 
+    # Check if we need to normalize and log-transform the data for module scoring
+    is_count_data = hasattr(adata, 'layers') and any(
+        layer_name in ["count", "counts", "impute_count"]
+        for layer_name in adata.layers.keys()
+    )
+
+    # If X contains count data (integer values), normalize and log-transform
+    if is_count_data or (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)):
+        logger.info("Detected count data. Normalizing and log-transforming for module score calculation...")
+
+        # Store raw counts if not already stored
+        if adata.raw is None:
+            adata.raw = adata
+
+        # Normalize to 10,000 reads per cell
+        sc.pp.normalize_total(adata, target_sum=1e4)
+
+        # Log-transform (log1p)
+        sc.pp.log1p(adata)
+
+        logger.info("Data normalized and log-transformed for module scoring")
+    else:
+        logger.info("Data appears to be already normalized/log-transformed")
+
     # Ensure annotation is categorical if it exists
     if annotation_key in adata.obs.columns:
         adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
@@ -345,6 +370,30 @@ def calculate_module_score(training_adata, annotation_key):
 
     # Ensure annotation is categorical
     adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
+
+    # Check if we need to normalize and log-transform the data
+    # Determine if we're working with count data based on data layer name
+    is_count_data = hasattr(adata, 'layers') and any(
+        layer_name in ["count", "counts", "impute_count"]
+        for layer_name in adata.layers.keys()
+    )
+
+    # If X contains count data (integer values), normalize and log-transform
+    if is_count_data or (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)):
+        logger.info("Detected count data. Normalizing and log-transforming for DEG analysis...")
+
+        # Store raw counts
+        adata.raw = adata
+
+        # Normalize to 10,000 reads per cell
+        sc.pp.normalize_total(adata, target_sum=1e4)
+
+        # Log-transform (log1p)
+        sc.pp.log1p(adata)
+
+        logger.info("Data normalized and log-transformed")
+    else:
+        logger.info("Data appears to be already normalized/log-transformed")
 
     # Perform DEG analysis
     sc.tl.rank_genes_groups(

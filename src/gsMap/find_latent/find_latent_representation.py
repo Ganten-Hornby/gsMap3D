@@ -195,7 +195,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
             scores = training_adata.obs.loc[training_adata.obs[config.annotation] == label, f"{label}_module_score"]
             median_module_score = np.median(scores)
             IQR = np.percentile(scores, 75) - np.percentile(scores, 25)
-            threshold = median_module_score - 3 * IQR
+            threshold = max(0, median_module_score - 3 * IQR)  # Ensure threshold is at least 0
             module_score_threshold_dict[label] = threshold
             logger.info(f"Module score threshold for {label}: {threshold:.3f}")
 
