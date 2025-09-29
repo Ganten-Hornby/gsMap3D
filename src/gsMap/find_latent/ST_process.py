@@ -27,18 +27,17 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
     variances_list = []
     cell_number = []
-    annotation_list = []
 
     logger.info("Finding highly variable genes (HVGs)...")
-    
+
     for sample_name, st_file in track(sample_h5ad_dict.items(), description="Finding HVGs"):
         adata_temp = sc.read_h5ad(st_file)
         # sc.pp.filter_genes(adata_temp, min_counts=1)
-        
+
         # Filter out mitochondrial and hemoglobin genes
         gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
         adata_temp = adata_temp[:,gene_keep].copy()
-        
+
         # Set data layer
         # print(params.data_layer)
         if params.data_layer not in adata_temp.layers:
@@ -56,7 +55,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
                 params.data_layer = None
         else:
             adata_temp.X = adata_temp.layers[params.data_layer]
-        
+
         # Identify highly variable genes
         flavor = "seurat_v3" if params.data_layer in ["count", "counts", "impute_count"] else "seurat"
         sc.pp.highly_variable_genes(
@@ -67,11 +66,6 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         variances_list.append(var_df)
 
         cell_number.append(adata_temp.n_obs)
-        # Store the annotation
-        if params.annotation is not None:
-            annotation_list = (
-                annotation_list + adata_temp.obs[params.annotation].to_list()
-            )
 
     # Find the common genes across all datasets
     common_genes = np.array(
@@ -112,7 +106,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             na_position="last",
             inplace=True,
         )
-    
+
     hvg = df.iloc[: params.feat_cell,].index.tolist()
 
     # Find the number of sampling cells for each batch
@@ -122,19 +116,6 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     n_cell_used = [
         int(cell) for cell in (total_cell_training * cell_proportion).tolist()
     ]
-
-    # Find the percentatges of each annotation
-    if params.annotation is not None:
-        percent_annotation = (
-            pd.DataFrame(
-                np.unique(annotation_list, return_counts=True),
-                index=["annotation", "cell_num"],
-            )
-            .T.assign(cell_num=lambda x: x.cell_num / x.cell_num.sum())
-            .set_index("annotation")
-        )
-    else:
-        percent_annotation = None
 
     # Only use the common genes that can be transformed to human genes
     if params.species is not None:
@@ -147,7 +128,117 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         gene_name_dict = dict(zip(common_genes,homologs.loc[common_genes].HUMAN_GENE_SYM.values))
     else:
         gene_name_dict = dict(zip(common_genes,common_genes))
-    return hvg, n_cell_used, percent_annotation, gene_name_dict
+    return hvg, n_cell_used, gene_name_dict
+
+
+def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRepresentationsConfig):
+    """
+    Create subsampled adata for each sample with sample-specific stratified sampling,
+    add batch and label information, and return concatenated adata.
+
+    Args:
+        sample_h5ad_dict (dict): Dictionary mapping sample names to file paths of ST datasets.
+        n_cell_used (list): Number of cells to sample from each dataset.
+        params (object): Parameter object containing attributes.
+
+    Returns:
+        adata: Concatenated adata object with batch and label information in obs.
+    """
+    subsampled_adatas = []
+
+    logger.info("Creating subsampled adata with stratified sampling...")
+
+    for st_id, (sample_name, st_file) in enumerate(sample_h5ad_dict.items()):
+        logger.info(f"Processing {sample_name}...")
+
+        # Load the data
+        adata = sc.read_h5ad(st_file)
+
+        # Filter out mitochondrial and hemoglobin genes
+        gene_keep = ~adata.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
+        adata = adata[:,gene_keep].copy()
+
+        # Set data layers
+        if params.data_layer not in adata.layers:
+            if adata.X is not None and np.issubdtype(adata.X.dtype, np.integer):
+                logger.info(
+                    f'Data layer {params.data_layer} not found, falling back to adata.X'
+                )
+                adata.layers[params.data_layer] = adata.X.copy()
+                params.data_layer = 'count'
+            else:
+                params.data_layer = None
+        else:
+            adata.X = adata.layers[params.data_layer]
+
+        # Filter cells based on annotation if provided
+        if params.annotation is not None:
+            adata = adata[~adata.obs[params.annotation].isnull()]
+
+        # Perform stratified sampling within this sample
+        if params.do_sampling:
+            if params.annotation is None:
+                # Simple random sampling
+                num_cell = min(adata.n_obs, n_cell_used[st_id])
+                logger.info(f"Downsampling {sample_name} to {num_cell} cells...")
+                random_indices = np.random.choice(adata.n_obs, num_cell, replace=False)
+                adata = adata[random_indices].copy()
+            else:
+                # Stratified sampling based on sample-specific annotation distribution
+                sample_annotation_counts = adata.obs[params.annotation].value_counts()
+                sample_total_cells = len(adata)
+                target_total_cells = min(sample_total_cells, n_cell_used[st_id])
+
+                # Calculate sample-specific annotation proportions
+                sample_annotation_proportions = sample_annotation_counts / sample_total_cells
+
+                # Calculate target cells for each annotation in this sample
+                target_cells_per_annotation = (sample_annotation_proportions * target_total_cells).astype(int)
+
+                logger.info(f"Downsampling {sample_name} to {target_total_cells} cells...")
+                logger.info("---Sample-specific annotation distribution-----")
+                for ann, count in target_cells_per_annotation.items():
+                    logger.info(f"{ann}: {count} cells")
+
+                # Perform stratified sampling
+                sampled_cells = (
+                    adata.obs.groupby(params.annotation, group_keys=False)
+                    .apply(
+                        lambda x: x.sample(
+                            max(min(target_cells_per_annotation.get(x.name, 0), len(x)), 1),
+                            replace=False,
+                        )
+                    )
+                    .index
+                )
+
+                # Filter adata to sampled cells
+                adata = adata[sampled_cells].copy()
+
+        # Add batch information to obs
+        adata.obs['batch_id'] = f"S{st_id}"
+        adata.obs['sample_name'] = sample_name
+
+        # Add label information to obs (ensure it's properly set)
+        if params.annotation is not None:
+            # The annotation column already exists, just ensure it's called 'label'
+            if 'label' not in adata.obs.columns:
+                adata.obs['label'] = adata.obs[params.annotation]
+        else:
+            # Create dummy labels
+            adata.obs['label'] = 'unknown'
+
+        subsampled_adatas.append(adata)
+        logger.info(f"Subsampled {sample_name}: {adata.n_obs} cells, {adata.n_vars} genes")
+
+    # Concatenate all samples
+    logger.info("Concatenating all subsampled data...")
+    concatenated_adata = sc.concat(subsampled_adatas, axis=0, join='inner',
+                                   index_unique='_', fill_value=0)
+
+    logger.info(f"Final concatenated adata: {concatenated_adata.n_obs} cells, {concatenated_adata.n_vars} genes")
+
+    return concatenated_adata
 
 
 # prepare the trainning data
@@ -162,118 +253,75 @@ class TrainingData(object):
     def __init__(self, params):
         self.params = params
         self.gcov = GCN(self.params.K)
-        self.expression_merge = []
-        self.expression_gcn_merge = []
-        self.label_merge = []
-        self.batch_merge = []
+        self.expression_merge = None
+        self.expression_gcn_merge = None
+        self.label_merge = None
+        self.batch_merge = None
         self.batch_size = None
-        self.batches_onehot = None
+        self.label_name = None
              
  
-    def prepare(self, sample_h5ad_dict, n_cell_used, hvg, percent_annotation):
-        for st_id, (sample_name, st_file) in enumerate(sample_h5ad_dict.items()):
-            
-            # Load the data
-            logger.info(f"Loading ST data of {sample_name} from {st_file}...")
-            adata = sc.read_h5ad(st_file)
-            st_name = sample_name
-             
-            # Set data layers
-            if not hasattr(adata, 'layers') or self.params.data_layer not in adata.layers:
-                if adata.X is not None and np.issubdtype(adata.X.dtype, np.integer):
-                    logger.info(
-                        f'Data layer {self.params.data_layer} not found in layers or layers missing, '
-                        f'falling back to adata.X'
-                    )
-                    adata.X = adata.X  # Use adata.X directly
-            else:
-                adata.X = adata.layers[self.params.data_layer]
-                
-            # Filter cells based on annotation if provided
-            if self.params.annotation is not None:
-                adata = adata[~adata.obs[self.params.annotation].isnull()]
-                label = adata.obs[self.params.annotation].values
-            else:
-                label = np.zeros(adata.n_obs)
-            
-            # Get expression array and apply GCN
-            expression_array = torch.Tensor(adata[:, hvg].X.toarray())
+    def prepare(self, concatenated_adata, hvg):
+        logger.info("Processing concatenated subsampled data...")
+
+        # Get labels from obs
+        if self.params.annotation is not None:
+            label = concatenated_adata.obs['label'].values
+        else:
+            label = np.zeros(concatenated_adata.n_obs)
+
+        # Get batch information from obs
+        batch_labels = concatenated_adata.obs['batch_id'].values
+
+        # Get expression array for HVG genes
+        expression_array = torch.Tensor(concatenated_adata[:, hvg].X.toarray())
+        logger.info(f"Expression array shape: {expression_array.shape}")
+
+        # Process each batch separately for GCN (since spatial graphs are sample-specific)
+        expression_array_gcn_list = []
+
+        for batch_id in concatenated_adata.obs['batch_id'].unique():
+            batch_mask = concatenated_adata.obs['batch_id'] == batch_id
+            batch_adata = concatenated_adata[batch_mask]
+            batch_expression = expression_array[batch_mask.values]
+
+            logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
+
+            # Build spatial graph for this batch
             edge = build_spatial_graph(
-                coords = np.array(adata.obsm[self.params.spatial_key]),
+                coords=np.array(batch_adata.obsm[self.params.spatial_key]),
                 n_neighbors=self.params.n_neighbors,
             )
             edge = torch.from_numpy(edge.T).long()
-            expression_array_gcn = self.gcov(expression_array, edge)
-            logger.info(
-                f"Graph for {st_name} has {edge.size(1)} edges, {adata.n_obs} cells."
-            )
 
-            # Downsampling
-            if self.params.do_sampling:
-                if self.params.annotation is None:
-                    num_cell = min(adata.n_obs, n_cell_used[st_id])
-                    logger.info(
-                        f"Downsampling {st_name} to {num_cell} cells...")
-                    random_indices = np.random.choice(
-                        adata.n_obs, num_cell, replace=False
-                    )
-                else:
-                    num_cell = (
-                        (percent_annotation * n_cell_used[st_id])
-                        .astype(int)
-                        .loc[adata.obs[self.params.annotation].unique()]
-                    )
-                    logger.info(
-                        f"Downsampling {st_name} to {n_cell_used[st_id]} cells..."
-                    )
-                    logger.info("---Including-----")
-                    logger.info(
-                        num_cell["cell_num"].sort_values(
-                            ascending=False).to_dict()
-                    )
-                    sampled_cells = (
-                        adata.obs.groupby(
-                            self.params.annotation, group_keys=False)
-                        .apply(
-                            lambda x: x.sample(
-                                max(min(num_cell.loc[x.name, "cell_num"], len(x)),1),
-                                replace=False,
-                            )
-                        )
-                        .index
-                    )
-                    random_indices = [
-                        adata.obs.index.get_loc(idx) for idx in sampled_cells
-                    ]
+            # Apply GCN to this batch
+            batch_expression_gcn = self.gcov(batch_expression, edge)
+            expression_array_gcn_list.append(batch_expression_gcn)
 
-                expression_array = expression_array[random_indices]
-                expression_array_gcn = expression_array_gcn[random_indices]
-                label = label[random_indices]
+            logger.info(f"Graph for {batch_id} has {edge.size(1)} edges, {batch_adata.n_obs} cells.")
 
-            # Batch identifiers
-            batch = [f"S{st_id}"] * expression_array.size(0)
+        # Concatenate GCN results in the same order as the original data
+        expression_array_gcn = torch.cat(expression_array_gcn_list, dim=0)
 
-            # Update attributes
-            self.expression_merge.append(expression_array)
-            self.expression_gcn_merge.append(expression_array_gcn)
-            self.label_merge.append(label)
-            self.batch_merge.append(batch)
+        # Convert batch labels to numeric codes
+        batch_codes = pd.Categorical(batch_labels).codes
 
-        # Concatenate data
-        self.expression_merge = torch.cat(self.expression_merge, dim=0)
-        self.expression_gcn_merge = torch.cat(self.expression_gcn_merge, dim=0)
-        self.batch_merge = torch.Tensor(
-            pd.Categorical(np.concatenate(self.batch_merge)).codes
-        )
-        cat_labels = pd.Categorical(np.concatenate(self.label_merge))
-        self.label_merge = torch.Tensor(cat_labels.codes).long()
-        
+        # Convert labels to categorical codes
+        cat_labels = pd.Categorical(label)
+        label_codes = cat_labels.codes
+
+        # Store results
+        self.expression_merge = expression_array
+        self.expression_gcn_merge = expression_array_gcn
+        self.batch_merge = torch.Tensor(batch_codes)
+        self.label_merge = torch.Tensor(label_codes).long()
+
         if self.params.annotation is not None:
             self.label_name = cat_labels.categories.take(np.unique(cat_labels.codes)).to_list()
         else:
             self.label_name = None
-            
-        # One-hot encode batches
+
+        # Set batch size
         self.batch_size = len(torch.unique(self.batch_merge))
 
 

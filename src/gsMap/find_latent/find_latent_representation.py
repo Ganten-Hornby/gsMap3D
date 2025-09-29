@@ -16,7 +16,7 @@ from collections import OrderedDict
 
 from .GNN.train_step import ModelTrain
 from .GNN.STmodel import StEmbeding
-from .ST_process import TrainingData, find_common_hvg, InferenceData
+from .ST_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData
 from ..config import FindLatentRepresentationsConfig
 
 from operator import itemgetter
@@ -65,12 +65,15 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
     set_seed(2024)
 
     # Find the hvg
-    hvg, n_cell_used, percent_annotation, gene_name_dict = find_common_hvg(config.sample_h5ad_dict, config)
+    hvg, n_cell_used, gene_name_dict = find_common_hvg(config.sample_h5ad_dict, config)
     common_genes = np.array(list(gene_name_dict.keys()))
+
+    # Create subsampled concatenated adata with sample-specific stratified sampling
+    training_adata = create_subsampled_adata(config.sample_h5ad_dict, n_cell_used, config)
 
     # Prepare the trainning data
     get_trainning_data = TrainingData(config)
-    get_trainning_data.prepare(config.sample_h5ad_dict, n_cell_used, hvg, percent_annotation)
+    get_trainning_data.prepare(training_adata, hvg)
 
     # Configure the distribution
     if config.data_layer in ["count", "counts"]:
