@@ -926,7 +926,8 @@ class MarkerScoreCalculator:
         emb_gcn: Optional[np.ndarray],
         emb_indv: np.ndarray,
         slice_ids: Optional[np.ndarray],
-        rank_shape: Tuple[int, int]
+        rank_shape: Tuple[int, int],
+        high_quality_mask: np.ndarray
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
         """
         Prepare batch data for a cell type
@@ -954,6 +955,7 @@ class MarkerScoreCalculator:
             emb_gcn=emb_gcn,
             emb_indv=emb_indv,
             cell_mask=cell_mask,
+            high_quality_mask=high_quality_mask,
             slice_ids=slice_ids,
             return_dense=True,
             k_central=self.config.num_neighbour_spatial,
@@ -1000,14 +1002,15 @@ class MarkerScoreCalculator:
         emb_gcn: Optional[np.ndarray],
         emb_indv: np.ndarray,
         annotation_key: str,
-        slice_ids: Optional[np.ndarray] = None
+        slice_ids: Optional[np.ndarray] = None,
+        high_quality_mask: np.ndarray = None
     ):
         """Process a single cell type with shared pools"""
         
         # Find homogeneous spots
         neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells  = self._find_homogeneous_spots(
             adata, cell_type, annotation_key, coords, emb_gcn,
-            emb_indv, slice_ids, self.reader.shape
+            emb_indv, slice_ids, self.reader.shape, high_quality_mask
         )
         
         # Reset the message queue for this cell type
@@ -1082,7 +1085,8 @@ class MarkerScoreCalculator:
                 emb_gcn,
                 emb_indv,
                 annotation_key,
-                slice_ids
+                slice_ids,
+                high_quality_mask
             )
         
         # Save updated AnnData with neighbor matrices
