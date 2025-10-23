@@ -194,11 +194,12 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
         for label in training_adata.obs[config.annotation].cat.categories:
             scores = training_adata.obs.loc[training_adata.obs[config.annotation] == label, f"{label}_module_score"]
             Q1 = np.percentile(scores, 25)
+            Q2 = np.median(scores)
             Q3 = np.percentile(scores, 75)
             IQR = Q3 - Q1
-            threshold = max(0, Q1 - 1.5 * IQR)  # Ensure threshold is not negative
+            threshold = max(0, Q2 - 1 * IQR)  # Ensure threshold is not negative
             module_score_threshold_dict[label] = threshold
-            logger.info(f"Module score threshold for {label}: {threshold:.3f}")
+            logger.info(f"High quality module score threshold for {label}: {threshold:.3f}")
 
     training_adata.uns['module_score_thresholds'] = module_score_threshold_dict
 
