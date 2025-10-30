@@ -1041,6 +1041,15 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     marker_score_format: Literal[ "memmap", "feather"] = "memmap"
     mkscore_feather_path: str | Path | None = None
 
+    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
+        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
+             "If provided, memory maps will be copied to this directory for faster random access during computation.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True
+    )] = None
+
     def __post_init__(self):
         super().__post_init__()
         

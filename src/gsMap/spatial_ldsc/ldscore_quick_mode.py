@@ -28,6 +28,7 @@ from statsmodels.stats.multitest import multipletests
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn, TimeElapsedColumn
 
 from ..config import SpatialLDSCConfig
+from ..latent2gene.memmap_io import MemMapDense
 
 logger = logging.getLogger("gsMap.spatial_ldsc_processor")
 
@@ -441,15 +442,16 @@ class SpatialLDSCProcessor:
         n_spots_memmap = meta['shape'][0]
         n_genes_memmap = meta['shape'][1]
         dtype = np.dtype(meta['dtype'])
-        
-        # Open memory-mapped array
-        self.mkscore_memmap = np.memmap(
-            mk_score_data_path,
+
+        # Use MemMapDense which handles tmp_dir internally (like marker_scores.py)
+        self.mkscore_memmap = MemMapDense(
+            path=mk_score_data_path,
+            shape=(n_spots_memmap, n_genes_memmap),
             dtype=dtype,
             mode='r',
-            shape=(n_spots_memmap, n_genes_memmap)
+            tmp_dir=self.config.memmap_tmp_dir
         )
-        
+
         logger.info(f"Marker scores shape: (n_spots={n_spots_memmap}, n_genes={n_genes_memmap})")
         
         # Load concatenated latent adata for metadata
@@ -820,9 +822,10 @@ class SpatialLDSCProcessor:
     def cleanup(self):
         """Clean up resources."""
         if hasattr(self, 'mkscore_memmap'):
-            del self.mkscore_memmap
+            # MemMapDense handles tmp file cleanup in its close() method
+            self.mkscore_memmap.close()
             logger.debug("Cleaned up memory-mapped arrays")
-        
+
         # Clean up other resources
         gc.collect()
     
