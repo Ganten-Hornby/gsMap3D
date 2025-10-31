@@ -125,21 +125,26 @@ def find_spatial_neighbors_with_slices(
         logger.debug(f"Slice {slice_id}: {len(slice_neighbor_pool_local_indices)} high quality cells")
 
     # Pre-compute KDTree for each slice using neighbor pool cells only
+    # Note: KDTree can handle cases where k > number of points in tree
+    # It will return valid neighbors first, then fill remaining slots with invalid indices
     slice_kdtrees = {}
     for slice_id in unique_slice_ids:
         # Use neighbor pool cells to build tree
         slice_neighbor_pool_local = neighbor_pool_per_slice.get(slice_id, np.array([]))
-        if len(slice_neighbor_pool_local) >= max(k_central, k_adjacent):
+        if len(slice_neighbor_pool_local) > 0:  # Build tree as long as there's at least 1 hq cell
             # Get coordinates of neighbor pool cells on this slice
             slice_neighbor_pool_coords = neighbor_pool_coords[slice_neighbor_pool_local]
             kdtree = cKDTree(slice_neighbor_pool_coords)
             # Store tree with global indices of neighbor pool cells
             slice_kdtrees[slice_id] = (kdtree, neighbor_pool_indices[slice_neighbor_pool_local])
-        else:
-            logger.warning(f"Slice {slice_id} has only {len(slice_neighbor_pool_local)} high quality cells, "
-                         f"which is less than required k={max(k_central, k_adjacent)}")
+
+            if len(slice_neighbor_pool_local) < max(k_central, k_adjacent):
+                logger.warning(f"Slice {slice_id} has only {len(slice_neighbor_pool_local)} high quality cells, "
+                             f"which is less than required k={max(k_central, k_adjacent)}. "
+                             # f"Some neighbors will be invalid (-1)."
+                               )
     
-    # Batch process all query cells
+    # Batch process all query cells (including edge cases with few neighbor pool cells)
     for slice_id in unique_slice_ids:
         if slice_id in slice_kdtrees:
             # Get all query cells on this slice
@@ -149,8 +154,18 @@ def find_spatial_neighbors_with_slices(
             # Central slice neighbors (fixed k_central)
             central_kdtree, central_neighbor_pool_global_indices = slice_kdtrees[slice_id]
             _, central_neighbor_local_indices = central_kdtree.query(query_coords, k=k_central, workers=-1)
-            # central_neighbor_pool_global_indices already contains the global indices
-            central_neighbor_global_indices = central_neighbor_pool_global_indices[central_neighbor_local_indices]
+
+            # Handle invalid indices returned by KDTree when k > number of points in tree
+            # KDTree returns index >= tree_size for invalid slots
+            n_central_pool_cells = len(central_neighbor_pool_global_indices)
+            # Initialize with -1 (invalid)
+            central_neighbor_global_indices = np.full_like(central_neighbor_local_indices, -1, dtype=np.int32)
+            # Create mask for valid indices (< tree size)
+            central_valid_mask = central_neighbor_local_indices < n_central_pool_cells
+            # Map valid local indices to global indices
+            central_neighbor_global_indices[central_valid_mask] = central_neighbor_pool_global_indices[
+                central_neighbor_local_indices[central_valid_mask]
+            ]
             spatial_neighbors[query_cells_on_slice, :k_central] = central_neighbor_global_indices
 
             # Adjacent slices (fixed k_adjacent for each)
@@ -161,36 +176,20 @@ def find_spatial_neighbors_with_slices(
                     if adjacent_slice_id in slice_kdtrees:
                         adjacent_kdtree, adjacent_neighbor_pool_global_indices = slice_kdtrees[adjacent_slice_id]
                         _, adjacent_neighbor_local_indices = adjacent_kdtree.query(query_coords, k=k_adjacent, workers=-1)
-                        # adjacent_neighbor_pool_global_indices already contains the global indices
-                        adjacent_neighbor_global_indices = adjacent_neighbor_pool_global_indices[adjacent_neighbor_local_indices]
+
+                        # Handle invalid indices for adjacent slices too
+                        n_adjacent_pool_cells = len(adjacent_neighbor_pool_global_indices)
+                        adjacent_neighbor_global_indices = np.full_like(adjacent_neighbor_local_indices, -1, dtype=np.int32)
+                        adjacent_valid_mask = adjacent_neighbor_local_indices < n_adjacent_pool_cells
+                        adjacent_neighbor_global_indices[adjacent_valid_mask] = adjacent_neighbor_pool_global_indices[
+                            adjacent_neighbor_local_indices[adjacent_valid_mask]
+                        ]
                         spatial_neighbors[query_cells_on_slice, neighbor_column_offset:neighbor_column_offset+k_adjacent] = adjacent_neighbor_global_indices
                     # If adjacent slice doesn't exist, already filled with -1
                     neighbor_column_offset += k_adjacent
 
-    # Handle edge cases: query cells on slices with too few neighbor pool cells
-    for slice_id, query_cells_local_indices in slice_to_query_cell_indices.items():
-        if slice_id not in slice_kdtrees and len(query_cells_local_indices) > 0:
-            # These query cells have too few neighbor pool cells on their slice
-            query_cells_on_slice = query_cells_local_indices
-
-            # Check if there are any neighbor pool cells on this slice
-            slice_neighbor_pool_local = neighbor_pool_per_slice.get(slice_id, np.array([]))
-            n_neighbor_pool_cells = len(slice_neighbor_pool_local)
-
-            if n_neighbor_pool_cells > 1:
-                # Few neighbor pool cells on slice - use all available as neighbors
-                slice_neighbor_pool_coords = neighbor_pool_coords[slice_neighbor_pool_local]
-                kdtree = cKDTree(slice_neighbor_pool_coords)
-                query_coords = query_cell_coords[query_cells_on_slice]
-                _, neighbor_local_indices = kdtree.query(
-                    query_coords,
-                    k=min(n_neighbor_pool_cells, k_central), workers=-1)
-                neighbor_global_indices = neighbor_pool_indices[slice_neighbor_pool_local[neighbor_local_indices]]
-
-                # Fill what we can, rest remains -1
-                actual_k = min(n_neighbor_pool_cells, k_central)
-                spatial_neighbors[query_cells_on_slice, :actual_k] = neighbor_global_indices
-            # If only 0 or 1 neighbor pool cell on slice, neighbors remain all -1
+    # Note: Slices with 0 neighbor pool cells will not be in slice_kdtrees
+    # Query cells on such slices will have all neighbors remain as -1 (already initialized)
 
     return spatial_neighbors, neighbor_pool_per_slice
 
