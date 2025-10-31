@@ -30,8 +30,8 @@ jax.config.update("jax_enable_x64", False)  # Use float32 for speed
 def find_spatial_neighbors_with_slices(
     coords: np.ndarray,
     slice_ids: Optional[np.ndarray] = None,
-    cell_mask: Optional[np.ndarray] = None,
-    high_quality_mask: np.ndarray = None,
+    query_cell_mask: Optional[np.ndarray] = None,
+    high_quality_cell_mask: np.ndarray = None,
     k_central: int = 101,
     k_adjacent: int = 50,
     n_adjacent_slices: int = 1
@@ -50,148 +50,149 @@ def find_spatial_neighbors_with_slices(
     Args:
         coords: Spatial coordinates (n_cells, 2) - only x,y coordinates
         slice_ids: Slice/z-coordinate indices (n_cells,) - sequential integers
-        cell_mask: Boolean mask for cells to process
-        high_quality_mask: Boolean mask for high quality cells (used to build KDTrees)
+        query_cell_mask: Boolean mask for cells to find neighbors for
+        high_quality_cell_mask: Boolean mask for high quality cells (defines the neighbor search pool)
         k_central: Number of neighbors to find on the central slice
         k_adjacent: Number of neighbors to find on each adjacent slice
         n_adjacent_slices: Number of slices to search above and below
 
     Returns:
         Tuple of:
-        - spatial_neighbors: Array of neighbor indices (n_masked, k_central + 2*n_adjacent_slices*k_adjacent)
-        - hq_cells_per_slice: Dict mapping slice_id to local indices of high quality cells on that slice
+        - spatial_neighbors: Array of neighbor indices (n_query_cells, k_central + 2*n_adjacent_slices*k_adjacent)
+        - neighbor_pool_per_slice: Dict mapping slice_id to local indices of neighbor pool cells on that slice
     """
     n_cells = len(coords)
-    if cell_mask is None:
-        cell_mask = np.ones(n_cells, dtype=bool)
+    if query_cell_mask is None:
+        query_cell_mask = np.ones(n_cells, dtype=bool)
 
-    if high_quality_mask is None:
-        high_quality_mask = np.ones(n_cells, dtype=bool)
+    if high_quality_cell_mask is None:
+        high_quality_cell_mask = np.ones(n_cells, dtype=bool)
 
-    logger.debug(f"Finding neighbors: {high_quality_mask.sum()}/{n_cells} cells are high quality")
+    logger.debug(f"Finding neighbors: {high_quality_cell_mask.sum()}/{n_cells} cells are high quality")
 
-    cell_indices = np.where(cell_mask)[0]
-    n_masked = len(cell_indices)
+    query_cell_indices = np.where(query_cell_mask)[0]
+    n_query_cells = len(query_cell_indices)
 
-    # High quality cells that will be used to build KDTrees (intersection of cell_mask and high_quality_mask)
-    hq_and_masked = cell_mask & high_quality_mask
-    hq_cell_indices = np.where(hq_and_masked)[0]
+    # Neighbor pool: high quality cells that will be used to build KDTrees
+    # (intersection of query_cell_mask and high_quality_cell_mask)
+    neighbor_pool_mask = query_cell_mask & high_quality_cell_mask
+    neighbor_pool_indices = np.where(neighbor_pool_mask)[0]
 
     # If no slice_ids provided, perform standard 2D KNN
     if slice_ids is None:
         logger.info(f"No slice IDs provided, performing standard 2D KNN with k={k_central}")
-        # Build tree with high quality cells only
-        tree = cKDTree(coords[hq_and_masked])
-        # Query for all masked cells (including non-HQ ones)
-        _, spatial_neighbors_local = tree.query(
-            coords[cell_mask],
-            k=min(k_central, len(hq_cell_indices)),
+        # Build tree with neighbor pool cells only
+        kdtree = cKDTree(coords[neighbor_pool_mask])
+        # Query for all query cells (including non-HQ ones)
+        _, neighbor_local_indices = kdtree.query(
+            coords[query_cell_mask],
+            k=min(k_central, len(neighbor_pool_indices)),
             workers=-1  # Use all available cores
         )
         # Convert local indices to global indices
-        spatial_neighbors = hq_cell_indices[spatial_neighbors_local]
+        spatial_neighbors = neighbor_pool_indices[neighbor_local_indices]
         return spatial_neighbors, {}
     
     # Slice-aware neighbor search with fixed-size arrays
     logger.info(f"Performing slice-aware neighbor search: k_central={k_central}, "
                 f"k_adjacent={k_adjacent}, n_adjacent_slices={n_adjacent_slices}")
 
-    masked_slice_ids = slice_ids[cell_mask]
-    masked_coords = coords[cell_mask]
+    query_cell_slice_ids = slice_ids[query_cell_mask]
+    query_cell_coords = coords[query_cell_mask]
 
     # Pre-allocate output with fixed size, initialized with -1 (invalid)
-    total_k = k_central + 2 * n_adjacent_slices * k_adjacent
+    total_neighbors_per_cell = k_central + 2 * n_adjacent_slices * k_adjacent
     # Always use int32 for spatial neighbors since they contain global cell indices
     # which can easily exceed int16 range in large spatial datasets
-    spatial_neighbors = np.full((n_masked, total_k), -1, dtype=np.int32)
+    spatial_neighbors = np.full((n_query_cells, total_neighbors_per_cell), -1, dtype=np.int32)
 
-    # Get unique slices and create mapping for all masked cells
-    unique_slices = np.unique(masked_slice_ids)
-    slice_to_indices = {s: np.where(masked_slice_ids == s)[0] for s in unique_slices}
+    # Get unique slices and create mapping for all query cells
+    unique_slice_ids = np.unique(query_cell_slice_ids)
+    slice_to_query_cell_indices = {s: np.where(query_cell_slice_ids == s)[0] for s in unique_slice_ids}
 
-    # Create mapping for high quality cells per slice (for building KDTrees)
-    hq_cells_per_slice = {}
+    # Create mapping for neighbor pool cells per slice (for building KDTrees)
+    neighbor_pool_per_slice = {}
 
-    # Get slice IDs for high quality cells
-    hq_masked_slice_ids = slice_ids[hq_and_masked]
-    hq_masked_coords = coords[hq_and_masked]
+    # Get slice IDs and coordinates for neighbor pool cells
+    neighbor_pool_slice_ids = slice_ids[neighbor_pool_mask]
+    neighbor_pool_coords = coords[neighbor_pool_mask]
 
-    for slice_id in unique_slices:
-        # Find HQ cells on this slice (in the hq_and_masked array)
-        hq_on_slice_mask = hq_masked_slice_ids == slice_id
-        hq_slice_local_indices = np.where(hq_on_slice_mask)[0]
-        hq_cells_per_slice[slice_id] = hq_slice_local_indices
-        logger.debug(f"Slice {slice_id}: {len(hq_slice_local_indices)} high quality cells")
+    for slice_id in unique_slice_ids:
+        # Find neighbor pool cells on this slice (in the neighbor_pool array)
+        slice_neighbor_pool_mask = neighbor_pool_slice_ids == slice_id
+        slice_neighbor_pool_local_indices = np.where(slice_neighbor_pool_mask)[0]
+        neighbor_pool_per_slice[slice_id] = slice_neighbor_pool_local_indices
+        logger.debug(f"Slice {slice_id}: {len(slice_neighbor_pool_local_indices)} high quality cells")
 
-    # Pre-compute KDTree for each slice using high quality cells only
-    slice_knn_models = {}
-    for slice_id in unique_slices:
-        # Use high quality cells to build tree
-        hq_slice_local = hq_cells_per_slice.get(slice_id, np.array([]))
-        if len(hq_slice_local) >= max(k_central, k_adjacent):
-            # Get coordinates of HQ cells on this slice
-            slice_coords = hq_masked_coords[hq_slice_local]
-            tree = cKDTree(slice_coords)
-            # Store tree with global indices of HQ cells
-            slice_knn_models[slice_id] = (tree, hq_cell_indices[hq_slice_local])
+    # Pre-compute KDTree for each slice using neighbor pool cells only
+    slice_kdtrees = {}
+    for slice_id in unique_slice_ids:
+        # Use neighbor pool cells to build tree
+        slice_neighbor_pool_local = neighbor_pool_per_slice.get(slice_id, np.array([]))
+        if len(slice_neighbor_pool_local) >= max(k_central, k_adjacent):
+            # Get coordinates of neighbor pool cells on this slice
+            slice_neighbor_pool_coords = neighbor_pool_coords[slice_neighbor_pool_local]
+            kdtree = cKDTree(slice_neighbor_pool_coords)
+            # Store tree with global indices of neighbor pool cells
+            slice_kdtrees[slice_id] = (kdtree, neighbor_pool_indices[slice_neighbor_pool_local])
         else:
-            logger.warning(f"Slice {slice_id} has only {len(hq_slice_local)} high quality cells, "
+            logger.warning(f"Slice {slice_id} has only {len(slice_neighbor_pool_local)} high quality cells, "
                          f"which is less than required k={max(k_central, k_adjacent)}")
     
-    # Batch process all cells
-    for slice_id in unique_slices:
-        if slice_id in slice_knn_models:
-            # Get all cells on this slice (these are the query cells)
-            cells_on_slice = slice_to_indices[slice_id]
-            query_coords = masked_coords[cells_on_slice]
+    # Batch process all query cells
+    for slice_id in unique_slice_ids:
+        if slice_id in slice_kdtrees:
+            # Get all query cells on this slice
+            query_cells_on_slice = slice_to_query_cell_indices[slice_id]
+            query_coords = query_cell_coords[query_cells_on_slice]
 
             # Central slice neighbors (fixed k_central)
-            tree, slice_global_indices = slice_knn_models[slice_id]
-            _, local_neighbors = tree.query(query_coords, k=k_central, workers=-1)
-            # slice_global_indices already contains the global indices
-            global_neighbors = slice_global_indices[local_neighbors]
-            spatial_neighbors[cells_on_slice, :k_central] = global_neighbors
+            central_kdtree, central_neighbor_pool_global_indices = slice_kdtrees[slice_id]
+            _, central_neighbor_local_indices = central_kdtree.query(query_coords, k=k_central, workers=-1)
+            # central_neighbor_pool_global_indices already contains the global indices
+            central_neighbor_global_indices = central_neighbor_pool_global_indices[central_neighbor_local_indices]
+            spatial_neighbors[query_cells_on_slice, :k_central] = central_neighbor_global_indices
 
             # Adjacent slices (fixed k_adjacent for each)
-            col_offset = k_central
-            for offset in range(1, n_adjacent_slices + 1):
+            neighbor_column_offset = k_central
+            for slice_offset in range(1, n_adjacent_slices + 1):
                 for direction in [1, -1]:
-                    adjacent_slice = slice_id + direction * offset
-                    if adjacent_slice in slice_knn_models:
-                        tree_adj, adj_global_indices = slice_knn_models[adjacent_slice]
-                        _, adj_local_neighbors = tree_adj.query(query_coords, k=k_adjacent, workers=-1)
-                        # adj_global_indices already contains the global indices
-                        adj_global_neighbors = adj_global_indices[adj_local_neighbors]
-                        spatial_neighbors[cells_on_slice, col_offset:col_offset+k_adjacent] = adj_global_neighbors
+                    adjacent_slice_id = slice_id + direction * slice_offset
+                    if adjacent_slice_id in slice_kdtrees:
+                        adjacent_kdtree, adjacent_neighbor_pool_global_indices = slice_kdtrees[adjacent_slice_id]
+                        _, adjacent_neighbor_local_indices = adjacent_kdtree.query(query_coords, k=k_adjacent, workers=-1)
+                        # adjacent_neighbor_pool_global_indices already contains the global indices
+                        adjacent_neighbor_global_indices = adjacent_neighbor_pool_global_indices[adjacent_neighbor_local_indices]
+                        spatial_neighbors[query_cells_on_slice, neighbor_column_offset:neighbor_column_offset+k_adjacent] = adjacent_neighbor_global_indices
                     # If adjacent slice doesn't exist, already filled with -1
-                    col_offset += k_adjacent
+                    neighbor_column_offset += k_adjacent
 
-    # Handle edge cases: cells on slices with too few high quality points
-    for slice_id, slice_local_indices in slice_to_indices.items():
-        if slice_id not in slice_knn_models and len(slice_local_indices) > 0:
-            # These cells have too few HQ neighbors on their slice
-            cells_on_slice = slice_local_indices
+    # Handle edge cases: query cells on slices with too few neighbor pool cells
+    for slice_id, query_cells_local_indices in slice_to_query_cell_indices.items():
+        if slice_id not in slice_kdtrees and len(query_cells_local_indices) > 0:
+            # These query cells have too few neighbor pool cells on their slice
+            query_cells_on_slice = query_cells_local_indices
 
-            # Check if there are any HQ cells on this slice
-            hq_slice_local = hq_cells_per_slice.get(slice_id, np.array([]))
-            n_hq_cells = len(hq_slice_local)
+            # Check if there are any neighbor pool cells on this slice
+            slice_neighbor_pool_local = neighbor_pool_per_slice.get(slice_id, np.array([]))
+            n_neighbor_pool_cells = len(slice_neighbor_pool_local)
 
-            if n_hq_cells > 1:
-                # Few HQ cells on slice - use all available as neighbors
-                slice_coords = hq_masked_coords[hq_slice_local]
-                tree = cKDTree(slice_coords)
-                query_coords = masked_coords[cells_on_slice]
-                _, local_neighbors = tree.query(
+            if n_neighbor_pool_cells > 1:
+                # Few neighbor pool cells on slice - use all available as neighbors
+                slice_neighbor_pool_coords = neighbor_pool_coords[slice_neighbor_pool_local]
+                kdtree = cKDTree(slice_neighbor_pool_coords)
+                query_coords = query_cell_coords[query_cells_on_slice]
+                _, neighbor_local_indices = kdtree.query(
                     query_coords,
-                    k=min(n_hq_cells, k_central), workers=-1)
-                global_neighbors = hq_cell_indices[hq_slice_local[local_neighbors]]
+                    k=min(n_neighbor_pool_cells, k_central), workers=-1)
+                neighbor_global_indices = neighbor_pool_indices[slice_neighbor_pool_local[neighbor_local_indices]]
 
                 # Fill what we can, rest remains -1
-                actual_k = min(n_hq_cells, k_central)
-                spatial_neighbors[cells_on_slice, :actual_k] = global_neighbors
-            # If only 0 or 1 HQ cell on slice, neighbors remain all -1
+                actual_k = min(n_neighbor_pool_cells, k_central)
+                spatial_neighbors[query_cells_on_slice, :actual_k] = neighbor_global_indices
+            # If only 0 or 1 neighbor pool cell on slice, neighbors remain all -1
 
-    return spatial_neighbors, hq_cells_per_slice
+    return spatial_neighbors, neighbor_pool_per_slice
 
 
 @partial(jit, static_argnums=(5, 6))
@@ -737,20 +738,20 @@ class ConnectivityMatrixBuilder:
         n_masked = len(cell_indices)
         
         # Step 1: Find spatial neighbors (slice-aware if slice_ids provided)
-        spatial_neighbors, hq_cells_per_slice = find_spatial_neighbors_with_slices(
+        spatial_neighbors, neighbor_pool_per_slice = find_spatial_neighbors_with_slices(
             coords=coords,
             slice_ids=slice_ids,
-            cell_mask=cell_mask,
-            high_quality_mask=high_quality_mask,
+            query_cell_mask=cell_mask,
+            high_quality_cell_mask=high_quality_mask,
             k_central=k_central,
             k_adjacent=k_adjacent,
             n_adjacent_slices=n_adjacent_slices
         )
 
-        # Log statistics about high quality cells per slice if available
-        if hq_cells_per_slice:
-            for slice_id, hq_indices in hq_cells_per_slice.items():
-                logger.debug(f"Slice {slice_id}: {len(hq_indices)} high quality cells available for neighbor search")
+        # Log statistics about neighbor pool cells per slice if available
+        if neighbor_pool_per_slice:
+            for slice_id, neighbor_pool_indices in neighbor_pool_per_slice.items():
+                logger.debug(f"Slice {slice_id}: {len(neighbor_pool_indices)} high quality cells available for neighbor search")
         
         # Step 2 & 3: Find anchors and homogeneous neighbors in batches
         logger.info(f"Finding anchors and homogeneous neighbors (batch size: {self.find_homogeneous_batch_size})...")
