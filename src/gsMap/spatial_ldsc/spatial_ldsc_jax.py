@@ -279,79 +279,68 @@ def load_and_prepare_data(config: SpatialLDSCConfig,
 # Main entry point
 # ============================================================================
 
-def run_spatial_ldsc_single_trait(config: SpatialLDSCConfig,
-                                 trait_name: str,
-                                 sumstats_file: str) -> pd.DataFrame:
+def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     """
-    Run spatial LDSC for a single trait using the unified processor.
-    
-    Args:
-        config: Configuration object
-        trait_name: Name of the trait
-        sumstats_file: Path to summary statistics file
-    
-    Returns:
-        Merged DataFrame with results
+    Run spatial LDSC for all traits in config.sumstats_config_dict.
     """
-    logger.info("=" * 70)
-    logger.info(f"Running Spatial LDSC (Unified Processor Version)")
-    logger.info(f"Project: {config.project_name}, Trait: {trait_name}")
-    if config.sample_filter:
-        logger.info(f"Filtering by sample: {config.sample_filter}")
-    if config.cell_indices_range:
-        logger.info(f"Cell indices range: {config.cell_indices_range}")
-    logger.info("=" * 70)
-    
+    if config.marker_score_format != "memmap":
+        raise NotImplementedError("Only memmap marker score format is supported.")
+
+    traits_to_process = list(config.sumstats_config_dict.items())
+    if not traits_to_process:
+        raise ValueError("No traits to process. config.sumstats_config_dict is empty.")
+
     # Create output directory
     output_dir = config.ldsc_save_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Load and prepare data
-    data, common_snps = load_and_prepare_data(config, trait_name, sumstats_file)
-    data_truncated = prepare_snp_data_for_blocks(data, config.n_blocks)
-    
-    if config.marker_score_format == "memmap":
-        # Import the unified processor
 
-        # Determine number of loader threads based on platform
-        if jax.default_backend() == 'gpu':
-            n_loader_threads = 10
-        else:
-            n_loader_threads = 2
-        
-        # Create processor instance
-        processor = SpatialLDSCProcessor(
-            config=config,
-            trait_name=trait_name,
-            data_truncated=data_truncated,
-            output_dir=output_dir,
-            n_loader_threads=n_loader_threads
-        )
-        
-        # Process all chunks
-        start_time = time.time()
-        try:
-            merged_df = processor.process_all_chunks(process_chunk_jit)
-        finally:
-            # Clean up resources
-            processor.cleanup()
-        
-        elapsed_time = time.time() - start_time
-        h, rem = divmod(elapsed_time, 3600)
-        m, s = divmod(rem, 60)
-        logger.info(f"Processing completed in {int(h)}h {int(m)}m {s:.2f}s")
-        
-        return merged_df
+    # Determine number of loader threads based on platform
+    n_loader_threads = 10 if jax.default_backend() == 'gpu' else 2
 
-    else:
-        # not implemented yet for feather mode
-        raise NotImplementedError("Feather mode is not implemented yet.")
+    processor = None
 
-def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
-    """
-    Wrapper for compatibility with existing code.
-    Processes all traits from config.sumstats_config_dict.
-    """
-    for trait_name, sumstats_file in config.sumstats_config_dict.items():
-        run_spatial_ldsc_single_trait(config, trait_name, sumstats_file)
+    try:
+        for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
+            logger.info("=" * 70)
+            logger.info(f"Running Spatial LDSC (JAX Implementation)")
+            logger.info(f"Project: {config.project_name}, Trait: {trait_name} ({idx+1}/{len(traits_to_process)})")
+            if config.sample_filter:
+                logger.info(f"Sample filter: {config.sample_filter}")
+            if config.cell_indices_range:
+                logger.info(f"Cell indices range: {config.cell_indices_range}")
+            logger.info("=" * 70)
+
+            # Load and prepare trait-specific data
+            data, common_snps = load_and_prepare_data(config, trait_name, sumstats_file)
+            data_truncated = prepare_snp_data_for_blocks(data, config.n_blocks)
+
+            if processor is None:
+                # First trait: create processor (loads memmap, copies to tmp if configured)
+                logger.info("Initializing processor and loading marker score memmap...")
+                processor = SpatialLDSCProcessor(
+                    config=config,
+                    trait_name=trait_name,
+                    data_truncated=data_truncated,
+                    output_dir=output_dir,
+                    n_loader_threads=n_loader_threads
+                )
+            else:
+                # Subsequent traits: reset state while keeping memmap loaded
+                logger.info("Reusing processor (memmap stays loaded)...")
+                processor.reset_for_new_trait(trait_name, data_truncated, output_dir)
+
+            # Process all chunks for current trait
+            start_time = time.time()
+            processor.process_all_chunks(process_chunk_jit)
+
+            elapsed_time = time.time() - start_time
+            h, rem = divmod(elapsed_time, 3600)
+            m, s = divmod(rem, 60)
+            logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
+
+    finally:
+        # Cleanup once: close memmap and delete tmp files (if created)
+        if processor is not None:
+            logger.info("Closing memmap and cleaning up tmp files...")
+            processor.mkscore_memmap.close()
 

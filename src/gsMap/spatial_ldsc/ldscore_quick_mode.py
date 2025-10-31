@@ -415,9 +415,12 @@ class SpatialLDSCProcessor:
                 f"Only 'memmap' marker score format is supported. Got: {config.marker_score_format}"
             )
         
-        # Initialize QuickModeLDScore components
+        # Initialize QuickModeLDScore components (trait-independent)
         self._initialize_quick_mode()
         
+        # Initialize trait-specific components
+        self._initialize_trait_specific()
+
         # Result accumulation
         self.results = []
         self.processed_chunks = set()
@@ -425,7 +428,7 @@ class SpatialLDSCProcessor:
         self.max_spot_end = 0
         
     def _initialize_quick_mode(self):
-        """Initialize quick mode components for memory-mapped marker scores."""
+        """Initialize trait-independent quick mode components for memory-mapped marker scores."""
         logger.info("Initializing memory-mapped marker scores...")
         
         # Load memory-mapped marker scores
@@ -490,33 +493,22 @@ class SpatialLDSCProcessor:
         self.n_spots = n_spots_memmap
         self.n_spots_filtered = len(self.spot_indices)
         
-        # Load SNP-gene weights
+        # Load SNP-gene weights adata (keep for trait-specific initialization)
         snp_gene_weight_path = Path(self.config.snp_gene_weight_adata_path)
         if not snp_gene_weight_path.exists():
             raise FileNotFoundError(f"SNP-gene weight matrix not found at {snp_gene_weight_path}")
         
-        snp_gene_weight_adata = ad.read_h5ad(snp_gene_weight_path)
-        
+        self.snp_gene_weight_adata = ad.read_h5ad(snp_gene_weight_path)
+
         # Find common genes
         memmap_genes_series = pd.Series(gene_names_from_adata)
-        common_genes_mask = memmap_genes_series.isin(snp_gene_weight_adata.var.index)
+        common_genes_mask = memmap_genes_series.isin(self.snp_gene_weight_adata.var.index)
         common_genes = gene_names_from_adata[common_genes_mask]
         
         self.memmap_gene_indices = np.where(common_genes_mask)[0]
-        snp_gene_indices = [snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes]
-        
+        self.weight_gene_indices = [self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes]
+
         logger.info(f"Found {len(common_genes)} common genes")
-        
-        # Get SNP positions from data_truncated
-        snp_positions = self.data_truncated.get('snp_positions', None)
-        if snp_positions is None:
-            raise ValueError("snp_positions not found in data_truncated")
-        
-        # Extract SNP-gene weight matrix
-        self.snp_gene_weight_sparse = snp_gene_weight_adata[snp_positions, snp_gene_indices].X
-        
-        if hasattr(self.snp_gene_weight_sparse, 'tocsr'):
-            self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
         
         # Set up chunking
         self.chunk_size = self.config.spots_per_chunk_quick_mode
@@ -536,7 +528,45 @@ class SpatialLDSCProcessor:
         
         self.total_chunks = len(self.chunk_starts)
         logger.info(f"Total chunks to process: {self.total_chunks}")
-        
+
+    def _initialize_trait_specific(self):
+        """Initialize trait-specific components (SNP-gene weight matrix for current trait)."""
+        logger.info(f"Initializing trait-specific components for trait: {self.trait_name}")
+
+        # Get SNP positions from data_truncated
+        snp_positions = self.data_truncated.get('snp_positions', None)
+        if snp_positions is None:
+            raise ValueError("snp_positions not found in data_truncated")
+
+        # Extract SNP-gene weight matrix for this trait's SNPs
+        self.snp_gene_weight_sparse = self.snp_gene_weight_adata[snp_positions, self.weight_gene_indices].X
+
+        if hasattr(self.snp_gene_weight_sparse, 'tocsr'):
+            self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
+
+        logger.info(f"SNP-gene weight matrix shape: {self.snp_gene_weight_sparse.shape}")
+
+    def reset_for_new_trait(self, trait_name: str, data_truncated: dict, output_dir: Path):
+        """
+        Reset processor state for a new trait while keeping memmap loaded.
+
+        Args:
+            trait_name: Name of the new trait
+            data_truncated: Truncated SNP data for the new trait
+            output_dir: Output directory for results
+        """
+        self.trait_name = trait_name
+        self.data_truncated = data_truncated
+        self.output_dir = output_dir
+        self.results = []
+        self.processed_chunks = set()
+        self.min_spot_start = float('inf')
+        self.max_spot_end = 0
+        logger.info(f"Reset processor for trait: {trait_name}")
+
+        # Re-initialize trait-specific components with new SNP positions
+        self._initialize_trait_specific()
+
     def _fetch_ldscore_chunk(self, chunk_index: int) -> Tuple[np.ndarray, pd.Index, int, int]:
         """
         Fetch LD score chunk for given index.
@@ -688,7 +718,10 @@ class SpatialLDSCProcessor:
             # Clean up resources
             reader.close()
             computer.close()
-        
+
+            # Note: mkscore_memmap is NOT closed here to allow reuse across multiple traits.
+            # It will be closed by the caller after all traits are processed.
+
         # Validate and merge results
         return self._validate_merge_and_save()
     
@@ -819,19 +852,3 @@ class SpatialLDSCProcessor:
         if len(self.processed_chunks) < self.total_chunks:
             logger.warning(f"WARNING: Only processed {len(self.processed_chunks)}/{self.total_chunks} chunks")
     
-    def cleanup(self):
-        """Clean up resources."""
-        if hasattr(self, 'mkscore_memmap'):
-            # MemMapDense handles tmp file cleanup in its close() method
-            self.mkscore_memmap.close()
-            logger.debug("Cleaned up memory-mapped arrays")
-
-        # Clean up other resources
-        gc.collect()
-    
-    def __del__(self):
-        """Ensure cleanup on deletion."""
-        try:
-            self.cleanup()
-        except:
-            pass
