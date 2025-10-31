@@ -644,7 +644,7 @@ def compute_marker_scores_3d_max_pooling_jax(
     weights_3d = weights.reshape(batch_size, n_slices, num_homogeneous_per_slice)
     
     # Normalize weights within each slice (sum to 1 along num_homogeneous_per_slice axis)
-    weights_sum = weights_3d.sum(axis=2, keepdims=True)
+    weights_sum = weights_3d.sum(axis=2, keepdims=True) # Shape: (batch_size, n_slices, 1)
     weights_normalized = weights_3d / jnp.where(weights_sum > 0, weights_sum, 1.0)
     
     # Compute weighted geometric mean in log space for each slice
@@ -683,12 +683,28 @@ def compute_marker_scores_3d_max_pooling_jax(
     
     marker_score_per_slice = jnp.exp(marker_score_per_slice ** 1.5) - 1.0
     
-    # Max pooling across slices: take the maximum score across all slices
+    # Calculate median across slices instead of max pooling to reduce noise
     # Result: (batch_size, n_genes)
-    # marker_score = marker_score_per_slice.max(axis=1)
 
-    # calculate the median across slices instead of max to reduce noise
-    marker_score = jnp.median(marker_score_per_slice, axis=1)
+    # Get the invalid slice mask before calculating median.
+    # These slices are invalid could be:
+    # 1. no neighbors from this slice for the outermost slices
+    # 2. the adjacent slices that do not have enough high quality cells which has been filtered out
+    invalid_slice_mask = (weights_sum == 0).squeeze(-1)  # Shape: (batch_size, n_slices)
+
+    # Set invalid slice scores to NaN, then calculate the median
+    # NaN values will be ignored by jnp.nanmedian
+    marker_score_per_slice = jnp.where(
+        invalid_slice_mask[:, :, None],  # Broadcast to (batch_size, n_slices, n_genes)
+        jnp.nan,
+        marker_score_per_slice
+    )
+
+    # Calculate median across slices (axis=1), ignoring NaN values
+    marker_score = jnp.nanmedian(marker_score_per_slice, axis=1)
+
+    # Handle cases where all slices are invalid (all NaN) - set to 0
+    marker_score = jnp.where(jnp.isnan(marker_score), 0.0, marker_score)
 
     # Return as float16 for memory efficiency
     return marker_score.astype(jnp.float16)
