@@ -685,8 +685,11 @@ def compute_marker_scores_3d_max_pooling_jax(
     
     # Max pooling across slices: take the maximum score across all slices
     # Result: (batch_size, n_genes)
-    marker_score = marker_score_per_slice.max(axis=1)
-    
+    # marker_score = marker_score_per_slice.max(axis=1)
+
+    # calculate the median across slices instead of max to reduce noise
+    marker_score = jnp.median(marker_score_per_slice, axis=1)
+
     # Return as float16 for memory efficiency
     return marker_score.astype(jnp.float16)
 
