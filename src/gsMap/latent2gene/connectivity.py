@@ -143,7 +143,63 @@ def find_spatial_neighbors_with_slices(
                              f"which is less than required k={max(k_central, k_adjacent)}. "
                              # f"Some neighbors will be invalid (-1)."
                                )
-    
+
+    # Build a mapping of slice_id -> list of adjacent slice_ids to search
+    # This ensures all slices search the same total number of adjacent slices
+    slice_adjacent_mapping = {}
+    min_slice_id = min(unique_slice_ids)
+    max_slice_id = max(unique_slice_ids)
+
+    for slice_id in unique_slice_ids:
+        adjacent_slices = []
+
+        # Collect slices in both directions up to n_adjacent_slices
+        for offset in range(1, n_adjacent_slices + 1):
+            neg_slice = slice_id - offset
+            pos_slice = slice_id + offset
+            if neg_slice in slice_kdtrees:
+                adjacent_slices.append((neg_slice, offset, -1))  # (slice_id, offset, direction)
+            if pos_slice in slice_kdtrees:
+                adjacent_slices.append((pos_slice, offset, 1))
+
+        # If we don't have enough adjacent slices (2*n_adjacent_slices total), compensate
+        target_count = 2 * n_adjacent_slices
+        if len(adjacent_slices) < target_count:
+            # Search deeper in available directions
+            extra_offset = n_adjacent_slices + 1
+            while len(adjacent_slices) < target_count and extra_offset <= max(max_slice_id - min_slice_id, 10):
+                neg_slice = slice_id - extra_offset
+                pos_slice = slice_id + extra_offset
+
+                if neg_slice >= min_slice_id and neg_slice in slice_kdtrees:
+                    if not any(s[0] == neg_slice for s in adjacent_slices):
+                        adjacent_slices.append((neg_slice, extra_offset, -1))
+                        if len(adjacent_slices) >= target_count:
+                            break
+
+                if pos_slice <= max_slice_id and pos_slice in slice_kdtrees:
+                    if not any(s[0] == pos_slice for s in adjacent_slices):
+                        adjacent_slices.append((pos_slice, extra_offset, 1))
+                        if len(adjacent_slices) >= target_count:
+                            break
+
+                extra_offset += 1
+
+        # Sort adjacent slices: first by offset (closer slices first), then by direction
+        # This maintains consistency: [offset=1,dir=-1], [offset=1,dir=1], [offset=2,dir=-1], [offset=2,dir=1], ...
+        adjacent_slices.sort(key=lambda x: (x[1], -x[2]))  # Sort by offset, then direction (-1 before 1)
+
+        slice_adjacent_mapping[slice_id] = adjacent_slices
+
+        if len(adjacent_slices) < target_count:
+            logger.warning(f"Slice {slice_id} only has {len(adjacent_slices)} adjacent slices available "
+                         f"(target: {target_count}). Some neighbor slots will remain empty.")
+
+    # Log the adjacent slice mapping for verification
+    for slice_id in sorted(slice_adjacent_mapping.keys()):
+        adj_slice_ids = [s[0] for s in slice_adjacent_mapping[slice_id]]
+        logger.debug(f"Slice {slice_id} will search in adjacent slices: {adj_slice_ids}")
+
     # Batch process all query cells (including edge cases with few neighbor pool cells)
     for slice_id in unique_slice_ids:
         if slice_id in slice_kdtrees:
@@ -168,25 +224,33 @@ def find_spatial_neighbors_with_slices(
             ]
             spatial_neighbors[query_cells_on_slice, :k_central] = central_neighbor_global_indices
 
-            # Adjacent slices (fixed k_adjacent for each)
-            neighbor_column_offset = k_central
-            for slice_offset in range(1, n_adjacent_slices + 1):
-                for direction in [1, -1]:
-                    adjacent_slice_id = slice_id + direction * slice_offset
-                    if adjacent_slice_id in slice_kdtrees:
-                        adjacent_kdtree, adjacent_neighbor_pool_global_indices = slice_kdtrees[adjacent_slice_id]
-                        _, adjacent_neighbor_local_indices = adjacent_kdtree.query(query_coords, k=k_adjacent, workers=-1)
+            # Adjacent slices - use the pre-computed mapping
+            # Get the list of adjacent slices to search for this slice_id
+            adjacent_slices_to_search = slice_adjacent_mapping.get(slice_id, [])
 
-                        # Handle invalid indices for adjacent slices too
-                        n_adjacent_pool_cells = len(adjacent_neighbor_pool_global_indices)
-                        adjacent_neighbor_global_indices = np.full_like(adjacent_neighbor_local_indices, -1, dtype=np.int32)
-                        adjacent_valid_mask = adjacent_neighbor_local_indices < n_adjacent_pool_cells
-                        adjacent_neighbor_global_indices[adjacent_valid_mask] = adjacent_neighbor_pool_global_indices[
-                            adjacent_neighbor_local_indices[adjacent_valid_mask]
-                        ]
-                        spatial_neighbors[query_cells_on_slice, neighbor_column_offset:neighbor_column_offset+k_adjacent] = adjacent_neighbor_global_indices
-                    # If adjacent slice doesn't exist, already filled with -1
-                    neighbor_column_offset += k_adjacent
+            neighbor_column_offset = k_central
+
+            # We need to fill exactly 2*n_adjacent_slices slots in the output array
+            # The array structure is: [offset=1,dir=-1], [offset=1,dir=+1], [offset=2,dir=-1], [offset=2,dir=+1], ...
+            for slot_idx in range(2 * n_adjacent_slices):
+                if slot_idx < len(adjacent_slices_to_search):
+                    # We have a slice to search for this slot
+                    adjacent_slice_id, _, _ = adjacent_slices_to_search[slot_idx]
+
+                    adjacent_kdtree, adjacent_neighbor_pool_global_indices = slice_kdtrees[adjacent_slice_id]
+                    _, adjacent_neighbor_local_indices = adjacent_kdtree.query(query_coords, k=k_adjacent, workers=-1)
+
+                    # Handle invalid indices for adjacent slices
+                    n_adjacent_pool_cells = len(adjacent_neighbor_pool_global_indices)
+                    adjacent_neighbor_global_indices = np.full_like(adjacent_neighbor_local_indices, -1, dtype=np.int32)
+                    adjacent_valid_mask = adjacent_neighbor_local_indices < n_adjacent_pool_cells
+                    adjacent_neighbor_global_indices[adjacent_valid_mask] = adjacent_neighbor_pool_global_indices[
+                        adjacent_neighbor_local_indices[adjacent_valid_mask]
+                    ]
+                    spatial_neighbors[query_cells_on_slice, neighbor_column_offset:neighbor_column_offset+k_adjacent] = adjacent_neighbor_global_indices
+                # else: slot remains as -1 (already initialized) if no slice available
+
+                neighbor_column_offset += k_adjacent
 
     # Note: Slices with 0 neighbor pool cells will not be in slice_kdtrees
     # Query cells on such slices will have all neighbors remain as -1 (already initialized)
@@ -233,17 +297,22 @@ def _find_anchors_and_homogeneous_batch_jit(
     cell_sims_thresholded = jnp.where(cell_sims >= similarity_threshold, cell_sims, 0.0)
     
     # Multiply the thresholded similarities
-    combined_sims = anchor_sims_thresholded * cell_sims_thresholded
-    
+    # combined_sims = anchor_sims_thresholded * cell_sims_thresholded
+    combined_sims = cell_sims_thresholded
+
     # Mask out invalid neighbors by setting their similarities to -0
     combined_sims = jnp.where(spatial_neighbors >= 0, combined_sims, 0)
-    
+
     # Select top homogeneous neighbors based on combined similarity
     top_homo_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous]
     batch_idx = jnp.arange(batch_size)[:, None]
     homogeneous_neighbors = spatial_neighbors[batch_idx, top_homo_idx]  # (batch_size, num_homogeneous)
     homogeneous_weights = combined_sims[batch_idx, top_homo_idx]
-    
+
+    # # if a cell top homo cell number less than num_homogeneous/2 these are low quality cell
+    # homogeneous_cell_number = jnp.sum(combined_sims > 0, axis=1, keepdims=True)
+    # homogeneous_weights = jnp.where(homogeneous_cell_number > num_homogeneous/2, homogeneous_weights, 0)
+
     return homogeneous_neighbors, homogeneous_weights
 
 

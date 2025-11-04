@@ -316,7 +316,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
             if processor is None:
                 # First trait: create processor (loads memmap, copies to tmp if configured)
-                logger.info("Initializing processor and loading marker score memmap...")
+                logger.debug("Initializing processor and loading marker score memmap...")
                 processor = SpatialLDSCProcessor(
                     config=config,
                     trait_name=trait_name,
@@ -326,7 +326,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                 )
             else:
                 # Subsequent traits: reset state while keeping memmap loaded
-                logger.info("Reusing processor (memmap stays loaded)...")
+                logger.debug("Reusing processor (memmap stays loaded)...")
                 processor.reset_for_new_trait(trait_name, data_truncated, output_dir)
 
             # Process all chunks for current trait

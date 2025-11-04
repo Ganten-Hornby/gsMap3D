@@ -701,7 +701,8 @@ def compute_marker_scores_3d_max_pooling_jax(
     )
 
     # Calculate median across slices (axis=1), ignoring NaN values
-    marker_score = jnp.nanmedian(marker_score_per_slice, axis=1)
+    marker_score = jnp.nanmean(marker_score_per_slice, axis=1)
+    # marker_score = jnp.nanmedian(marker_score_per_slice, axis=1)
 
     # Handle cases where all slices are invalid (all NaN) - set to 0
     marker_score = jnp.where(jnp.isnan(marker_score), 0.0, marker_score)
