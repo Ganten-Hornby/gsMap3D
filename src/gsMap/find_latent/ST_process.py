@@ -12,6 +12,7 @@ from rich.progress import track
 from scipy.special import softmax
 from .GNN.GCN import GCN, build_spatial_graph
 from gsMap.config import FindLatentRepresentationsConfig
+import scipy.sparse as sp
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,32 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
 
     return concatenated_adata
 
+def _looks_like_count_matrix(X, max_check=100, tol=1e-8):
+    """
+    Heuristically check whether X contains integer values.
+    """
+    if X is None:
+        return False
+
+    if sp.issparse(X):
+        data = X.data
+        if data.size == 0:
+            return False
+        if data.size > max_check:
+            data = data[:max_check]
+    else:
+        flat = np.asarray(X).ravel()
+        if flat.size == 0:
+            return False
+        if flat.size > max_check:
+            flat = flat[:max_check]
+        data = flat
+
+    nz = data[data != 0]
+    if nz.size == 0:
+        return True  # all zero, good enough
+    return np.allclose(nz, np.round(nz), atol=tol)
+
 
 def setup_data_layer(adata, data_layer):
     """
@@ -236,15 +263,15 @@ def setup_data_layer(adata, data_layer):
         adata.X = adata.layers[data_layer]
         actual_data_layer = data_layer
         logger.info(f"Using data layer: {data_layer}")
-    else:
-        # Fall back to adata.X
-        if data_layer != "X":
-            logger.warning(f"Data layer '{data_layer}' not found, using adata.X")
+    elif data_layer == "X":
         actual_data_layer = "X"
+    else:
+        raise ValueError(f"Data layer '{data_layer}' not found in adata.layers.")
 
     # Determine if this is count data
-    is_count_data = actual_data_layer in ["count", "counts", "impute_count"] or \
-                   (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer))
+    is_count_data = actual_data_layer in ["count", "counts", "raw_counts","impute_count"] or \
+                   (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)) or \
+                     _looks_like_count_matrix(adata.X)
 
     if is_count_data:
         logger.info("Detected count data")
@@ -338,7 +365,7 @@ def calculate_module_scores_from_degs(adata, deg_results, annotation_key):
     logger.info("Calculating module scores using existing DEG results...")
 
     # Detect count data and normalize if needed
-    is_count_data = adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)
+    is_count_data = _looks_like_count_matrix(adata.X)
     adata = normalize_for_analysis(adata, is_count_data, preserve_raw=False)
 
     # Ensure annotation is categorical if it exists
@@ -396,7 +423,7 @@ def calculate_module_score(training_adata, annotation_key):
     adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
 
     # Detect count data and normalize if needed
-    is_count_data = adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)
+    is_count_data = _looks_like_count_matrix(adata.X)
     adata = normalize_for_analysis(adata, is_count_data, preserve_raw=True)
 
     # Perform DEG analysis with DataFrame fragmentation warnings suppressed
