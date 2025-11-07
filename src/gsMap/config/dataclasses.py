@@ -826,7 +826,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         # Define input options
         input_options = {
             'h5ad_yaml': ('h5ad_yaml', 'yaml'),
-            'h5ad': ('h5ad', 'list'),
+            'h5ad_path': ('h5ad_path', 'list'),
             'h5ad_list_file': ('h5ad_list_file', 'file'),
         }
         
@@ -873,7 +873,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
                 raise ValueError(
                     f"No h5ad files found in latent directory {latent_dir}. "
                     f"Please run the find latent representation first. "
-                    f"Or provide one of: h5ad_yaml, h5ad, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
+                    f"Or provide one of: h5ad_yaml, h5ad_path, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
                 )
 
             # Extract sample names from file names
@@ -993,6 +993,8 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
         self.n_adjacent_slices = 0
+        self.spatial_key = None
+        self.latent_representation_niche = None
 
 
 
@@ -1278,41 +1280,6 @@ class ReportConfig(ConfigWithAutoPaths):
     plot_type: str = "all"
 
 
-@dataclass
-class MaxPoolingConfig(ConfigWithAutoPaths):
-    """Configuration for max pooling across sections."""
-    
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
-    
-    spe_file_list: Annotated[str, typer.Option(
-        help="List of input ST (.h5ad) files"
-    )]
-
-    annotation: Annotated[Optional[str], typer.Option(
-        help="Annotation in adata.obs to use"
-    )] = None
-    
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm"
-    )] = "spatial"
-    
-    sim_thresh: Annotated[float, typer.Option(
-        help="Similarity threshold for MNN matching",
-        min=0.0,
-        max=1.0
-    )] = 0.85
-
 
 @dataclass
 class GenerateLDScoreConfig(ConfigWithAutoPaths):
@@ -1404,15 +1371,6 @@ class GenerateLDScoreConfig(ConfigWithAutoPaths):
 class CauchyCombinationConfig(ConfigWithAutoPaths):
     """Configuration for Cauchy combination test."""
     
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-
 
     trait_name: Annotated[str, typer.Option(
         help="Name of the trait being analyzed"
