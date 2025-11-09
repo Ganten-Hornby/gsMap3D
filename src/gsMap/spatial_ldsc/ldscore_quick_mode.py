@@ -295,12 +295,10 @@ class ParallelLDScoreComputer:
                 
                 # Convert to JAX and process
                 spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
-                
-                # Process with JIT function
-                batch_size = min(50, spot_names.shape[0])
+
+                # Process with batched JIT function (no batch_size needed - processes all spots at once)
                 betas, ses = self.process_chunk_jit_fn(
                     self.processor.config.n_blocks,
-                    batch_size,
                     spatial_ld_jax,
                     self.baseline_ld_sum_jax,
                     self.chisq_jax,
@@ -644,10 +642,15 @@ class SpatialLDSCProcessor:
             
             description = " | ".join(desc_parts)
             
-            # Start JAX profiling if needed
-            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-                jax.profiler.start_trace("/tmp/jax-trace-ldsc")
-            
+            # # Start JAX profiling if needed
+            # # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+            # print('starting jax profiler...')
+            # print('starting jax profiler...')
+            # print('starting jax profiler...')
+            # print('starting jax profiler...')
+            # print('starting jax profiler...')
+            # jax.profiler.start_trace("/tmp/jax-trace-ldsc")
+
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
@@ -706,13 +709,15 @@ class SpatialLDSCProcessor:
                         # # Periodic memory check
                         # if n_chunks_processed % 100 == 0:
                         #     gc.collect()
-                    
                     # Small sleep to prevent busy waiting
                     time.sleep(0.1)
             
-            if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-                jax.profiler.stop_trace()
-                logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
+            # # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
+            # jax.profiler.stop_trace()
+            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
+            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
+            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
+            #     # logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
             
         finally:
             # Clean up resources

@@ -199,6 +199,121 @@ def process_chunk_jit(n_blocks: int,
     return betas, ses
 
 
+@partial(jit, static_argnums=(0,))
+def process_chunk_batched_jit(n_blocks: int,
+                               spatial_ld: jnp.ndarray,
+                               baseline_ld_sum: jnp.ndarray,
+                               chisq: jnp.ndarray,
+                               N: jnp.ndarray,
+                               baseline_ann: jnp.ndarray,
+                               w_ld: jnp.ndarray,
+                               Nbar: float) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Process an entire chunk of spots with JIT compilation and BATCHED matrix operations.
+
+    OPTIMIZATION: Uses batched matrix operations instead of vmap to improve GPU utilization.
+    All spots are processed simultaneously using efficient matrix operations.
+
+    Args:
+        n_blocks: Number of jackknife blocks
+        spatial_ld: (n_snps, n_spots) array of spatial LD scores
+        baseline_ld_sum: (n_snps,) baseline LD scores summed
+        chisq: (n_snps,) chi-squared statistics
+        N: (n_snps,) sample sizes
+        baseline_ann: (n_snps, n_baseline_features) baseline annotations
+        w_ld: (n_snps,) regression weights
+        Nbar: Average sample size
+
+    Returns:
+        betas: (n_spots,) regression coefficients
+        ses: (n_spots,) standard errors
+    """
+    n_snps, n_spots = spatial_ld.shape
+    n_baseline_features = baseline_ann.shape[1]
+
+    # Compute x_tot for all spots: (n_snps, n_spots)
+    x_tot = spatial_ld + baseline_ld_sum.reshape(-1, 1)
+
+    # Compute hsq for each spot: (n_spots,)
+    # hsq = 10000 * (mean(chisq) - 1) / mean(x_tot * N)
+    N_expanded = N.reshape(-1, 1)  # (n_snps, 1)
+    x_tot_N = x_tot * N_expanded  # (n_snps, n_spots)
+    mean_chisq = jnp.mean(chisq)
+    mean_x_tot_N = jnp.mean(x_tot_N, axis=0)  # (n_spots,)
+    hsq = 10000.0 * (mean_chisq - 1.0) / mean_x_tot_N  # (n_spots,)
+    hsq = jnp.clip(hsq, 0.0, 1.0)
+
+    # Compute weights for all spots: (n_snps, n_spots)
+    ld_clip = jnp.maximum(x_tot, 1.0)
+    w_ld_clip = jnp.maximum(w_ld.reshape(-1, 1), 1.0)
+    c = (hsq.reshape(1, -1) * N_expanded) / 10000.0  # (n_snps, n_spots)
+    weights = jnp.sqrt(1.0 / (2 * jnp.square(1.0 + c * ld_clip) * w_ld_clip))
+
+    # Normalize weights per spot
+    weights_sum = jnp.sum(weights, axis=0, keepdims=True)  # (1, n_spots)
+    weights_scaled = weights / weights_sum  # (n_snps, n_spots)
+
+    # Prepare features for all spots
+    # x_focal shape: (n_snps, n_spots, 1 + n_baseline_features)
+    spatial_weighted = (spatial_ld * weights_scaled)[..., None]  # (n_snps, n_spots, 1)
+    baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]  # (n_snps, n_spots, n_baseline)
+    x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
+
+    # y_weighted: (n_snps, n_spots, 1)
+    y_weighted = (chisq.reshape(-1, 1) * weights_scaled)[..., None]
+
+    # Reshape for block computation
+    block_size = n_snps // n_blocks
+    n_snps_used = block_size * n_blocks
+
+    # Truncate to block-aligned size
+    x_focal = x_focal[:n_snps_used]
+    y_weighted = y_weighted[:n_snps_used]
+
+    # Reshape: (n_blocks, block_size, n_spots, n_features)
+    x_blocks = x_focal.reshape(n_blocks, block_size, n_spots, -1)
+    y_blocks = y_weighted.reshape(n_blocks, block_size, n_spots, 1)
+
+    # Compute block XtY and XtX for all spots simultaneously
+    # xty_blocks: (n_blocks, n_spots, n_features)
+    xty_blocks = jnp.einsum('nbsf,nbs->nsf', x_blocks, y_blocks.squeeze(-1))
+
+    # xtx_blocks: (n_blocks, n_spots, n_features, n_features)
+    xtx_blocks = jnp.einsum('nbsf,nbsg->nsfg', x_blocks, x_blocks)
+
+    # Total across blocks
+    xty_total = jnp.sum(xty_blocks, axis=0)  # (n_spots, n_features)
+    xtx_total = jnp.sum(xtx_blocks, axis=0)  # (n_spots, n_features, n_features)
+
+    # Solve for all spots: (n_spots, n_features)
+    est = jnp.linalg.solve(xtx_total, xty_total[..., None]).squeeze(-1)
+
+    # Delete-one estimates: (n_blocks, n_spots, n_features)
+    xty_del = xty_total - xty_blocks  # (n_blocks, n_spots, n_features)
+    xtx_del = xtx_total - xtx_blocks  # (n_blocks, n_spots, n_features, n_features)
+    delete_ests = jnp.linalg.solve(xtx_del, xty_del[..., None]).squeeze(-1)
+
+    # Pseudovalues: (n_blocks, n_spots, n_features)
+    pseudovalues = n_blocks * est - (n_blocks - 1) * delete_ests
+
+    # Jackknife estimates per spot
+    jknife_est = jnp.mean(pseudovalues, axis=0)  # (n_spots, n_features)
+
+    # Jackknife covariance for each spot
+    # Center pseudovalues
+    pseudo_centered = pseudovalues - jknife_est  # broadcast (n_blocks, n_spots, n_features)
+
+    # Covariance: (n_spots, n_features, n_features)
+    jknife_cov = jnp.einsum('nsf,nsg->sfg', pseudo_centered, pseudo_centered) / (n_blocks * (n_blocks - 1))
+
+    # Extract diagonal for SE: (n_spots, n_features)
+    jknife_se = jnp.sqrt(jnp.diagonal(jknife_cov, axis1=1, axis2=2))
+
+    # Return spatial coefficient (first feature) for all spots
+    return jknife_est[:, 0] / Nbar, jknife_se[:, 0] / Nbar
+
+
+
 # ============================================================================
 # Data loading and preparation
 # ============================================================================
@@ -275,6 +390,12 @@ def load_and_prepare_data(config: SpatialLDSCConfig,
     return data, common_snps
 
 
+def wrapper_of_process_chunk_jit(*args, **kwargs):
+    """Wrapper to call the JIT-compiled process_chunk_jit function."""
+    # return process_chunk_jit(*args, **kwargs)
+    return process_chunk_batched_jit(*args, **kwargs)
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -331,7 +452,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
             # Process all chunks for current trait
             start_time = time.time()
-            processor.process_all_chunks(process_chunk_jit)
+            processor.process_all_chunks(wrapper_of_process_chunk_jit)
 
             elapsed_time = time.time() - start_time
             h, rem = divmod(elapsed_time, 3600)

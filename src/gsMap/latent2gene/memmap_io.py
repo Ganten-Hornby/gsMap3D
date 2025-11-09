@@ -400,10 +400,11 @@ class MemMapDense:
         if self.mode in ('w', 'r+'):
             self.mark_complete()
         
-        # Sync tmp files back to original location if using tmp
-        if self.using_tmp:
-            self._sync_tmp_to_original()
-            self._cleanup_tmp()
+            # Sync tmp files back to original location if using tmp
+            if self.using_tmp:
+                self._sync_tmp_to_original()
+
+        self._cleanup_tmp()
 
     def __enter__(self):
         return self
