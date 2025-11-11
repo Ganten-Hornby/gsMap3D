@@ -396,6 +396,27 @@ def wrapper_of_process_chunk_jit(*args, **kwargs):
     return process_chunk_batched_jit(*args, **kwargs)
 
 
+def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str) -> str:
+
+    base_name = f"{config.project_name}_{trait_name}"
+
+    # If we have cell indices range, include it in filename
+    if config.cell_indices_range:
+        start_cell, end_cell = config.cell_indices_range
+        return f"{base_name}_cells_{start_cell}_{end_cell}.csv.gz"
+
+    # If sample filter is set, filename will include sample info
+    # but we can't predict exact start/end without loading data
+    # For now, just check the simple complete case
+    if config.sample_filter:
+        # Return None to indicate we can't reliably predict the filename
+        # and should proceed with processing
+        return None
+
+    # Default case: complete coverage
+    return f"{base_name}.csv.gz"
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -430,6 +451,16 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             if config.cell_indices_range:
                 logger.info(f"Cell indices range: {config.cell_indices_range}")
             logger.info("=" * 70)
+
+            # Check if output already exists
+            expected_filename = generate_expected_output_filename(config, trait_name)
+            if expected_filename is not None:
+                expected_output_path = output_dir / expected_filename
+                if expected_output_path.exists():
+                    logger.info(f"Output file already exists: {expected_output_path}")
+                    logger.info(f"Skipping trait {trait_name} ({idx+1}/{len(traits_to_process)})")
+                    logger.info("=" * 70)
+                    continue
 
             # Load and prepare trait-specific data
             data, common_snps = load_and_prepare_data(config, trait_name, sumstats_file)
