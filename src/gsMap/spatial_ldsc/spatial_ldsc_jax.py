@@ -21,6 +21,7 @@ import pandas as pd
 import psutil
 from jax import jit, vmap
 from scipy.stats import norm
+from statsmodels.stats.multitest import multipletests
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
 import anndata as ad
@@ -417,6 +418,39 @@ def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str
     return f"{base_name}.csv.gz"
 
 
+def log_existing_result_statistics(result_path: Path, trait_name: str):
+
+    try:
+        # Read the existing result
+        logger.info(f"Reading existing result from: {result_path}")
+        df = pd.read_csv(result_path, compression='gzip')
+
+        n_spots = len(df)
+        bonferroni_threshold = 0.05 / n_spots
+        n_bonferroni_sig = (df['p'] < bonferroni_threshold).sum()
+
+        # FDR correction
+        reject, _, _, _ = multipletests(
+            df['p'], alpha=0.001, method='fdr_bh'
+        )
+        n_fdr_sig = reject.sum()
+
+        logger.info("=" * 70)
+        logger.info(f"EXISTING RESULT SUMMARY - {trait_name}")
+        logger.info("=" * 70)
+        logger.info(f"Total spots: {n_spots:,}")
+        logger.info(f"Max -log10(p): {df['neg_log10_p'].max():.2f}")
+        logger.info("-" * 70)
+        logger.info(f"Nominally significant (p < 0.05): {(df['p'] < 0.05).sum():,}")
+        logger.info(f"Bonferroni threshold: {bonferroni_threshold:.2e}")
+        logger.info(f"Bonferroni significant: {n_bonferroni_sig:,}")
+        logger.info(f"FDR significant (alpha=0.001): {n_fdr_sig:,}")
+        logger.info("=" * 70)
+
+    except Exception as e:
+        logger.warning(f"Could not read existing result statistics: {e}")
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -459,7 +493,9 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                 if expected_output_path.exists():
                     logger.info(f"Output file already exists: {expected_output_path}")
                     logger.info(f"Skipping trait {trait_name} ({idx+1}/{len(traits_to_process)})")
-                    logger.info("=" * 70)
+
+                    # Log statistics from existing result
+                    log_existing_result_statistics(expected_output_path, trait_name)
                     continue
 
             # Load and prepare trait-specific data

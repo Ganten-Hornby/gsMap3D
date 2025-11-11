@@ -76,7 +76,7 @@ class ParallelLDScoreReader:
         
         # Queues for communication
         self.read_queue = queue.Queue()
-        self.result_queue = output_queue if output_queue else queue.Queue(maxsize=num_workers * 4)
+        self.result_queue = output_queue if output_queue else queue.Queue(maxsize=num_workers * 8)
         
         # Throughput tracking
         self.throughput = ComponentThroughput()
@@ -834,10 +834,10 @@ class SpatialLDSCProcessor:
         n_bonferroni_sig = (df['p'] < bonferroni_threshold).sum()
         
         # FDR correction
-        _, fdr_corrected_pvals, _, _ = multipletests(
+        reject, _, _, _ = multipletests(
             df['p'], alpha=0.001, method='fdr_bh'
         )
-        n_fdr_sig = fdr_corrected_pvals.sum()
+        n_fdr_sig = reject.sum()
         
         logger.info("=" * 70)
         logger.info("STATISTICAL SUMMARY")
