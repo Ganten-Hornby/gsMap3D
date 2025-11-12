@@ -350,6 +350,11 @@ def load_and_prepare_data(config: SpatialLDSCConfig,
     if chisq_max is None:
         chisq_max = max(0.001 * sumstats.N.max(), 80)
     sumstats["chisq"] = sumstats.Z ** 2
+
+    # Calculate genomic control lambda (λGC) before filtering
+    lambda_gc = np.median(sumstats.chisq) / 0.4559364
+    logger.info(f"Lambda GC (genomic control λ): {lambda_gc:.4f}")
+
     sumstats = sumstats[sumstats.chisq < chisq_max]
     logger.info(f"Filtered to {len(sumstats)} SNPs with chi^2 < {chisq_max}")
     
