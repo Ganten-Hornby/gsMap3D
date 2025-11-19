@@ -43,10 +43,17 @@ def create_snp_feature_map(
         F = len(unique_features)
 
         # Convert BIM to PyRanges
-        bim_pr = pr.PyRanges(bim_df.rename(columns={"CHR": "Chromosome", "BP": "Start"}))
-        bim_pr.End = bim_pr.Start + 1
+        # PyRanges requires Chromosome, Start, End columns
+        bim_for_pr = bim_df.rename(columns={"CHR": "Chromosome", "BP": "Start"}).copy()
+        bim_for_pr['End'] = bim_for_pr['Start'] + 1  # SNPs are point locations
+        bim_pr = pr.PyRanges(bim_for_pr)
 
         # Prepare Feature PyRanges with Window
+        # Ensure proper column names for PyRanges
+        if 'Chrom' in features_df.columns:
+            features_df = features_df.rename(columns={'Chrom': 'Chromosome'})
+
+        features_df = features_df.copy()  # Avoid modifying original
         features_df['Start'] = features_df['Start'] - window_size
         features_df['End'] = features_df['End'] + window_size
         feat_pr = pr.PyRanges(features_df)

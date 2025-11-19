@@ -200,25 +200,23 @@ class PlinkBEDReader:
 
         with open(self.bed_path, "rb") as f:
             for snp_idx in snp_indices:
-                # Seek to SNP position (skip 3-byte header + previous SNPs)
-                f.seek(3 + int(snp_idx) * 2 * self.nru)
+                # Seek to SNP position in bytes
+                # File structure: 3-byte header + (bytes_per_snp bytes per SNP)
+                byte_offset = 3 + int(snp_idx) * self.bytes_per_snp
+                f.seek(byte_offset)
 
                 # Read bitarray for this SNP
+                # Each SNP uses bytes_per_snp bytes = 2 * nru bits
                 z = ba.bitarray(endian="little")
-                z.fromfile(f, 2 * self.nru)
+                z.fromfile(f, self.bytes_per_snp)  # Read bytes, not bits
 
                 # Decode genotypes using PLINK encoding
-                # Extract every other bit (PLINK uses 2 bits per genotype)
-                A = z[0::2]  # First bit of each genotype pair
-                B = z[1::2]  # Second bit of each genotype pair
-
-                # Decode to genotype values:
-                # 00 (A=0, B=0) -> 0 (hom major)
-                # 01 (A=1, B=0) -> 9 (missing)
-                # 10 (A=0, B=1) -> 1 (het)
-                # 11 (A=1, B=1) -> 2 (hom minor)
+                # The bitarray.decode() converts pairs of bits to genotype values
+                # using the _bedcode mapping
                 genotype_vals = np.array(z.decode(self._bedcode), dtype=np.float32)
-                genotype_vals = genotype_vals.reshape(self.nru)[: self.n]  # Trim padding
+
+                # Trim to actual number of individuals (remove padding)
+                genotype_vals = genotype_vals[: self.n]
 
                 genotypes.append(genotype_vals)
 

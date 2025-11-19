@@ -9,35 +9,38 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+from .constants import LDSC_BIAS_CORRECTION_DF
 
 
-# Unbiased LD score estimator bias correction constant
-# For sample size N, the bias correction is (1 - r^2) / (N - 2)
-LDSC_BIAS_CORRECTION_DF = 2.0
-
-
-@partial(jax.jit, static_argnames=["block_len", "n_features"])
+@partial(jax.jit, static_argnames=["n_features"])
 def compute_batch_weights(
     ref_block: jnp.ndarray,
     hm3_batch: jnp.ndarray,
     block_mapping: jnp.ndarray,
+    relative_starts: jnp.ndarray,
+    relative_ends: jnp.ndarray,
     n_features: int,
 ) -> jnp.ndarray:
     """
-    Compute LD score weight matrix using JAX JIT compilation.
-
-    This function calculates the unbiased LD score (L2) between reference SNPs
-    and HapMap3 SNPs, then aggregates by feature using segment_sum.
+    Compute LD score weight matrix using JAX JIT compilation with sliding window masking.
 
     Parameters
     ----------
     ref_block : jnp.ndarray
-        Reference genotypes (standardized), shape (N_individuals, block_len)
+        Reference genotypes (standardized) for the Super Block.
+        Shape: (N_individuals, block_len)
     hm3_batch : jnp.ndarray
-        HapMap3 genotypes (standardized), shape (N_individuals, batch_size)
+        HapMap3 genotypes (standardized) for the current batch.
+        Shape: (N_individuals, batch_size)
     block_mapping : jnp.ndarray
-        Feature index for each reference SNP, shape (block_len,)
-        Values in [0, n_features). Value n_features indicates unmapped SNPs.
+        Feature index for each reference SNP in the Super Block.
+        Shape: (block_len,)
+    relative_starts : jnp.ndarray
+        Start index of the valid window for each HM3 SNP, relative to the Super Block start.
+        Shape: (batch_size,)
+    relative_ends : jnp.ndarray
+        End index (exclusive) of the valid window for each HM3 SNP.
+        Shape: (batch_size,)
     n_features : int
         Total number of distinct features (F)
 
@@ -45,87 +48,72 @@ def compute_batch_weights(
     -------
     jnp.ndarray
         Weight matrix of shape (batch_size, n_features)
-
-    Notes
-    -----
-    The unbiased L2 estimator is computed as:
-        L2 = r^2 - (1 - r^2) / (N - 2)
-
-    where r is the Pearson correlation coefficient and N is the sample size.
-    This corrects for the upward bias in squared correlation estimates.
-
-    References
-    ----------
-    .. [1] Bulik-Sullivan, B. K. et al. (2015). LD Score regression distinguishes
-           confounding from polygenicity in genome-wide association studies.
-           Nature Genetics, 47(3), 291-295.
     """
     N = ref_block.shape[0]
+    block_len = ref_block.shape[1]
+    batch_size = hm3_batch.shape[1]
 
-    # Step 1: Compute correlation matrix
-    # For standardized genotypes (mean=0, var=1), the correlation is simply:
-    # r = (X_ref.T @ X_hm3) / N
+    # 1. Compute Correlation Matrix (Super Block vs Batch)
     # Shape: (block_len, batch_size)
+    # cov[j, i] = correlation between Ref SNP j and HM3 SNP i
     cov = jnp.dot(ref_block.T, hm3_batch) / N
 
-    # Step 2: Apply unbiased L2 estimator
-    # L2_unbiased = r^2 - (1 - r^2) / (N - 2)
-    # This corrects for upward bias in squared correlation estimates
+    # 2. Apply Unbiased L2 Estimator
+    # L2 = r^2 - (1 - r^2) / (N - 2)
     l2_scores = jnp.square(cov)
     l2_unbiased = l2_scores - (1.0 - l2_scores) / (N - LDSC_BIAS_CORRECTION_DF)
 
-    # Step 3: Aggregate LD scores by feature using segment_sum
-    # For each feature, sum the LD scores of all SNPs mapped to that feature
-    # block_mapping: (block_len,) contains feature indices [0, n_features)
-    # Unmapped SNPs have index n_features (garbage bin)
-    # Output shape: (n_features + 1, batch_size)
+    # 3. Apply Sliding Window Mask
+    # We need to zero out L2 scores for reference SNPs that are outside
+    # the specific window of the HM3 SNP.
+
+    # Create grid of indices for the block: (block_len, 1)
+    idx_grid = jnp.arange(block_len)[:, None]
+
+    # Broadcast comparison against batch limits: (1, batch_size)
+    # Mask shape: (block_len, batch_size)
+    # Valid if: start <= index < end
+    mask = (idx_grid >= relative_starts[None, :]) & (idx_grid < relative_ends[None, :])
+
+    # Apply mask (zeros out invalid regions)
+    masked_l2 = jnp.where(mask, l2_unbiased, 0.0)
+
+    # 4. Aggregate by Feature
+    # block_mapping maps rows (Ref SNPs) to features.
+    # We sum down the rows for each column (HM3 SNP).
+    # Shape: (n_features + 1, batch_size)
     aggregated = jax.ops.segment_sum(
-        l2_unbiased, block_mapping, num_segments=n_features + 1
+        masked_l2, block_mapping, num_segments=n_features + 1
     )
 
-    # Step 4: Remove garbage bin and transpose to output shape
-    # Return shape: (batch_size, n_features)
+    # 5. Transpose and remove garbage bin
     return aggregated[:n_features, :].T
 
 
-def prepare_padding(matrix: jnp.ndarray, target_width: int) -> jnp.ndarray:
+def prepare_padding(matrix: jnp.ndarray, target_width: int, constant_values=0) -> jnp.ndarray:
     """
-    Pad or truncate matrix width to match quantized block length for JIT.
-
-    This function ensures consistent matrix dimensions for JAX JIT compilation
-    by padding short matrices or truncating long ones to a target width.
-
-    Parameters
-    ----------
-    matrix : jnp.ndarray
-        Input matrix of shape (n_rows, current_width)
-    target_width : int
-        Desired width for the output matrix
-
-    Returns
-    -------
-    jnp.ndarray
-        Matrix of shape (n_rows, target_width)
-
-    Notes
-    -----
-    - If current_width < target_width: Pads with zeros on the right
-    - If current_width > target_width: Truncates to first target_width columns
-    - If current_width == target_width: Returns as-is
-
-    This is used for window quantization in the dynamic programming approach
-    to minimize JAX recompilation overhead when processing variable-sized
-    LD windows.
+    Pad or truncate matrix width to match quantized block length.
     """
     current_width = matrix.shape[1]
 
     if current_width < target_width:
-        # Pad with zeros on the right
         pad_width = target_width - current_width
-        return jnp.pad(matrix, ((0, 0), (0, pad_width)), mode="constant", constant_values=0)
+        # Pad on the right (axis 1)
+        return jnp.pad(matrix, ((0, 0), (0, pad_width)), mode="constant", constant_values=constant_values)
     elif current_width > target_width:
-        # Truncate to target width
         return matrix[:, :target_width]
     else:
-        # Already correct size
         return matrix
+
+def prepare_vector_padding(vector: jnp.ndarray, target_width: int, fill_value=0) -> jnp.ndarray:
+    """
+    Pad 1D vector to match quantized block length.
+    """
+    current_width = vector.shape[0]
+    if current_width < target_width:
+        pad_width = target_width - current_width
+        return jnp.pad(vector, (0, pad_width), mode="constant", constant_values=fill_value)
+    elif current_width > target_width:
+        return vector[:target_width]
+    else:
+        return vector
