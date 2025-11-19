@@ -20,7 +20,7 @@ import jax.numpy as jnp
 from jax.experimental import sparse
 
 from .io import PlinkBEDReader
-from .batch_construction import construct_all_batches, BatchInfo
+from .batch_construction import construct_batches, BatchInfo
 from .compute import (
     compute_ld_scores,
     compute_batch_weights_segment_sum,
@@ -60,7 +60,7 @@ class ChromosomeResult:
 
 class LDScorePipeline:
     """
-    Pipeline for computing LD scores across chromosomes with DP-based batching.
+    Pipeline for computing LD scores across chromosomes.
 
     Parameters
     ----------
@@ -70,8 +70,6 @@ class LDScorePipeline:
         Directory containing HM3 SNP lists per chromosome
     batch_size_hm3 : int
         Number of HM3 SNPs per batch
-    n_quantization_groups : int
-        Number of quantization groups (Q) for DP
     window_size_bp : int
         LD window size in base pairs (default: 1Mb)
     maf_min : float
@@ -85,7 +83,6 @@ class LDScorePipeline:
         bfile_prefix_template: str,
         hm3_dir: str,
         batch_size_hm3: int,
-        n_quantization_groups: int,
         window_size_bp: int = 1_000_000,
         maf_min: float = 0.01,
         chromosomes: Optional[List[int]] = None,
@@ -93,7 +90,6 @@ class LDScorePipeline:
         self.bfile_prefix_template = bfile_prefix_template
         self.hm3_dir = Path(hm3_dir)
         self.batch_size_hm3 = batch_size_hm3
-        self.n_quantization_groups = n_quantization_groups
         self.window_size_bp = window_size_bp
         self.maf_min = maf_min
         self.chromosomes = chromosomes or list(range(1, 23))
@@ -104,7 +100,6 @@ class LDScorePipeline:
         logger.info(f"PLINK template: {bfile_prefix_template}")
         logger.info(f"HM3 directory: {hm3_dir}")
         logger.info(f"Batch size (HM3): {batch_size_hm3}")
-        logger.info(f"Quantization groups: {n_quantization_groups}")
         logger.info(f"LD window: {window_size_bp:,} bp")
         logger.info(f"MAF filter: {maf_min}")
         logger.info(f"Chromosomes: {self.chromosomes}")
@@ -270,13 +265,12 @@ class LDScorePipeline:
             logger.error(f"PLINK files not found for chromosome {chromosome}: {e}")
             return None
 
-        # Construct batches with DP quantization
-        logger.info(f"Constructing batches with DP quantization...")
-        batch_infos = construct_all_batches(
+        # Construct batches
+        logger.info(f"Constructing batches...")
+        batch_infos = construct_batches(
             bim_df=reader.bim,
             hm3_snp_names=hm3_snps,
             batch_size_hm3=self.batch_size_hm3,
-            n_quantization_groups=self.n_quantization_groups,
             window_size_bp=self.window_size_bp,
         )
 
@@ -295,14 +289,15 @@ class LDScorePipeline:
             logger.info(f"\nProcessing batch {i+1}/{len(batch_infos)}")
             logger.info(f"  HM3 SNPs: {len(batch_info.hm3_indices)}")
             logger.info(
-                f"  Ref block: [{batch_info.sb_start_global}, {batch_info.sb_end_global})"
+                f"  Ref block: [{batch_info.ref_start_idx}, {batch_info.ref_end_idx})"
             )
-            logger.info(f"  Width: {batch_info.current_width} -> {batch_info.quantized_width}")
+            ref_width = batch_info.ref_end_idx - batch_info.ref_start_idx
+            logger.info(f"  Ref block width: {ref_width} SNPs")
 
-            # Fetch genotypes using padded boundaries
+            # Fetch genotypes
             X_hm3 = reader.genotypes[:, batch_info.hm3_indices]
             ref_indices = np.arange(
-                batch_info.sb_start_global, batch_info.sb_end_global
+                batch_info.ref_start_idx, batch_info.ref_end_idx
             )
             # Clip to valid range
             ref_indices = ref_indices[ref_indices < reader.m]
