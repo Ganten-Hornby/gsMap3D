@@ -71,60 +71,68 @@ def construct_batches(
     bim_snps = bim_df["SNP"].values
     bim_positions = bim_df["BP"].values
     
-    # Ensure positions are sorted for searchsorted
-    # In standard BIM files they are, but we check to be safe or just assume?
-    # For max performance we assume sorted, but a check is cheap compared to the old code.
-    # Let's assume sorted as is standard for genetics tools.
-
     # Find indices of HM3 SNPs in BIM
-    # Use a set for O(1) lookup during mask creation if needed, 
-    # but np.isin is efficient for bulk.
     hm3_set = set(hm3_snp_names)
-    hm3_mask = np.isin(bim_snps, list(hm3_set))
+    # np.isin on strings is very slow, use pandas isin instead
+    hm3_mask = bim_df["SNP"].isin(hm3_set).values
     hm3_indices_all = np.where(hm3_mask)[0]
 
-    if len(hm3_indices_all) == 0:
+    n_hm3 = len(hm3_indices_all)
+    if n_hm3 == 0:
         logger.warning(f"No HM3 SNPs found in chromosome {chromosome}")
         return []
 
-    logger.info(f"Found {len(hm3_indices_all)} HM3 SNPs in chromosome {chromosome}")
+    logger.info(f"Found {n_hm3} HM3 SNPs in chromosome {chromosome}")
 
-    # Split into batches
-    n_hm3 = len(hm3_indices_all)
-    n_batches = (n_hm3 + batch_size_hm3 - 1) // batch_size_hm3
+    # Calculate batch boundaries
+    # We want batches of size batch_size_hm3
+    # Start indices: 0, batch_size, 2*batch_size, ...
+    batch_starts = np.arange(0, n_hm3, batch_size_hm3)
+    # End indices: batch_size, 2*batch_size, ..., n_hm3
+    batch_ends = np.minimum(batch_starts + batch_size_hm3, n_hm3)
+    
+    n_batches = len(batch_starts)
+    
+    # Get indices in BIM for start and end of each batch
+    # hm3_indices_all contains the BIM indices of HM3 SNPs
+    # We need the BIM index of the first and last HM3 SNP in each batch
+    
+    # First HM3 SNP in each batch
+    batch_start_bim_indices = hm3_indices_all[batch_starts]
+    # Last HM3 SNP in each batch (indices are exclusive in slice, so -1 for element access)
+    batch_end_bim_indices = hm3_indices_all[batch_ends - 1]
+    
+    # Get positions
+    min_pos = bim_positions[batch_start_bim_indices]
+    max_pos = bim_positions[batch_end_bim_indices]
+    
+    # Calculate window boundaries
+    window_starts = min_pos - window_size_bp
+    window_ends = max_pos + window_size_bp
+    
+    # Vectorized searchsorted
+    # Find insertion points for all window starts and ends at once
+    ref_starts = np.searchsorted(bim_positions, window_starts, side='left')
+    ref_ends = np.searchsorted(bim_positions, window_ends, side='right')
+    
+    # Construct BatchInfo objects
     batch_infos = []
-
-    for batch_idx in range(n_batches):
-        # Get HM3 indices for this batch
-        start_idx = batch_idx * batch_size_hm3
-        end_idx = min((batch_idx + 1) * batch_size_hm3, n_hm3)
-        hm3_indices = hm3_indices_all[start_idx:end_idx]
-
-        # Get positions for this batch
-        # Since hm3_indices are sorted (coming from where), these positions are sorted
-        batch_positions = bim_positions[hm3_indices]
-        min_pos = batch_positions[0]
-        max_pos = batch_positions[-1]
-
-        # Find reference block boundaries using binary search
-        # This is O(log N) instead of O(N)
-        window_start = min_pos - window_size_bp
-        window_end = max_pos + window_size_bp
-
-        ref_start = np.searchsorted(bim_positions, window_start, side='left')
-        ref_end = np.searchsorted(bim_positions, window_end, side='right')
-
-        batch_info = BatchInfo(
+    for i in range(n_batches):
+        # Slice the HM3 indices for this batch
+        # This is the only part that might still be a bit slow if n_batches is huge,
+        # but it's much faster than the searchsorted loop.
+        b_hm3_indices = hm3_indices_all[batch_starts[i]:batch_ends[i]]
+        
+        batch_infos.append(BatchInfo(
             chromosome=chromosome,
-            hm3_indices=hm3_indices,
-            ref_start_idx=int(ref_start),
-            ref_end_idx=int(ref_end),
-        )
-        batch_infos.append(batch_info)
+            hm3_indices=b_hm3_indices,
+            ref_start_idx=int(ref_starts[i]),
+            ref_end_idx=int(ref_ends[i]),
+        ))
 
     logger.info(f"Created {len(batch_infos)} batches for chromosome {chromosome}")
     if len(batch_infos) > 0:
-        avg_size = np.mean([b.ref_end_idx - b.ref_start_idx for b in batch_infos])
+        avg_size = np.mean(ref_ends - ref_starts)
         logger.info(f"  Average reference block size: {avg_size:.0f} SNPs")
 
     return batch_infos

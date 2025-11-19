@@ -41,7 +41,7 @@ dependencies = [
     'pyarrow',
     'scikit-misc',
     'numba',
-    'jax[cuda12] >= 0.7.1',
+    'jax >= 0.7.1',
     'rich >= 14.1.0',
 ]
 
