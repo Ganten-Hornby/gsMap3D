@@ -20,6 +20,7 @@ def run_generate_ldscore(config: LDScoreConfig):
     logger.info("Loading Metadata...")
     reader = PlinkBEDReader(config.bfile_root)
     hm3_df = pd.read_csv(config.hm3_snp_path, sep="\t")  # Assuming format
+    #TODO: Validate HM3 SNPs against reference, only keep intersecting SNPs
 
     # 2. Omics Feature Setup
     if config.omics_h5ad_path:

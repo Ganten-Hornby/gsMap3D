@@ -1,25 +1,19 @@
-import pandas as pd
+
+from typing import Dict, Optional, Union
+
 import numpy as np
+import pandas as pd
 import pyranges as pr
-from typing import Dict, Optional
 
 
 def create_snp_feature_map(
-        bim_df: pd.DataFrame,
-        mapping_type: str,
-        mapping_data: Union[pd.DataFrame, Dict],
-        window_size: int = 0,
-        strategy: str = "score"
+    bim_df: pd.DataFrame,
+    mapping_type: str,
+    mapping_data: Union[pd.DataFrame, Dict[str, str]],
+    window_size: int = 0,
+    strategy: str = "score",
 ) -> tuple[np.ndarray, int]:
-    """
-    Creates a dense vector of length M_ref.
-    map[i] = feature_index.
-    If SNP i is not mapped, map[i] = F (where F is number of features).
 
-    Returns:
-        mapping_vector: np.array of shape (M_ref,)
-        num_features: int (F)
-    """
     m_ref = len(bim_df)
 
     # 1. Define Features

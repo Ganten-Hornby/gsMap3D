@@ -1,3 +1,10 @@
+"""
+Utility functions for LD score calculation with Numba acceleration.
+
+This module provides high-performance functions for preprocessing genomic data,
+including window quantization and LD block calculation.
+"""
+
 import numpy as np
 import numba
 
@@ -5,11 +12,38 @@ import numba
 @numba.njit
 def dynamic_programming_quantization(lengths: np.ndarray, n_bins: int) -> np.ndarray:
     """
-    Quantizes variable block lengths into a fixed set of 'n_bins' upper bounds
-    to minimize JAX JIT recompilation.
+    Quantize variable block lengths into fixed bins to minimize JAX JIT recompilation.
 
-    This is a simplified greedy implementation. Replace with full DP algo
-    if strict optimal binning is required.
+    This function reduces the number of unique LD window sizes by rounding up to
+    discrete bin values, minimizing the JAX JIT recompilation overhead that occurs
+    when processing variable-sized windows.
+
+    Parameters
+    ----------
+    lengths : np.ndarray
+        Array of block lengths (LD window sizes) to quantize
+    n_bins : int
+        Number of discrete bins to use for quantization
+
+    Returns
+    -------
+    np.ndarray
+        Quantized lengths, where each value is rounded up to the nearest bin
+
+    Notes
+    -----
+    This is a greedy quantile-based implementation. For stricter optimal binning
+    that minimizes total padding waste, a dynamic programming algorithm could be
+    used instead.
+
+    The quantization strategy uses percentiles to distribute bin boundaries,
+    which provides reasonable performance in practice.
+
+    Examples
+    --------
+    >>> lengths = np.array([100, 150, 200, 250, 300])
+    >>> quantized = dynamic_programming_quantization(lengths, n_bins=3)
+    >>> print(quantized)  # Values rounded up to 3 discrete bins
     """
     max_val = lengths.max()
     if n_bins >= len(np.unique(lengths)):
@@ -38,10 +72,48 @@ def dynamic_programming_quantization(lengths: np.ndarray, n_bins: int) -> np.nda
 
 
 @numba.njit
-def get_block_limits(coords_ref: np.ndarray, coords_hm3: np.ndarray, window_size: int):
+def get_block_limits(
+    coords_ref: np.ndarray, coords_hm3: np.ndarray, window_size: int
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Calculates left and right indices in the Reference array for each HM3 SNP
-    based on physical position (BP) and window size.
+    Calculate LD window boundaries for each HapMap3 SNP in the reference panel.
+
+    This function efficiently computes the range of reference SNPs that fall
+    within a genomic window around each HM3 SNP using a two-pointer algorithm.
+
+    Parameters
+    ----------
+    coords_ref : np.ndarray
+        Genomic coordinates (base pairs) of reference SNPs, shape (M_ref,)
+        Must be sorted in ascending order
+    coords_hm3 : np.ndarray
+        Genomic coordinates (base pairs) of HapMap3 SNPs, shape (M_hm3,)
+        Must be sorted in ascending order
+    window_size : int
+        LD window size in base pairs (symmetric around each HM3 SNP)
+
+    Returns
+    -------
+    left_limits : np.ndarray
+        Left boundary indices in coords_ref for each HM3 SNP, shape (M_hm3,)
+    right_limits : np.ndarray
+        Right boundary indices (exclusive) in coords_ref for each HM3 SNP, shape (M_hm3,)
+
+    Notes
+    -----
+    For each HM3 SNP at position `pos`, the window is [pos - window_size, pos + window_size].
+    Reference SNPs within this window have indices in range [left_limits[i], right_limits[i]).
+
+    The two-pointer algorithm ensures O(M_ref + M_hm3) time complexity, which is
+    optimal for this problem.
+
+    Examples
+    --------
+    >>> coords_ref = np.array([100, 200, 300, 400, 500])
+    >>> coords_hm3 = np.array([250])
+    >>> left, right = get_block_limits(coords_ref, coords_hm3, window_size=150)
+    >>> print(left, right)  # SNPs within [100, 400] for HM3 SNP at 250
+    [0] [4]
     """
     m_hm3 = len(coords_hm3)
     m_ref = len(coords_ref)
