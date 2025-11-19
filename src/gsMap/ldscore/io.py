@@ -12,6 +12,8 @@ import bitarray as ba
 import numpy as np
 import pandas as pd
 import pyranges as pr
+import jax
+import jax.numpy as jnp
 
 logger = logging.getLogger(__name__)
 
@@ -292,62 +294,71 @@ class PlinkBEDReader:
         # Add MAF to BIM dataframe
         self.bim['MAF'] = self.maf
 
-    def _load_and_standardize_all(self) -> np.ndarray:
+    def _load_and_standardize_all(self) -> jnp.ndarray:
         """
-        Load all genotypes and standardize them using vectorized numpy operations.
+        Load all genotypes and standardize them using JAX-accelerated operations.
 
         Returns
         -------
-        np.ndarray
+        jnp.ndarray
             Standardized genotype matrix of shape (n_individuals, m_snps)
 
         Notes
         -----
-        Uses pure matrix operations for maximum performance:
+        Uses JAX for GPU/CPU-accelerated matrix operations:
         - Replace missing (9) with NaN for masked operations
         - Compute means/stds using nanmean/nanstd
         - Impute and standardize using broadcasting
+        - Returns JAX array for pure JAX pipeline
         """
-        # Decode all genotypes at once
+        # Decode all genotypes at once (numpy for bitarray decode)
         decoded = np.array(self.geno_bitarray.decode(self._bedcode), dtype=np.float32)
 
         # Reshape to (m_snps, nru) then extract (m_snps, n)
         genotypes_raw = decoded.reshape((self.m, self.nru))[:, :self.n]
 
         # Transpose to (n_individuals, m_snps)
-        X = genotypes_raw.T.copy()
+        X_np = genotypes_raw.T.copy()
+
+        # Convert to JAX array for accelerated computation
+        X = jnp.array(X_np, dtype=jnp.float32)
 
         # Replace missing values (9) with NaN for masked operations
-        X[X == 9] = np.nan
+        X = jnp.where(X == 9, jnp.nan, X)
 
         # Compute column-wise statistics (ignoring NaNs)
         # Shape: (m_snps,)
-        means = np.nanmean(X, axis=0)
-        stds = np.nanstd(X, axis=0)
+        means = jnp.nanmean(X, axis=0)
+        stds = jnp.nanstd(X, axis=0)
 
         # Handle edge cases
         # 1. All-missing columns: set mean to 0
-        all_missing = np.isnan(means)
-        means[all_missing] = 0
-        stds[all_missing] = 1  # Avoid division by zero
+        all_missing = jnp.isnan(means)
+        means = jnp.where(all_missing, 0.0, means)
+        stds = jnp.where(all_missing, 1.0, stds)  # Avoid division by zero
 
         # 2. Monomorphic SNPs: set std to 1 to avoid division by zero
         monomorphic = (stds == 0)
-        stds[monomorphic] = 1
+        stds = jnp.where(monomorphic, 1.0, stds)
 
         # Impute missing values with column means using broadcasting
         # For each column, fill NaNs with the column's mean
-        nan_mask = np.isnan(X)
-        X[nan_mask] = np.take(means, np.where(nan_mask)[1])
+        nan_mask = jnp.isnan(X)
+
+        # Use where to replace NaNs with column means
+        # Broadcasting means across rows
+        X = jnp.where(nan_mask, means[jnp.newaxis, :], X)
 
         # Standardize: (X - mean) / std using broadcasting
         # means and stds have shape (m_snps,), broadcasting along columns
-        X_std = (X - means[np.newaxis, :]) / stds[np.newaxis, :]
+        X_std = (X - means[jnp.newaxis, :]) / stds[jnp.newaxis, :]
 
         # Set all-missing and monomorphic columns to zero
-        X_std[:, all_missing | monomorphic] = 0
+        edge_case_mask = all_missing | monomorphic
+        X_std = jnp.where(edge_case_mask[jnp.newaxis, :], 0.0, X_std)
 
-        return X_std.astype(np.float32)
+        # Return JAX array directly (no numpy conversion)
+        return X_std
 
     @staticmethod
     def _load_fam(path: str) -> pd.DataFrame:
@@ -373,7 +384,7 @@ class PlinkBEDReader:
         self,
         snp_indices: Optional[np.ndarray] = None,
         snp_names: Optional[list[str]] = None
-    ) -> np.ndarray:
+    ) -> jnp.ndarray:
         """
         Get genotype matrix for specified SNPs.
 
@@ -389,7 +400,7 @@ class PlinkBEDReader:
 
         Returns
         -------
-        np.ndarray
+        jnp.ndarray
             Standardized genotype matrix of shape (n_individuals, n_snps)
 
         Raises
@@ -423,13 +434,13 @@ class PlinkBEDReader:
                 "or call _load_and_standardize_all() first."
             )
 
-    def get_all_genotypes(self) -> np.ndarray:
+    def get_all_genotypes(self) -> jnp.ndarray:
         """
         Get all standardized genotypes.
 
         Returns
         -------
-        np.ndarray
+        jnp.ndarray
             Complete genotype matrix of shape (n_individuals, m_snps)
 
         Raises

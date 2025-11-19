@@ -3,9 +3,14 @@ Dynamic programming based batch width quantization.
 
 This module implements a divide-and-conquer DP algorithm to optimally partition
 SNP batches into Q groups with quantized widths, minimizing total padding cost.
+
+Note: The DP algorithm uses NumPy for its recursive structure and mutable state,
+as JAX's functional paradigm would significantly complicate the implementation.
+This is acceptable since DP quantization runs once per chromosome (not in hot path).
 """
 
 import numpy as np
+import jax.numpy as jnp
 from typing import Tuple
 
 
@@ -22,12 +27,21 @@ def compute_prefix(A: np.ndarray) -> np.ndarray:
     -------
     np.ndarray
         Prefix sum array with P[0] = 0, P[i] = sum(A[0:i])
+
+    Notes
+    -----
+    Uses JAX for vectorized cumsum operation.
+    DP algorithm still uses numpy for complex control flow.
     """
-    n = len(A)
-    P = np.zeros(n + 1, dtype=np.int64)
-    for i in range(1, n + 1):
-        P[i] = P[i - 1] + A[i - 1]
-    return P
+    # Convert to JAX array for vectorized cumsum
+    A_jax = jnp.array(A, dtype=jnp.int32)
+
+    # Compute cumsum: P[i] = sum(A[0:i])
+    # Prepend 0 for P[0] = 0
+    P_jax = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(A_jax)])
+
+    # Convert back to numpy for DP algorithm (complex control flow requires numpy)
+    return np.array(P_jax)
 
 
 def cost_factory(A: np.ndarray):

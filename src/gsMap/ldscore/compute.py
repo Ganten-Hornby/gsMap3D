@@ -252,3 +252,107 @@ def compute_r_squared_matrix(
     """
     r = compute_correlation_matrix(X_hm3, X_ref_block)
     return r ** 2
+
+
+@jax.jit
+def compute_batch_weights_segment_sum(
+    X_hm3: jnp.ndarray,
+    X_ref_block: jnp.ndarray,
+    block_links: jnp.ndarray,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Compute LD score weight matrix using segment sum for efficient feature aggregation.
+
+    This is more efficient than creating dense feature masks when features are sparse.
+    Uses segment_sum to aggregate L2 scores by feature.
+
+    Parameters
+    ----------
+    X_hm3 : jnp.ndarray
+        Standardized genotypes for HM3 SNPs, shape (n_individuals, n_hm3_snps)
+    X_ref_block : jnp.ndarray
+        Standardized genotypes for reference block, shape (n_individuals, n_ref_snps)
+    block_links : jnp.ndarray
+        Feature indices for each reference SNP, shape (n_ref_snps,)
+        Values are feature indices in range [0, F] where F is the "unmapped" bin
+
+    Returns
+    -------
+    weights : jnp.ndarray
+        Weight matrix, shape (n_hm3_snps, n_unique_features)
+    unique_features : jnp.ndarray
+        Global feature indices, shape (n_unique_features,)
+
+    Notes
+    -----
+    For each HM3 SNP and feature:
+        W[i, j] = sum_{k: block_links[k] == feature_j} L2(hm3_snp_i, ref_snp_k)
+
+    This uses JAX's segment_sum for efficient aggregation.
+    """
+    # Compute unbiased L2 matrix: (n_hm3_snps, n_ref_snps)
+    l2_unbiased = compute_unbiased_l2_batch(X_hm3, X_ref_block)
+
+    # Get unique features in this block and their indices
+    unique_features = jnp.unique(block_links)
+    n_unique = len(unique_features)
+
+    # Create mapping from block_links to dense indices [0, n_unique)
+    # This allows us to use segment_sum efficiently
+    # We'll process each HM3 SNP separately and stack results
+    def process_hm3_snp(l2_row):
+        """Process one HM3 SNP's L2 scores."""
+        # l2_row: (n_ref_snps,)
+        # For each unique feature, sum L2 scores of ref SNPs with that feature
+        weights_row = jnp.zeros(n_unique, dtype=l2_row.dtype)
+
+        # Use segment_sum: for each unique feature, sum corresponding L2 values
+        for i, feature_idx in enumerate(unique_features):
+            mask = (block_links == feature_idx)
+            weights_row = weights_row.at[i].set(jnp.sum(l2_row * mask))
+
+        return weights_row
+
+    # Vectorize over HM3 SNPs using vmap
+    weights = jax.vmap(process_hm3_snp)(l2_unbiased)
+    # Shape: (n_hm3_snps, n_unique_features)
+
+    return weights, unique_features
+
+
+def compute_batch_weights_segment_sum_numpy(
+    X_hm3: np.ndarray,
+    X_ref_block: np.ndarray,
+    block_links: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Numpy wrapper for segment sum weight computation.
+
+    Parameters
+    ----------
+    X_hm3 : np.ndarray
+        Standardized genotypes for HM3 SNPs, shape (n_individuals, n_hm3_snps)
+    X_ref_block : np.ndarray
+        Standardized genotypes for reference block, shape (n_individuals, n_ref_snps)
+    block_links : np.ndarray
+        Feature indices for reference SNPs, shape (n_ref_snps,)
+
+    Returns
+    -------
+    weights : np.ndarray
+        Weight matrix, shape (n_hm3_snps, n_unique_features)
+    unique_features : np.ndarray
+        Global feature indices, shape (n_unique_features,)
+    """
+    # Convert to JAX arrays
+    X_hm3_jax = jnp.array(X_hm3)
+    X_ref_block_jax = jnp.array(X_ref_block)
+    block_links_jax = jnp.array(block_links, dtype=jnp.int32)
+
+    # Compute weights
+    weights_jax, unique_features_jax = compute_batch_weights_segment_sum(
+        X_hm3_jax, X_ref_block_jax, block_links_jax
+    )
+
+    # Convert back to numpy
+    return np.array(weights_jax), np.array(unique_features_jax)

@@ -12,12 +12,19 @@ import numpy as np
 import pandas as pd
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
+
+import jax
+import jax.numpy as jnp
+from jax.experimental import sparse
 
 from .io import PlinkBEDReader
 from .batch_construction import construct_all_batches, BatchInfo
-from .compute import compute_batch_weights_numpy, compute_batch_ld_scores_numpy
+from .compute import (
+    compute_ld_scores,
+    compute_batch_weights_segment_sum,
+)
 from .mapping import create_snp_feature_map
 
 logger = logging.getLogger(__name__)
@@ -34,16 +41,21 @@ class ChromosomeResult:
         Chromosome identifier
     hm3_snp_names : List[str]
         Names of HM3 SNPs processed
-    ld_scores : np.ndarray
+    ld_scores : jnp.ndarray
         LD scores for each HM3 SNP, shape (n_hm3_snps,)
-    weights : Optional[np.ndarray]
-        Weight matrix for features, shape (n_hm3_snps, n_features)
+        JAX array for pure JAX pipeline
+    weights : Optional[sparse.BCOO]
+        Sparse weight matrix for features, shape (n_hm3_snps, n_features)
+        BCOO format: Batched Coordinate sparse matrix
+    n_features : Optional[int]
+        Total number of features (F+1, including unmapped feature)
     """
 
     chromosome: str
     hm3_snp_names: List[str]
-    ld_scores: np.ndarray
-    weights: Optional[np.ndarray] = None
+    ld_scores: jnp.ndarray
+    weights: Optional[sparse.BCOO] = None
+    n_features: Optional[int] = None
 
 
 class LDScorePipeline:
@@ -141,10 +153,80 @@ class LDScorePipeline:
         logger.warning(f"No HM3 SNP file found for chromosome {chromosome}")
         return []
 
+    def _create_bcoo_from_batches(
+        self,
+        batch_weight_data: List[Dict],
+        n_hm3_total: int,
+        n_features: int,
+    ) -> sparse.BCOO:
+        """
+        Create BCOO sparse matrix from batch weight data.
+
+        Parameters
+        ----------
+        batch_weight_data : List[Dict]
+            List of batch results, each containing:
+            - weights: jnp.ndarray of shape (batch_hm3, n_unique_features)
+            - unique_features: jnp.ndarray of feature indices
+            - hm3_start_idx: int, starting HM3 index for this batch
+            - n_hm3: int, number of HM3 SNPs in this batch
+        n_hm3_total : int
+            Total number of HM3 SNPs in chromosome
+        n_features : int
+            Total number of features (F+1, including unmapped)
+
+        Returns
+        -------
+        sparse.BCOO
+            Sparse weight matrix of shape (n_hm3_total, n_features)
+        """
+        # Collect all non-zero entries
+        all_indices = []
+        all_values = []
+
+        for batch_data in batch_weight_data:
+            weights = batch_data['weights']  # JAX array (batch_hm3, n_unique_features)
+            unique_features = batch_data['unique_features']  # JAX array (n_unique_features,)
+            hm3_start = batch_data['hm3_start_idx']
+            n_hm3 = batch_data['n_hm3']
+
+            # Convert to numpy for indexing
+            weights_np = np.array(weights)
+            unique_features_np = np.array(unique_features)
+
+            # Find non-zero entries in this batch
+            for i in range(n_hm3):
+                for j, feature_idx in enumerate(unique_features_np):
+                    value = weights_np[i, j]
+                    if value != 0:  # Only store non-zero values
+                        global_hm3_idx = hm3_start + i
+                        all_indices.append([global_hm3_idx, int(feature_idx)])
+                        all_values.append(value)
+
+        # Create BCOO sparse matrix directly with JAX
+        if len(all_indices) == 0:
+            # No non-zero entries
+            indices = jnp.zeros((0, 2), dtype=jnp.int32)
+            values = jnp.zeros(0, dtype=jnp.float32)
+        else:
+            indices = jnp.array(all_indices, dtype=jnp.int32)
+            values = jnp.array(all_values, dtype=jnp.float32)
+
+        # Create BCOO sparse matrix
+        # BCOO format: indices shape (nnz, ndim), data shape (nnz,)
+        bcoo = sparse.BCOO(
+            (values, indices),
+            shape=(n_hm3_total, n_features)
+        )
+
+        logger.info(f"Created BCOO matrix: shape={bcoo.shape}, nnz={bcoo.nse}")
+        return bcoo
+
     def process_chromosome(
         self,
         chromosome: int,
-        feature_mapping: Optional[pd.DataFrame] = None,
+        mapping_vec: Optional[np.ndarray] = None,
+        n_features: Optional[int] = None,
     ) -> Optional[ChromosomeResult]:
         """
         Process a single chromosome.
@@ -153,8 +235,11 @@ class LDScorePipeline:
         ----------
         chromosome : int
             Chromosome number
-        feature_mapping : Optional[pd.DataFrame]
-            SNP-feature mapping (from create_snp_gene_map)
+        mapping_vec : Optional[np.ndarray]
+            SNP-to-feature mapping vector, shape (m_ref,)
+            Values are feature indices [0, F], where F is the unmapped feature
+        n_features : Optional[int]
+            Total number of features (F+1, including unmapped feature)
 
         Returns
         -------
@@ -204,7 +289,7 @@ class LDScorePipeline:
 
         # Process each batch
         all_ld_scores = []
-        all_weights = [] if feature_mapping is not None else None
+        batch_weight_data = [] if mapping_vec is not None else None
         all_hm3_snp_names = []
 
         for i, batch_info in enumerate(batch_infos):
@@ -227,87 +312,86 @@ class LDScorePipeline:
             logger.info(f"  X_hm3 shape: {X_hm3.shape}")
             logger.info(f"  X_ref_block shape: {X_ref_block.shape}")
 
-            # Compute LD scores
-            ld_scores = compute_batch_ld_scores_numpy(X_hm3, X_ref_block)
+            # Compute LD scores (pure JAX)
+            ld_scores = compute_ld_scores(X_hm3, X_ref_block)
             all_ld_scores.append(ld_scores)
 
             # Get HM3 SNP names for this batch
             batch_snp_names = reader.bim.iloc[batch_info.hm3_indices]["SNP"].tolist()
             all_hm3_snp_names.extend(batch_snp_names)
 
-            # Compute weights if feature mapping provided
-            if feature_mapping is not None:
-                # Get ref SNP names
-                ref_snp_names = reader.bim.iloc[ref_indices]["SNP"].tolist()
+            # Compute weights if mapping vector provided
+            if mapping_vec is not None:
+                # Get block links: feature indices for reference SNPs in this batch
+                block_links_np = mapping_vec[ref_indices]
+                block_links = jnp.array(block_links_np, dtype=jnp.int32)
 
-                # Create feature mask
-                ref_snp_set = set(ref_snp_names)
-                feature_mask = (
-                    feature_mapping[feature_mapping["SNP"].isin(ref_snp_set)]
-                    .groupby(["SNP", "feature_idx"])
-                    .size()
-                    .reset_index(name="count")
+                # Compute weights using segment sum (pure JAX)
+                # Returns: (batch_hm3, n_unique_features), (n_unique_features,)
+                weights, unique_features = compute_batch_weights_segment_sum(
+                    X_hm3, X_ref_block, block_links
                 )
 
-                # Convert to binary mask matrix
-                n_features = feature_mapping["feature_idx"].max() + 1
-                feature_mask_matrix = np.zeros(
-                    (len(ref_snp_names), n_features), dtype=np.float32
-                )
-
-                for _, row in feature_mask.iterrows():
-                    snp_name = row["SNP"]
-                    if snp_name in ref_snp_set:
-                        snp_idx = ref_snp_names.index(snp_name)
-                        feature_mask_matrix[snp_idx, int(row["feature_idx"])] = 1.0
-
-                # Compute weights
-                weights = compute_batch_weights_numpy(
-                    X_hm3, X_ref_block, feature_mask_matrix
-                )
-                all_weights.append(weights)
+                # Store batch data for sparse matrix construction
+                batch_weight_data.append({
+                    'weights': weights,
+                    'unique_features': unique_features,
+                    'hm3_start_idx': len(all_hm3_snp_names) - len(batch_snp_names),
+                    'n_hm3': len(batch_snp_names)
+                })
 
                 logger.info(f"  LD scores: {ld_scores.shape}")
-                logger.info(f"  Weights: {weights.shape}")
+                logger.info(f"  Weights: {weights.shape}, unique features: {len(unique_features)}")
 
-        # Combine results
-        ld_scores_combined = np.concatenate(all_ld_scores)
-        weights_combined = (
-            np.vstack(all_weights) if all_weights is not None else None
-        )
+        # Combine LD scores (pure JAX)
+        ld_scores_combined = jnp.concatenate(all_ld_scores)
+
+        # Create BCOO sparse matrix from batch results
+        weights_bcoo = None
+        if batch_weight_data is not None:
+            weights_bcoo = self._create_bcoo_from_batches(
+                batch_weight_data, len(all_hm3_snp_names), n_features
+            )
 
         logger.info("=" * 80)
         logger.info(f"Chromosome {chromosome} complete")
         logger.info(f"  Total HM3 SNPs processed: {len(all_hm3_snp_names)}")
         logger.info(f"  LD scores shape: {ld_scores_combined.shape}")
-        if weights_combined is not None:
-            logger.info(f"  Weights shape: {weights_combined.shape}")
+        if weights_bcoo is not None:
+            logger.info(f"  Weights shape: {weights_bcoo.shape} (sparse BCOO)")
+            logger.info(f"  Weights nnz: {weights_bcoo.nse}")
         logger.info("=" * 80)
 
         return ChromosomeResult(
             chromosome=str(chromosome),
             hm3_snp_names=all_hm3_snp_names,
             ld_scores=ld_scores_combined,
-            weights=weights_combined,
+            weights=weights_bcoo,
+            n_features=n_features,
         )
 
     def run(
         self,
-        feature_annotation_file: Optional[str] = None,
-        mapping_strategy: str = "TSS",
-        window_size_mapping: int = 100_000,
+        mapping_type: Optional[str] = None,
+        mapping_data: Optional[Union[pd.DataFrame, Dict[str, str]]] = None,
+        window_size_mapping: int = 0,
+        mapping_strategy: str = "score",
     ) -> Dict[str, ChromosomeResult]:
         """
         Run pipeline across all chromosomes.
 
         Parameters
         ----------
-        feature_annotation_file : Optional[str]
-            Path to feature annotation file (e.g., gene annotation CSV)
-        mapping_strategy : str
-            SNP-gene mapping strategy ("TSS" or "gene_body")
+        mapping_type : Optional[str]
+            Type of feature mapping: "bed" for genomic intervals or "dict" for direct mapping
+        mapping_data : Optional[Union[pd.DataFrame, Dict[str, str]]]
+            Feature mapping data:
+            - For "bed": DataFrame with [Feature, Chrom, Start, End, Score, Strand]
+            - For "dict": Dictionary {rsid: feature_name}
         window_size_mapping : int
-            Window size for TSS mapping (bp)
+            Window size for spatial mapping (bp), default: 0
+        mapping_strategy : str
+            Mapping strategy: "score" (max score) or "tss" (closest TSS), default: "score"
 
         Returns
         -------
@@ -318,18 +402,41 @@ class LDScorePipeline:
         logger.info("Starting LD Score Pipeline")
         logger.info("=" * 80 + "\n")
 
-        # Create feature mapping if annotation file provided
-        feature_mapping = None
-        if feature_annotation_file is not None:
-            logger.info("Creating SNP-feature mapping...")
-            # This will be done per chromosome in process_chromosome
-            pass
-
         # Process each chromosome
         results = {}
 
         for chrom in self.chromosomes:
-            result = self.process_chromosome(chrom, feature_mapping)
+            # Create feature mapping for this chromosome if provided
+            mapping_vec = None
+            n_features = None
+
+            if mapping_type is not None and mapping_data is not None:
+                logger.info(f"Creating SNP-feature mapping for chromosome {chrom}...")
+
+                # Load BIM for this chromosome to create mapping
+                bfile_prefix = self.bfile_prefix_template.format(chr=chrom)
+                try:
+                    reader = PlinkBEDReader(
+                        bfile_prefix,
+                        maf_min=self.maf_min,
+                        preload=False,  # Only need BIM for mapping
+                    )
+
+                    # Create mapping vector
+                    mapping_vec, F = create_snp_feature_map(
+                        bim_df=reader.bim,
+                        mapping_type=mapping_type,
+                        mapping_data=mapping_data,
+                        window_size=window_size_mapping,
+                        strategy=mapping_strategy,
+                    )
+                    n_features = F + 1  # F+1 includes unmapped feature
+
+                    logger.info(f"  Created mapping: {F} features, {n_features} total (including unmapped)")
+                except FileNotFoundError:
+                    logger.warning(f"Could not create mapping for chromosome {chrom}")
+
+            result = self.process_chromosome(chrom, mapping_vec, n_features)
             if result is not None:
                 results[str(chrom)] = result
 
@@ -367,8 +474,10 @@ def save_results(
     all_data = []
 
     for chrom, result in results.items():
+        # Convert JAX array to numpy only for saving
+        ld_scores_np = np.array(result.ld_scores)
         for i, snp_name in enumerate(result.hm3_snp_names):
-            row = {"CHR": chrom, "SNP": snp_name, "L2": result.ld_scores[i]}
+            row = {"CHR": chrom, "SNP": snp_name, "L2": ld_scores_np[i]}
             all_data.append(row)
 
     # Save LD scores
@@ -377,18 +486,55 @@ def save_results(
     df_ldscore.to_csv(ldscore_file, sep="\t", index=False, compression="gzip")
     logger.info(f"  Saved LD scores: {ldscore_file}")
 
-    # Save weights if available
+    # Save weights if available (BCOO sparse matrices)
     if save_weights and any(r.weights is not None for r in results.values()):
-        # Combine weights
-        all_weights = []
-        for result in results.values():
-            if result.weights is not None:
-                all_weights.append(result.weights)
+        # For BCOO sparse matrices, we need to combine them carefully
+        # Each chromosome may have different features, so we stack them vertically
+        all_bcoo_data = []
+        total_hm3 = 0
+        max_features = 0
 
-        if len(all_weights) > 0:
-            weights_combined = np.vstack(all_weights)
-            weights_file = f"{output_prefix}.weights.npy"
-            np.save(weights_file, weights_combined)
-            logger.info(f"  Saved weights: {weights_file} (shape: {weights_combined.shape})")
+        for chrom, result in results.items():
+            if result.weights is not None:
+                bcoo = result.weights
+                n_hm3 = len(result.hm3_snp_names)
+
+                # Convert BCOO to numpy arrays for storage
+                # bcoo.data: values, bcoo.indices: (nnz, 2) array
+                indices = np.array(bcoo.indices)
+                values = np.array(bcoo.data)
+
+                # Offset row indices by total_hm3
+                indices_offset = indices.copy()
+                indices_offset[:, 0] += total_hm3
+
+                all_bcoo_data.append({
+                    'indices': indices_offset,
+                    'values': values,
+                    'chrom': chrom,
+                    'n_hm3': n_hm3,
+                })
+
+                total_hm3 += n_hm3
+                if result.n_features is not None:
+                    max_features = max(max_features, result.n_features)
+
+        if len(all_bcoo_data) > 0:
+            # Combine all indices and values
+            all_indices = np.vstack([d['indices'] for d in all_bcoo_data])
+            all_values = np.concatenate([d['values'] for d in all_bcoo_data])
+
+            # Save as npz (compressed numpy format)
+            weights_file = f"{output_prefix}.weights.npz"
+            np.savez(
+                weights_file,
+                indices=all_indices,
+                values=all_values,
+                shape=np.array([total_hm3, max_features]),
+            )
+            logger.info(
+                f"  Saved weights: {weights_file} "
+                f"(shape: ({total_hm3}, {max_features}), nnz: {len(all_values)})"
+            )
 
     logger.info("Results saved successfully")
