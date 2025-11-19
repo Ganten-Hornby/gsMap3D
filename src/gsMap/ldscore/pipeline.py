@@ -1,212 +1,394 @@
+"""
+Chromosome-wise pipeline for LD score calculation with DP-based batching.
+
+This module orchestrates the complete workflow:
+1. Loop through chromosomes
+2. Construct batches with DP quantization
+3. Load genotypes once per chromosome
+4. Process each batch to compute LD scores/weights
+"""
+
 import numpy as np
 import pandas as pd
-import jax
-import jax.numpy as jnp
-from jax.experimental import sparse
-from tqdm import tqdm
-import gc
 import logging
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
-from .config import LDScoreConfig
-from .io import PlinkBEDReader, load_omics_features
+from .io import PlinkBEDReader
+from .batch_construction import construct_all_batches, BatchInfo
+from .compute import compute_batch_weights_numpy, compute_batch_ld_scores_numpy
 from .mapping import create_snp_feature_map
-from .utils import get_block_limits
-from .compute import compute_batch_weights, prepare_padding, prepare_vector_padding
 
 logger = logging.getLogger(__name__)
 
 
-def get_quantized_width(required_width: int, bin_step: int = 128) -> int:
-    """Return the next multiple of bin_step >= required_width to minimize JIT recompilation."""
-    return int(np.ceil(required_width / bin_step) * bin_step)
+@dataclass
+class ChromosomeResult:
+    """
+    Results for a single chromosome.
+
+    Attributes
+    ----------
+    chromosome : str
+        Chromosome identifier
+    hm3_snp_names : List[str]
+        Names of HM3 SNPs processed
+    ld_scores : np.ndarray
+        LD scores for each HM3 SNP, shape (n_hm3_snps,)
+    weights : Optional[np.ndarray]
+        Weight matrix for features, shape (n_hm3_snps, n_features)
+    """
+
+    chromosome: str
+    hm3_snp_names: List[str]
+    ld_scores: np.ndarray
+    weights: Optional[np.ndarray] = None
 
 
-def run_generate_ldscore(config: LDScoreConfig):
-    # 1. Load Metadata
-    logger.info(f"Initializing LD Score generation for {config.bfile_root}")
-    reader = PlinkBEDReader(config.bfile_root)
+class LDScorePipeline:
+    """
+    Pipeline for computing LD scores across chromosomes with DP-based batching.
 
-    logger.info(f"Loading HM3 SNPs from {config.hm3_snp_path}")
-    hm3_df = pd.read_csv(config.hm3_snp_path, sep="\t")
+    Parameters
+    ----------
+    bfile_prefix_template : str
+        Template for PLINK file prefix, e.g., "1000G.EUR.QC.{chr}"
+    hm3_dir : str
+        Directory containing HM3 SNP lists per chromosome
+    batch_size_hm3 : int
+        Number of HM3 SNPs per batch
+    n_quantization_groups : int
+        Number of quantization groups (Q) for DP
+    window_size_bp : int
+        LD window size in base pairs (default: 1Mb)
+    maf_min : float
+        Minimum MAF threshold for SNP filtering (default: 0.01)
+    chromosomes : Optional[List[int]]
+        List of chromosomes to process (default: 1-22)
+    """
 
-    # Filter HM3 SNPs to those present in the BIM file to avoid errors
-    # We assume the BIM SNP IDs are unique for simplicity here
-    valid_hm3_mask = hm3_df['SNP'].isin(reader.bim['SNP'])
-    if (~valid_hm3_mask).any():
-        logger.warning(f"{(~valid_hm3_mask).sum()} HM3 SNPs not found in reference panel. They will be skipped.")
-        hm3_df = hm3_df[valid_hm3_mask].reset_index(drop=True)
+    def __init__(
+        self,
+        bfile_prefix_template: str,
+        hm3_dir: str,
+        batch_size_hm3: int,
+        n_quantization_groups: int,
+        window_size_bp: int = 1_000_000,
+        maf_min: float = 0.01,
+        chromosomes: Optional[List[int]] = None,
+    ):
+        self.bfile_prefix_template = bfile_prefix_template
+        self.hm3_dir = Path(hm3_dir)
+        self.batch_size_hm3 = batch_size_hm3
+        self.n_quantization_groups = n_quantization_groups
+        self.window_size_bp = window_size_bp
+        self.maf_min = maf_min
+        self.chromosomes = chromosomes or list(range(1, 23))
 
-    # 2. Omics Feature Setup
-    feature_names = []
-    if config.omics_h5ad_path:
-        feature_names = load_omics_features(config.omics_h5ad_path)
-        logger.info(f"Loaded {len(feature_names)} omics features")
+        logger.info("=" * 80)
+        logger.info("LD Score Pipeline Configuration")
+        logger.info("=" * 80)
+        logger.info(f"PLINK template: {bfile_prefix_template}")
+        logger.info(f"HM3 directory: {hm3_dir}")
+        logger.info(f"Batch size (HM3): {batch_size_hm3}")
+        logger.info(f"Quantization groups: {n_quantization_groups}")
+        logger.info(f"LD window: {window_size_bp:,} bp")
+        logger.info(f"MAF filter: {maf_min}")
+        logger.info(f"Chromosomes: {self.chromosomes}")
+        logger.info("=" * 80)
 
-    # Load Mapping Input
-    mapping_data = {}
-    if config.mapping_type == 'bed':
-        if not config.mapping_file:
-            raise ValueError("mapping_file is required for 'bed' mapping type")
-        logger.info(f"Loading mapping file: {config.mapping_file}")
-        mapping_data = pd.read_csv(config.mapping_file, sep="\t")
-        # Ensure necessary columns exist
-        required_cols = ['Feature', 'Chromosome', 'Start', 'End']
-        if not all(col in mapping_data.columns for col in required_cols):
-            raise ValueError(f"Mapping file missing required columns: {required_cols}")
-    else:
-        # Placeholder for dict loading if implemented
-        pass
+    def load_hm3_snps(self, chromosome: int) -> List[str]:
+        """
+        Load HM3 SNP list for a chromosome.
 
-    # 3. Create Global Map (SNP -> Feature)
-    logger.info("Mapping SNPs to Features...")
-    snp_feature_map, num_features = create_snp_feature_map(
-        reader.bim,
-        config.mapping_type,
-        mapping_data,
-        window_size=config.window_size,
-        strategy=config.strategy
-    )
-    logger.info(f"Total features mapped: {num_features}")
+        Parameters
+        ----------
+        chromosome : int
+            Chromosome number
 
-    # 4. Iterate Chromosomes
-    chrom_list = range(1, 23) if config.chromosomes == 'all' else config.chromosomes
-    bcoo_matrices = []
+        Returns
+        -------
+        List[str]
+            List of HM3 SNP names
+        """
+        # Try common file naming patterns
+        possible_paths = [
+            self.hm3_dir / f"hm.{chromosome}.snp",
+            self.hm3_dir / f"hm3_snps.chr{chromosome}.txt",
+            self.hm3_dir / f"hapmap3_snps.chr{chromosome}.txt",
+            self.hm3_dir / f"chr{chromosome}.snplist",
+            self.hm3_dir / f"w_hm3.snplist.chr{chromosome}",
+        ]
 
-    for chrom in chrom_list:
-        chrom_str = str(chrom)
-        logger.info(f"Processing Chromosome {chrom}...")
+        for path in possible_paths:
+            if path.exists():
+                # Try reading with different formats
+                try:
+                    snps = pd.read_csv(path, header=None, names=["SNP"])["SNP"].tolist()
+                    logger.info(f"Loaded {len(snps)} HM3 SNPs from {path}")
+                    return snps
+                except:
+                    # Try with tab separator
+                    try:
+                        snps = pd.read_csv(path, sep="\t", header=None, names=["SNP"])["SNP"].tolist()
+                        logger.info(f"Loaded {len(snps)} HM3 SNPs from {path}")
+                        return snps
+                    except:
+                        continue
 
-        # Get indices for current chromosome
-        # Note: PlinkBEDReader loads the whole BIM. We work with global indices.
-        ref_indices_chrom = np.where(reader.bim['CHR'].astype(str) == chrom_str)[0]
+        # If no file found, log warning and return empty
+        logger.warning(f"No HM3 SNP file found for chromosome {chromosome}")
+        return []
 
-        if len(ref_indices_chrom) == 0:
-            logger.warning(f"No Reference SNPs found for Chr {chrom}. Skipping.")
-            continue
+    def process_chromosome(
+        self,
+        chromosome: int,
+        feature_mapping: Optional[pd.DataFrame] = None,
+    ) -> Optional[ChromosomeResult]:
+        """
+        Process a single chromosome.
 
-        coords_ref = reader.bim.iloc[ref_indices_chrom]['BP'].values
+        Parameters
+        ----------
+        chromosome : int
+            Chromosome number
+        feature_mapping : Optional[pd.DataFrame]
+            SNP-feature mapping (from create_snp_gene_map)
 
-        # Offset to convert chromosome-relative indices to global indices
-        chrom_offset = ref_indices_chrom[0]
+        Returns
+        -------
+        Optional[ChromosomeResult]
+            Results for this chromosome, or None if no HM3 SNPs found
+        """
+        logger.info("=" * 80)
+        logger.info(f"Processing Chromosome {chromosome}")
+        logger.info("=" * 80)
 
-        # Filter HM3 for this chromosome
-        hm3_chrom = hm3_df[hm3_df['CHR'].astype(str) == chrom_str]
-        # TODO should only keep HM3 SNPs that are also in the reference panel
-        coords_hm3 = hm3_chrom['BP'].values
-        m_hm3_chrom = len(hm3_chrom)
+        # Load HM3 SNPs
+        hm3_snps = self.load_hm3_snps(chromosome)
+        if len(hm3_snps) == 0:
+            logger.warning(f"No HM3 SNPs for chromosome {chromosome}, skipping")
+            return None
 
+        # Load PLINK data
+        bfile_prefix = self.bfile_prefix_template.format(chr=chromosome)
+        logger.info(f"Loading PLINK data from: {bfile_prefix}")
 
-        if m_hm3_chrom == 0:
-            logger.info(f"No HM3 SNPs for Chr {chrom}. Skipping.")
-            continue
-
-        # 5. Pre-calculate Block Limits (Local Indices relative to Chromosome)
-        # left_limits and right_limits are indices into coords_ref
-        left_limits, right_limits = get_block_limits(coords_ref, coords_hm3, config.window_size)
-
-        # 6. Batch Processing
-        chrom_weights = []
-
-        # Processing loop
-        for start_idx in tqdm(range(0, m_hm3_chrom, config.batch_size_hm3), desc=f"Chr {chrom} Batches"):
-            end_idx = min(start_idx + config.batch_size_hm3, m_hm3_chrom)
-
-            # Indices of HM3 SNPs in this batch (relative to chromosome list)
-            batch_indices_local = np.arange(start_idx, end_idx)
-
-            # Identify the "Super Block" for this batch
-            # Min left index and Max right index in the reference panel for this batch
-            sb_start_local = left_limits[batch_indices_local].min()
-            sb_end_local = right_limits[batch_indices_local].max()
-
-            # Calculate relative limits for the mask
-            # For a SNP i, its valid window starts at left_limits[i] - sb_start_local inside the superblock
-            relative_starts = left_limits[batch_indices_local] - sb_start_local
-            relative_ends = right_limits[batch_indices_local] - sb_start_local
-
-            # Convert local chromosome indices to global reader indices
-            sb_start_global = chrom_offset + sb_start_local
-            sb_end_global = chrom_offset + sb_end_local
-
-            # Actual width needed
-            current_width = sb_end_global - sb_start_global
-
-            # Quantize width to minimize JIT recompilation
-            # We pad the reference block to this width
-            target_width = get_quantized_width(current_width, bin_step=256)
-
-            # 1. Load HM3 Genotypes (Target)
-            # Map HM3 IDs to global indices in BIM
-            # Optimization: We could use a pre-computed map, but `isin` + `where` works for now
-            batch_snps = hm3_chrom.iloc[batch_indices_local]['SNP'].values
-            # This lookup is slow inside a loop; practically we should pre-map,
-            # but keeping it simple for the framework structure
-            hm3_global_indices = reader.bim.index[reader.bim['SNP'].isin(batch_snps)].values
-
-            # Sort to ensure alignment if needed, though HM3 is usually sorted
-            hm3_global_indices.sort()
-
-            X_hm3 = reader.get_genotypes(hm3_global_indices)  # (N, Batch)
-            X_hm3 = jnp.array(X_hm3)
-
-            # 2. Load Reference Super Block
-            # We load the contiguous range [sb_start_global, sb_end_global)
-            # get_genotypes supports arbitrary indices, so we generate range
-            ref_range_indices = np.arange(sb_start_global, sb_end_global)
-            X_ref_block = reader.get_genotypes(ref_range_indices)  # (N, current_width)
-            X_ref_block = jnp.array(X_ref_block)
-
-            # 3. Pad Reference Block to Quantized Width
-            X_ref_padded = prepare_padding(X_ref_block, target_width)
-
-            # 4. Get Feature Mapping for Super Block
-            # Slice global map
-            batch_mapping_raw = snp_feature_map[sb_start_global:sb_end_global]
-            batch_mapping = jnp.array(batch_mapping_raw)
-
-            # Pad mapping vector with "garbage bin" index (num_features)
-            batch_mapping_padded = prepare_vector_padding(
-                batch_mapping, target_width, fill_value=num_features
+        try:
+            reader = PlinkBEDReader(
+                bfile_prefix,
+                maf_min=self.maf_min,
+                preload=True,  # Load genotypes into memory
             )
+        except FileNotFoundError as e:
+            logger.error(f"PLINK files not found for chromosome {chromosome}: {e}")
+            return None
 
-            # 5. Compute Weights
-            # Transfer to JAX device and compute
-            relative_starts_jax = jnp.array(relative_starts)
-            relative_ends_jax = jnp.array(relative_ends)
+        # Construct batches with DP quantization
+        logger.info(f"Constructing batches with DP quantization...")
+        batch_infos, W = construct_all_batches(
+            bim_df=reader.bim,
+            hm3_snp_names=hm3_snps,
+            batch_size_hm3=self.batch_size_hm3,
+            n_quantization_groups=self.n_quantization_groups,
+            window_size_bp=self.window_size_bp,
+        )
 
-            w_matrix = compute_batch_weights(
-                X_ref_padded,
-                X_hm3,
-                batch_mapping_padded,
-                relative_starts_jax,
-                relative_ends_jax,
-                num_features
+        if len(batch_infos) == 0:
+            logger.warning(f"No batches created for chromosome {chromosome}")
+            return None
+
+        logger.info(f"Created {len(batch_infos)} batches")
+        logger.info(f"W matrix:\n{W}")
+
+        # Process each batch
+        all_ld_scores = []
+        all_weights = [] if feature_mapping is not None else None
+        all_hm3_snp_names = []
+
+        for i, batch_info in enumerate(batch_infos):
+            logger.info(f"\nProcessing batch {i+1}/{len(batch_infos)}")
+            logger.info(f"  HM3 SNPs: {len(batch_info.hm3_indices)}")
+            logger.info(
+                f"  Ref block: [{batch_info.sb_start_global}, {batch_info.sb_end_global})"
             )
+            logger.info(f"  Width: {batch_info.current_width} -> {batch_info.quantized_width}")
 
-            # Convert to BCOO (Batched Coordinate format) for sparse storage
-            # Thresholding small values (near zero) can save space,
-            # but standard LDSC keeps all L2 scores.
-            chrom_weights.append(sparse.BCOO.fromdense(w_matrix))
+            # Fetch genotypes using padded boundaries
+            X_hm3 = reader.genotypes[:, batch_info.hm3_indices]
+            ref_indices = np.arange(
+                batch_info.sb_start_global, batch_info.sb_end_global
+            )
+            # Clip to valid range
+            ref_indices = ref_indices[ref_indices < reader.m]
+            X_ref_block = reader.genotypes[:, ref_indices]
 
-            # Memory Cleanup
-            del X_hm3, X_ref_block, X_ref_padded
-            if start_idx % 1000 == 0:
-                gc.collect()
-                jax.clear_caches()
+            logger.info(f"  X_hm3 shape: {X_hm3.shape}")
+            logger.info(f"  X_ref_block shape: {X_ref_block.shape}")
 
-        # Concatenate Batch Results for Chromosome
-        if chrom_weights:
-            chrom_final = sparse.bcoo_concatenate(chrom_weights, dimension=0)
-            bcoo_matrices.append(chrom_final)
-            logger.info(f"Chromosome {chrom} complete. Shape: {chrom_final.shape}")
-        else:
-            logger.warning(f"No results generated for Chromosome {chrom}")
+            # Compute LD scores
+            ld_scores = compute_batch_ld_scores_numpy(X_hm3, X_ref_block)
+            all_ld_scores.append(ld_scores)
 
-    # 8. Final Concatenation
-    if bcoo_matrices:
-        final_weight_matrix = sparse.bcoo_concatenate(bcoo_matrices, dimension=0)
-        logger.info(f"Global LD Score Matrix Computation Complete. Final Shape: {final_weight_matrix.shape}")
-        return final_weight_matrix
-    else:
-        logger.error("No weights computed across any chromosomes.")
-        return None
+            # Get HM3 SNP names for this batch
+            batch_snp_names = reader.bim.iloc[batch_info.hm3_indices]["SNP"].tolist()
+            all_hm3_snp_names.extend(batch_snp_names)
+
+            # Compute weights if feature mapping provided
+            if feature_mapping is not None:
+                # Get ref SNP names
+                ref_snp_names = reader.bim.iloc[ref_indices]["SNP"].tolist()
+
+                # Create feature mask
+                ref_snp_set = set(ref_snp_names)
+                feature_mask = (
+                    feature_mapping[feature_mapping["SNP"].isin(ref_snp_set)]
+                    .groupby(["SNP", "feature_idx"])
+                    .size()
+                    .reset_index(name="count")
+                )
+
+                # Convert to binary mask matrix
+                n_features = feature_mapping["feature_idx"].max() + 1
+                feature_mask_matrix = np.zeros(
+                    (len(ref_snp_names), n_features), dtype=np.float32
+                )
+
+                for _, row in feature_mask.iterrows():
+                    snp_name = row["SNP"]
+                    if snp_name in ref_snp_set:
+                        snp_idx = ref_snp_names.index(snp_name)
+                        feature_mask_matrix[snp_idx, int(row["feature_idx"])] = 1.0
+
+                # Compute weights
+                weights = compute_batch_weights_numpy(
+                    X_hm3, X_ref_block, feature_mask_matrix
+                )
+                all_weights.append(weights)
+
+                logger.info(f"  LD scores: {ld_scores.shape}")
+                logger.info(f"  Weights: {weights.shape}")
+
+        # Combine results
+        ld_scores_combined = np.concatenate(all_ld_scores)
+        weights_combined = (
+            np.vstack(all_weights) if all_weights is not None else None
+        )
+
+        logger.info("=" * 80)
+        logger.info(f"Chromosome {chromosome} complete")
+        logger.info(f"  Total HM3 SNPs processed: {len(all_hm3_snp_names)}")
+        logger.info(f"  LD scores shape: {ld_scores_combined.shape}")
+        if weights_combined is not None:
+            logger.info(f"  Weights shape: {weights_combined.shape}")
+        logger.info("=" * 80)
+
+        return ChromosomeResult(
+            chromosome=str(chromosome),
+            hm3_snp_names=all_hm3_snp_names,
+            ld_scores=ld_scores_combined,
+            weights=weights_combined,
+        )
+
+    def run(
+        self,
+        feature_annotation_file: Optional[str] = None,
+        mapping_strategy: str = "TSS",
+        window_size_mapping: int = 100_000,
+    ) -> Dict[str, ChromosomeResult]:
+        """
+        Run pipeline across all chromosomes.
+
+        Parameters
+        ----------
+        feature_annotation_file : Optional[str]
+            Path to feature annotation file (e.g., gene annotation CSV)
+        mapping_strategy : str
+            SNP-gene mapping strategy ("TSS" or "gene_body")
+        window_size_mapping : int
+            Window size for TSS mapping (bp)
+
+        Returns
+        -------
+        Dict[str, ChromosomeResult]
+            Results for each chromosome
+        """
+        logger.info("\n" + "=" * 80)
+        logger.info("Starting LD Score Pipeline")
+        logger.info("=" * 80 + "\n")
+
+        # Create feature mapping if annotation file provided
+        feature_mapping = None
+        if feature_annotation_file is not None:
+            logger.info("Creating SNP-feature mapping...")
+            # This will be done per chromosome in process_chromosome
+            pass
+
+        # Process each chromosome
+        results = {}
+
+        for chrom in self.chromosomes:
+            result = self.process_chromosome(chrom, feature_mapping)
+            if result is not None:
+                results[str(chrom)] = result
+
+        logger.info("\n" + "=" * 80)
+        logger.info("Pipeline Complete")
+        logger.info("=" * 80)
+        logger.info(f"Processed {len(results)} chromosomes")
+        total_snps = sum(len(r.hm3_snp_names) for r in results.values())
+        logger.info(f"Total HM3 SNPs: {total_snps}")
+        logger.info("=" * 80 + "\n")
+
+        return results
+
+
+def save_results(
+    results: Dict[str, ChromosomeResult],
+    output_prefix: str,
+    save_weights: bool = True,
+):
+    """
+    Save pipeline results to files.
+
+    Parameters
+    ----------
+    results : Dict[str, ChromosomeResult]
+        Results from pipeline
+    output_prefix : str
+        Output file prefix
+    save_weights : bool
+        Whether to save weight matrices
+    """
+    logger.info(f"Saving results to {output_prefix}.*")
+
+    # Combine all chromosomes
+    all_data = []
+
+    for chrom, result in results.items():
+        for i, snp_name in enumerate(result.hm3_snp_names):
+            row = {"CHR": chrom, "SNP": snp_name, "L2": result.ld_scores[i]}
+            all_data.append(row)
+
+    # Save LD scores
+    df_ldscore = pd.DataFrame(all_data)
+    ldscore_file = f"{output_prefix}.l2.ldscore.gz"
+    df_ldscore.to_csv(ldscore_file, sep="\t", index=False, compression="gzip")
+    logger.info(f"  Saved LD scores: {ldscore_file}")
+
+    # Save weights if available
+    if save_weights and any(r.weights is not None for r in results.values()):
+        # Combine weights
+        all_weights = []
+        for result in results.values():
+            if result.weights is not None:
+                all_weights.append(result.weights)
+
+        if len(all_weights) > 0:
+            weights_combined = np.vstack(all_weights)
+            weights_file = f"{output_prefix}.weights.npy"
+            np.save(weights_file, weights_combined)
+            logger.info(f"  Saved weights: {weights_file} (shape: {weights_combined.shape})")
+
+    logger.info("Results saved successfully")
