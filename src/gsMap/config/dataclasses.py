@@ -143,7 +143,7 @@ def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=N
             # Special handling for data_layer
             if field_name == 'data_layer' and field_key != 'X':
                 if 'layers' not in structure or field_key not in structure.get('layers', []):
-                    logger.warning(
+                    raise ValueError(
                         f"Data layer '{field_key}' not found in layers for sample '{sample_name}'. "
                         f"Available layers: {structure.get('layers', [])}"
                     )
