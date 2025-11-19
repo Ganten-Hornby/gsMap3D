@@ -270,7 +270,7 @@ def construct_all_batches(
     batch_size_hm3: int,
     n_quantization_groups: int,
     window_size_bp: int = 1_000_000,
-) -> Tuple[List[BatchInfo], np.ndarray]:
+) -> List[BatchInfo]:
     """
     Complete pipeline: construct, quantize, and pad batches for a chromosome.
 
@@ -291,8 +291,6 @@ def construct_all_batches(
     -------
     batch_infos : List[BatchInfo]
         List of BatchInfo objects
-    W : np.ndarray
-        Batch matrix (n_batches, 4)
     """
     chromosome = str(bim_df["CHR"].iloc[0])
 
@@ -302,15 +300,11 @@ def construct_all_batches(
     )
 
     if len(batches) == 0:
-        return [], np.array([])
+        return []
 
     # Step 2: Apply quantization and padding
     batch_infos = apply_quantization_and_padding(batches, n_quantization_groups, chromosome)
 
-    # Step 3: Create W matrix
-    W = create_batch_matrix(batch_infos)
-
     logger.info(f"Chromosome {chromosome}: Created {len(batch_infos)} batches")
-    logger.info(f"  W matrix shape: {W.shape}")
 
-    return batch_infos, W
+    return batch_infos

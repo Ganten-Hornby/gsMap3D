@@ -272,7 +272,7 @@ class LDScorePipeline:
 
         # Construct batches with DP quantization
         logger.info(f"Constructing batches with DP quantization...")
-        batch_infos, W = construct_all_batches(
+        batch_infos = construct_all_batches(
             bim_df=reader.bim,
             hm3_snp_names=hm3_snps,
             batch_size_hm3=self.batch_size_hm3,
@@ -285,7 +285,6 @@ class LDScorePipeline:
             return None
 
         logger.info(f"Created {len(batch_infos)} batches")
-        logger.info(f"W matrix:\n{W}")
 
         # Process each batch
         all_ld_scores = []
