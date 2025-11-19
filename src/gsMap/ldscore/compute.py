@@ -93,7 +93,6 @@ def compute_ld_scores(
     return ld_scores
 
 
-@jax.jit
 def compute_batch_weights_segment_sum(
     X_hm3: jnp.ndarray,
     X_ref_block: jnp.ndarray,
@@ -136,25 +135,19 @@ def compute_batch_weights_segment_sum(
     unique_features = jnp.unique(block_links)
     n_unique = len(unique_features)
 
-    # Create mapping from block_links to dense indices [0, n_unique)
-    # This allows us to use segment_sum efficiently
-    # We'll process each HM3 SNP separately and stack results
-    def process_hm3_snp(l2_row):
-        """Process one HM3 SNP's L2 scores."""
-        # l2_row: (n_ref_snps,)
-        # For each unique feature, sum L2 scores of ref SNPs with that feature
-        weights_row = jnp.zeros(n_unique, dtype=l2_row.dtype)
-
-        # Use segment_sum: for each unique feature, sum corresponding L2 values
-        for i, feature_idx in enumerate(unique_features):
-            mask = (block_links == feature_idx)
-            weights_row = weights_row.at[i].set(jnp.sum(l2_row * mask))
-
-        return weights_row
-
-    # Vectorize over HM3 SNPs using vmap
-    weights = jax.vmap(process_hm3_snp)(l2_unbiased)
-    # Shape: (n_hm3_snps, n_unique_features)
+    # Map block_links to local indices [0, n_unique)
+    # Since unique_features is sorted, we can use searchsorted
+    local_indices = jnp.searchsorted(unique_features, block_links)
+    
+    # Use segment_sum on the transposed L2 matrix
+    # l2_unbiased.T shape: (n_ref_snps, n_hm3_snps)
+    # local_indices shape: (n_ref_snps,)
+    # We sum rows of l2_unbiased.T (which are columns of l2_unbiased) based on local_indices
+    # Result shape: (n_unique, n_hm3_snps)
+    weights_T = jax.ops.segment_sum(l2_unbiased.T, local_indices, num_segments=n_unique)
+    
+    # Transpose back to get (n_hm3_snps, n_unique)
+    weights = weights_T.T
 
     return weights, unique_features
 
