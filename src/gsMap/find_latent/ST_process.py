@@ -656,7 +656,7 @@ class InferenceData(object):
         Inference_loader = DataLoader(dataset=dataset, batch_size=512, shuffle=False)
 
         # Inference process
-        emb, emb_gcn, class_prob = [], [], []
+        emb_cell, emb_niche, class_prob = [], [], []
 
         for (
             expression_gcn_focal,
@@ -677,19 +677,19 @@ class InferenceData(object):
                 )
                 
                 class_prob.append(x_class.cpu().numpy())
-                emb.append(mu_focal[0].cpu().numpy())
-                emb_gcn.append(mu_focal[1].cpu().numpy())
+                emb_cell.append(mu_focal[0].cpu().numpy())
+                emb_niche.append(mu_focal[1].cpu().numpy())
 
         # Concatenate results and store embeddings in adata
-        emb = np.concatenate(emb, axis=0)
-        emb_gcn = np.concatenate(emb_gcn, axis=0)
+        emb_cell = np.concatenate(emb_cell, axis=0)
+        emb_niche = np.concatenate(emb_niche, axis=0)
         class_prob = np.concatenate(class_prob, axis=0)
         
         # if self.label_name is not None:
         #     class_prob = pd.DataFrame(softmax(class_prob,axis=1), columns=self.label_name,index=adata.obs_names)
         #     adata.obsm["class_prob"] = class_prob
             
-        adata.obsm["emb"] = emb
-        adata.obsm["emb_gcn"] = emb_gcn
+        adata.obsm[self.params.latent_representation_cell] = emb_cell
+        adata.obsm[self.params.latent_representation_niche] = emb_niche
         
         return adata

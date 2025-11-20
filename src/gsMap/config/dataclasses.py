@@ -569,6 +569,14 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
 
     species: Optional[str] = None
 
+    latent_representation_niche: Annotated[str, typer.Option(
+        help="Key for spatial niche embedding in obsm"
+    )] = "emb_niche"
+
+    latent_representation_cell: Annotated[str, typer.Option(
+        help="Key for cell identity embedding in obsm"
+    )] = "emb_cell"
+
     def __post_init__(self):
         super().__post_init__()
         

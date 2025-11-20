@@ -811,19 +811,19 @@ class MarkerScoreCalculator:
         """Prepare and normalize embeddings based on dataset type
         
         Returns:
-            Tuple of (coords, emb_gcn, emb_indv, slice_ids)
+            Tuple of (coords, emb_niche, emb_indv, slice_ids)
         """
         logger.info("Loading shared data structures...")
         
         coords = None
-        emb_gcn = None
+        emb_niche = None
         slice_ids = None
         
         if self.config.dataset_type in ['spatial2D', 'spatial3D']:
             # Load spatial coordinates for spatial datasets
             coords = adata.obsm[self.config.spatial_key]
             # Load niche embeddings for spatial datasets (float16 for memory efficiency)
-            emb_gcn = adata.obsm[self.config.latent_representation_niche].astype(np.float16)
+            emb_niche = adata.obsm[self.config.latent_representation_niche].astype(np.float16)
             
             # Load slice IDs if provided (for both spatial2D and spatial3D)
             assert 'slice_id' in adata.obs.columns
@@ -836,15 +836,15 @@ class MarkerScoreCalculator:
         logger.info("Normalizing embeddings...")
         
         # L2 normalize niche embeddings (only for spatial datasets)
-        if emb_gcn is not None:
-            emb_gcn_norm = np.linalg.norm(emb_gcn, axis=1, keepdims=True)
-            emb_gcn = emb_gcn / (emb_gcn_norm + 1e-8)
+        if emb_niche is not None:
+            emb_niche_norm = np.linalg.norm(emb_niche, axis=1, keepdims=True)
+            emb_niche = emb_niche / (emb_niche_norm + 1e-8)
         
         # L2 normalize individual embeddings
         emb_indv_norm = np.linalg.norm(emb_indv, axis=1, keepdims=True)
         emb_indv = emb_indv / (emb_indv_norm + 1e-8)
         
-        return coords, emb_gcn, emb_indv, slice_ids
+        return coords, emb_niche, emb_indv, slice_ids
     
     def _get_cell_types(self, adata: ad.AnnData) -> np.ndarray:
         """Get cell types from annotation key
@@ -943,7 +943,7 @@ class MarkerScoreCalculator:
         cell_type: str,
         annotation_key: str,
         coords: Optional[np.ndarray],
-        emb_gcn: Optional[np.ndarray],
+        emb_niche: Optional[np.ndarray],
         emb_indv: np.ndarray,
         slice_ids: Optional[np.ndarray],
         rank_shape: Tuple[int, int],
@@ -972,7 +972,7 @@ class MarkerScoreCalculator:
         logger.info("Building connectivity matrix...")
         neighbor_indices, neighbor_weights = self.connectivity_builder.build_connectivity_matrix(
             coords=coords,
-            emb_gcn=emb_gcn,
+            emb_niche=emb_niche,
             emb_indv=emb_indv,
             cell_mask=cell_mask,
             high_quality_mask=high_quality_mask,
@@ -1019,7 +1019,7 @@ class MarkerScoreCalculator:
         adata: ad.AnnData,
         cell_type: str,
         coords: Optional[np.ndarray],
-        emb_gcn: Optional[np.ndarray],
+        emb_niche: Optional[np.ndarray],
         emb_indv: np.ndarray,
         annotation_key: str,
         slice_ids: Optional[np.ndarray] = None,
@@ -1029,7 +1029,7 @@ class MarkerScoreCalculator:
         
         # Find homogeneous spots
         neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells  = self._find_homogeneous_spots(
-            adata, cell_type, annotation_key, coords, emb_gcn,
+            adata, cell_type, annotation_key, coords, emb_niche,
             emb_indv, slice_ids, self.reader.shape, high_quality_mask
         )
         
@@ -1091,7 +1091,7 @@ class MarkerScoreCalculator:
         annotation_key = self.config.annotation
         
         # Prepare embeddings
-        coords, emb_gcn, emb_indv, slice_ids = self._prepare_embeddings(adata)
+        coords, emb_niche, emb_indv, slice_ids = self._prepare_embeddings(adata)
         
         # Initialize processing pipeline
         self._initialize_pipeline(rank_memmap, output_memmap, global_log_gmean, global_expr_frac)
@@ -1102,7 +1102,7 @@ class MarkerScoreCalculator:
                 adata,
                 cell_type,
                 coords,
-                emb_gcn,
+                emb_niche,
                 emb_indv,
                 annotation_key,
                 slice_ids,
