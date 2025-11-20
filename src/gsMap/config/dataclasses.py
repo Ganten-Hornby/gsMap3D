@@ -24,20 +24,32 @@ logger = logging.getLogger("gsMap.config")
 
 def configure_jax_platform(use_gpu: bool = True):
     """Configure JAX platform based on use_gpu flag.
-    
+
     Args:
-        use_gpu: If True, configure JAX to use GPU. If False, use CPU.
-    
+        use_gpu: If True, try to use GPU if available, otherwise fall back to CPU.
+                If False, force CPU usage.
+
     Raises:
         ImportError: If JAX is not installed.
     """
     try:
         import jax
         from jax import config as jax_config
-        
+
         if use_gpu:
-            jax_config.update('jax_platform_name', 'gpu')  # Force GPU usage
-            logger.info("JAX configured to use GPU for computations")
+            # Try to use GPU if available, but gracefully fall back to CPU
+            try:
+                gpu_devices = jax.devices('gpu')
+                if len(gpu_devices) > 0:
+                    jax_config.update('jax_platform_name', 'gpu')
+                    logger.info(f"JAX configured to use GPU for computations ({len(gpu_devices)} GPU(s) detected)")
+                else:
+                    jax_config.update('jax_platform_name', 'cpu')
+                    logger.info("No GPU detected, JAX configured to use CPU for computations")
+            except (RuntimeError, Exception) as e:
+                # GPU not available or other error, fall back to CPU
+                jax_config.update('jax_platform_name', 'cpu')
+                logger.info(f"GPU not available ({str(e)}), JAX configured to use CPU for computations")
         else:
             jax_config.update('jax_platform_name', 'cpu')  # Force CPU usage
             logger.info("JAX configured to use CPU for computations")

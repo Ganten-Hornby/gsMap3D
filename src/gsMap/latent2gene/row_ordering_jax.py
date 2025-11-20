@@ -137,10 +137,16 @@ def optimize_row_order_jax(
     # Convert to JAX arrays on CPU to avoid CUDA memory issues
     # test gpu if available
     if device is None:
-        if jax.devices('gpu'):
-            device = 'gpu'
-        else:
-            device = 'cpu'
+        try:
+            # Check if GPU devices are available
+            gpu_devices = jax.devices('gpu')
+            if len(gpu_devices) > 0:
+                device = jax.devices()[0]  # Use default device
+            else:
+                device = jax.devices('cpu')[0]
+        except RuntimeError:
+            # No GPU available, use CPU
+            device = jax.devices('cpu')[0]
 
     with jax.default_device(device):
         neighbor_indices_jax = jnp.asarray(neighbor_indices)
