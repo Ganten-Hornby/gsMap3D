@@ -83,7 +83,7 @@ tests = [
 ]
 
 cuda = [
-    "jax[cuda13] >= 0.8.1",
+    "jax[cuda12] >= 0.8.1",
 ]
 
 [project.urls]
@@ -92,7 +92,7 @@ Documentation = "https://yanglab.westlake.edu.cn/gsmap/document/software"
 Website = "https://yanglab.westlake.edu.cn/gsmap/home"
 
 [project.scripts]
-gsmap = "gsMap.main:main"
+gsmap = "gsMap.cli:app"
 
 [tool.flit.module]
 name = "gsMap"

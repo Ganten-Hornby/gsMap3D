@@ -396,22 +396,6 @@ class RunAllModeConfig:
 class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
     """Configuration for finding latent representations."""
     
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-
-    project_name: Annotated[str, typer.Option(
-        help="Name of the project"
-    )]
-
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
 
     h5ad_path: Annotated[Optional[List[Path]], typer.Option(
         help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
@@ -634,18 +618,6 @@ class MarkerScoreCrossSliceStrategy(str, Enum):
 class LatentToGeneConfig(ConfigWithAutoPaths):
     """Configuration for latent to gene mapping."""
     
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    project_name: Annotated[str, typer.Option(
-        help="Name of the project"
-    )]
 
     dataset_type: Annotated[DatasetType, typer.Option(
         help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
@@ -1029,22 +1001,8 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         self.latent_representation_niche = None
 
 
-
-
 @dataclass
 class SpatialLDSCConfig(ConfigWithAutoPaths):
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-
-    project_name: Annotated[str, typer.Option(
-        help="Name of the project"
-    )]
-
 
     w_file: str | None = None
     # ldscore_save_dir: str
