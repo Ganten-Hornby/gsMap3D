@@ -686,9 +686,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     )] = "X"
 
     
-    latent_representation_niche: Annotated[str, typer.Option(
+    latent_representation_niche: Annotated[Optional[str], typer.Option(
         help="Key for spatial niche embedding in obsm"
-    )] = "emb_niche"
+    )] = None
 
     latent_representation_cell: Annotated[str, typer.Option(
         help="Key for cell identity embedding in obsm"
@@ -713,11 +713,17 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         max=100
     )] = 21
 
-    similarity_threshold: Annotated[float, typer.Option(
-        help="Minimum similarity threshold for homogeneous neighbors.",
+    cell_embedding_similarity_threshold: Annotated[float, typer.Option(
+        help="Minimum similarity threshold for cell embedding.",
         min=0.0,
         max=1.0
     )] = 0.0
+
+    spatial_domain_similarity_threshold: Annotated[float, typer.Option(
+        help="Minimum similarity threshold for spatial domain embedding.",
+        min=0.0,
+        max=1.0
+    )] = 0.5
 
     no_expression_fraction: Annotated[bool, typer.Option(
         "--no-expression-fraction",
@@ -962,6 +968,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             self.n_adjacent_slices = 0
             logger.info("Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting n_adjacent_slices=0.")
 
+        if self.latent_representation_niche is None:
+            logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
+
         assert self.num_homogeneous <= self.num_neighbour_spatial, \
             f"num_homogeneous ({self.num_homogeneous}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial}) for spatial2D datasets"
 
@@ -973,6 +982,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
                 "You must set n_adjacent_slices to 1 or higher to enable cross-slice search. "
                 "If you don't want cross-slice search, use dataset_type='spatial2D' instead."
             )
+        
+        if self.latent_representation_niche is None:
+            logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
 
         assert self.k_adjacent <= self.num_neighbour_spatial, \
             f"k_adjacent ({self.k_adjacent}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"

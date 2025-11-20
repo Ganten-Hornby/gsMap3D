@@ -822,9 +822,7 @@ class MarkerScoreCalculator:
         if self.config.dataset_type in ['spatial2D', 'spatial3D']:
             # Load spatial coordinates for spatial datasets
             coords = adata.obsm[self.config.spatial_key]
-            # Load niche embeddings for spatial datasets (float16 for memory efficiency)
-            emb_niche = adata.obsm[self.config.latent_representation_niche].astype(np.float16)
-            
+
             # Load slice IDs if provided (for both spatial2D and spatial3D)
             assert 'slice_id' in adata.obs.columns
             slice_ids = adata.obs['slice_id'].values.astype(np.int32)
