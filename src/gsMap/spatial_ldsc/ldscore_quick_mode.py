@@ -18,6 +18,8 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
+from rich.console import Console
+
 import anndata as ad
 import jax
 import jax.numpy as jnp
@@ -650,6 +652,8 @@ class SpatialLDSCProcessor:
             # print('starting jax profiler...')
             # print('starting jax profiler...')
             # jax.profiler.start_trace("/tmp/jax-trace-ldsc")
+            console = Console(force_terminal=True, soft_wrap=True) # For showing progress in some environments
+            # console = Console()
 
             with Progress(
                 SpinnerColumn(),
@@ -661,6 +665,7 @@ class SpatialLDSCProcessor:
                 TextColumn("[dim]R→C: {task.fields[r_to_c_queue]}"),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
+                console=console,
                 refresh_per_second=2
             ) as progress:
                 task = progress.add_task(
@@ -710,7 +715,7 @@ class SpatialLDSCProcessor:
                         # if n_chunks_processed % 100 == 0:
                         #     gc.collect()
                     # Small sleep to prevent busy waiting
-                    time.sleep(0.1)
+                    time.sleep(0.5)
             
             # # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
             # jax.profiler.stop_trace()
