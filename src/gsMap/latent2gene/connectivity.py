@@ -260,10 +260,10 @@ def find_spatial_neighbors_with_slices(
 
 @partial(jit, static_argnums=(5, 6))
 def _find_anchors_and_homogeneous_batch_jit(
-    emb_niche_batch_norm: Optional[jnp.ndarray],      # (batch_size, d1) - pre-normalized
+    emb_niche_batch_norm: jnp.ndarray,      # (batch_size, d1) - pre-normalized (always exists, may be dummy ones)
     emb_indv_batch_norm: jnp.ndarray,      # (batch_size, d2) - pre-normalized
     spatial_neighbors: jnp.ndarray,   # (batch_size, k1)
-    all_emb_niche_norm: Optional[jnp.ndarray],         # (n_all, d1) - pre-normalized
+    all_emb_niche_norm: jnp.ndarray,         # (n_all, d1) - pre-normalized (always exists, may be dummy ones)
     all_emb_indv_norm: jnp.ndarray,        # (n_all, d2) - pre-normalized
     num_homogeneous: int,
     cell_embedding_similarity_threshold: float = 0.0,
@@ -273,35 +273,30 @@ def _find_anchors_and_homogeneous_batch_jit(
     JIT-compiled function to find anchors and homogeneous neighbors.
     Processes a batch of cells to manage GPU memory.
     Expects pre-normalized embeddings for efficiency.
-    
+
     Args:
         cell_embedding_similarity_threshold: Minimum similarity threshold for cell embedding.
         spatial_domain_similarity_threshold: Minimum similarity threshold for spatial domain embedding.
     """
     batch_size = emb_indv_batch_norm.shape[0]
-    
+
     # Step 1: Extract spatial neighbors' embeddings (already normalized)
     # Use a safe index (0) for invalid neighbors, will mask them later
     safe_neighbors = jnp.where(spatial_neighbors >= 0, spatial_neighbors, 0)
     spatial_emb_indv_norm = all_emb_indv_norm[safe_neighbors]  # (batch_size, k1, d2)
-    
-    # Step 2: Compute both GCN and individual similarities for spatial neighbors
+
+    # Step 2: Compute both niche and individual similarities for spatial neighbors
     # Compute individual/cell similarities (embeddings are already normalized)
     cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, spatial_emb_indv_norm)
     cell_sims = jnp.where(cell_sims >= cell_embedding_similarity_threshold, cell_sims, 0.0)
 
-    # Compute GCN similarities if available
-    if all_emb_niche_norm is not None and emb_niche_batch_norm is not None:
-        spatial_emb_niche_norm = all_emb_niche_norm[safe_neighbors]  # (batch_size, k1, d1)
-        anchor_sims = jnp.einsum('bd,bkd->bk', emb_niche_batch_norm, spatial_emb_niche_norm)
-        # anchor_sims_thresholded = jnp.where(anchor_sims >= spatial_domain_similarity_threshold, anchor_sims, 0.0)
-        # combined_sims = anchor_sims_thresholded * cell_sims_thresholded
-        # mask the cell for not in the same niche
-        combined_sims = jnp.where(anchor_sims >= spatial_domain_similarity_threshold, cell_sims, 0.0)
-    else:
-        combined_sims = cell_sims
-    
-    # Mask out invalid neighbors by setting their similarities to -0
+    # Compute niche/spatial domain similarities (always exists now, may be dummy ones)
+    spatial_emb_niche_norm = all_emb_niche_norm[safe_neighbors]  # (batch_size, k1, d1)
+    anchor_sims = jnp.einsum('bd,bkd->bk', emb_niche_batch_norm, spatial_emb_niche_norm)
+    # If dummy ones, anchor_sims is 1.0. Since 1.0 >= threshold, we always select cell_sims.
+    combined_sims = jnp.where(anchor_sims >= spatial_domain_similarity_threshold, cell_sims, 0.0)
+
+    # Mask out invalid neighbors by setting their similarities to 0
     combined_sims = jnp.where(spatial_neighbors >= 0, combined_sims, 0)
 
     # Select top homogeneous neighbors based on combined similarity
@@ -309,10 +304,6 @@ def _find_anchors_and_homogeneous_batch_jit(
     batch_idx = jnp.arange(batch_size)[:, None]
     homogeneous_neighbors = spatial_neighbors[batch_idx, top_homo_idx]  # (batch_size, num_homogeneous)
     homogeneous_weights = combined_sims[batch_idx, top_homo_idx]
-
-    # # if a cell top homo cell number less than num_homogeneous/2 these are low quality cell
-    # homogeneous_cell_number = jnp.sum(combined_sims > 0, axis=1, keepdims=True)
-    # homogeneous_weights = jnp.where(homogeneous_cell_number > num_homogeneous/2, homogeneous_weights, 0)
 
     return homogeneous_neighbors, homogeneous_weights
 
@@ -325,7 +316,7 @@ def _find_homogeneous_3d_memory_efficient(
     all_emb_indv_norm_jax: jnp.ndarray,
     num_homogeneous_per_slice: int,
     k_central: int,
-    k_adjacent: int, 
+    k_adjacent: int,
     n_adjacent_slices: int,
     cell_embedding_similarity_threshold: float,
     spatial_domain_similarity_threshold: float,
@@ -334,23 +325,21 @@ def _find_homogeneous_3d_memory_efficient(
     """
     Memory-efficient version of 3D homogeneous neighbor finding.
     Processes slices separately to avoid large memory allocations.
-    
+
     Args:
-        emb_niche_masked_jax: GCN embeddings for masked cells (JAX array, float16)
+        emb_niche_masked_jax: Niche embeddings for masked cells (JAX array, float16, always exists, may be dummy ones)
         emb_indv_masked_jax: Individual embeddings for masked cells (JAX array, float16)
         spatial_neighbors: Spatial neighbors array with structure [central | adj1 | adj2 | ...] (numpy array)
-        all_emb_niche_norm_jax: All normalized GCN embeddings (JAX array, float16)
+        all_emb_niche_norm_jax: All normalized niche embeddings (JAX array, float16, always exists, may be dummy ones)
         all_emb_indv_norm_jax: All normalized individual embeddings (JAX array, float16)
         num_homogeneous_per_slice: Number of neighbors to select per slice
         k_central: Number of neighbors in central slice
         k_adjacent: Number of neighbors per adjacent slice
         n_adjacent_slices: Number of adjacent slices above and below
-        k_adjacent: Number of neighbors per adjacent slice
-        n_adjacent_slices: Number of adjacent slices above and below
         cell_embedding_similarity_threshold: Minimum similarity threshold for cell embedding
         spatial_domain_similarity_threshold: Minimum similarity threshold for spatial domain embedding
         find_homogeneous_batch_size: Batch size for processing
-    
+
     Returns:
         homogeneous_neighbors: Selected neighbors
         homogeneous_weights: Corresponding weights
@@ -412,9 +401,9 @@ def _find_homogeneous_3d_memory_efficient(
                                     transient=True):
                 batch_end = min(batch_start + find_homogeneous_batch_size, n_masked)
                 batch_indices = slice(batch_start, batch_end)
-                
-                # Get batch data
-                emb_niche_batch_norm = emb_niche_masked_jax[batch_indices] if emb_niche_masked_jax is not None else None
+
+                # Get batch data (emb_niche always exists now, may be dummy ones)
+                emb_niche_batch_norm = emb_niche_masked_jax[batch_indices]
                 emb_indv_batch_norm = emb_indv_masked_jax[batch_indices]
                 
                 # Extract batch of neighbors for this slice
@@ -549,7 +538,7 @@ class ConnectivityMatrixBuilder:
     def build_connectivity_matrix(
         self,
         coords: Optional[np.ndarray] = None,
-        emb_niche: Optional[np.ndarray] = None,
+        emb_niche: np.ndarray = None,
         emb_indv: Optional[np.ndarray] = None,
         cell_mask: Optional[np.ndarray] = None,
         high_quality_mask: np.ndarray = None,
@@ -568,7 +557,7 @@ class ConnectivityMatrixBuilder:
 
         Args:
             coords: Spatial coordinates (n_cells, 2) - required for spatial datasets
-            emb_niche: Spatial niche embeddings (n_cells, d1) - required for spatial datasets
+            emb_niche: Niche embeddings (n_cells, d1) - always provided (may be dummy ones for scRNA-seq)
             emb_indv: Cell identity embeddings (n_cells, d2) - required for all datasets
             cell_mask: Boolean mask for cells to process
             high_quality_mask: Boolean mask for high quality cells (used for neighbor search in spatial data)
@@ -636,7 +625,7 @@ class ConnectivityMatrixBuilder:
         self,
         coords: np.ndarray,
         emb_indv: np.ndarray,
-        emb_niche: Optional[np.ndarray] = None,
+        emb_niche: np.ndarray = None,
         cell_mask: Optional[np.ndarray] = None,
         high_quality_mask: np.ndarray = None,
         slice_ids: Optional[np.ndarray] = None,
@@ -650,7 +639,7 @@ class ConnectivityMatrixBuilder:
 
         Args:
             coords: Spatial coordinates (n_cells, 2) - only x,y coordinates
-            emb_niche: Spatial niche embeddings (n_cells, d1)
+            emb_niche: Niche embeddings (n_cells, d1) - always provided (may be dummy ones)
             emb_indv: Cell identity embeddings (n_cells, d2)
             cell_mask: Boolean mask for cells to process
             high_quality_mask: Boolean mask for high quality cells (used for neighbor search)
@@ -692,12 +681,13 @@ class ConnectivityMatrixBuilder:
 
         # Convert embeddings to JAX arrays once (shared for both paths)
         # Note: float16 provides sufficient precision for normalized embeddings
-        all_emb_niche_norm_jax = jnp.array(emb_niche, dtype=jnp.float16) if emb_niche is not None else None
+        # emb_niche is guaranteed to exist now (may be dummy ones)
+        all_emb_niche_norm_jax = jnp.array(emb_niche, dtype=jnp.float16)
         all_emb_indv_norm_jax = jnp.array(emb_indv, dtype=jnp.float16)
-        
+
         # Get masked embeddings
         masked_cell_indices = np.where(cell_mask)[0]
-        emb_niche_masked_jax = all_emb_niche_norm_jax[masked_cell_indices] if all_emb_niche_norm_jax is not None else None
+        emb_niche_masked_jax = all_emb_niche_norm_jax[masked_cell_indices]
         emb_indv_masked_jax = all_emb_indv_norm_jax[masked_cell_indices]
 
 

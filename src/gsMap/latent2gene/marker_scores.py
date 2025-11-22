@@ -805,20 +805,20 @@ class MarkerScoreCalculator:
         return adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes, high_quality_mask
     
     def _prepare_embeddings(
-        self, 
+        self,
         adata: ad.AnnData
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], np.ndarray, Optional[np.ndarray]]:
+    ) -> Tuple[Optional[np.ndarray], np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """Prepare and normalize embeddings based on dataset type
-        
+
         Returns:
             Tuple of (coords, emb_niche, emb_indv, slice_ids)
         """
         logger.info("Loading shared data structures...")
-        
+
         coords = None
         emb_niche = None
         slice_ids = None
-        
+
         if self.config.dataset_type in ['spatial2D', 'spatial3D']:
             # Load spatial coordinates for spatial datasets
             coords = adata.obsm[self.config.spatial_key]
@@ -827,21 +827,33 @@ class MarkerScoreCalculator:
             assert 'slice_id' in adata.obs.columns
             slice_ids = adata.obs['slice_id'].values.astype(np.int32)
 
+            # Try to load niche embeddings if they exist
+            if self.config.latent_representation_niche in adata.obsm:
+                emb_niche = adata.obsm[self.config.latent_representation_niche]
+
         # Load cell embeddings for all dataset types
         emb_indv = adata.obsm[self.config.latent_representation_cell].astype(np.float16)
-        
+
+        # --- ELEGANT FIX START ---
+        # If emb_niche is missing (scRNA-seq or spatial without niche),
+        # create a dummy (N, 1) array of ones.
+        # Normalizing a vector of 1s results in 1.0, so cosine similarity will be 1.0 everywhere.
+        if emb_niche is None:
+            logger.info("No niche embeddings found. Using dummy embeddings (all ones).")
+            emb_niche = np.ones((emb_indv.shape[0], 1), dtype=np.float32)
+        # --- ELEGANT FIX END ---
+
         # Normalize embeddings
         logger.info("Normalizing embeddings...")
-        
-        # L2 normalize niche embeddings (only for spatial datasets)
-        if emb_niche is not None:
-            emb_niche_norm = np.linalg.norm(emb_niche, axis=1, keepdims=True)
-            emb_niche = emb_niche / (emb_niche_norm + 1e-8)
-        
+
+        # L2 normalize niche embeddings (always exists now)
+        emb_niche_norm = np.linalg.norm(emb_niche, axis=1, keepdims=True)
+        emb_niche = emb_niche / (emb_niche_norm + 1e-8)
+
         # L2 normalize individual embeddings
         emb_indv_norm = np.linalg.norm(emb_indv, axis=1, keepdims=True)
         emb_indv = emb_indv / (emb_indv_norm + 1e-8)
-        
+
         return coords, emb_niche, emb_indv, slice_ids
     
     def _get_cell_types(self, adata: ad.AnnData) -> np.ndarray:
@@ -941,7 +953,7 @@ class MarkerScoreCalculator:
         cell_type: str,
         annotation_key: str,
         coords: Optional[np.ndarray],
-        emb_niche: Optional[np.ndarray],
+        emb_niche: np.ndarray,
         emb_indv: np.ndarray,
         slice_ids: Optional[np.ndarray],
         rank_shape: Tuple[int, int],
@@ -1017,7 +1029,7 @@ class MarkerScoreCalculator:
         adata: ad.AnnData,
         cell_type: str,
         coords: Optional[np.ndarray],
-        emb_niche: Optional[np.ndarray],
+        emb_niche: np.ndarray,
         emb_indv: np.ndarray,
         annotation_key: str,
         slice_ids: Optional[np.ndarray] = None,
