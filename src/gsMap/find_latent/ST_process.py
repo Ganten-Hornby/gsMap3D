@@ -8,7 +8,7 @@ import logging
 import re 
 from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
-from rich.progress import track
+from rich.progress import Progress, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from scipy.special import softmax
 from .GNN.GCN import GCN, build_spatial_graph
 from gsMap.config import FindLatentRepresentationsConfig
@@ -31,27 +31,35 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
     logger.info("Finding highly variable genes (HVGs)...")
 
-    for sample_name, st_file in track(sample_h5ad_dict.items(), description="Finding HVGs"):
-        adata_temp = sc.read_h5ad(st_file)
-        # sc.pp.filter_genes(adata_temp, min_counts=1)
+    with Progress(
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task("Finding HVGs", total=len(sample_h5ad_dict))
 
-        # Filter out mitochondrial and hemoglobin genes
-        gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
-        adata_temp = adata_temp[:,gene_keep].copy()
+        for sample_name, st_file in sample_h5ad_dict.items():
+            adata_temp = sc.read_h5ad(st_file)
+            # sc.pp.filter_genes(adata_temp, min_counts=1)
 
-        # Setup data layer consistently
-        is_count_data, actual_data_layer = setup_data_layer(adata_temp, params.data_layer)
+            # Filter out mitochondrial and hemoglobin genes
+            gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
+            adata_temp = adata_temp[:,gene_keep].copy()
 
-        # Identify highly variable genes
-        flavor = "seurat_v3" if is_count_data else "seurat"
-        sc.pp.highly_variable_genes(
-            adata_temp, n_top_genes=params.feat_cell, subset=False, flavor=flavor
-        )
-        var_df = adata_temp.var
-        var_df["gene"] = var_df.index.tolist()
-        variances_list.append(var_df)
+            is_count_data, actual_data_layer = setup_data_layer(adata_temp, params.data_layer, verbose=False)
 
-        cell_number.append(adata_temp.n_obs)
+            # Identify highly variable genes
+            flavor = "seurat_v3" if is_count_data else "seurat"
+            sc.pp.highly_variable_genes(
+                adata_temp, n_top_genes=params.feat_cell, subset=False, flavor=flavor
+            )
+            var_df = adata_temp.var
+            var_df["gene"] = var_df.index.tolist()
+            variances_list.append(var_df)
+
+            cell_number.append(adata_temp.n_obs)
+
+            progress.update(task, advance=1)
 
     # Find the common genes across all datasets
     common_genes = np.array(
@@ -244,13 +252,14 @@ def _looks_like_count_matrix(X, max_check=100, tol=1e-8):
     return np.allclose(nz, np.round(nz), atol=tol)
 
 
-def setup_data_layer(adata, data_layer):
+def setup_data_layer(adata, data_layer, verbose=True):
     """
     Setup and validate data layer for adata object.
 
     Args:
         adata: AnnData object
         data_layer: Requested data layer name
+        verbose: Whether to log information messages (default: True)
 
     Returns:
         tuple: (is_count_data, actual_data_layer)
@@ -262,7 +271,8 @@ def setup_data_layer(adata, data_layer):
         # Use the specified layer
         adata.X = adata.layers[data_layer]
         actual_data_layer = data_layer
-        logger.info(f"Using data layer: {data_layer}")
+        if verbose:
+            logger.info(f"Using data layer: {data_layer}")
     elif data_layer == "X":
         actual_data_layer = "X"
     else:
@@ -273,10 +283,11 @@ def setup_data_layer(adata, data_layer):
                    (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)) or \
                      _looks_like_count_matrix(adata.X)
 
-    if is_count_data:
-        logger.info("Detected count data")
-    else:
-        logger.info("Data appears to be normalized/log-transformed")
+    if verbose:
+        if is_count_data:
+            logger.info("Detected count data")
+        else:
+            logger.info("Data appears to be normalized/log-transformed")
 
     return is_count_data, actual_data_layer
 
