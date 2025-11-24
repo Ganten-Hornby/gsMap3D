@@ -79,15 +79,15 @@ def compute_ld_scores(
     return ld_scores
 
 
-def compute_batch_weights_segment_sum(
+def compute_batch_weights_sparse(
     X_hm3: np.ndarray,
     X_ref_block: np.ndarray,
-    block_links: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
+    block_mapping_matrix: scipy.sparse.csr_matrix,
+) -> np.ndarray:
     """
-    Compute LD score weight matrix using efficient sparse matrix multiplication.
+    Compute LD score weight matrix using matrix multiplication with a sparse mapping matrix.
 
-    Aggregates L2 scores by feature using a sparse transform matrix.
+    Weights = L2_Unbiased @ Mapping_Matrix
 
     Parameters
     ----------
@@ -95,49 +95,27 @@ def compute_batch_weights_segment_sum(
         Standardized genotypes for HM3 SNPs, shape (n_individuals, n_hm3_snps)
     X_ref_block : np.ndarray
         Standardized genotypes for reference block, shape (n_individuals, n_ref_snps)
-    block_links : np.ndarray
-        Feature indices for each reference SNP, shape (n_ref_snps,)
-        Values are global feature indices.
+    block_mapping_matrix : scipy.sparse.csr_matrix
+        Sparse mapping matrix for the reference block, shape (n_ref_snps, n_features)
+        Values represent the score or binary membership of a ref SNP to a feature.
 
     Returns
     -------
     weights : np.ndarray
-        Weight matrix, shape (n_hm3_snps, n_unique_features_in_batch)
-    unique_features : np.ndarray
-        Global feature indices found in this batch, shape (n_unique_features_in_batch,)
+        Weight matrix, shape (n_hm3_snps, n_features)
     """
     # 1. Compute unbiased L2 matrix: (n_hm3_snps, n_ref_snps)
     l2_unbiased = compute_unbiased_l2_batch(X_hm3, X_ref_block)
 
-    n_ref_snps = X_ref_block.shape[1]
+    # 2. Compute Weights: W = L2 @ M
+    # (n_hm3, n_ref) @ (n_ref, n_features) -> (n_hm3, n_features)
+    # scipy.sparse handles dense @ sparse multiplication efficiently
+    weights = l2_unbiased @ block_mapping_matrix
 
-    # 2. Identify unique features in this block
-    unique_features = np.unique(block_links)
-    n_unique = len(unique_features)
-
-    # 3. Create a sparse transform matrix T: (n_ref_snps, n_unique)
-    # We map global feature indices (block_links) to local 0..n_unique indices
-    feature_map = {val: i for i, val in enumerate(unique_features)}
-
-    # Map each ref SNP to a local column index
-    col_indices = np.array([feature_map[x] for x in block_links], dtype=np.int32)
-    row_indices = np.arange(n_ref_snps, dtype=np.int32)
-    data = np.ones(n_ref_snps, dtype=np.float32)
-
-    # Transform Matrix T
-    # T[i, j] = 1 if ref_snp i belongs to feature j (local index)
-    T = scipy.sparse.csr_matrix(
-        (data, (row_indices, col_indices)),
-        shape=(n_ref_snps, n_unique)
-    )
-
-    # 4. Compute Weights: W = L2 @ T
-    # (n_hm3, n_ref) @ (n_ref, n_unique) -> (n_hm3, n_unique)
-    # Using dense matrix multiplication since L2 is dense
-    weights = l2_unbiased @ T
-
-    # If weights resulted in a sparse matrix (depends on implementation), convert to dense array
+    # Ensure output is a dense numpy array (scipy might return matrix or numpy array)
     if scipy.sparse.issparse(weights):
         weights = weights.toarray()
+    elif isinstance(weights, np.matrix):
+        weights = np.asarray(weights)
 
-    return weights, unique_features
+    return weights
