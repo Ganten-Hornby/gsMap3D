@@ -42,21 +42,22 @@ class ChromosomeResult:
         Chromosome identifier
     hm3_snp_names : List[str]
         Names of HM3 SNPs processed
-    ld_scores : jnp.ndarray
-        LD scores for each HM3 SNP, shape (n_hm3_snps,)
-        JAX array for pure JAX pipeline
-    weights : Optional[sparse.BCOO]
+    weights : sparse.BCOO
         Sparse weight matrix for features, shape (n_hm3_snps, n_features)
         BCOO format: Batched Coordinate sparse matrix
-    n_features : Optional[int]
-        Total number of features (F+1, including unmapped feature)
+        Contains feature-stratified LD weights
+    n_features : int
+        Total number of feature indices (including unmapped feature index)
+    ld_scores : Optional[jnp.ndarray]
+        LD scores for each HM3 SNP (optional, not computed in weight-only mode)
+        Can be derived from weights if needed: ld_scores = weights.sum(axis=1)
     """
 
     chromosome: str
     hm3_snp_names: List[str]
-    ld_scores: jnp.ndarray
-    weights: Optional[sparse.BCOO] = None
-    n_features: Optional[int] = None
+    weights: sparse.BCOO
+    n_features: int
+    ld_scores: Optional[jnp.ndarray] = None
 
 
 class LDScorePipeline:
@@ -221,22 +222,22 @@ class LDScorePipeline:
     def process_chromosome(
         self,
         chromosome: int,
-        mapping_type: Optional[str] = None,
-        mapping_data: Optional[Union[pd.DataFrame, Dict[str, str]]] = None,
+        mapping_type: str,
+        mapping_data: Union[pd.DataFrame, Dict[str, str]],
         window_size_mapping: int = 0,
         mapping_strategy: str = "score",
     ) -> Optional[ChromosomeResult]:
         """
-        Process a single chromosome.
+        Process a single chromosome to compute feature-stratified LD weights.
 
         Parameters
         ----------
         chromosome : int
             Chromosome number
-        mapping_type : Optional[str]
+        mapping_type : str
             Type of feature mapping: "bed" for genomic intervals or "dict" for direct mapping
-        mapping_data : Optional[Union[pd.DataFrame, Dict[str, str]]]
-            Feature mapping data:
+        mapping_data : Union[pd.DataFrame, Dict[str, str]]
+            Feature mapping data (REQUIRED):
             - For "bed": DataFrame with [Feature, Chrom, Start, End, Score, Strand]
             - For "dict": Dictionary {rsid: feature_name}
         window_size_mapping : int
@@ -259,7 +260,7 @@ class LDScorePipeline:
             logger.warning(f"No HM3 SNPs for chromosome {chromosome}, skipping")
             return None
 
-        # Load PLINK data (read file only once)
+        # Load PLINK data once
         bfile_prefix = self.bfile_prefix_template.format(chr=chromosome)
         logger.info(f"Loading PLINK data from: {bfile_prefix}")
 
@@ -273,31 +274,25 @@ class LDScorePipeline:
             logger.error(f"PLINK files not found for chromosome {chromosome}: {e}")
             return None
 
-        # Create SNP-to-feature mapping if provided (using the same reader)
-        mapping_vec = None
-        n_feature_indices = None
+        # Create SNP-to-feature mapping (REQUIRED - always created)
+        logger.info(f"Creating SNP-feature mapping for chromosome {chromosome}...")
 
-        if mapping_type is not None and mapping_data is not None:
-            logger.info(f"Creating SNP-feature mapping for chromosome {chromosome}...")
+        mapping_vec, n_mapped_features = create_snp_feature_map(
+            bim_df=reader.bim,
+            mapping_type=mapping_type,
+            mapping_data=mapping_data,
+            window_size=window_size_mapping,
+            strategy=mapping_strategy,
+        )
 
-            # Create mapping vector using the BIM data we just loaded
-            mapping_vec, n_mapped_features = create_snp_feature_map(
-                bim_df=reader.bim,
-                mapping_type=mapping_type,
-                mapping_data=mapping_data,
-                window_size=window_size_mapping,
-                strategy=mapping_strategy,
-            )
+        # Total number of feature indices including unmapped
+        # Mapped features: indices 0 to (n_mapped_features - 1)
+        # Unmapped SNPs: index n_mapped_features
+        n_feature_indices = n_mapped_features + 1
 
-            # Total number of feature indices including unmapped
-            # Mapped features get indices 0 to (n_mapped_features - 1)
-            # Unmapped SNPs get index n_mapped_features
-            # So total indices = n_mapped_features + 1
-            n_feature_indices = n_mapped_features + 1
-
-            logger.info(f"  Mapped features: {n_mapped_features}")
-            logger.info(f"  Total feature indices (including unmapped): {n_feature_indices}")
-            logger.info(f"  Feature index range: [0, {n_feature_indices - 1}]")
+        logger.info(f"  Mapped features: {n_mapped_features}")
+        logger.info(f"  Total feature indices (including unmapped): {n_feature_indices}")
+        logger.info(f"  Mapping created for {len(reader.bim)} SNPs")
 
         # Construct batches
         logger.info(f"Constructing batches...")
@@ -314,9 +309,8 @@ class LDScorePipeline:
 
         logger.info(f"Created {len(batch_infos)} batches")
 
-        # Process each batch
-        all_ld_scores = []
-        batch_weight_data = [] if mapping_vec is not None else None
+        # Process each batch to compute weights
+        batch_weight_data = []
         all_hm3_snp_names = []
 
         with Progress(
@@ -351,83 +345,71 @@ class LDScorePipeline:
                 logger.info(f"  X_hm3 shape: {X_hm3.shape}")
                 logger.info(f"  X_ref_block shape: {X_ref_block.shape}")
 
-                # Compute LD scores (pure JAX)
-                ld_scores = compute_ld_scores(X_hm3, X_ref_block)
-                all_ld_scores.append(ld_scores)
-
                 # Get HM3 SNP names for this batch
                 batch_snp_names = reader.bim.iloc[batch_info.hm3_indices]["SNP"].tolist()
                 all_hm3_snp_names.extend(batch_snp_names)
 
-                # Compute weights if mapping vector provided
-                if mapping_vec is not None:
-                    # Get block links: feature indices for reference SNPs in this batch
-                    block_links_np = mapping_vec[ref_indices]
-                    block_links = jnp.array(block_links_np, dtype=jnp.int32)
+                # Get feature indices for reference SNPs in this batch
+                block_links_np = mapping_vec[ref_indices]
+                block_links = jnp.array(block_links_np, dtype=jnp.int32)
 
-                    # Compute weights using segment sum (pure JAX)
-                    # Returns: (batch_hm3, n_unique_features), (n_unique_features,)
-                    weights, unique_features = compute_batch_weights_segment_sum(
-                        X_hm3, X_ref_block, block_links
-                    )
+                # Compute feature-stratified weights using segment sum
+                # Returns: (batch_hm3, n_unique_features), (n_unique_features,)
+                weights, unique_features = compute_batch_weights_segment_sum(
+                    X_hm3, X_ref_block, block_links
+                )
 
-                    # Store batch data for sparse matrix construction
-                    batch_weight_data.append({
-                        'weights': weights,
-                        'unique_features': unique_features,
-                        'hm3_start_idx': len(all_hm3_snp_names) - len(batch_snp_names),
-                        'n_hm3': len(batch_snp_names)
-                    })
+                # Store batch data for sparse matrix construction
+                batch_weight_data.append({
+                    'weights': weights,
+                    'unique_features': unique_features,
+                    'hm3_start_idx': len(all_hm3_snp_names) - len(batch_snp_names),
+                    'n_hm3': len(batch_snp_names)
+                })
 
-                    logger.info(f"  LD scores: {ld_scores.shape}")
-                    logger.info(f"  Weights: {weights.shape}, unique features: {len(unique_features)}")
+                logger.info(f"  Weights shape: {weights.shape}")
+                logger.info(f"  Unique features in batch: {len(unique_features)}")
 
                 # Update progress bar
                 progress.update(task, advance=1)
 
-        # Combine LD scores (pure JAX)
-        ld_scores_combined = jnp.concatenate(all_ld_scores)
-
-        # Create BCOO sparse matrix from batch results
-        weights_bcoo = None
-        if batch_weight_data is not None:
-            weights_bcoo = self._create_bcoo_from_batches(
-                batch_weight_data, len(all_hm3_snp_names), n_feature_indices
-            )
+        # Create BCOO sparse weight matrix from batch results
+        weights_bcoo = self._create_bcoo_from_batches(
+            batch_weight_data, len(all_hm3_snp_names), n_feature_indices
+        )
 
         logger.info("=" * 80)
         logger.info(f"Chromosome {chromosome} complete")
         logger.info(f"  Total HM3 SNPs processed: {len(all_hm3_snp_names)}")
-        logger.info(f"  LD scores shape: {ld_scores_combined.shape}")
-        if weights_bcoo is not None:
-            logger.info(f"  Weights shape: {weights_bcoo.shape} (sparse BCOO)")
-            logger.info(f"  Weights nnz: {weights_bcoo.nse}")
+        logger.info(f"  Weights shape: {weights_bcoo.shape} (sparse BCOO)")
+        logger.info(f"  Weights nnz: {weights_bcoo.nse:,}")
+        logger.info(f"  Sparsity: {100 * (1 - weights_bcoo.nse / (weights_bcoo.shape[0] * weights_bcoo.shape[1])):.2f}%")
         logger.info("=" * 80)
 
         return ChromosomeResult(
             chromosome=str(chromosome),
             hm3_snp_names=all_hm3_snp_names,
-            ld_scores=ld_scores_combined,
+            ld_scores=None,  # Not computed separately
             weights=weights_bcoo,
             n_features=n_feature_indices,
         )
 
     def run(
         self,
-        mapping_type: Optional[str] = None,
-        mapping_data: Optional[Union[pd.DataFrame, Dict[str, str]]] = None,
+        mapping_type: str,
+        mapping_data: Union[pd.DataFrame, Dict[str, str]],
         window_size_mapping: int = 0,
         mapping_strategy: str = "score",
     ) -> Dict[str, ChromosomeResult]:
         """
-        Run pipeline across all chromosomes.
+        Run pipeline across all chromosomes to compute feature-stratified LD weights.
 
         Parameters
         ----------
-        mapping_type : Optional[str]
-            Type of feature mapping: "bed" for genomic intervals or "dict" for direct mapping
-        mapping_data : Optional[Union[pd.DataFrame, Dict[str, str]]]
-            Feature mapping data:
+        mapping_type : str
+            Type of feature mapping: "bed" for genomic intervals or "dict" for direct mapping (REQUIRED)
+        mapping_data : Union[pd.DataFrame, Dict[str, str]]
+            Feature mapping data (REQUIRED):
             - For "bed": DataFrame with [Feature, Chrom, Start, End, Score, Strand]
             - For "dict": Dictionary {rsid: feature_name}
         window_size_mapping : int
@@ -438,10 +420,14 @@ class LDScorePipeline:
         Returns
         -------
         Dict[str, ChromosomeResult]
-            Results for each chromosome
+            Results for each chromosome with BCOO weight matrices
         """
         logger.info("\n" + "=" * 80)
-        logger.info("Starting LD Score Pipeline")
+        logger.info("Starting LD Weight Computation Pipeline")
+        logger.info("=" * 80)
+        logger.info(f"Mapping type: {mapping_type}")
+        logger.info(f"Mapping strategy: {mapping_strategy}")
+        logger.info(f"Window size: {window_size_mapping:,} bp")
         logger.info("=" * 80 + "\n")
 
         # Process each chromosome
@@ -449,7 +435,7 @@ class LDScorePipeline:
 
         for chrom in self.chromosomes:
             # Process chromosome with mapping parameters
-            # Mapping will be created inside process_chromosome using the same PLINK reader
+            # Mapping is created inside process_chromosome using the PLINK reader
             result = self.process_chromosome(
                 chrom,
                 mapping_type=mapping_type,
@@ -474,87 +460,76 @@ class LDScorePipeline:
 def save_results(
     results: Dict[str, ChromosomeResult],
     output_prefix: str,
-    save_weights: bool = True,
 ):
     """
-    Save pipeline results to files.
+    Save pipeline results (BCOO weight matrices) to files.
 
     Parameters
     ----------
     results : Dict[str, ChromosomeResult]
         Results from pipeline
     output_prefix : str
-        Output file prefix
-    save_weights : bool
-        Whether to save weight matrices
+        Output file prefix (saves to {output_prefix}.weights.npz)
     """
-    logger.info(f"Saving results to {output_prefix}.*")
+    logger.info(f"Saving weight matrices to {output_prefix}.*")
 
-    # Combine all chromosomes
-    all_data = []
+    # Combine SNP information from all chromosomes
+    all_snp_data = []
+    all_bcoo_data = []
+    total_hm3 = 0
+    max_features = 0
 
     for chrom, result in results.items():
-        # Convert JAX array to numpy only for saving
-        ld_scores_np = np.array(result.ld_scores)
-        for i, snp_name in enumerate(result.hm3_snp_names):
-            row = {"CHR": chrom, "SNP": snp_name, "L2": ld_scores_np[i]}
-            all_data.append(row)
+        bcoo = result.weights
+        n_hm3 = len(result.hm3_snp_names)
 
-    # Save LD scores
-    df_ldscore = pd.DataFrame(all_data)
-    ldscore_file = f"{output_prefix}.l2.ldscore.gz"
-    df_ldscore.to_csv(ldscore_file, sep="\t", index=False, compression="gzip")
-    logger.info(f"  Saved LD scores: {ldscore_file}")
+        # Collect SNP information
+        for snp_name in result.hm3_snp_names:
+            all_snp_data.append({
+                'CHR': chrom,
+                'SNP': snp_name,
+            })
 
-    # Save weights if available (BCOO sparse matrices)
-    if save_weights and any(r.weights is not None for r in results.values()):
-        # For BCOO sparse matrices, we need to combine them carefully
-        # Each chromosome may have different features, so we stack them vertically
-        all_bcoo_data = []
-        total_hm3 = 0
-        max_features = 0
+        # Convert BCOO to numpy arrays for storage
+        # bcoo.data: values, bcoo.indices: (nnz, 2) array
+        indices = np.array(bcoo.indices)
+        values = np.array(bcoo.data)
 
-        for chrom, result in results.items():
-            if result.weights is not None:
-                bcoo = result.weights
-                n_hm3 = len(result.hm3_snp_names)
+        # Offset row indices by total_hm3 to stack chromosomes vertically
+        indices_offset = indices.copy()
+        indices_offset[:, 0] += total_hm3
 
-                # Convert BCOO to numpy arrays for storage
-                # bcoo.data: values, bcoo.indices: (nnz, 2) array
-                indices = np.array(bcoo.indices)
-                values = np.array(bcoo.data)
+        all_bcoo_data.append({
+            'indices': indices_offset,
+            'values': values,
+            'chrom': chrom,
+            'n_hm3': n_hm3,
+        })
 
-                # Offset row indices by total_hm3
-                indices_offset = indices.copy()
-                indices_offset[:, 0] += total_hm3
+        total_hm3 += n_hm3
+        max_features = max(max_features, result.n_features)
 
-                all_bcoo_data.append({
-                    'indices': indices_offset,
-                    'values': values,
-                    'chrom': chrom,
-                    'n_hm3': n_hm3,
-                })
+    # Combine all BCOO data
+    all_indices = np.vstack([d['indices'] for d in all_bcoo_data])
+    all_values = np.concatenate([d['values'] for d in all_bcoo_data])
 
-                total_hm3 += n_hm3
-                if result.n_features is not None:
-                    max_features = max(max_features, result.n_features)
+    # Save weight matrix as npz (compressed sparse format)
+    weights_file = f"{output_prefix}.weights.npz"
+    np.savez_compressed(
+        weights_file,
+        indices=all_indices,
+        values=all_values,
+        shape=np.array([total_hm3, max_features]),
+    )
+    logger.info(f"  Saved weights: {weights_file}")
+    logger.info(f"    Shape: ({total_hm3:,}, {max_features:,})")
+    logger.info(f"    Non-zero entries: {len(all_values):,}")
+    logger.info(f"    Sparsity: {100 * (1 - len(all_values) / (total_hm3 * max_features)):.2f}%")
 
-        if len(all_bcoo_data) > 0:
-            # Combine all indices and values
-            all_indices = np.vstack([d['indices'] for d in all_bcoo_data])
-            all_values = np.concatenate([d['values'] for d in all_bcoo_data])
-
-            # Save as npz (compressed numpy format)
-            weights_file = f"{output_prefix}.weights.npz"
-            np.savez(
-                weights_file,
-                indices=all_indices,
-                values=all_values,
-                shape=np.array([total_hm3, max_features]),
-            )
-            logger.info(
-                f"  Saved weights: {weights_file} "
-                f"(shape: ({total_hm3}, {max_features}), nnz: {len(all_values)})"
-            )
+    # Save SNP information for reference
+    snp_file = f"{output_prefix}.snps.tsv"
+    df_snps = pd.DataFrame(all_snp_data)
+    df_snps.to_csv(snp_file, sep="\t", index=False)
+    logger.info(f"  Saved SNP info: {snp_file}")
 
     logger.info("Results saved successfully")
