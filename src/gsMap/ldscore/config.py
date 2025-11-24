@@ -1,8 +1,5 @@
 """
 Configuration dataclasses for the general LD score framework.
-
-This module defines the configuration structure for LD score calculation,
-including paths, mapping strategies, and computational parameters.
 """
 
 from dataclasses import dataclass, field
@@ -33,6 +30,3 @@ class LDScoreConfig:
     # Computation
     chromosomes: Union[str, List[int]] = "all"
     batch_size_hm3: int = 50
-
-    # JAX/Performance
-    use_gpu: bool = False
