@@ -6,7 +6,7 @@ Direct computation of unbiased L2 statistics from genotype matrices using NumPy 
 
 import numpy as np
 import scipy.sparse
-from typing import Tuple, List
+from typing import Tuple, List, Union
 
 from .constants import LDSC_BIAS_CORRECTION_DF
 
@@ -82,11 +82,12 @@ def compute_ld_scores(
 def compute_batch_weights_sparse(
     X_hm3: np.ndarray,
     X_ref_block: np.ndarray,
-    block_mapping_matrix: scipy.sparse.csr_matrix,
+    block_mapping_matrix: Union[scipy.sparse.csr_matrix, np.ndarray],
 ) -> np.ndarray:
     """
-    Compute LD score weight matrix using matrix multiplication with a sparse mapping matrix.
+    Compute LD score weight matrix using matrix multiplication.
 
+    Works for both sparse and dense mapping matrices.
     Weights = L2_Unbiased @ Mapping_Matrix
 
     Parameters
@@ -95,9 +96,9 @@ def compute_batch_weights_sparse(
         Standardized genotypes for HM3 SNPs, shape (n_individuals, n_hm3_snps)
     X_ref_block : np.ndarray
         Standardized genotypes for reference block, shape (n_individuals, n_ref_snps)
-    block_mapping_matrix : scipy.sparse.csr_matrix
-        Sparse mapping matrix for the reference block, shape (n_ref_snps, n_features)
-        Values represent the score or binary membership of a ref SNP to a feature.
+    block_mapping_matrix : Union[scipy.sparse.csr_matrix, np.ndarray]
+        Mapping matrix for the reference block, shape (n_ref_snps, n_features).
+        Can be a sparse CSR matrix (from creating_snp_feature_map) or a dense array (from annotations).
 
     Returns
     -------
@@ -109,10 +110,14 @@ def compute_batch_weights_sparse(
 
     # 2. Compute Weights: W = L2 @ M
     # (n_hm3, n_ref) @ (n_ref, n_features) -> (n_hm3, n_features)
-    # scipy.sparse handles dense @ sparse multiplication efficiently
-    weights = l2_unbiased @ block_mapping_matrix
+    # numpy dot handles dense @ dense
+    # scipy.sparse handles dense @ sparse
+    if scipy.sparse.issparse(block_mapping_matrix):
+        weights = l2_unbiased @ block_mapping_matrix
+    else:
+        weights = np.dot(l2_unbiased, block_mapping_matrix)
 
-    # Ensure output is a dense numpy array (scipy might return matrix or numpy array)
+    # Ensure output is a dense numpy array
     if scipy.sparse.issparse(weights):
         weights = weights.toarray()
     elif isinstance(weights, np.matrix):

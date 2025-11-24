@@ -24,14 +24,18 @@ class LDScoreConfig:
     # Omics Input
     omics_h5ad_path: Optional[str] = None
 
-    # Mapping Input
+    # Mapping Input (Strategy A/B)
     # 'bed' or 'dict'
     mapping_type: str = "bed"
     mapping_file: Optional[str] = None
 
+    # Annotation Input (Strategy C - Direct Annotation Matrix)
+    # Template for annotation files (e.g., 'baseline.{chr}.annot.gz')
+    annot_file: Optional[str] = None
+
     # Mapping Strategy parameters
     window_size: int = 0  # bp window for mapping (e.g. TSS window)
-    strategy: str = "score"  # 'score', 'tss', 'distance'
+    strategy: str = "score"  # 'score', 'tss', 'distance', 'allow_repeat'
 
     # LD Calculation parameters
     window_size_bp: int = 1_000_000  # LD window size
@@ -42,7 +46,12 @@ class LDScoreConfig:
     batch_size_hm3: int = 50
 
     def __post_init__(self):
-
+        """
+        Post-initialization processing:
+        1. Parse chromosome string to list.
+        2. Fix PLINK file template.
+        3. Validate file existence.
+        """
         # 1. Parse Chromosomes
         if self.chromosomes == "all":
             self.chromosomes = list(range(1, 23))
