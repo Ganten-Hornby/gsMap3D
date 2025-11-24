@@ -17,6 +17,17 @@ def create_snp_feature_map(
     """
     Create a mapping vector assigning each SNP in the BIM file to a feature index.
 
+    Feature Indexing Scheme
+    -----------------------
+    - Mapped features get indices: 0, 1, 2, ..., F-1 (where F = number of unique features)
+    - Unmapped SNPs get index: F
+    - Total feature indices used: F + 1
+
+    Example: If there are 500 unique genes (features):
+    - Genes get indices 0-499
+    - Unmapped SNPs get index 500
+    - Weight matrix will have shape (n_snps, 501)
+
     Parameters
     ----------
     bim_df : pd.DataFrame
@@ -36,9 +47,12 @@ def create_snp_feature_map(
     -------
     mapping_vec : np.ndarray
         Array of shape (M,) containing the feature index for each SNP.
-        Unmapped SNPs are assigned the index F (where F is the number of features).
-    n_features : int
-        Total number of unique features (F).
+        Values are in range [0, F], where:
+        - 0 to F-1: mapped to features
+        - F: unmapped SNPs
+    n_mapped_features : int
+        Number of unique mapped features (F).
+        Note: Total feature indices = F + 1 (including unmapped)
     """
     m_ref = len(bim_df)
 

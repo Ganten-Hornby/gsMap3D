@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 from jax.experimental import sparse
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
 
 from .io import PlinkBEDReader
 from .batch_construction import construct_batches, BatchInfo
@@ -220,8 +221,10 @@ class LDScorePipeline:
     def process_chromosome(
         self,
         chromosome: int,
-        mapping_vec: Optional[np.ndarray] = None,
-        n_features: Optional[int] = None,
+        mapping_type: Optional[str] = None,
+        mapping_data: Optional[Union[pd.DataFrame, Dict[str, str]]] = None,
+        window_size_mapping: int = 0,
+        mapping_strategy: str = "score",
     ) -> Optional[ChromosomeResult]:
         """
         Process a single chromosome.
@@ -230,11 +233,16 @@ class LDScorePipeline:
         ----------
         chromosome : int
             Chromosome number
-        mapping_vec : Optional[np.ndarray]
-            SNP-to-feature mapping vector, shape (m_ref,)
-            Values are feature indices [0, F], where F is the unmapped feature
-        n_features : Optional[int]
-            Total number of features (F+1, including unmapped feature)
+        mapping_type : Optional[str]
+            Type of feature mapping: "bed" for genomic intervals or "dict" for direct mapping
+        mapping_data : Optional[Union[pd.DataFrame, Dict[str, str]]]
+            Feature mapping data:
+            - For "bed": DataFrame with [Feature, Chrom, Start, End, Score, Strand]
+            - For "dict": Dictionary {rsid: feature_name}
+        window_size_mapping : int
+            Window size for spatial mapping (bp), default: 0
+        mapping_strategy : str
+            Mapping strategy: "score" (max score) or "tss" (closest TSS), default: "score"
 
         Returns
         -------
@@ -251,7 +259,7 @@ class LDScorePipeline:
             logger.warning(f"No HM3 SNPs for chromosome {chromosome}, skipping")
             return None
 
-        # Load PLINK data
+        # Load PLINK data (read file only once)
         bfile_prefix = self.bfile_prefix_template.format(chr=chromosome)
         logger.info(f"Loading PLINK data from: {bfile_prefix}")
 
@@ -264,6 +272,32 @@ class LDScorePipeline:
         except FileNotFoundError as e:
             logger.error(f"PLINK files not found for chromosome {chromosome}: {e}")
             return None
+
+        # Create SNP-to-feature mapping if provided (using the same reader)
+        mapping_vec = None
+        n_feature_indices = None
+
+        if mapping_type is not None and mapping_data is not None:
+            logger.info(f"Creating SNP-feature mapping for chromosome {chromosome}...")
+
+            # Create mapping vector using the BIM data we just loaded
+            mapping_vec, n_mapped_features = create_snp_feature_map(
+                bim_df=reader.bim,
+                mapping_type=mapping_type,
+                mapping_data=mapping_data,
+                window_size=window_size_mapping,
+                strategy=mapping_strategy,
+            )
+
+            # Total number of feature indices including unmapped
+            # Mapped features get indices 0 to (n_mapped_features - 1)
+            # Unmapped SNPs get index n_mapped_features
+            # So total indices = n_mapped_features + 1
+            n_feature_indices = n_mapped_features + 1
+
+            logger.info(f"  Mapped features: {n_mapped_features}")
+            logger.info(f"  Total feature indices (including unmapped): {n_feature_indices}")
+            logger.info(f"  Feature index range: [0, {n_feature_indices - 1}]")
 
         # Construct batches
         logger.info(f"Constructing batches...")
@@ -285,57 +319,71 @@ class LDScorePipeline:
         batch_weight_data = [] if mapping_vec is not None else None
         all_hm3_snp_names = []
 
-        for i, batch_info in enumerate(batch_infos):
-            logger.info(f"\nProcessing batch {i+1}/{len(batch_infos)}")
-            logger.info(f"  HM3 SNPs: {len(batch_info.hm3_indices)}")
-            logger.info(
-                f"  Ref block: [{batch_info.ref_start_idx}, {batch_info.ref_end_idx})"
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+        ) as progress:
+            task = progress.add_task(
+                f"[cyan]Chr {chromosome}", total=len(batch_infos)
             )
-            ref_width = batch_info.ref_end_idx - batch_info.ref_start_idx
-            logger.info(f"  Ref block width: {ref_width} SNPs")
 
-            # Fetch genotypes
-            X_hm3 = reader.genotypes[:, batch_info.hm3_indices]
-            ref_indices = np.arange(
-                batch_info.ref_start_idx, batch_info.ref_end_idx
-            )
-            # Clip to valid range
-            ref_indices = ref_indices[ref_indices < reader.m]
-            X_ref_block = reader.genotypes[:, ref_indices]
-
-            logger.info(f"  X_hm3 shape: {X_hm3.shape}")
-            logger.info(f"  X_ref_block shape: {X_ref_block.shape}")
-
-            # Compute LD scores (pure JAX)
-            ld_scores = compute_ld_scores(X_hm3, X_ref_block)
-            all_ld_scores.append(ld_scores)
-
-            # Get HM3 SNP names for this batch
-            batch_snp_names = reader.bim.iloc[batch_info.hm3_indices]["SNP"].tolist()
-            all_hm3_snp_names.extend(batch_snp_names)
-
-            # Compute weights if mapping vector provided
-            if mapping_vec is not None:
-                # Get block links: feature indices for reference SNPs in this batch
-                block_links_np = mapping_vec[ref_indices]
-                block_links = jnp.array(block_links_np, dtype=jnp.int32)
-
-                # Compute weights using segment sum (pure JAX)
-                # Returns: (batch_hm3, n_unique_features), (n_unique_features,)
-                weights, unique_features = compute_batch_weights_segment_sum(
-                    X_hm3, X_ref_block, block_links
+            for i, batch_info in enumerate(batch_infos):
+                logger.info(f"\nProcessing batch {i+1}/{len(batch_infos)}")
+                logger.info(f"  HM3 SNPs: {len(batch_info.hm3_indices)}")
+                logger.info(
+                    f"  Ref block: [{batch_info.ref_start_idx}, {batch_info.ref_end_idx})"
                 )
+                ref_width = batch_info.ref_end_idx - batch_info.ref_start_idx
+                logger.info(f"  Ref block width: {ref_width} SNPs")
 
-                # Store batch data for sparse matrix construction
-                batch_weight_data.append({
-                    'weights': weights,
-                    'unique_features': unique_features,
-                    'hm3_start_idx': len(all_hm3_snp_names) - len(batch_snp_names),
-                    'n_hm3': len(batch_snp_names)
-                })
+                # Fetch genotypes
+                X_hm3 = reader.genotypes[:, batch_info.hm3_indices]
+                ref_indices = np.arange(
+                    batch_info.ref_start_idx, batch_info.ref_end_idx
+                )
+                # Clip to valid range
+                ref_indices = ref_indices[ref_indices < reader.m]
+                X_ref_block = reader.genotypes[:, ref_indices]
 
-                logger.info(f"  LD scores: {ld_scores.shape}")
-                logger.info(f"  Weights: {weights.shape}, unique features: {len(unique_features)}")
+                logger.info(f"  X_hm3 shape: {X_hm3.shape}")
+                logger.info(f"  X_ref_block shape: {X_ref_block.shape}")
+
+                # Compute LD scores (pure JAX)
+                ld_scores = compute_ld_scores(X_hm3, X_ref_block)
+                all_ld_scores.append(ld_scores)
+
+                # Get HM3 SNP names for this batch
+                batch_snp_names = reader.bim.iloc[batch_info.hm3_indices]["SNP"].tolist()
+                all_hm3_snp_names.extend(batch_snp_names)
+
+                # Compute weights if mapping vector provided
+                if mapping_vec is not None:
+                    # Get block links: feature indices for reference SNPs in this batch
+                    block_links_np = mapping_vec[ref_indices]
+                    block_links = jnp.array(block_links_np, dtype=jnp.int32)
+
+                    # Compute weights using segment sum (pure JAX)
+                    # Returns: (batch_hm3, n_unique_features), (n_unique_features,)
+                    weights, unique_features = compute_batch_weights_segment_sum(
+                        X_hm3, X_ref_block, block_links
+                    )
+
+                    # Store batch data for sparse matrix construction
+                    batch_weight_data.append({
+                        'weights': weights,
+                        'unique_features': unique_features,
+                        'hm3_start_idx': len(all_hm3_snp_names) - len(batch_snp_names),
+                        'n_hm3': len(batch_snp_names)
+                    })
+
+                    logger.info(f"  LD scores: {ld_scores.shape}")
+                    logger.info(f"  Weights: {weights.shape}, unique features: {len(unique_features)}")
+
+                # Update progress bar
+                progress.update(task, advance=1)
 
         # Combine LD scores (pure JAX)
         ld_scores_combined = jnp.concatenate(all_ld_scores)
@@ -344,7 +392,7 @@ class LDScorePipeline:
         weights_bcoo = None
         if batch_weight_data is not None:
             weights_bcoo = self._create_bcoo_from_batches(
-                batch_weight_data, len(all_hm3_snp_names), n_features
+                batch_weight_data, len(all_hm3_snp_names), n_feature_indices
             )
 
         logger.info("=" * 80)
@@ -361,7 +409,7 @@ class LDScorePipeline:
             hm3_snp_names=all_hm3_snp_names,
             ld_scores=ld_scores_combined,
             weights=weights_bcoo,
-            n_features=n_features,
+            n_features=n_feature_indices,
         )
 
     def run(
@@ -400,37 +448,15 @@ class LDScorePipeline:
         results = {}
 
         for chrom in self.chromosomes:
-            # Create feature mapping for this chromosome if provided
-            mapping_vec = None
-            n_features = None
-
-            if mapping_type is not None and mapping_data is not None:
-                logger.info(f"Creating SNP-feature mapping for chromosome {chrom}...")
-
-                # Load BIM for this chromosome to create mapping
-                bfile_prefix = self.bfile_prefix_template.format(chr=chrom)
-                try:
-                    reader = PlinkBEDReader(
-                        bfile_prefix,
-                        maf_min=self.maf_min,
-                        preload=False,  # Only need BIM for mapping
-                    )
-
-                    # Create mapping vector
-                    mapping_vec, F = create_snp_feature_map(
-                        bim_df=reader.bim,
-                        mapping_type=mapping_type,
-                        mapping_data=mapping_data,
-                        window_size=window_size_mapping,
-                        strategy=mapping_strategy,
-                    )
-                    n_features = F + 1  # F+1 includes unmapped feature
-
-                    logger.info(f"  Created mapping: {F} features, {n_features} total (including unmapped)")
-                except FileNotFoundError:
-                    logger.warning(f"Could not create mapping for chromosome {chrom}")
-
-            result = self.process_chromosome(chrom, mapping_vec, n_features)
+            # Process chromosome with mapping parameters
+            # Mapping will be created inside process_chromosome using the same PLINK reader
+            result = self.process_chromosome(
+                chrom,
+                mapping_type=mapping_type,
+                mapping_data=mapping_data,
+                window_size_mapping=window_size_mapping,
+                mapping_strategy=mapping_strategy,
+            )
             if result is not None:
                 results[str(chrom)] = result
 
