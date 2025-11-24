@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 from jax.experimental import sparse
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 
 from .io import PlinkBEDReader
 from .batch_construction import construct_batches, BatchInfo
@@ -277,13 +277,16 @@ class LDScorePipeline:
         # Create SNP-to-feature mapping (REQUIRED - always created)
         logger.info(f"Creating SNP-feature mapping for chromosome {chromosome}...")
 
-        mapping_vec, n_mapped_features = create_snp_feature_map(
+        mapping_vec_np, n_mapped_features = create_snp_feature_map(
             bim_df=reader.bim,
             mapping_type=mapping_type,
             mapping_data=mapping_data,
             window_size=window_size_mapping,
             strategy=mapping_strategy,
         )
+
+        # Convert mapping_vec to JAX array
+        mapping_vec = jnp.array(mapping_vec_np, dtype=jnp.int32)
 
         # Total number of feature indices including unmapped
         # Mapped features: indices 0 to (n_mapped_features - 1)
@@ -319,9 +322,10 @@ class LDScorePipeline:
             BarColumn(),
             TaskProgressColumn(),
             TimeElapsedColumn(),
+            TimeRemainingColumn(),
         ) as progress:
             task = progress.add_task(
-                f"[cyan]Chr {chromosome}", total=len(batch_infos)
+                f"[cyan]Chr {chromosome} ({len(hm3_snps):,} HM3 SNPs)", total=len(hm3_snps)
             )
 
             for i, batch_info in enumerate(batch_infos):
@@ -349,9 +353,8 @@ class LDScorePipeline:
                 batch_snp_names = reader.bim.iloc[batch_info.hm3_indices]["SNP"].tolist()
                 all_hm3_snp_names.extend(batch_snp_names)
 
-                # Get feature indices for reference SNPs in this batch
-                block_links_np = mapping_vec[ref_indices]
-                block_links = jnp.array(block_links_np, dtype=jnp.int32)
+                # Get feature indices for reference SNPs in this batch (mapping_vec is already a JAX array)
+                block_links = mapping_vec[ref_indices]
 
                 # Compute feature-stratified weights using segment sum
                 # Returns: (batch_hm3, n_unique_features), (n_unique_features,)
@@ -370,8 +373,8 @@ class LDScorePipeline:
                 logger.info(f"  Weights shape: {weights.shape}")
                 logger.info(f"  Unique features in batch: {len(unique_features)}")
 
-                # Update progress bar
-                progress.update(task, advance=1)
+                # Update progress bar by number of HM3 SNPs processed in this batch
+                progress.update(task, advance=len(batch_snp_names))
 
         # Create BCOO sparse weight matrix from batch results
         weights_bcoo = self._create_bcoo_from_batches(
