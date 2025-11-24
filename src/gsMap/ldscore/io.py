@@ -95,6 +95,10 @@ class PlinkBEDReader:
         # Apply filters to the xarray DataArray
         self._apply_filters(maf_min=maf_min, keep_snps=keep_snps)
 
+        # Apply Basic QC (Filter Monomorphic and All-Missing)
+        # This must happen before _sync_metadata so BIM reflects valid SNPs only
+        self._apply_basic_qc()
+
         # Update dimensions after filtering
         self.n = self.G.sizes['sample']
         self.m = self.G.sizes['variant']
@@ -165,6 +169,41 @@ class PlinkBEDReader:
         if n_before != n_after:
             logger.info(f"Total SNPs filtered: {n_before - n_after}/{n_before}")
 
+    def _apply_basic_qc(self) -> None:
+        """
+        Filter out monomorphic variants (std=0) and variants with all missing values.
+        """
+        logger.info("Applying basic QC (removing monomorphic and all-missing variants)...")
+
+        # Calculate stats lazily via dask
+        # 1. Standard Deviation (skipna=True handles missing)
+        stds = self.G.std(dim="sample", skipna=True)
+
+        # 2. Count of non-missing values
+        counts = self.G.count(dim="sample")
+
+        # Compute to get numpy arrays for boolean masking
+        stds_val = stds.values
+        counts_val = counts.values
+
+        # Create masks
+        # Monomorphic: std == 0 (or very close to 0)
+        # All missing: count == 0
+        mask_polymorphic = (stds_val > 0)
+        mask_not_empty = (counts_val > 0)
+
+        mask = mask_polymorphic & mask_not_empty
+
+        n_removed = np.sum(~mask)
+        if n_removed > 0:
+            logger.info(f"QC: Filtered {n_removed} variants (monomorphic or all-missing)")
+
+            # Apply filter
+            self.G = self.G.isel(variant=mask)
+            self.maf = self.maf[mask]
+        else:
+            logger.info("QC: No monomorphic or all-missing variants found.")
+
     def _sync_metadata(self):
         """Extract filtered BIM and FAM dataframes from xarray coordinates."""
         # Use standard PLINK column names: CHR, SNP, CM, BP, A1, A2
@@ -195,6 +234,8 @@ class PlinkBEDReader:
         """
         Load genotypes from Dask into memory, convert to NumPy, and standardize.
 
+        We assume basic QC (monomorphic/all-missing removal) has already run.
+
         Returns
         -------
         np.ndarray
@@ -203,60 +244,21 @@ class PlinkBEDReader:
         logger.info("Reading filtered genotype matrix into memory...")
         X = self.G.values.astype(np.float32)
 
-        # 3. Compute stats (ignoring NaNs)
+        # Compute stats (ignoring NaNs)
         means = np.nanmean(X, axis=0)
         stds = np.nanstd(X, axis=0)
 
-        # 4. Handle edge cases
-        all_missing = np.isnan(means)
-        means = np.where(all_missing, 0.0, means)
-        stds = np.where(all_missing, 1.0, stds)
-
-        # Monomorphic SNPs
-        monomorphic = (stds == 0)
-        stds = np.where(monomorphic, 1.0, stds)
-
-        # 5. Impute and Standardize
         # Impute missing values with column means
         nan_mask = np.isnan(X)
-        # Broadcasting means: (m,) -> (1, m) to match (n, m)
-        X = np.where(nan_mask, means[np.newaxis, :], X)
+
+        # Broadcasting means: (m,) -> (1, m) to match (n, m) for X which is (n, m)
+        # Note: In X, rows=individuals, cols=snps. means shape is (m_snps,).
+        # We need to broadcast properly.
+        # X is (n, m), means is (m,). numpy broadcasts (m,) to (n, m) automatically on last dim.
+        X = np.where(nan_mask, means, X)
 
         # Standardize: (X - mean) / std
-        X_std = (X - means[np.newaxis, :]) / stds[np.newaxis, :]
-
-        # Zero out edge cases
-        edge_case_mask = all_missing | monomorphic
-        X_std = np.where(edge_case_mask[np.newaxis, :], 0.0, X_std)
+        # Standard broadcasting rules apply: (n, m) - (m,) -> (n, m)
+        X_std = (X - means) / stds
 
         return X_std
-
-    def get_genotypes(
-        self,
-        snp_indices: Optional[np.ndarray] = None,
-        snp_names: Optional[List[str]] = None
-    ) -> np.ndarray:
-        """
-        Get genotype matrix for specified SNPs.
-        """
-        if snp_names is not None:
-            # Find indices based on SNP IDs
-            current_snps = self.bim['SNP'].values
-            mask = np.isin(current_snps, snp_names)
-            if not np.any(mask):
-                raise ValueError(f"None of the requested SNPs found")
-            snp_indices = np.where(mask)[0]
-
-        if self.genotypes is not None:
-            if snp_indices is None:
-                return self.genotypes
-            return self.genotypes[:, snp_indices]
-        else:
-            raise RuntimeError(
-                "Genotypes were not pre-loaded. Initialize with preload=True."
-            )
-
-    def get_all_genotypes(self) -> np.ndarray:
-        if self.genotypes is None:
-            raise RuntimeError("Genotypes were not pre-loaded.")
-        return self.genotypes
