@@ -81,6 +81,8 @@ def construct_batches(
     if n_hm3 == 0:
         logger.warning(f"No HM3 SNPs found in chromosome {chromosome}")
         return []
+    if n_hm3 < len(hm3_snp_names):
+        logger.warning(f"{len(hm3_snp_names) - n_hm3} HM3 SNPs not found in chromosome {chromosome} reference plink panel")
 
     logger.info(f"Found {n_hm3} HM3 SNPs in chromosome {chromosome}")
 

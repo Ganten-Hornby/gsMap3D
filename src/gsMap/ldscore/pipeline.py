@@ -12,6 +12,7 @@ This module orchestrates the complete workflow:
 import numpy as np
 import pandas as pd
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from .compute import (
     compute_batch_weights_segment_sum,
 )
 from .mapping import create_snp_feature_map
+from .config import LDScoreConfig
 
 logger = logging.getLogger(__name__)
 
@@ -394,3 +396,65 @@ def save_results(
     adata.write(output_file)
 
     logger.info(f"Successfully saved AnnData to {output_file}")
+
+
+def run_generate_ldscore_weight_matrix(config: LDScoreConfig):
+    """
+    Entry point function to run the full LD Score pipeline based on configuration.
+
+    Parameters
+    ----------
+    config : LDScoreConfig
+        Configuration object containing paths, mapping settings, and parameters.
+    """
+    # 1. Load Mapping Data
+    logger.info(f"Loading mapping data from: {config.mapping_file}")
+
+    if config.mapping_type == 'bed':
+        # Assume BED/TSV format for genomic intervals
+        # Requires columns: Feature, Chromosome, Start, End
+        mapping_data = pd.read_csv(config.mapping_file, sep=None, engine='python')
+
+    elif config.mapping_type == 'dict':
+        # Assume 2-column file mapping SNP -> Feature
+        df_map = pd.read_csv(config.mapping_file, sep=None, engine='python')
+
+        # Try to identify columns intelligently if no standard header
+        if 'SNP' in df_map.columns and 'Feature' in df_map.columns:
+            mapping_data = dict(zip(df_map['SNP'], df_map['Feature']))
+        elif len(df_map.columns) >= 2:
+            # Fallback to first two columns: Col 1 = SNP, Col 2 = Feature
+            logger.info("Assuming first column is SNP and second is Feature.")
+            mapping_data = dict(zip(df_map.iloc[:, 0], df_map.iloc[:, 1]))
+        else:
+            raise ValueError(f"Dictionary mapping file {config.mapping_file} must have at least 2 columns (SNP, Feature).")
+    else:
+        raise ValueError(f"Unsupported mapping_type: {config.mapping_type}")
+
+    # 2. Initialize Pipeline
+    # (Chromosome parsing and bfile template fixing handled in config.__post_init__)
+    pipeline = LDScorePipeline(
+        bfile_prefix_template=config.bfile_root,
+        hm3_dir=config.hm3_snp_path,
+        batch_size_hm3=config.batch_size_hm3,
+        window_size_bp=config.window_size_bp,
+        maf_min=config.maf_min,
+        chromosomes=config.chromosomes
+    )
+
+    # 3. Run Pipeline
+    results = pipeline.run(
+        mapping_type=config.mapping_type,
+        mapping_data=mapping_data,
+        window_size_mapping=config.window_size,
+        mapping_strategy=config.strategy
+    )
+
+    # 4. Save Results
+    # Construct output prefix
+    output_path = Path(config.output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    output_prefix = output_path / "ld_score_weights"
+
+    save_results(results, str(output_prefix))
