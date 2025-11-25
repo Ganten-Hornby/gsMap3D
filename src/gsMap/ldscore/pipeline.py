@@ -74,6 +74,8 @@ class LDScorePipeline:
         logger.info(f"LD window: {config.window_size_bp:,} bp")
         logger.info(f"MAF filter: {config.maf_min}")
         logger.info(f"Chromosomes: {config.chromosomes}")
+        logger.info(f"Output Directory: {config.output_dir}")
+        logger.info(f"Output Filename: {config.output_filename}")
         logger.info("=" * 80)
 
     def run(self):
@@ -107,7 +109,7 @@ class LDScorePipeline:
             logger.warning("No results generated. Skipping save.")
             return
 
-        self._save_aggregated_results(results, self.config.output_dir, "ld_score_weights")
+        self._save_aggregated_results(results, self.config.output_dir, self.config.output_filename)
 
     def _run_with_annotation(self):
         """Run the pipeline using external annotation matrices."""
@@ -121,7 +123,7 @@ class LDScorePipeline:
             logger.warning("No results generated.")
             return
 
-        self._save_aggregated_results(results, self.config.output_dir, "annot_ldscores")
+        self._save_aggregated_results(results, self.config.output_dir, self.config.output_filename)
 
     def _load_mapping_data(self) -> Union[pd.DataFrame, Dict[str, str]]:
         """Helper to load mapping file based on config."""
@@ -200,13 +202,22 @@ class LDScorePipeline:
             return None
 
         logger.info(f"Creating SNP-feature mapping for chromosome {chromosome}...")
-        mapping_matrix, feature_names = create_snp_feature_map(
+        # create_snp_feature_map now returns (matrix, names, df)
+        mapping_matrix, feature_names, mapping_df = create_snp_feature_map(
             bim_df=reader.bim,
             mapping_type=self.config.mapping_type,
             mapping_data=mapping_data,
             window_size=self.config.window_size,
             strategy=self.config.strategy,
         )
+
+        # Save Curated Mapping if it exists (BED type)
+        if mapping_df is not None:
+            output_dir = Path(self.config.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            mapping_out_file = output_dir / f"{self.config.output_filename}.chr{chromosome}.mapping.csv"
+            mapping_df.to_csv(mapping_out_file, index=False)
+            logger.info(f"  Saved SNP-Feature mapping ({len(mapping_df)} rows) to: {mapping_out_file}")
 
         # Ensure feature names align with matrix width (handle Unmapped bin)
         if mapping_matrix.shape[1] == len(feature_names) + 1:
@@ -388,7 +399,7 @@ class LDScorePipeline:
         self,
         results: Dict[str, ChromosomeResult],
         output_dir: str,
-        output_prefix: str
+        output_filename: str
     ):
         """Helper to concatenate and save results."""
         logger.info("\n" + "=" * 80)
@@ -432,7 +443,7 @@ class LDScorePipeline:
 
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
-        out_file = out_path / f"{output_prefix}.h5ad"
+        out_file = out_path / f"{output_filename}.h5ad"
 
         adata.write(out_file)
         logger.info(f"Successfully saved AnnData to {out_file}")

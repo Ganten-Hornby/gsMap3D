@@ -20,6 +20,7 @@ class LDScoreConfig:
     bfile_root: str  # Reference panel prefix template (e.g., 'data/1000G.{chr}')
     hm3_snp_path: str  # Path to HM3 SNP list
     output_dir: str
+    output_filename: str = "ld_score_weights" # Prefix for output files
 
     # Omics Input
     omics_h5ad_path: Optional[str] = None
@@ -35,7 +36,7 @@ class LDScoreConfig:
 
     # Mapping Strategy parameters
     window_size: int = 0  # bp window for mapping (e.g. TSS window)
-    strategy: str = "score"  # 'score', 'tss', 'distance', 'allow_repeat'
+    strategy: str = "score"  # 'score', 'tss', 'center', 'allow_repeat'
 
     # LD Calculation parameters
     window_size_bp: int = 1_000_000  # LD window size

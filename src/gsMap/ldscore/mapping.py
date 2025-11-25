@@ -14,12 +14,14 @@ def create_snp_feature_map(
         mapping_data: Union[pd.DataFrame, Dict[str, str]],
         window_size: int = 0,
         strategy: str = "score",
-) -> Tuple[scipy.sparse.csr_matrix, List[str]]:
+) -> Tuple[scipy.sparse.csr_matrix, List[str], Optional[pd.DataFrame]]:
     """
     Create a sparse mapping matrix assigning each SNP in the BIM file to feature indices.
 
-    Returns a sparse matrix where rows correspond to SNPs (in bim_df order) and columns
-    correspond to features. The last column represents "Unmapped" SNPs.
+    Returns:
+    1. Sparse matrix where rows correspond to SNPs (in bim_df order) and columns correspond to features.
+    2. List of feature names corresponding to indices 0 to F-1.
+    3. (Optional) DataFrame containing the curated SNP-feature mappings (for BED type).
 
     Feature Indexing Scheme
     -----------------------
@@ -39,10 +41,11 @@ def create_snp_feature_map(
     window_size : int
         Window extension (for 'bed').
     strategy : str
-        'score', 'tss', or 'allow_repeat'.
+        'score', 'tss', 'center', or 'allow_repeat'.
         - 'allow_repeat': A SNP can map to multiple features (values are summed or kept).
         - 'score': Keep mapping with highest score per SNP.
         - 'tss': Keep mapping closest to TSS per SNP.
+        - 'center': Keep mapping closest to the center of the feature interval per SNP.
 
     Returns
     -------
@@ -50,9 +53,12 @@ def create_snp_feature_map(
         Sparse matrix of shape (M, F+1).
     feature_names : List[str]
         List of feature names corresponding to indices 0 to F-1.
+    mapping_df : Optional[pd.DataFrame]
+        DataFrame with columns [SNP, Feature, ...] showing final mappings. None if using 'dict'.
     """
     m_ref = len(bim_df)
     unique_feature_names = []
+    curated_mapping_df = None
 
     # Prepare basic SNP info for joining
     # We assign an integer index to every SNP in BIM to construct the sparse matrix later
@@ -80,19 +86,10 @@ def create_snp_feature_map(
         valid_mapping = {k: v for k, v in mapping_data.items() if k in bim_snps}
 
         # 3. Create Sparse Entries
-        # Iterate through BIM to maintain order or just map directly?
-        # Faster: Map BIM SNPs to indices
-        # We can map the 'SNP' column to feature indices
-
         # Create a Series for mapping: SNP -> Feature Index
         snp_to_feat_idx = pd.Series(valid_mapping).map(feature_to_idx)
 
-        # Intersect with BIM
-        # This gives us a Series indexed by SNP with values as feature indices
-        # We need aligned row indices.
-
         # Map BIM SNPs to feature indices
-        # map returns NaN for missing
         mapped_feat_indices = bim_df['SNP'].map(snp_to_feat_idx)
 
         # Drop NaNs (Unmapped)
@@ -146,7 +143,10 @@ def create_snp_feature_map(
         pr_features = pr.PyRanges(df_features)
 
         # 5. Join
-        joined = pr_bim.join(pr_features).df
+        # Columns from pr_features (Right) that overlap with pr_bim (Left) get suffix '_b'
+        # Overlapping cols usually: Start, End.
+        # pr_bim (SNP) Start is 'Start'. pr_features (Window) Start is 'Start_b'.
+        joined = pr_bim.join(pr_features, apply_strand_suffix=False).df
 
         if not joined.empty:
             # 6. Resolve Conflicts / Filter
@@ -161,6 +161,16 @@ def create_snp_feature_map(
                 joined = joined.sort_values(by=['SNP', 'distance_to_tss'], ascending=[True, True])
                 joined = joined.drop_duplicates(subset=['SNP'], keep='first')
 
+            elif strategy == 'center':
+                # Calculate center of the feature interval (the window around feature)
+                # 'Start_b' and 'End_b' are the feature window coordinates from PyRanges join
+                joined['feature_center'] = (joined['Start_b'] + joined['End_b']) / 2.0
+                # Calculate distance from SNP position ('Start') to center
+                joined['distance_to_center'] = np.abs(joined['Start'] - joined['feature_center'])
+                # Sort and pick closest
+                joined = joined.sort_values(by=['SNP', 'distance_to_center'], ascending=[True, True])
+                joined = joined.drop_duplicates(subset=['SNP'], keep='first')
+
             elif strategy == 'allow_repeat':
                 # No de-duplication. One SNP can map to multiple features.
                 pass
@@ -171,13 +181,24 @@ def create_snp_feature_map(
             col_indices = joined['Feature'].map(feature_to_idx).values
 
             # Data values: Use Score if available and requested, otherwise 1.0
-            if 'Score' in joined.columns and strategy != 'tss':
-                # NOTE: If strategy is TSS, usually we just care about distance for filtering,
-                # score might be irrelevant or should default to 1.
-                # If 'allow_repeat' or 'score', we use the score.
+            if 'Score' in joined.columns and strategy in ['score', 'allow_repeat']:
+                # Use provided score
                 data_values = joined['Score'].values.astype(np.float32)
             else:
+                # Default to 1.0 for geometric strategies (tss, center) or missing score
                 data_values = np.ones(len(row_indices), dtype=np.float32)
+
+            # Save the result for output
+            # We filter columns to make it cleaner
+            output_cols = ['SNP', 'Chromosome', 'Start', 'Feature']
+            if 'Score' in joined.columns: output_cols.append('Score')
+            if 'distance_to_tss' in joined.columns: output_cols.append('distance_to_tss')
+            if 'distance_to_center' in joined.columns: output_cols.append('distance_to_center')
+
+            # Ensure columns exist before selecting
+            output_cols = [c for c in output_cols if c in joined.columns]
+            curated_mapping_df = joined[output_cols].copy()
+            curated_mapping_df.rename(columns={'Start': 'SNP_BP'}, inplace=True)
 
     else:
         raise ValueError(f"Unknown mapping_type: {mapping_type}")
@@ -220,4 +241,4 @@ def create_snp_feature_map(
         dtype=np.float32
     )
 
-    return mapping_matrix, unique_feature_names
+    return mapping_matrix, unique_feature_names, curated_mapping_df

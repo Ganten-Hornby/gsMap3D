@@ -205,10 +205,7 @@ class PlinkBEDReader:
             logger.info("QC: No monomorphic or all-missing variants found.")
 
     def _sync_metadata(self):
-        """Extract filtered BIM and FAM dataframes from xarray coordinates."""
-        # Use standard PLINK column names: CHR, SNP, CM, BP, A1, A2
-        # pandas-plink maps 'a0' and 'a1'. Usually a1 is the effect allele in PLINK 1.9 usage,
-        # but conventions vary. We map 'a1' -> 'A1', 'a0' -> 'A2'.
+
         self.bim = pd.DataFrame({
             'CHR': self.G.chrom.values,
             'SNP': self.G.snp.values,
