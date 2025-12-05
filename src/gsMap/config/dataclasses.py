@@ -1025,8 +1025,13 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
 
     spots_per_chunk_quick_mode: int = 1_000
 
-    ldscore_save_dir: str  | Path | None = None
-    quick_mode_resource_dir: str | Path | None = None
+    snp_gene_weight_adata_path: Annotated[Path, typer.Option(
+        help="Path to the SNP-gene weight matrix (H5AD format)",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = None
     use_jax: bool = True
 
     marker_score_feather_path: str | Path | None = None
@@ -1174,13 +1179,8 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         for sumstats_file in self.sumstats_config_dict.values():
             assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
 
-        if self.quick_mode_resource_dir is not None:
-            logger.info(
-                f"quick_mode_resource_dir is provided: {self.quick_mode_resource_dir}"
-            )
-            self.ldscore_save_dir = self.quick_mode_resource_dir
-            # Fix the path - quick_mode_resource_dir already points to quick_mode directory
-            self.snp_gene_weight_adata_path = Path(self.quick_mode_resource_dir) / "snp_gene_weight_matrix.h5ad"
+        if self.snp_gene_weight_adata_path is None:
+            raise ValueError("snp_gene_weight_adata_path must be provided.")
 
         # Handle w_file
         if self.w_file is None:
@@ -1196,33 +1196,7 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         else:
             logger.info(f"Using provided weights file: {self.w_file}")
 
-        if self.use_additional_baseline_annotation:
-            self.process_additional_baseline_annotation()
 
-    def process_additional_baseline_annotation(self):
-        additional_baseline_annotation = Path(self.ldscore_save_dir) / "additional_baseline"
-        dir_exists = additional_baseline_annotation.exists()
-
-        if not dir_exists:
-            self.use_additional_baseline_annotation = False
-        else:
-            logger.info(
-                "------Additional baseline annotation is provided. It will be used with the default baseline annotation."
-            )
-            logger.info(
-                f"------Additional baseline annotation directory: {additional_baseline_annotation}"
-            )
-
-            chrom_list = range(1, 23)
-            for chrom in chrom_list:
-                baseline_annotation_path = (
-                    additional_baseline_annotation / f"baseline.{chrom}.l2.ldscore.feather"
-                )
-                if not baseline_annotation_path.exists():
-                    raise FileNotFoundError(
-                        f"baseline.{chrom}.annot.gz is not found in {additional_baseline_annotation}."
-                    )
-        return None
 
 
 @dataclass

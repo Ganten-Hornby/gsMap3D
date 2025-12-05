@@ -68,7 +68,7 @@ def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:
                    f"({n_dropped/n_snps*100:.3f}%) for {n_blocks} blocks of size {block_size}")
     
     truncated = {}
-    snp_keys = ['baseline_ld_sum', 'w_ld', 'chisq', 'N']
+    snp_keys = ['baseline_ld_sum', 'w_ld', 'chisq', 'N', 'snp_positions']
     
     for key, value in data.items():
         if key in snp_keys and isinstance(value, (np.ndarray, jnp.ndarray)):

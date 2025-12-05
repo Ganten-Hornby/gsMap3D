@@ -123,10 +123,7 @@ class ParallelLDScoreReader:
                 
                 # Fetch the chunk using processor's method
                 ldscore, spot_names, abs_start, abs_end = self.processor._fetch_ldscore_chunk(chunk_idx)
-                
-                # Truncate to match SNP data
-                n_snps_used = self.processor.data_truncated.get('n_snps_used', ldscore.shape[0])
-                ldscore = ldscore[:n_snps_used]
+
                 
                 # Track throughput
                 elapsed = time.time() - start_time

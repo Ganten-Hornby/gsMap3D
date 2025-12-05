@@ -214,13 +214,38 @@ def load_and_prepare_data(config: SpatialLDSCConfig,
     
     log_memory_usage("before loading data")
     
-    # Load weights and baseline LD scores
+    # Load weights
     w_ld = _read_w_ld(config.w_file)
     w_ld.set_index("SNP", inplace=True)
     
-    # Use ldscore_save_dir which is set to quick_mode_resource_dir when in quick mode
-    baseline_ld_path = f"{config.ldscore_save_dir}/baseline/baseline."
-    baseline_ld = _read_ref_ld_v2(baseline_ld_path)
+    # Load SNP-gene weight matrix to construct baseline LD
+    logger.info(f"Loading SNP-gene weight matrix from {config.snp_gene_weight_adata_path}...")
+    snp_gene_weight_adata = ad.read_h5ad(config.snp_gene_weight_adata_path)
+    
+    # Construct baseline LD from snp_gene_weight_adata
+    X = snp_gene_weight_adata.X
+    if hasattr(X, "toarray"):
+        X = X.toarray()
+    
+    # Assuming X has shape (n_snps, n_genes + 1)
+    # columns are genes, last column is unmapped
+    
+    # Compute base annotations
+    all_gene = X[:, :-1].sum(axis=1)
+    base = all_gene + X[:, -1]
+    
+    # Create baseline_ld DataFrame
+    baseline_ld = pd.DataFrame(
+        {
+            "base": base,
+            "all_gene": all_gene
+        },
+        index=snp_gene_weight_adata.obs_names
+    )
+    # Ensure index name is SNP
+    baseline_ld.index.name = "SNP"
+    
+    logger.info(f"Constructed baseline LD from SNP-gene weights. Shape: {baseline_ld.shape}")
     
     log_memory_usage("after loading baseline")
     
@@ -257,17 +282,38 @@ def load_and_prepare_data(config: SpatialLDSCConfig,
     
     # Subset all data to common SNPs
     baseline_ld = baseline_ld.loc[common_snps]
+
+    # Load additional baselines from h5ad list if provided
+    if config.additional_baseline_h5ad_path_list:
+        logger.info(f"Loading {len(config.additional_baseline_h5ad_path_list)} additional baseline annotations...")
+        for i, h5ad_path in enumerate(config.additional_baseline_h5ad_path_list):
+            logger.info(f"Loading additional baseline {i+1}: {h5ad_path}")
+            add_adata = ad.read_h5ad(h5ad_path)
+
+            # Let's intersect with current common_snps
+            common_in_add = common_snps.intersection(add_adata.obs_names)
+            if len(common_in_add) < len(common_snps):
+                logger.warning(f"Additional baseline {h5ad_path} only has {len(common_in_add)}/{len(common_snps)} common SNPs. Intersecting...")
+                common_snps = common_in_add
+                baseline_ld = baseline_ld.loc[common_snps]
+                snp_positions = snp_gene_weight_adata.obs_names.get_indexer(common_snps)
+
+            # Extract data from additional baseline
+            add_X = add_adata[common_snps].X
+            if hasattr(add_X, "toarray"):
+                add_X = add_X.toarray()
+            
+            add_df = pd.DataFrame(
+                add_X,
+                index=common_snps,
+                columns=add_adata.var_names
+            )
+            # Concatenate
+            baseline_ld = pd.concat([baseline_ld, add_df], axis=1)
+
     w_ld = w_ld.loc[common_snps]
     sumstats = sumstats.loc[common_snps]
-    
-    # Load additional baseline if needed
-    if config.use_additional_baseline_annotation:
-        # Use ldscore_save_dir which points to the correct directory
-        additional_path = f"{config.ldscore_save_dir}/additional_baseline/baseline."
-        additional_ld = _read_ref_ld_v2(additional_path)
-        additional_ld = additional_ld.loc[common_snps]
-        baseline_ld = pd.concat([baseline_ld, additional_ld], axis=1)
-    
+
     # Prepare data dictionary
     data = {
         'baseline_ld': baseline_ld,
