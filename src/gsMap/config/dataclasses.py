@@ -1004,26 +1004,79 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
 @dataclass
 class SpatialLDSCConfig(ConfigWithAutoPaths):
 
-    w_file: str | None = None
+    w_file: Annotated[Optional[Path], typer.Option(
+        help="Path to the weights file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = None
 
-    additional_baseline_h5ad_path_list: List[str] = field(default_factory=list)
+    additional_baseline_h5ad_path_list: Annotated[List[Path], typer.Option(
+        help="List of additional baseline h5ad paths"
+    )] = field(default_factory=list)
 
-    trait_name: str | None = None
-    sumstats_file: str | None = None
-    sumstats_config_file: str | None = None
+    trait_name: Annotated[Optional[str], typer.Option(
+        help="Name of the trait for GWAS analysis"
+    )] = None
 
-    num_processes: int = 4
-    num_read_workers: int = 10
-    ldsc_compute_workers: int = 2
+    sumstats_file: Annotated[Optional[Path], typer.Option(
+        help="Path to GWAS summary statistics file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = None
 
-    not_M_5_50: bool = False
+    sumstats_config_file: Annotated[Optional[Path], typer.Option(
+        help="Path to sumstats config file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = None
 
-    n_blocks: int = 200
-    chisq_max: int | None = None
-    cell_indices_range: tuple[int, int] | None = None  # 0-based range [start, end) of cell indices to process
-    sample_filter: str | None = None  # Field for filtering processing to a specific sample
+    num_processes: Annotated[int, typer.Option(
+        help="Number of processes for parallel execution",
+        min=1
+    )] = 4
 
-    spots_per_chunk_quick_mode: int = 1_000
+    num_read_workers: Annotated[int, typer.Option(
+        help="Number of read workers",
+        min=1
+    )] = 10
+
+    ldsc_compute_workers: Annotated[int, typer.Option(
+        help="Number of compute workers",
+        min=1
+    )] = 2
+
+    not_M_5_50: Annotated[bool, typer.Option(
+        "--not-M-5-50",
+        help="Do not use M_5_50"
+    )] = False
+
+    n_blocks: Annotated[int, typer.Option(
+        help="Number of jackknife blocks",
+        min=1
+    )] = 200
+
+    chisq_max: Annotated[Optional[int], typer.Option(
+        help="Maximum chi-square value"
+    )] = None
+
+    cell_indices_range: Annotated[Optional[tuple[int, int]], typer.Option(
+        help="0-based range [start, end) of cell indices to process"
+    )] = None
+
+    sample_filter: Annotated[Optional[str], typer.Option(
+        help="Filter processing to a specific sample"
+    )] = None
+
+    spots_per_chunk_quick_mode: Annotated[int, typer.Option(
+        help="Number of spots per chunk in quick mode",
+        min=1
+    )] = 1_000
 
     snp_gene_weight_adata_path: Annotated[Path, typer.Option(
         help="Path to the SNP-gene weight matrix (H5AD format)",
@@ -1032,11 +1085,31 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         dir_okay=False,
         resolve_path=True
     )] = None
-    use_jax: bool = True
 
-    marker_score_feather_path: str | Path | None = None
-    marker_score_h5ad_path: str | Path | None = None
-    marker_score_format: Literal["memmap", "feather", "h5ad"] | None = None
+    use_jax: Annotated[bool, typer.Option(
+        "--use-jax/--no-jax",
+        help="Use JAX-accelerated spatial LDSC implementation"
+    )] = True
+
+    marker_score_feather_path: Annotated[Optional[Path], typer.Option(
+        help="Path to marker score feather file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = None
+
+    marker_score_h5ad_path: Annotated[Optional[Path], typer.Option(
+        help="Path to marker score h5ad file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = None
+
+    marker_score_format: Annotated[Optional[Literal["memmap", "feather", "h5ad"]], typer.Option(
+        help="Format of marker scores"
+    )] = None
 
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
@@ -1182,20 +1255,20 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         if self.snp_gene_weight_adata_path is None:
             raise ValueError("snp_gene_weight_adata_path must be provided.")
 
-        # Handle w_file
-        if self.w_file is None:
-            w_ld_dir = Path(self.ldscore_save_dir) / "w_ld"
-            if w_ld_dir.exists():
-                self.w_file = str(w_ld_dir / "weights.")
-                logger.info(f"Using weights generated in the generate_ldscore step: {self.w_file}")
-            else:
-                raise ValueError(
-                    "No w_file provided and no weights found in generate_ldscore output. "
-                    "Either provide --w_file or run generate_ldscore first."
-                )
-        else:
-            logger.info(f"Using provided weights file: {self.w_file}")
-
+        # # Handle w_file
+        # if self.w_file is None:
+        #     w_ld_dir = Path(self.ldscore_save_dir) / "w_ld"
+        #     if w_ld_dir.exists():
+        #         self.w_file = str(w_ld_dir / "weights.")
+        #         logger.info(f"Using weights generated in the generate_ldscore step: {self.w_file}")
+        #     else:
+        #         raise ValueError(
+        #             "No w_file provided and no weights found in generate_ldscore output. "
+        #             "Either provide --w_file or run generate_ldscore first."
+        #         )
+        # else:
+        #     logger.info(f"Using provided weights file: {self.w_file}")
+        #
 
 
 
