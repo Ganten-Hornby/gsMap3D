@@ -46,6 +46,10 @@ class LDScoreConfig:
     chromosomes: Union[str, List[int]] = "all"
     batch_size_hm3: int = 50
 
+    # w_ld Calculation
+    calculate_w_ld: bool = False
+    w_ld_dir: Optional[str] = None
+
     def __post_init__(self):
         """
         Post-initialization processing:

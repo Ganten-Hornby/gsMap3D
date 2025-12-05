@@ -227,6 +227,9 @@ class LDScorePipeline:
 
         logger.info(f"  Features: {len(feature_names_full)} | Matrix nnz: {mapping_matrix.nnz}")
 
+        if self.config.calculate_w_ld:
+             self._compute_w_ld(chromosome, target_hm3_snps)
+
         return self._compute_chromosome_weights(
             chromosome=chromosome,
             reader=reader,
@@ -300,6 +303,9 @@ class LDScorePipeline:
 
         logger.info("Converting annotation to sparse matrix...")
         annot_matrix = scipy.sparse.csr_matrix(feature_df.values, dtype=np.float32)
+
+        if self.config.calculate_w_ld:
+             self._compute_w_ld(chromosome, target_hm3_snps)
 
         return self._compute_chromosome_weights(
             chromosome=chromosome,
@@ -399,6 +405,96 @@ class LDScorePipeline:
         if not batch_data:
             return np.zeros((n_rows, n_cols), dtype=np.float32)
         return np.vstack([b['weights'] for b in batch_data])
+
+    def _compute_w_ld(self, chromosome: int, hm3_snps: List[str]):
+        """
+        Compute 'w_ld' (weighted LD scores) for a chromosome.
+        w_ld is typically the LD score of a SNP computed against the set of regression SNPs (HM3 SNPs).
+        """
+        logger.info(f"Computing w_ld for chromosome {chromosome}...")
+
+        # 1. Initialize Reader restricted to HM3 SNPs
+        bfile_prefix = self.config.bfile_root.format(chr=chromosome)
+        try:
+            # We filter for HM3 SNPs specifically
+            reader = PlinkBEDReader(
+                bfile_prefix,
+                maf_min=self.config.maf_min,
+                keep_snps=hm3_snps,
+                preload=True,
+            )
+        except Exception as e:
+            logger.error(f"Failed to load PLINK for w_ld (chk {chromosome}): {e}")
+            return
+
+        # 2. Construct Batches (using the filtered BIM)
+        # Note: reader.bim now ONLY contains HM3 SNPs (and those passing MAF)
+        # We use all available SNPs in the reader as targets
+        available_hm3 = reader.bim["SNP"].tolist()
+        
+        batch_infos = construct_batches(
+            bim_df=reader.bim,
+            hm3_snp_names=available_hm3,
+            batch_size_hm3=self.config.batch_size_hm3,
+            window_size_bp=self.config.window_size_bp,
+        )
+
+        logger.info(f"  w_ld: Processing {len(batch_infos)} batches for {len(available_hm3)} SNPs")
+
+        w_ld_values = []
+        w_ld_snps = []
+
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+            BarColumn(), TaskProgressColumn(), TimeElapsedColumn(), TimeRemainingColumn()
+        ) as progress:
+            task = progress.add_task(f"[magenta]w_ld Chr {chromosome}", total=len(available_hm3))
+
+            for batch in batch_infos:
+                # Genotypes (filtered to HM3)
+                X_hm3 = reader.genotypes[:, batch.hm3_indices]
+                
+                # Reference block is also from the filtered reader (so it's HM3 only)
+                ref_indices = np.arange(batch.ref_start_idx, batch.ref_end_idx)
+                # Clip to valid range (should be handled by construct_batches but safe to double check)
+                ref_indices = ref_indices[ref_indices < reader.m]
+                X_ref = reader.genotypes[:, ref_indices]
+
+                # Compute LD Scores (L2 sum)
+                ld_scores_batch = compute_ld_scores(X_hm3, X_ref)
+                
+                w_ld_values.append(ld_scores_batch)
+                
+                batch_snps = reader.bim.iloc[batch.hm3_indices]["SNP"].tolist()
+                w_ld_snps.extend(batch_snps)
+                
+                progress.update(task, advance=len(batch.hm3_indices))
+
+        # 3. Aggregate and Save
+        if w_ld_values:
+            w_ld_arr = np.concatenate(w_ld_values)
+            
+            # Match with metadata
+            df_w_ld = reader.bim[reader.bim["SNP"].isin(w_ld_snps)].copy()
+            # Ensure order
+            df_w_ld = df_w_ld.set_index("SNP").reindex(w_ld_snps).reset_index()
+            df_w_ld["L2"] = w_ld_arr
+            
+            # Select columns
+            out_cols = ["CHR", "SNP", "BP", "CM", "L2"]
+            # Ensure columns exist (CM might be missing or 0)
+            if "CM" not in df_w_ld.columns:
+                 df_w_ld["CM"] = 0.0
+            
+            df_w_ld = df_w_ld[out_cols]
+            
+            # Determine output path
+            w_ld_base = Path(self.config.w_ld_dir) if self.config.w_ld_dir else Path(self.config.output_dir) / "w_ld"
+            w_ld_base.mkdir(parents=True, exist_ok=True)
+            
+            out_file = w_ld_base / f"weights.{chromosome}.l2.ldscore.gz"
+            df_w_ld.to_csv(out_file, sep="\t", index=False, compression="gzip")
+            logger.info(f"  Saved w_ld to: {out_file}")
 
     def _save_aggregated_results(
         self,
