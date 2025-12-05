@@ -392,6 +392,7 @@ class SpatialLDSCProcessor:
                  trait_name: str,
                  data_truncated: dict,
                  output_dir: Path,
+                 marker_score_adata: ad.AnnData,
                  n_loader_threads: int = 10):
         """
         Initialize the unified processor.
@@ -401,19 +402,17 @@ class SpatialLDSCProcessor:
             trait_name: Name of the trait being processed
             data_truncated: Truncated SNP data dictionary
             output_dir: Output directory for results
+            marker_score_adata: AnnData object containing marker scores in .X
             n_loader_threads: Number of parallel loader threads
         """
         self.config = config
         self.trait_name = trait_name
         self.data_truncated = data_truncated
         self.output_dir = output_dir
+        self.marker_score_adata = marker_score_adata
         self.n_loader_threads = n_loader_threads
         
-        # Check marker score format
-        if config.marker_score_format != "memmap":
-            raise NotImplementedError(
-                f"Only 'memmap' marker score format is supported. Got: {config.marker_score_format}"
-            )
+
         
         # Initialize QuickModeLDScore components (trait-independent)
         self._initialize_quick_mode()
@@ -428,48 +427,23 @@ class SpatialLDSCProcessor:
         self.max_spot_end = 0
         
     def _initialize_quick_mode(self):
-        """Initialize trait-independent quick mode components for memory-mapped marker scores."""
-        logger.info("Initializing memory-mapped marker scores...")
+        """Initialize trait-independent quick mode components using provided AnnData."""
+        logger.info("Initializing marker scores from provided AnnData...")
         
-        # Load memory-mapped marker scores
-        mk_score_data_path = Path(self.config.marker_scores_memmap_path)
-        mk_score_meta_path = mk_score_data_path.with_suffix('.meta.json')
+        n_spots_marker_score = self.marker_score_adata.n_obs
+        n_genes_marker_score = self.marker_score_adata.n_vars
         
-        if not mk_score_meta_path.exists():
-            raise FileNotFoundError(f"Marker scores metadata not found at {mk_score_meta_path}")
+        logger.info(f"Marker scores shape: (n_spots={n_spots_marker_score}, n_genes={n_genes_marker_score})")
         
-        # Load metadata
-        with open(mk_score_meta_path, 'r') as f:
-            meta = json.load(f)
-        
-        n_spots_memmap = meta['shape'][0]
-        n_genes_memmap = meta['shape'][1]
-        dtype = np.dtype(meta['dtype'])
-
-        # Use MemMapDense which handles tmp_dir internally (like marker_scores.py)
-        self.mkscore_memmap = MemMapDense(
-            path=mk_score_data_path,
-            shape=(n_spots_memmap, n_genes_memmap),
-            dtype=dtype,
-            mode='r',
-            tmp_dir=self.config.memmap_tmp_dir
-        )
-
-        logger.info(f"Marker scores shape: (n_spots={n_spots_memmap}, n_genes={n_genes_memmap})")
-        
-        # Load concatenated latent adata for metadata
-        concat_adata_path = Path(self.config.concatenated_latent_adata_path)
-        concat_adata = ad.read_h5ad(concat_adata_path, backed='r')
-        gene_names_from_adata = concat_adata.var_names.to_numpy()
-        self.spot_names_all = concat_adata.obs_names.to_numpy()
+        gene_names_from_adata = self.marker_score_adata.var_names.to_numpy()
+        self.spot_names_all = self.marker_score_adata.obs_names.to_numpy()
         
         # Filter by sample if specified
         if self.config.sample_filter:
             logger.info(f"Filtering spots by sample: {self.config.sample_filter}")
-            sample_info = concat_adata.obs.get('sample', concat_adata.obs.get('sample_name', None))
+            sample_info = self.marker_score_adata.obs.get('sample', self.marker_score_adata.obs.get('sample_name', None))
             
             if sample_info is None:
-                concat_adata.file.close()
                 raise ValueError("No 'sample' or 'sample_name' column found in obs")
             
             sample_info = sample_info.to_numpy()
@@ -478,19 +452,17 @@ class SpatialLDSCProcessor:
             # Verify spots are contiguous for efficient slicing
             expected_range = list(range(self.spot_indices[0], self.spot_indices[-1] + 1))
             if self.spot_indices.tolist() != expected_range:
-                concat_adata.file.close()
                 raise ValueError("Spot indices for sample must be contiguous")
             
             self.sample_start_offset = self.spot_indices[0]
             self.spot_names_filtered = self.spot_names_all[self.spot_indices]
             logger.info(f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_filter}'")
         else:
-            self.spot_indices = np.arange(n_spots_memmap)
+            self.spot_indices = np.arange(n_spots_marker_score)
             self.spot_names_filtered = self.spot_names_all
             self.sample_start_offset = 0
         
-        concat_adata.file.close()
-        self.n_spots = n_spots_memmap
+        self.n_spots = n_spots_marker_score
         self.n_spots_filtered = len(self.spot_indices)
         
         # Load SNP-gene weights adata (keep for trait-specific initialization)
@@ -501,11 +473,11 @@ class SpatialLDSCProcessor:
         self.snp_gene_weight_adata = ad.read_h5ad(snp_gene_weight_path)
 
         # Find common genes
-        memmap_genes_series = pd.Series(gene_names_from_adata)
-        common_genes_mask = memmap_genes_series.isin(self.snp_gene_weight_adata.var.index)
+        marker_score_genes_series = pd.Series(gene_names_from_adata)
+        common_genes_mask = marker_score_genes_series.isin(self.snp_gene_weight_adata.var.index)
         common_genes = gene_names_from_adata[common_genes_mask]
         
-        self.memmap_gene_indices = np.where(common_genes_mask)[0]
+        self.marker_score_gene_indices = np.where(common_genes_mask)[0]
         self.weight_gene_indices = [self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes]
 
         logger.info(f"Found {len(common_genes)} common genes")
@@ -584,8 +556,8 @@ class SpatialLDSCProcessor:
         memmap_start = self.sample_start_offset + start
         memmap_end = self.sample_start_offset + end
         
-        # Load chunk from memmap
-        mk_score_chunk = self.mkscore_memmap[memmap_start:memmap_end, self.memmap_gene_indices]
+        # Load chunk from marker_score_adata
+        mk_score_chunk = self.marker_score_adata.X[memmap_start:memmap_end, self.marker_score_gene_indices]
         mk_score_chunk = mk_score_chunk.T.astype(np.float32)
         
         # Compute LD scores via sparse matrix multiplication

@@ -30,7 +30,7 @@ class MemMapDense:
         self,
         path: Union[str, Path],
         shape: Tuple[int, int],
-        dtype=np.float32,
+        dtype=np.float16,
         mode: str = 'w',
         num_write_workers: int = 4,
         flush_interval: float = 30,
@@ -452,70 +452,7 @@ class ComponentThroughput:
         return 0.0
 
 
-class MarkerScoreLoader:
-    """Utilities for loading marker scores into AnnData structures"""
 
-    @staticmethod
-    def load_with_metadata(
-        memmap_path: Union[str, Path],
-        metadata_path: Union[str, Path],
-        mode: str = 'r',
-        tmp_dir: Optional[Union[str, Path]] = None
-    ) -> ad.AnnData:
-        """
-        Load marker scores memmap and wrap it in an AnnData object with metadata
-        from a reference h5ad file.
-
-        Args:
-            memmap_path: Path to the marker scores memory map (without extension)
-            metadata_path: Path to the latent/concatenated adata file (.h5ad)
-            mode: Mode to open the memmap ('r', 'r+')
-            tmp_dir: Optional temporary directory for MemMapDense
-
-        Returns:
-            AnnData object with X backed by the memory map
-        """
-        memmap_path = Path(memmap_path)
-        metadata_path = Path(metadata_path)
-
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-
-        # check complete
-        is_complete, _ = MemMapDense.check_complete(memmap_path)
-        if not is_complete:
-            raise ValueError(f"Marker score at {memmap_path} is incomplete or corrupted. Please recompute.")
-
-        # Load metadata source in backed mode
-        logger.info(f"Loading metadata from {metadata_path}")
-        src_adata = ad.read_h5ad(metadata_path, backed='r')
-
-        # Determine shape from metadata
-        shape = (src_adata.n_obs, src_adata.n_vars)
-
-        # Initialize MemMapDense
-        # Note: MemMapDense takes 'path' without extension.
-        mm = MemMapDense(
-            memmap_path,
-            shape=shape,
-            mode=mode,
-            tmp_dir=tmp_dir
-        )
-
-        logger.info("Constructing AnnData wrapper...")
-        adata = ad.AnnData(
-            X=mm.memmap,
-            obs=src_adata.obs.copy(),
-            var=src_adata.var.copy(),
-            uns=src_adata.uns.copy(),
-            obsm=src_adata.obsm.copy(),
-            varm=src_adata.varm.copy()
-        )
-
-        # Attach the manager to allow access to MemMapDense methods
-        adata.uns['memmap_manager'] = mm
-
-        return adata
 
 
 class ParallelRankReader:

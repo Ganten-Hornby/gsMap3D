@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple, List, Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -26,6 +26,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 import anndata as ad
 from ..config import SpatialLDSCConfig
+from ..latent2gene.memmap_io import MemMapDense
 from ..utils.regression_read import _read_ref_ld_v2, _read_sumstats, _read_w_ld
 from .ldscore_quick_mode import SpatialLDSCProcessor
 
@@ -401,6 +402,60 @@ def wrapper_of_process_chunk_jit(*args, **kwargs):
     # return process_chunk_jit(*args, **kwargs)
     return process_chunk_batched_jit(*args, **kwargs)
 
+def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
+    """
+    Load marker scores memmap and wrap it in an AnnData object with metadata
+    from a reference h5ad file using configuration.
+
+    Args:
+        config: SpatialLDSCConfig containing paths and settings
+
+    Returns:
+        AnnData object with X backed by the memory map
+    """
+    memmap_path = Path(config.marker_scores_memmap_path)
+    metadata_path = Path(config.concatenated_latent_adata_path)
+    tmp_dir = config.memmap_tmp_dir
+    mode = 'r'  # Read-only mode for loading
+
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
+
+    # check complete
+    is_complete, _ = MemMapDense.check_complete(memmap_path)
+    if not is_complete:
+        raise ValueError(f"Marker score at {memmap_path} is incomplete or corrupted. Please recompute.")
+
+    # Load metadata source in backed mode
+    logger.info(f"Loading metadata from {metadata_path}")
+    src_adata = ad.read_h5ad(metadata_path, backed='r')
+
+    # Determine shape from metadata
+    shape = (src_adata.n_obs, src_adata.n_vars)
+
+    # Initialize MemMapDense
+    mm = MemMapDense(
+        memmap_path,
+        shape=shape,
+        mode=mode,
+        tmp_dir=tmp_dir
+    )
+
+    logger.info("Constructing AnnData wrapper...")
+    adata = ad.AnnData(
+        X=mm.memmap,
+        obs=src_adata.obs.copy(),
+        var=src_adata.var.copy(),
+        uns=src_adata.uns.copy(),
+        obsm=src_adata.obsm.copy(),
+        varm=src_adata.varm.copy()
+    )
+
+    # Attach the manager to allow access to MemMapDense methods
+    adata.uns['memmap_manager'] = mm
+
+    return adata
+
 
 def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str) -> str:
 
@@ -464,8 +519,8 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     """
     Run spatial LDSC for all traits in config.sumstats_config_dict.
     """
-    if config.marker_score_format != "memmap":
-        raise NotImplementedError("Only memmap marker score format is supported.")
+    if config.marker_score_format not in ["memmap", "h5ad"]:
+        raise NotImplementedError(f"Marker score format '{config.marker_score_format}' is not supported. Only 'memmap' and 'h5ad' are supported.")
 
     traits_to_process = list(config.sumstats_config_dict.items())
     if not traits_to_process:
@@ -478,62 +533,90 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     # Determine number of loader threads based on platform
     n_loader_threads = 10 if jax.default_backend() == 'gpu' else 2
 
-    processor = None
-
+    # Load marker scores once (format-agnostic)
+    logger.info(f"Loading marker scores (format: {config.marker_score_format})...")
+    marker_score_adata = None
+    
     try:
-        for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
-            logger.info("=" * 70)
-            logger.info(f"Running Spatial LDSC (JAX Implementation)")
-            logger.info(f"Project: {config.project_name}, Trait: {trait_name} ({idx+1}/{len(traits_to_process)})")
-            if config.sample_filter:
-                logger.info(f"Sample filter: {config.sample_filter}")
-            if config.cell_indices_range:
-                logger.info(f"Cell indices range: {config.cell_indices_range}")
-            logger.info("=" * 70)
+        if config.marker_score_format == "memmap":
+            marker_score_adata = load_marker_scores_memmap_format(config)
+        elif config.marker_score_format == "h5ad":
+            if not config.marker_score_h5ad_path:
+                raise ValueError("marker_score_h5ad_path must be provided when marker_score_format is 'h5ad'")
+            
+            h5ad_path = Path(config.marker_score_h5ad_path)
+            if not h5ad_path.exists():
+                raise FileNotFoundError(f"Marker score H5AD file not found: {h5ad_path}")
+            
+            logger.info(f"Loading marker scores from H5AD: {h5ad_path}")
+            marker_score_adata = ad.read_h5ad(h5ad_path, backed='r')
+        
+        processor = None
 
-            # Check if output already exists
-            expected_filename = generate_expected_output_filename(config, trait_name)
-            if expected_filename is not None:
-                expected_output_path = output_dir / expected_filename
-                if expected_output_path.exists():
-                    logger.info(f"Output file already exists: {expected_output_path}")
-                    logger.info(f"Skipping trait {trait_name} ({idx+1}/{len(traits_to_process)})")
+        try:
+            for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
+                logger.info("=" * 70)
+                logger.info(f"Running Spatial LDSC (JAX Implementation)")
+                logger.info(f"Project: {config.project_name}, Trait: {trait_name} ({idx+1}/{len(traits_to_process)})")
+                if config.sample_filter:
+                    logger.info(f"Sample filter: {config.sample_filter}")
+                if config.cell_indices_range:
+                    logger.info(f"Cell indices range: {config.cell_indices_range}")
+                logger.info("=" * 70)
 
-                    # Log statistics from existing result
-                    log_existing_result_statistics(expected_output_path, trait_name)
-                    continue
+                # Check if output already exists
+                expected_filename = generate_expected_output_filename(config, trait_name)
+                if expected_filename is not None:
+                    expected_output_path = output_dir / expected_filename
+                    if expected_output_path.exists():
+                        logger.info(f"Output file already exists: {expected_output_path}")
+                        logger.info(f"Skipping trait {trait_name} ({idx+1}/{len(traits_to_process)})")
 
-            # Load and prepare trait-specific data
-            data, common_snps = load_and_prepare_data(config, trait_name, sumstats_file)
-            data_truncated = prepare_snp_data_for_blocks(data, config.n_blocks)
+                        # Log statistics from existing result
+                        log_existing_result_statistics(expected_output_path, trait_name)
+                        continue
 
-            if processor is None:
-                # First trait: create processor (loads memmap, copies to tmp if configured)
-                logger.debug("Initializing processor and loading marker score memmap...")
-                processor = SpatialLDSCProcessor(
-                    config=config,
-                    trait_name=trait_name,
-                    data_truncated=data_truncated,
-                    output_dir=output_dir,
-                    n_loader_threads=n_loader_threads
-                )
-            else:
-                # Subsequent traits: reset state while keeping memmap loaded
-                logger.debug("Reusing processor (memmap stays loaded)...")
-                processor.reset_for_new_trait(trait_name, data_truncated, output_dir)
+                # Load and prepare trait-specific data
+                data, common_snps = load_and_prepare_data(config, trait_name, sumstats_file)
+                data_truncated = prepare_snp_data_for_blocks(data, config.n_blocks)
 
-            # Process all chunks for current trait
-            start_time = time.time()
-            processor.process_all_chunks(wrapper_of_process_chunk_jit)
+                if processor is None:
+                    # First trait: create processor
+                    logger.debug("Initializing processor...")
+                    processor = SpatialLDSCProcessor(
+                        config=config,
+                        trait_name=trait_name,
+                        data_truncated=data_truncated,
+                        output_dir=output_dir,
+                        marker_score_adata=marker_score_adata,
+                        n_loader_threads=n_loader_threads
+                    )
+                else:
+                    # Subsequent traits: reset state while keeping memmap/adata loaded
+                    logger.debug("Reusing processor...")
+                    processor.reset_for_new_trait(trait_name, data_truncated, output_dir)
 
-            elapsed_time = time.time() - start_time
-            h, rem = divmod(elapsed_time, 3600)
-            m, s = divmod(rem, 60)
-            logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
+                # Process all chunks for current trait
+                start_time = time.time()
+                processor.process_all_chunks(wrapper_of_process_chunk_jit)
 
-    finally:
-        # Cleanup once: close memmap and delete tmp files (if created)
-        if processor is not None:
-            logger.info("Closing memmap and cleaning up tmp files...")
-            processor.mkscore_memmap.close()
+                elapsed_time = time.time() - start_time
+                h, rem = divmod(elapsed_time, 3600)
+                m, s = divmod(rem, 60)
+                logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
+
+        finally:
+            # Cleanup once: close memmap/adata if needed
+            if marker_score_adata is not None:
+                logger.info("Closing marker score resources...")
+                # If it's our MemMap wrapper, close it explicitly
+                if 'memmap_manager' in marker_score_adata.uns:
+                    marker_score_adata.uns['memmap_manager'].close()
+                # If it's backed AnnData, close the file
+                if marker_score_adata.isbacked:
+                    marker_score_adata.file.close()
+
+    except Exception as e:
+        logger.error(f"An error occurred during execution: {e}")
+        raise
 

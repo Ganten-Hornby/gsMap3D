@@ -1030,8 +1030,9 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     quick_mode_resource_dir: str | Path | None = None
     use_jax: bool = True
     
-    marker_score_format: Literal[ "memmap", "feather"] = "memmap"
+    marker_score_format: Literal[ "memmap", "feather", "h5ad"] = "memmap"
     mkscore_feather_path: str | Path | None = None
+    marker_score_h5ad_path: str | Path | None = None
 
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
