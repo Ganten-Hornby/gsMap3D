@@ -30,7 +30,7 @@ import numpy as np
 import anndata as ad
 from ..config import SpatialLDSCConfig
 from ..latent2gene.memmap_io import MemMapDense
-from .io import  load_and_prepare_data, generate_expected_output_filename, log_existing_result_statistics, FeatherAnnData,load_marker_scores_memmap_format
+from .io import  load_common_resources, generate_expected_output_filename, log_existing_result_statistics, FeatherAnnData,load_marker_scores_memmap_format
 from .ldscore_quick_mode import SpatialLDSCProcessor
 
 logger = logging.getLogger("gsMap.spatial_ldsc_jax")
@@ -50,40 +50,7 @@ jax.config.update('jax_enable_x64', False)  # Use float32 for speed and memory e
 # Core computational functions
 # ============================================================================
 
-def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:
-    """Prepare SNP-related data arrays for equal-sized blocks."""
-    if 'chisq' in data:
-        n_snps = len(data['chisq'])
-    elif 'N' in data:
-        n_snps = len(data['N'])
-    else:
-        raise ValueError("Cannot determine number of SNPs from data")
-    
-    block_size = n_snps // n_blocks
-    n_snps_used = block_size * n_blocks
-    n_dropped = n_snps - n_snps_used
-    
-    if n_dropped > 0:
-        logger.info(f"Truncating SNP data: dropping {n_dropped} SNPs "
-                   f"({n_dropped/n_snps*100:.3f}%) for {n_blocks} blocks of size {block_size}")
-    
-    truncated = {}
-    snp_keys = ['baseline_ld_sum', 'w_ld', 'chisq', 'N', 'snp_positions']
-    
-    for key, value in data.items():
-        if key in snp_keys and isinstance(value, (np.ndarray, jnp.ndarray)):
-            truncated[key] = value[:n_snps_used]
-        elif key == 'baseline_ld':
-            truncated[key] = value.iloc[:n_snps_used]
-        else:
-            truncated[key] = value
-    
-    truncated['block_size'] = block_size
-    truncated['n_blocks'] = n_blocks
-    truncated['n_snps_used'] = n_snps_used
-    truncated['n_snps_original'] = n_snps
-    
-    return truncated
+
 
 @jax.profiler.annotate_function
 @partial(jit, static_argnums=(0, 1))
@@ -358,7 +325,20 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             logger.info(f"Loading marker scores from H5AD: {h5ad_path}")
             marker_score_adata = ad.read_h5ad(h5ad_path, backed='r')
         
-        processor = None
+        # Load common resources once (baseline, weights, snp_gene_weights)
+        baseline_ld, w_ld, snp_gene_weight_adata = load_common_resources(config)
+
+        # Initialize processor with common resources
+        logger.debug("Initializing processor...")
+        processor = SpatialLDSCProcessor(
+            config=config,
+            output_dir=output_dir,
+            marker_score_adata=marker_score_adata,
+            snp_gene_weight_adata=snp_gene_weight_adata,
+            baseline_ld=baseline_ld,
+            w_ld=w_ld,
+            n_loader_threads=n_loader_threads
+        )
 
         try:
             for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
@@ -383,25 +363,8 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                         log_existing_result_statistics(expected_output_path, trait_name)
                         continue
 
-                # Load and prepare trait-specific data
-                data, common_snps = load_and_prepare_data(config, trait_name, sumstats_file)
-                data_truncated = prepare_snp_data_for_blocks(data, config.n_blocks)
-
-                if processor is None:
-                    # First trait: create processor
-                    logger.debug("Initializing processor...")
-                    processor = SpatialLDSCProcessor(
-                        config=config,
-                        trait_name=trait_name,
-                        data_truncated=data_truncated,
-                        output_dir=output_dir,
-                        marker_score_adata=marker_score_adata,
-                        n_loader_threads=n_loader_threads
-                    )
-                else:
-                    # Subsequent traits: reset state while keeping memmap/adata loaded
-                    logger.debug("Reusing processor...")
-                    processor.reset_for_new_trait(trait_name, data_truncated, output_dir)
+                # Setup processor for current trait
+                processor.setup_trait(trait_name, sumstats_file)
 
                 # Process all chunks for current trait
                 start_time = time.time()

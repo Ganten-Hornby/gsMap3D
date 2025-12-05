@@ -31,8 +31,45 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 
 from ..config import SpatialLDSCConfig
 from ..latent2gene.memmap_io import MemMapDense
+from .io import prepare_trait_data
 
 logger = logging.getLogger("gsMap.spatial_ldsc_processor")
+
+
+def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:
+    """Prepare SNP-related data arrays for equal-sized blocks."""
+    if 'chisq' in data:
+        n_snps = len(data['chisq'])
+    elif 'N' in data:
+        n_snps = len(data['N'])
+    else:
+        raise ValueError("Cannot determine number of SNPs from data")
+    
+    block_size = n_snps // n_blocks
+    n_snps_used = block_size * n_blocks
+    n_dropped = n_snps - n_snps_used
+    
+    if n_dropped > 0:
+        logger.info(f"Truncating SNP data: dropping {n_dropped} SNPs "
+                   f"({n_dropped/n_snps*100:.3f}%) for {n_blocks} blocks of size {block_size}")
+    
+    truncated = {}
+    snp_keys = ['baseline_ld_sum', 'w_ld', 'chisq', 'N', 'snp_positions']
+    
+    for key, value in data.items():
+        if key in snp_keys and isinstance(value, (np.ndarray, jnp.ndarray)):
+            truncated[key] = value[:n_snps_used]
+        elif key == 'baseline_ld':
+            truncated[key] = value.iloc[:n_snps_used]
+        else:
+            truncated[key] = value
+    
+    truncated['block_size'] = block_size
+    truncated['n_blocks'] = n_blocks
+    truncated['n_snps_used'] = n_snps_used
+    truncated['n_snps_original'] = n_snps
+    
+    return truncated
 
 
 @dataclass
@@ -386,51 +423,74 @@ class SpatialLDSCProcessor:
     
     def __init__(self, 
                  config: SpatialLDSCConfig,
-                 trait_name: str,
-                 data_truncated: dict,
                  output_dir: Path,
                  marker_score_adata: ad.AnnData,
+                 snp_gene_weight_adata: ad.AnnData,
+                 baseline_ld: pd.DataFrame,
+                 w_ld: pd.DataFrame,
                  n_loader_threads: int = 10):
         """
         Initialize the unified processor.
         
         Args:
             config: Configuration object
-            trait_name: Name of the trait being processed
-            data_truncated: Truncated SNP data dictionary
             output_dir: Output directory for results
             marker_score_adata: AnnData object containing marker scores in .X
+            snp_gene_weight_adata: AnnData object containing SNP-gene weights
+            baseline_ld: Baseline LD scores common to all traits
+            w_ld: Weights common to all traits
             n_loader_threads: Number of parallel loader threads
         """
         self.config = config
-        self.trait_name = trait_name
-        self.data_truncated = data_truncated
         self.output_dir = output_dir
         self.marker_score_adata = marker_score_adata
+        self.snp_gene_weight_adata = snp_gene_weight_adata
+        self.n_spots = snp_gene_weight_adata.n_obs
+        self.baseline_ld = baseline_ld
+        self.w_ld = w_ld
         self.n_loader_threads = n_loader_threads
         
-
+        # Trait specific state
+        self.trait_name = None
+        self.data_truncated = None
         
-        # Initialize QuickModeLDScore components (trait-independent)
-        self._initialize_quick_mode()
-        
-        # Initialize trait-specific components
-        self._initialize_trait_specific()
+        self.results = []
+        self.processed_chunks = set()
+        self.min_spot_start = float('inf')
+        self.max_spot_end = 0
 
-        # Result accumulation
+        logger.info(f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})")
+
+
+    def setup_trait(self, trait_name: str, sumstats_file: str):
+        """
+        Setup processor for a new trait.
+        Loads sumstats, prepares data, and initializes trait-specific components.
+        """
+        self.trait_name = trait_name
+        logger.info(f"Setting up processor for trait: {trait_name}")
+        
+        # Prepare trait data
+        data, common_snps = prepare_trait_data(
+            self.config, 
+            trait_name, 
+            sumstats_file, 
+            self.baseline_ld, 
+            self.w_ld, 
+            self.snp_gene_weight_adata
+        )
+        
+        # Prepare blocks
+        self.data_truncated = prepare_snp_data_for_blocks(data, self.config.n_blocks)
+        
+        # Reset results
         self.results = []
         self.processed_chunks = set()
         self.min_spot_start = float('inf')
         self.max_spot_end = 0
         
-    def _initialize_quick_mode(self):
-        """Initialize trait-independent quick mode components using provided AnnData."""
-        logger.info("Initializing marker scores from provided AnnData...")
-        
-        n_spots_marker_score = self.marker_score_adata.n_obs
-        n_genes_marker_score = self.marker_score_adata.n_vars
-        
-        logger.info(f"Detected Marker scores shape: (n_spots={n_spots_marker_score}, n_genes={n_genes_marker_score})")
+        # Initialize trait-specific components
+        self._initialize_trait_specific()
         
         gene_names_from_adata = self.marker_score_adata.var_names.to_numpy()
         self.spot_names_all = self.marker_score_adata.obs_names.to_numpy()
@@ -455,19 +515,15 @@ class SpatialLDSCProcessor:
             self.spot_names_filtered = self.spot_names_all[self.spot_indices]
             logger.info(f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_filter}'")
         else:
-            self.spot_indices = np.arange(n_spots_marker_score)
+            self.spot_indices = np.arange(self.n_spots)
             self.spot_names_filtered = self.spot_names_all
             self.sample_start_offset = 0
         
-        self.n_spots = n_spots_marker_score
         self.n_spots_filtered = len(self.spot_indices)
         
-        # Load SNP-gene weights adata (keep for trait-specific initialization)
-        snp_gene_weight_path = Path(self.config.snp_gene_weight_adata_path)
-        if not snp_gene_weight_path.exists():
-            raise FileNotFoundError(f"SNP-gene weight matrix not found at {snp_gene_weight_path}")
-        
-        self.snp_gene_weight_adata = ad.read_h5ad(snp_gene_weight_path)
+        # Use provided SNP-gene weights adata
+        if self.snp_gene_weight_adata is None:
+             raise ValueError("snp_gene_weight_adata must be provided")
 
         # Find common genes
         marker_score_genes_series = pd.Series(gene_names_from_adata)
@@ -515,26 +571,7 @@ class SpatialLDSCProcessor:
 
         logger.info(f"SNP-gene weight matrix shape: {self.snp_gene_weight_sparse.shape}")
 
-    def reset_for_new_trait(self, trait_name: str, data_truncated: dict, output_dir: Path):
-        """
-        Reset processor state for a new trait while keeping memmap loaded.
 
-        Args:
-            trait_name: Name of the new trait
-            data_truncated: Truncated SNP data for the new trait
-            output_dir: Output directory for results
-        """
-        self.trait_name = trait_name
-        self.data_truncated = data_truncated
-        self.output_dir = output_dir
-        self.results = []
-        self.processed_chunks = set()
-        self.min_spot_start = float('inf')
-        self.max_spot_end = 0
-        logger.info(f"Reset processor for trait: {trait_name}")
-
-        # Re-initialize trait-specific components with new SNP positions
-        self._initialize_trait_specific()
 
     def _fetch_ldscore_chunk(self, chunk_index: int) -> Tuple[np.ndarray, pd.Index, int, int]:
         """
