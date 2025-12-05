@@ -86,6 +86,8 @@ class PlinkBEDReader:
         # Initial dimensions
         self.n_original = self.G.sizes['sample']
         self.m_original = self.G.sizes['variant']
+        self.snp_ids_original = pd.Index(self.G.snp.values)
+
         logger.info(f"Loaded metadata: {self.m_original} SNPs × {self.n_original} individuals")
 
         # Calculate MAF using matrix operations (lazy execution via dask)

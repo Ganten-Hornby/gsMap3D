@@ -278,11 +278,16 @@ class LDScorePipeline:
             df_annot = df_annot.set_index("SNP")
             df_annot = df_annot.reindex(reader.bim["SNP"], fill_value=0)
         else:
-            if len(df_annot) != reader.n_original:
-                 logger.error(f"Annotation rows mismatch. Missing 'SNP' column preventing alignment.")
-                 return None
-            logger.error("Annotation file missing 'SNP' column. Strict alignment required.")
-            return None
+            logger.warning("Annotation file missing 'SNP' column. Thin annotation format detected, assuming strict alignment.")
+
+            if len(df_annot) == reader.m_original:
+                # Filter df_annot according to filtered SNPs using snp_ids_original
+                logger.info(f"Filtering annotation from {len(df_annot)} to {reader.m} SNPs based on MAF/QC filters")
+                df_annot.index = reader.snp_ids_original
+                df_annot = df_annot.reindex(reader.bim["SNP"], fill_value=0)
+            else:
+                logger.error(f"Annotation rows mismatch. Missing 'SNP' column preventing alignment. For the thin format, annotation rows ({len(df_annot)}) must match SNP count ({reader.m_original}) in the plink panel.")
+                return None
 
         # Drop non-feature columns
         feature_df = df_annot.drop(columns=[c for c in ["CHR", "BP", "CM"] if c in df_annot.columns])
