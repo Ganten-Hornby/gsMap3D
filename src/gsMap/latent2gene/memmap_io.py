@@ -17,6 +17,8 @@ import tempfile
 import uuid
 
 import numpy as np
+import pandas as pd
+import anndata as ad
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +58,13 @@ class MemMapDense:
         self.tmp_dir = Path(tmp_dir) if tmp_dir else None
         self.using_tmp = False
         self.tmp_path = None
-        
+
         # Set up paths based on whether tmp_dir is provided
         if self.tmp_dir:
             self._setup_tmp_paths()
         else:
             self.path = self.original_path
-            
+
         # File paths
         self.data_path = self.path.with_suffix('.dat')
         self.meta_path = self.path.with_suffix('.meta.json')
@@ -91,47 +93,47 @@ class MemMapDense:
         unique_id = str(uuid.uuid4())[:8]
         self.tmp_subdir = self.tmp_dir / f"memmap_{unique_id}"
         self.tmp_subdir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create tmp path with same structure as original
         self.tmp_path = self.tmp_subdir / self.original_path.name
         self.path = self.tmp_path
         self.using_tmp = True
-        
+
         logger.info(f"Using temporary directory for memmap: {self.tmp_subdir}")
-        
+
         # If reading, copy existing files to tmp directory
         if self.mode in ('r', 'r+'):
             original_data_path = self.original_path.with_suffix('.dat')
             original_meta_path = self.original_path.with_suffix('.meta.json')
-            
+
             if original_data_path.exists() and original_meta_path.exists():
                 tmp_data_path = self.tmp_path.with_suffix('.dat')
                 tmp_meta_path = self.tmp_path.with_suffix('.meta.json')
-                
+
                 logger.info(f"Copying memmap files to temporary directory for faster access...")
                 shutil.copy2(original_data_path, tmp_data_path)
                 shutil.copy2(original_meta_path, tmp_meta_path)
                 logger.info(f"Memmap files copied to {self.tmp_subdir}")
-    
+
     def _sync_tmp_to_original(self):
         """Sync temporary files back to original location"""
         if not self.using_tmp:
             return
-            
+
         tmp_data_path = self.tmp_path.with_suffix('.dat')
         tmp_meta_path = self.tmp_path.with_suffix('.meta.json')
         original_data_path = self.original_path.with_suffix('.dat')
         original_meta_path = self.original_path.with_suffix('.meta.json')
-        
+
         if tmp_data_path.exists():
             logger.info(f"Syncing memmap data from tmp to original location...")
             shutil.move(str(tmp_data_path), str(original_data_path))
-            
+
         if tmp_meta_path.exists():
             shutil.move(str(tmp_meta_path), str(original_meta_path))
-            
+
         logger.info(f"Memmap files synced to {self.original_path}")
-    
+
     def _cleanup_tmp(self):
         """Clean up temporary directory"""
         if self.using_tmp and self.tmp_subdir and self.tmp_subdir.exists():
@@ -140,7 +142,7 @@ class MemMapDense:
                 logger.debug(f"Cleaned up temporary directory: {self.tmp_subdir}")
             except Exception as e:
                 logger.warning(f"Could not clean up temporary directory {self.tmp_subdir}: {e}")
-    
+
     def _create_memmap(self):
         """Create a new memory-mapped file"""
         # Check if already exists and is complete
@@ -230,7 +232,7 @@ class MemMapDense:
         logger.info(f"Opened MemMapDense at {self.data_path} in read-write mode")
 
     def _start_writer_threads(self):
-        """Start multiple background writer threads"""
+        """Start multiple background writer threads sharing the same memmap object"""
         def writer_worker(worker_id):
             last_flush_time = time.time()  # Track last flush time for worker 0
 
@@ -241,7 +243,7 @@ class MemMapDense:
                         break
                     data, row_indices, col_slice = item
 
-                    # Write data with thread safety
+                    # Write data with thread safety using shared memmap
                     if isinstance(row_indices, slice):
                         self.memmap[row_indices, col_slice] = data
                     elif isinstance(row_indices, (int, np.integer)):
@@ -344,16 +346,16 @@ class MemMapDense:
     def check_complete(cls, memmap_path: Union[str, Path], meta_path: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[dict]]:
         """
         Check if a memory map file is complete without opening it.
-        
+
         Args:
             memmap_path: Path to the memory-mapped file (without extension)
             meta_path: Optional path to metadata file. If not provided, will be derived from memmap_path
-            
+
         Returns:
             Tuple of (is_complete, metadata_dict). metadata_dict is None if file doesn't exist or can't be read.
         """
         memmap_path = Path(memmap_path)
-        
+
         if meta_path is None:
             # Derive metadata path from memmap path
             if memmap_path.suffix == '.dat':
@@ -365,10 +367,10 @@ class MemMapDense:
                 meta_path = memmap_path.with_suffix('.meta.json')
         else:
             meta_path = Path(meta_path)
-            
+
         if not meta_path.exists():
             return False, None
-            
+
         try:
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
@@ -399,7 +401,7 @@ class MemMapDense:
         # Final flush
         if self.mode in ('w', 'r+'):
             self.mark_complete()
-        
+
             # Sync tmp files back to original location if using tmp
             if self.using_tmp:
                 self._sync_tmp_to_original()
@@ -450,6 +452,71 @@ class ComponentThroughput:
         return 0.0
 
 
+class MarkerScoreLoader:
+    """Utilities for loading marker scores into AnnData structures"""
+
+    @staticmethod
+    def load_with_metadata(
+        memmap_path: Union[str, Path],
+        metadata_path: Union[str, Path],
+        mode: str = 'r',
+        tmp_dir: Optional[Union[str, Path]] = None
+    ) -> ad.AnnData:
+        """
+        Load marker scores memmap and wrap it in an AnnData object with metadata
+        from a reference h5ad file.
+
+        Args:
+            memmap_path: Path to the marker scores memory map (without extension)
+            metadata_path: Path to the latent/concatenated adata file (.h5ad)
+            mode: Mode to open the memmap ('r', 'r+')
+            tmp_dir: Optional temporary directory for MemMapDense
+
+        Returns:
+            AnnData object with X backed by the memory map
+        """
+        memmap_path = Path(memmap_path)
+        metadata_path = Path(metadata_path)
+
+        if not metadata_path.exists():
+            raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
+
+        # check complete
+        is_complete, _ = MemMapDense.check_complete(memmap_path)
+        if not is_complete:
+            raise ValueError(f"Marker score at {memmap_path} is incomplete or corrupted. Please recompute.")
+
+        # Load metadata source in backed mode
+        logger.info(f"Loading metadata from {metadata_path}")
+        src_adata = ad.read_h5ad(metadata_path, backed='r')
+
+        # Determine shape from metadata
+        shape = (src_adata.n_obs, src_adata.n_vars)
+
+        # Initialize MemMapDense
+        # Note: MemMapDense takes 'path' without extension.
+        mm = MemMapDense(
+            memmap_path,
+            shape=shape,
+            mode=mode,
+            tmp_dir=tmp_dir
+        )
+
+        logger.info("Constructing AnnData wrapper...")
+        adata = ad.AnnData(
+            X=mm.memmap,
+            obs=src_adata.obs.copy(),
+            var=src_adata.var.copy(),
+            uns=src_adata.uns.copy(),
+            obsm=src_adata.obsm.copy(),
+            varm=src_adata.varm.copy()
+        )
+
+        # Attach the manager to allow access to MemMapDense methods
+        adata.uns['memmap_manager'] = mm
+
+        return adata
+
 
 class ParallelRankReader:
     """Multi-threaded reader for log-rank data from memory-mapped storage"""
@@ -461,20 +528,30 @@ class ParallelRankReader:
             output_queue: queue.Queue = None,
             cache_size_mb: int = 1000
     ):
-        # Store path and metadata for workers to open their own instances
-        if isinstance(rank_memmap, str):
+        # Store shared memmap object if provided
+        if isinstance(rank_memmap, MemMapDense):
+            self.shared_memmap = rank_memmap.memmap
+            self.memmap_path = rank_memmap.path
+            self.shape = rank_memmap.shape
+            self.dtype = rank_memmap.dtype
+        else:
+            # Fallback for string path: open a shared read-only memmap here
             self.memmap_path = Path(rank_memmap)
             meta_path = self.memmap_path.with_suffix('.meta.json')
+            data_path = self.memmap_path.with_suffix('.dat')
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
             self.shape = tuple(meta['shape'])
             self.dtype = np.dtype(meta['dtype'])
-        else:
-            # If MemMapDense instance, extract path and metadata
-            assert hasattr(rank_memmap, 'path')
-            self.memmap_path = rank_memmap.path
-            self.shape = rank_memmap.shape
-            self.dtype = rank_memmap.dtype
+
+            # Open the single shared memmap
+            self.shared_memmap = np.memmap(
+                data_path,
+                dtype=self.dtype,
+                mode='r',
+                shape=self.shape
+            )
+            logger.info(f"Opened shared memmap for reading at {data_path}")
 
         self.num_workers = num_workers
 
@@ -508,18 +585,11 @@ class ParallelRankReader:
             self.workers.append(worker)
 
     def _worker(self, worker_id: int):
-        """Worker thread for reading batches from memory map"""
-        logger.debug(f"Reader worker {worker_id} started")
+        """Worker thread for reading batches from shared memory map"""
+        logger.debug(f"Reader worker {worker_id} started using shared memmap")
 
-        # Open worker's own memory map instance
-        data_path = self.memmap_path.with_suffix('.dat')
-        worker_memmap = np.memmap(
-            data_path,
-            dtype=self.dtype,
-            mode='r',
-            shape=self.shape
-        )
-        logger.debug(f"Worker {worker_id} opened its own memory map at {data_path}")
+        # No need to open a new memmap; use self.shared_memmap directly.
+        # Numpy releases the GIL during memmap array access, enabling parallelism.
 
         while not self.stop_workers.is_set():
             try:
@@ -541,9 +611,8 @@ class ParallelRankReader:
                 assert flat_indices.max() <= max_idx, \
                     f"Worker {worker_id}: Indices exceed bounds (max: {flat_indices.max()}, limit: {max_idx})"
 
-                # Read from worker's own memory map (direct array access)
-                # Memory map stores log-ranks directly
-                rank_data = worker_memmap[flat_indices]
+                # Read from shared memory map (thread-safe, GIL released)
+                rank_data = self.shared_memmap[flat_indices]
 
                 # Ensure we have a numpy array
                 if not isinstance(rank_data, np.ndarray):
@@ -574,11 +643,6 @@ class ParallelRankReader:
                 self.has_error.set()
                 self.stop_workers.set()  # Signal all workers to stop
                 break
-
-        # Clean up worker's memory map if it was opened
-        if self.memmap_path is not None and 'worker_memmap' in locals():
-            del worker_memmap
-            logger.debug(f"Worker {worker_id} closed its memory map")
 
     def submit_batch(self, batch_id: int, neighbor_indices: np.ndarray, batch_metadata: dict = None):
         """Submit batch for reading with metadata"""
@@ -615,14 +679,13 @@ class ParallelRankReader:
         for worker in self.workers:
             worker.join(timeout=5)
 
-        # No need to close individual worker memmaps as they're cleaned up in _worker
-        # Only close if we have a shared rank_memmap (fallback mode)
-        if hasattr(self, 'rank_memmap') and hasattr(self.rank_memmap, 'close'):
-            self.rank_memmap.close()
+        # Do not close shared_memmap here if it was passed in (owned by caller)
+        # If we opened it ourselves (str path), we could close it, but memmap doesn't strictly require close()
+        pass
 
 
 class ParallelMarkerScoreWriter:
-    """Multi-threaded writer pool for marker scores (reusable across cell types)"""
+    """Multi-threaded writer pool for marker scores using shared memmap"""
 
     def __init__(
             self,
@@ -634,11 +697,12 @@ class ParallelMarkerScoreWriter:
         Initialize writer pool
 
         Args:
-            output_memmap: Output memory map
+            output_memmap: Output memory map wrapper object
             num_workers: Number of writer threads
             input_queue: Optional input queue (from computer)
         """
-        # Store path and metadata for workers to open their own instances
+        # Store shared memmap object
+        self.shared_memmap = output_memmap.memmap
         self.memmap_path = output_memmap.path
         self.shape = output_memmap.shape
         self.dtype = output_memmap.dtype
@@ -673,21 +737,11 @@ class ParallelMarkerScoreWriter:
             )
             worker.start()
             self.workers.append(worker)
-        logger.debug(f"Started {self.num_workers} writer threads")
+        logger.debug(f"Started {self.num_workers} writer threads with shared memmap")
 
     def _writer_worker(self, worker_id: int):
-        """Writer worker thread"""
+        """Writer worker thread using shared memmap"""
         logger.debug(f"Writer worker {worker_id} started")
-
-        # Open worker's own memory map instance
-        data_path = self.memmap_path.with_suffix('.dat')
-        worker_memmap = np.memmap(
-            data_path,
-            dtype=self.dtype,
-            mode='r+',  # Read-write mode for writing
-            shape=self.shape
-        )
-        logger.debug(f"Writer worker {worker_id} opened its own memory map at {data_path}")
 
         while not self.stop_workers.is_set():
             try:
@@ -701,9 +755,10 @@ class ParallelMarkerScoreWriter:
                 # Track timing
                 start_time = time.time()
 
-                # Write directly to worker's memory map
+                # Write directly to shared memory map
+                # Thread-safe because workers process disjoint batches (indices)
                 # cell_indices should be the absolute indices in the full matrix
-                worker_memmap[cell_indices] = marker_scores
+                self.shared_memmap[cell_indices] = marker_scores
 
                 # Track throughput
                 elapsed = time.time() - start_time
@@ -726,11 +781,9 @@ class ParallelMarkerScoreWriter:
                 self.stop_workers.set()  # Signal all workers to stop
                 break
 
-        # Final flush before closing
-        worker_memmap.flush()
-        # Clean up worker's memory map
-        del worker_memmap
-        logger.debug(f"Writer worker {worker_id} closed its memory map")
+        # We do not close or delete the shared memmap here.
+        # Flushing is handled by the main thread or MemMapDense wrapper.
+        logger.debug(f"Writer worker {worker_id} stopping")
 
     def reset_for_cell_type(self, cell_type: str):
         """Reset for processing a new cell type"""
