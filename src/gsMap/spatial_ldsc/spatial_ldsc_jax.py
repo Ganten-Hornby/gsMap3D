@@ -18,16 +18,19 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-import psutil
+
 from jax import jit, vmap
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+import pyarrow.feather as feather
+import pandas as pd
+import numpy as np
 
 import anndata as ad
 from ..config import SpatialLDSCConfig
 from ..latent2gene.memmap_io import MemMapDense
-from ..utils.regression_read import _read_ref_ld_v2, _read_sumstats, _read_w_ld
+from .io import  load_and_prepare_data, generate_expected_output_filename, log_existing_result_statistics, FeatherAnnData,load_marker_scores_memmap_format
 from .ldscore_quick_mode import SpatialLDSCProcessor
 
 logger = logging.getLogger("gsMap.spatial_ldsc_jax")
@@ -42,21 +45,6 @@ jax.config.update('jax_enable_x64', False)  # Use float32 for speed and memory e
 # Memory configuration for environments with limited resources
 # os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 # os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.5')
-# ============================================================================
-# Memory monitoring
-# ============================================================================
-
-def log_memory_usage(message=""):
-    """Log current memory usage."""
-    try:
-        process = psutil.Process()
-        mem_info = process.memory_info()
-        rss_gb = mem_info.rss / 1024**3
-        logger.debug(f"Memory usage {message}: {rss_gb:.2f} GB")
-        return rss_gb
-    except:
-        return 0.0
-
 
 # ============================================================================
 # Core computational functions
@@ -316,199 +304,10 @@ def process_chunk_batched_jit(n_blocks: int,
 
 
 
-# ============================================================================
-# Data loading and preparation
-# ============================================================================
-
-def load_and_prepare_data(config: SpatialLDSCConfig, 
-                         trait_name: str,
-                         sumstats_file: str) -> Tuple[dict, pd.Index]:
-    """Load and prepare all data for a single trait."""
-    logger.info(f"Loading data for {trait_name}...")
-    
-    log_memory_usage("before loading data")
-    
-    # Load weights and baseline LD scores
-    w_ld = _read_w_ld(config.w_file)
-    w_ld.set_index("SNP", inplace=True)
-    
-    # Use ldscore_save_dir which is set to quick_mode_resource_dir when in quick mode
-    baseline_ld_path = f"{config.ldscore_save_dir}/baseline/baseline."
-    baseline_ld = _read_ref_ld_v2(baseline_ld_path)
-    
-    log_memory_usage("after loading baseline")
-    
-    # Find common SNPs
-    common_snps = baseline_ld.index.intersection(w_ld.index)
-    
-    # Load and process summary statistics
-    sumstats = _read_sumstats(fh=sumstats_file, alleles=False, dropna=False)
-    sumstats.set_index("SNP", inplace=True)
-    sumstats = sumstats.astype(np.float32)
-    
-    # Filter by chi-squared
-    chisq_max = config.chisq_max
-    if chisq_max is None:
-        chisq_max = max(0.001 * sumstats.N.max(), 80)
-    sumstats["chisq"] = sumstats.Z ** 2
-
-    # Calculate genomic control lambda (λGC) before filtering
-    lambda_gc = np.median(sumstats.chisq) / 0.4559364
-    logger.info(f"Lambda GC (genomic control λ): {lambda_gc:.4f}")
-
-    sumstats = sumstats[sumstats.chisq < chisq_max]
-    logger.info(f"Filtered to {len(sumstats)} SNPs with chi^2 < {chisq_max}")
-    
-    # Find common SNPs with sumstats
-    common_snps = common_snps.intersection(sumstats.index)
-    logger.info(f"Common SNPs: {len(common_snps)}")
-    
-    if len(common_snps) < 200000:
-        logger.warning(f"WARNING: Only {len(common_snps)} common SNPs")
-    
-    # Get SNP positions
-    snp_positions = baseline_ld.index.get_indexer(common_snps)
-    
-    # Subset all data to common SNPs
-    baseline_ld = baseline_ld.loc[common_snps]
-    w_ld = w_ld.loc[common_snps]
-    sumstats = sumstats.loc[common_snps]
-    
-    # Load additional baseline if needed
-    if config.use_additional_baseline_annotation:
-        # Use ldscore_save_dir which points to the correct directory
-        additional_path = f"{config.ldscore_save_dir}/additional_baseline/baseline."
-        additional_ld = _read_ref_ld_v2(additional_path)
-        additional_ld = additional_ld.loc[common_snps]
-        baseline_ld = pd.concat([baseline_ld, additional_ld], axis=1)
-    
-    # Prepare data dictionary
-    data = {
-        'baseline_ld': baseline_ld,
-        'baseline_ld_sum': baseline_ld.sum(axis=1).values.astype(np.float32),
-        'w_ld': w_ld.LD_weights.values.astype(np.float32),
-        'sumstats': sumstats,
-        'chisq': sumstats.chisq.values.astype(np.float32),
-        'N': sumstats.N.values.astype(np.float32),
-        'Nbar': np.float32(sumstats.N.mean()),
-        'snp_positions': snp_positions
-    }
-    
-    return data, common_snps
-
-
 def wrapper_of_process_chunk_jit(*args, **kwargs):
     """Wrapper to call the JIT-compiled process_chunk_jit function."""
     # return process_chunk_jit(*args, **kwargs)
     return process_chunk_batched_jit(*args, **kwargs)
-
-def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
-    """
-    Load marker scores memmap and wrap it in an AnnData object with metadata
-    from a reference h5ad file using configuration.
-
-    Args:
-        config: SpatialLDSCConfig containing paths and settings
-
-    Returns:
-        AnnData object with X backed by the memory map
-    """
-    memmap_path = Path(config.marker_scores_memmap_path)
-    metadata_path = Path(config.concatenated_latent_adata_path)
-    tmp_dir = config.memmap_tmp_dir
-    mode = 'r'  # Read-only mode for loading
-
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-
-    # check complete
-    is_complete, _ = MemMapDense.check_complete(memmap_path)
-    if not is_complete:
-        raise ValueError(f"Marker score at {memmap_path} is incomplete or corrupted. Please recompute.")
-
-    # Load metadata source in backed mode
-    logger.info(f"Loading metadata from {metadata_path}")
-    src_adata = ad.read_h5ad(metadata_path, backed='r')
-
-    # Determine shape from metadata
-    shape = (src_adata.n_obs, src_adata.n_vars)
-
-    # Initialize MemMapDense
-    mm = MemMapDense(
-        memmap_path,
-        shape=shape,
-        mode=mode,
-        tmp_dir=tmp_dir
-    )
-
-    logger.info("Constructing AnnData wrapper...")
-    adata = ad.AnnData(
-        X=mm.memmap,
-        obs=src_adata.obs.copy(),
-        var=src_adata.var.copy(),
-        uns=src_adata.uns.copy(),
-        obsm=src_adata.obsm.copy(),
-        varm=src_adata.varm.copy()
-    )
-
-    # Attach the manager to allow access to MemMapDense methods
-    adata.uns['memmap_manager'] = mm
-
-    return adata
-
-
-def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str) -> str:
-
-    base_name = f"{config.project_name}_{trait_name}"
-
-    # If we have cell indices range, include it in filename
-    if config.cell_indices_range:
-        start_cell, end_cell = config.cell_indices_range
-        return f"{base_name}_cells_{start_cell}_{end_cell}.csv.gz"
-
-    # If sample filter is set, filename will include sample info
-    # but we can't predict exact start/end without loading data
-    # For now, just check the simple complete case
-    if config.sample_filter:
-        # Return None to indicate we can't reliably predict the filename
-        # and should proceed with processing
-        return None
-
-    # Default case: complete coverage
-    return f"{base_name}.csv.gz"
-
-
-def log_existing_result_statistics(result_path: Path, trait_name: str):
-
-    try:
-        # Read the existing result
-        logger.info(f"Reading existing result from: {result_path}")
-        df = pd.read_csv(result_path, compression='gzip')
-
-        n_spots = len(df)
-        bonferroni_threshold = 0.05 / n_spots
-        n_bonferroni_sig = (df['p'] < bonferroni_threshold).sum()
-
-        # FDR correction
-        reject, _, _, _ = multipletests(
-            df['p'], alpha=0.001, method='fdr_bh'
-        )
-        n_fdr_sig = reject.sum()
-
-        logger.info("=" * 70)
-        logger.info(f"EXISTING RESULT SUMMARY - {trait_name}")
-        logger.info("=" * 70)
-        logger.info(f"Total spots: {n_spots:,}")
-        logger.info(f"Max -log10(p): {df['neg_log10_p'].max():.2f}")
-        logger.info("-" * 70)
-        logger.info(f"Nominally significant (p < 0.05): {(df['p'] < 0.05).sum():,}")
-        logger.info(f"Bonferroni threshold: {bonferroni_threshold:.2e}")
-        logger.info(f"Bonferroni significant: {n_bonferroni_sig:,}")
-        logger.info(f"FDR significant (alpha=0.001): {n_fdr_sig:,}")
-        logger.info("=" * 70)
-
-    except Exception as e:
-        logger.warning(f"Could not read existing result statistics: {e}")
 
 
 # ============================================================================
@@ -519,8 +318,8 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     """
     Run spatial LDSC for all traits in config.sumstats_config_dict.
     """
-    if config.marker_score_format not in ["memmap", "h5ad"]:
-        raise NotImplementedError(f"Marker score format '{config.marker_score_format}' is not supported. Only 'memmap' and 'h5ad' are supported.")
+    if config.marker_score_format not in ["memmap", "h5ad", "feather"]:
+        raise NotImplementedError(f"Marker score format '{config.marker_score_format}' is not supported. Only 'memmap', 'h5ad', and 'feather' are supported.")
 
     traits_to_process = list(config.sumstats_config_dict.items())
     if not traits_to_process:
@@ -540,6 +339,14 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     try:
         if config.marker_score_format == "memmap":
             marker_score_adata = load_marker_scores_memmap_format(config)
+        
+        elif config.marker_score_format == "feather":
+
+            feather_path = Path(config.marker_score_feather_path)
+            logger.info(f"Loading marker scores from Feather: {feather_path}")
+            # Use the specialized FeatherAnnData wrapper
+            marker_score_adata = FeatherAnnData(feather_path, index_col='HUMAN_GENE_SYM')
+
         elif config.marker_score_format == "h5ad":
             if not config.marker_score_h5ad_path:
                 raise ValueError("marker_score_h5ad_path must be provided when marker_score_format is 'h5ad'")

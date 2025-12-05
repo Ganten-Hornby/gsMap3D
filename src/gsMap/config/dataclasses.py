@@ -2,7 +2,7 @@
 Configuration dataclasses for gsMap commands.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Annotated, List, Literal
@@ -1005,8 +1005,9 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
 class SpatialLDSCConfig(ConfigWithAutoPaths):
 
     w_file: str | None = None
-    # ldscore_save_dir: str
-    use_additional_baseline_annotation: bool = True
+
+    additional_baseline_h5ad_path_list: List[str] = field(default_factory=list)
+
     trait_name: str | None = None
     sumstats_file: str | None = None
     sumstats_config_file: str | None = None
@@ -1022,17 +1023,15 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     cell_indices_range: tuple[int, int] | None = None  # 0-based range [start, end) of cell indices to process
     sample_filter: str | None = None  # Field for filtering processing to a specific sample
 
-    ldscore_save_format: Literal["feather", "quick_mode"] = "feather"
-
     spots_per_chunk_quick_mode: int = 1_000
 
     ldscore_save_dir: str  | Path | None = None
     quick_mode_resource_dir: str | Path | None = None
     use_jax: bool = True
-    
-    marker_score_format: Literal[ "memmap", "feather", "h5ad"] = "memmap"
-    mkscore_feather_path: str | Path | None = None
+
+    marker_score_feather_path: str | Path | None = None
     marker_score_h5ad_path: str | Path | None = None
+    marker_score_format: Literal["memmap", "feather", "h5ad"] | None = None
 
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
@@ -1045,12 +1044,24 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
 
     def __post_init__(self):
         super().__post_init__()
-        
+
         # Configure JAX platform if use_jax is enabled
         if self.use_jax:
             # SpatialLDSC doesn't have use_gpu flag, so default to trying GPU
             configure_jax_platform(use_gpu=True)
-        
+
+        # Auto-detect marker_score_format if not specified
+        if self.marker_score_format is None:
+            if self.marker_score_feather_path is not None:
+                self.marker_score_format = "feather"
+                logger.info("Auto-detected marker_score_format as 'feather' based on marker_score_feather_path")
+            elif self.marker_score_h5ad_path is not None:
+                self.marker_score_format = "h5ad"
+                logger.info("Auto-detected marker_score_format as 'h5ad' based on marker_score_h5ad_path")
+            else:
+                self.marker_score_format = "memmap"
+                logger.info("Using default marker_score_format 'memmap'")
+
         # Validate cell_indices_range is 0-based
         if self.cell_indices_range is not None:
             # Validate exclusivity between sample_filter and cell_indices_range
@@ -1076,25 +1087,62 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
             # Check that start < end
             if start >= end:
                 raise ValueError(f"cell_indices_range start ({start}) must be less than end ({end})")
-            
-            # Validate against actual data shape if in quick_mode
-            if self.ldscore_save_format == "quick_mode" and self.quick_mode_resource_dir is not None:
-                # Check if concatenated latent adata exists
-                concat_adata_path = Path(self.workdir) / self.project_name / "latent2gene" / "concatenated_latent_adata.h5ad"
-                assert concat_adata_path.exists(), f"Concatenated latent adata not found at {concat_adata_path}. The latent to gene step must be run first."
-                shape = get_anndata_shape(str(concat_adata_path))
+
+            # Validate against actual data shape based on marker score format
+            if self.marker_score_format == "memmap":
+                # For memmap format, check the concatenated latent adata
+                adata_path = Path(self.workdir) / self.project_name / "latent2gene" / "concatenated_latent_adata.h5ad"
+                shape = get_anndata_shape(str(adata_path))
                 if shape is not None:
                     n_obs, _ = shape
                     if end > n_obs:
                         logger.warning(
-                            f"cell_indices_range end ({end}) exceeds number of observations ({n_obs}) "
-                            f"Set end to {n_obs}."
-                            )
+                            f"cell_indices_range end ({end}) exceeds number of observations ({n_obs}). "
+                            f"Setting end to {n_obs}."
+                        )
                         end = n_obs
+            elif self.marker_score_format == "h5ad":
+                # For h5ad format, check the provided h5ad path
+                adata_path = Path(self.marker_score_h5ad_path)
+                assert adata_path.exists(), f"Marker score h5ad not found at {adata_path}."
+                shape = get_anndata_shape(str(adata_path))
+                if shape is not None:
+                    n_obs, _ = shape
+                    if end > n_obs:
+                        logger.warning(
+                            f"cell_indices_range end ({end}) exceeds number of observations ({n_obs}). "
+                            f"Setting end to {n_obs}."
+                        )
+                        end = n_obs
+            elif self.marker_score_format == "feather":
+                # For feather format, validate the path exists
+                feather_path = Path(self.marker_score_feather_path)
+                assert feather_path.exists(), f"Marker score feather file not found at {feather_path}."
+
+                # Use pyarrow to get the number of rows and validate end
+                try:
+                    import pyarrow.feather as feather
+                    # Read metadata without loading full data
+                    feather_table = feather.read_table(str(feather_path), memory_map=True, columns=[])
+                    n_obs = feather_table.num_rows
+                    if end > n_obs:
+                        logger.warning(
+                            f"cell_indices_range end ({end}) exceeds number of rows ({n_obs}) in feather file. "
+                            f"Setting end to {n_obs}."
+                        )
+                        end = n_obs
+                except ImportError:
+                    logger.warning(
+                        "pyarrow not available. Cannot validate cell_indices_range against feather file. "
+                        "Install pyarrow to enable validation."
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not read feather file metadata: {e}")
+
+            # Update cell_indices_range with validated values
             self.cell_indices_range = (start, end)
             logger.info(f"Processing cell_indices_range: [{start}, {end})")
 
-        
         if self.sumstats_file is None and self.sumstats_config_file is None:
             raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
         if self.sumstats_file is not None and self.sumstats_config_file is not None:
@@ -1807,7 +1855,7 @@ class RunLinkModeConfig(ConfigWithAutoPaths):
     bfile_root: Optional[str] = None
     keep_snp_root: Optional[str] = None
     w_file: Optional[str] = None
-    snp_gene_weight_adata_path: Optional[str] = None
+    snp_feature_weight_adata_path: Optional[str] = None
     baseline_annotation_dir: Optional[Path] = None
     SNP_gene_pair_dir: Optional[Path] = None
     sumstats_config_dict: Optional[dict] = None

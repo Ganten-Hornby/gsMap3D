@@ -433,7 +433,7 @@ class SpatialLDSCProcessor:
         n_spots_marker_score = self.marker_score_adata.n_obs
         n_genes_marker_score = self.marker_score_adata.n_vars
         
-        logger.info(f"Marker scores shape: (n_spots={n_spots_marker_score}, n_genes={n_genes_marker_score})")
+        logger.info(f"Detected Marker scores shape: (n_spots={n_spots_marker_score}, n_genes={n_genes_marker_score})")
         
         gene_names_from_adata = self.marker_score_adata.var_names.to_numpy()
         self.spot_names_all = self.marker_score_adata.obs_names.to_numpy()
