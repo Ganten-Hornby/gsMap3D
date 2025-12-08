@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 from torch.distributions import kl_divergence as kl
 
-from .GeneFormer import GeneModuleFormer
+from .gene_former import GeneModuleFormer
 
 
 def full_block(in_dim, out_dim, p_drop=0.1):

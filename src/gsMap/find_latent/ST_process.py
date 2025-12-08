@@ -10,7 +10,7 @@ from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
 from rich.progress import Progress, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from scipy.special import softmax
-from .GNN.GCN import GCN, build_spatial_graph
+from .gnn.gcn import GCN, build_spatial_graph
 from gsMap.config import FindLatentRepresentationsConfig
 import scipy.sparse as sp
 

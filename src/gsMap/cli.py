@@ -97,7 +97,7 @@ def find_latent_representations(config: FindLatentRepresentationsConfig):
         logger.info("Using single-stage training with reconstruction loss only")
     
     try:
-        from gsMap.find_latent_representation import run_find_latent_representation
+        from gsMap.find_latent import run_find_latent_representation
         run_find_latent_representation(config)
         logger.info("✓ Latent representations computed successfully!")
     except ImportError:

@@ -14,9 +14,9 @@ from torch.utils.data import (
 )
 from collections import OrderedDict
 
-from .GNN.train_step import ModelTrain
-from .GNN.STmodel import StEmbeding
-from .ST_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData, calculate_module_score, apply_module_score_qc, calculate_module_scores_from_degs
+from .gnn.train_step import ModelTrain
+from .gnn.st_model import StEmbeding
+from .st_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData, calculate_module_score, apply_module_score_qc, calculate_module_scores_from_degs
 from ..config import FindLatentRepresentationsConfig
 
 from operator import itemgetter
