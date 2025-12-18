@@ -13,12 +13,14 @@ import numpy as np
 import pandas as pd
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any, Tuple
 from dataclasses import dataclass
 
 import scipy.sparse
 import anndata as ad
+import pyranges as pr
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 
 from .io import PlinkBEDReader
@@ -130,7 +132,41 @@ class LDScorePipeline:
         logger.info(f"Loading mapping data from: {self.config.mapping_file}")
 
         if self.config.mapping_type == 'bed':
-            return pd.read_csv(self.config.mapping_file, sep=None, engine='python')
+            # Use pyranges to read standard BED file
+            try:
+                bed_pr = pr.read_bed(self.config.mapping_file)
+                bed_df = bed_pr.df
+
+                # Convert pyranges BED format to expected format
+                # Standard BED columns: Chromosome, Start, End, Name, Score, Strand
+                # Expected format: Feature, Chromosome, Start, End, [Score], [Strand]
+
+                if 'Name' not in bed_df.columns:
+                    logger.error("BED file must contain a 'Name' column (4th column in BED6 format)")
+                    logger.error("Required format: standard BED6 (chr, start, end, name, score, strand)")
+                    logger.error("Note: BED file should NOT have a header line")
+                    sys.exit(1)
+
+                # Rename 'Name' to 'Feature' for internal use
+                bed_df = bed_df.rename(columns={'Name': 'Feature'})
+
+                # Ensure required columns exist
+                required_cols = ['Chromosome', 'Start', 'End', 'Feature']
+                if not all(col in bed_df.columns for col in required_cols):
+                    logger.error(f"BED file missing required columns after parsing")
+                    logger.error("Required format: standard BED6 (chr, start, end, name, score, strand)")
+                    logger.error("Note: BED file should NOT have a header line")
+                    sys.exit(1)
+
+                logger.info(f"Successfully loaded BED file: {len(bed_df)} features")
+                logger.info(f"Columns: {list(bed_df.columns)}")
+                return bed_df
+
+            except Exception as e:
+                logger.error(f"Failed to read BED file: {e}")
+                logger.error("Required format: standard BED6 (chr, start, end, name, score, strand)")
+                logger.error("Note: BED file should NOT have a header line")
+                sys.exit(1)
 
         elif self.config.mapping_type == 'dict':
             df_map = pd.read_csv(self.config.mapping_file, sep=None, engine='python')

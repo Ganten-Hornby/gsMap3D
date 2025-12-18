@@ -37,7 +37,16 @@ def create_snp_feature_map(
     mapping_type : str
         'bed' or 'dict'.
     mapping_data : Union[pd.DataFrame, Dict[str, str]]
-        Mapping source data.
+        Mapping source data. For 'bed' type, this should be a DataFrame read from
+        a standard BED file using pr.read_bed() with columns:
+        - Chromosome (chr)
+        - Start (0-based start position)
+        - End (1-based end position)
+        - Feature (name/identifier from 4th column)
+        - Score (optional, from 5th column)
+        - Strand (optional, from 6th column)
+
+        Note: BED files should be in standard BED6 format WITHOUT a header line.
     window_size : int
         Window extension (for 'bed').
     strategy : str

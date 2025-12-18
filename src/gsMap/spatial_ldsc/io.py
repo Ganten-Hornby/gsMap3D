@@ -225,20 +225,14 @@ def load_common_resources(config: SpatialLDSCConfig) -> Tuple[pd.DataFrame, pd.D
 
     # 3. Construct baseline LD from snp_gene_weight_adata
     X = snp_gene_weight_adata.X
-    if hasattr(X, "toarray"):
-        X = X.toarray()
-    
+
     # Compute base annotations
-    # all_gene = row sum of X[:, :-1]
-    # base = all_gene + X[:, -1]
     all_gene = X[:, :-1].sum(axis=1)
     base = all_gene + X[:, -1]
     
     baseline_ld = pd.DataFrame(
-        {
-            "base": base,
-            "all_gene": all_gene
-        },
+        np.column_stack((base, all_gene)),
+        columns=["base", "all_gene"],
         index=snp_gene_weight_adata.obs_names
     )
     baseline_ld.index.name = "SNP"
