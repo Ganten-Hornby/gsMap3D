@@ -2,289 +2,37 @@
 Configuration dataclasses for gsMap commands.
 """
 
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Annotated, List, Literal
 from collections import OrderedDict
-
-import yaml
 import logging
-from pathlib import Path
-import h5py
-
-
 import typer
 
 from .base import ConfigWithAutoPaths
+from .utils import (
+    configure_jax_platform,
+    get_anndata_shape,
+    inspect_h5ad_structure,
+    validate_h5ad_structure,
+    process_h5ad_inputs,
+    verify_homolog_file_format
+)
 
+# Import module-specific configs for orchestration
+from gsMap.find_latent.config import FindLatentRepresentationsConfig
+from gsMap.latent2gene.config import LatentToGeneConfig
+from gsMap.spatial_ldsc.config import SpatialLDSCConfig
 
 
 logger = logging.getLogger("gsMap.config")
 
-def configure_jax_platform(use_gpu: bool = True):
-    """Configure JAX platform based on use_gpu flag.
-
-    Args:
-        use_gpu: If True, try to use GPU if available, otherwise fall back to CPU.
-                If False, force CPU usage.
-
-    Raises:
-        ImportError: If JAX is not installed.
-    """
-    try:
-        import jax
-        from jax import config as jax_config
-
-        if use_gpu:
-            # Try to use GPU if available, but gracefully fall back to CPU
-            try:
-                gpu_devices = jax.devices('gpu')
-                if len(gpu_devices) > 0:
-                    jax_config.update('jax_platform_name', 'gpu')
-                    logger.info(f"JAX configured to use GPU for computations ({len(gpu_devices)} GPU(s) detected)")
-                else:
-                    jax_config.update('jax_platform_name', 'cpu')
-                    logger.info("No GPU detected, JAX configured to use CPU for computations")
-            except (RuntimeError, Exception) as e:
-                # GPU not available or other error, fall back to CPU
-                jax_config.update('jax_platform_name', 'cpu')
-                logger.info(f"GPU not available ({str(e)}), JAX configured to use CPU for computations")
-        else:
-            jax_config.update('jax_platform_name', 'cpu')  # Force CPU usage
-            logger.info("JAX configured to use CPU for computations")
-    except ImportError:
-        raise ImportError(
-            "JAX is required but not installed. Please install JAX by running: "
-            "pip install jax jaxlib (for CPU) or see JAX documentation for GPU installation."
-        )
-
-def get_anndata_shape(h5ad_path: str):
-    """Get the shape (n_obs, n_vars) of an AnnData file without loading it."""
-    with h5py.File(h5ad_path, 'r') as f:
-        # 1. Verify it's a valid AnnData file by checking metadata
-        if f.attrs.get('encoding-type') != 'anndata':
-            logger.error(f"File '{h5ad_path}' does not appear to be a valid AnnData file.")
-            return None
-
-        # 2. Determine n_obs and n_vars from the primary metadata sources
-        if 'obs' not in f or 'var' not in f:
-            logger.error("AnnData file is missing 'obs' or 'var' group.")
-            return None
-
-        # Get the name of the index column from attributes
-        obs_index_key = f['obs'].attrs.get('_index', None)
-        var_index_key = f['var'].attrs.get('_index', None)
-
-        if not obs_index_key or obs_index_key not in f['obs']:
-            logger.error("Could not determine index for 'obs'.")
-            return None
-        if not var_index_key or var_index_key not in f['var']:
-            logger.error("Could not determine index for 'var'.")
-            return None
-
-        # The shape is the length of these index arrays
-        obs_obj = f['obs'][obs_index_key]
-        if isinstance(obs_obj, h5py.Group):
-            obs_obj = obs_obj['categories']
-        n_obs = obs_obj.shape[0]
-
-        var_obj  = f['var'][var_index_key]
-        if isinstance(var_obj, h5py.Group):
-            var_obj = var_obj['categories']
-        n_vars = var_obj.shape[0]
-
-        return n_obs, n_vars
-
-
-def inspect_h5ad_structure(filename):
-    """
-    Inspect the structure of an h5ad file without loading data.
-    
-    Returns dict with keys present in each slot.
-    """
-    structure = {}
-    
-    with h5py.File(filename, 'r') as f:
-        # Check main slots
-        slots = ['obs', 'var', 'obsm', 'varm', 'obsp', 'varp', 'uns', 'layers', 'X', 'raw']
-        
-        for slot in slots:
-            if slot in f:
-                if slot in ['obsm', 'varm', 'obsp', 'varp', 'layers', 'uns']:
-                    # These are groups containing multiple keys
-                    structure[slot] = list(f[slot].keys())
-                elif slot in ['obs', 'var']:
-                    # These are dataframes - get column names
-                    if 'column-order' in f[slot].attrs:
-                        structure[slot] = list(f[slot].attrs['column-order'])
-                    else:
-                        structure[slot] = list(f[slot].keys())
-                else:
-                    # X, raw - just note they exist
-                    structure[slot] = True
-    
-    return structure
-
-
-def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=None):
-    """
-    Validate h5ad files have required structure.
-    
-    Args:
-        sample_h5ad_dict: OrderedDict of {sample_name: h5ad_path}
-        required_fields: Dict of {field_name: (slot, field_key, error_msg_template)}
-            e.g., {'spatial': ('obsm', 'spatial', 'Spatial key')}
-        optional_fields: Dict of {field_name: (slot, field_key)} for fields to warn about
-    
-    Returns:
-        None, raises ValueError if required fields are missing
-    """
-    for sample_name, h5ad_path in sample_h5ad_dict.items():
-        if not h5ad_path.exists():
-            raise FileNotFoundError(f"H5AD file not found for sample '{sample_name}': {h5ad_path}")
-        
-        # Inspect h5ad structure
-        structure = inspect_h5ad_structure(h5ad_path)
-        
-        # Check required fields
-        for field_name, (slot, field_key, error_msg) in required_fields.items():
-            if field_key is None:  # Skip if field not specified
-                continue
-                
-            # Special handling for data_layer
-            if field_name == 'data_layer' and field_key != 'X':
-                if 'layers' not in structure or field_key not in structure.get('layers', []):
-                    raise ValueError(
-                        f"Data layer '{field_key}' not found in layers for sample '{sample_name}'. "
-                        f"Available layers: {structure.get('layers', [])}"
-                    )
-            elif field_name == 'data_layer' and field_key == 'X':
-                if 'X' not in structure:
-                    raise ValueError(f"X matrix not found in h5ad file for sample '{sample_name}'")
-            else:
-                # Standard validation for obsm, obs, etc.
-                if slot not in structure or field_key not in structure.get(slot, []):
-                    available = structure.get(slot, [])
-                    raise ValueError(
-                        f"{error_msg} '{field_key}' not found in {slot} for sample '{sample_name}'. "
-                        f"Available keys in {slot}: {available}"
-                    )
-        
-        # Check optional fields (warn only)
-        if optional_fields:
-            for field_name, (slot, field_key) in optional_fields.items():
-                if field_key is None:  # Skip if field not specified
-                    continue
-                    
-                if slot not in structure or field_key not in structure.get(slot, []):
-                    available = structure.get(slot, [])
-                    logger.warning(
-                        f"Optional field '{field_key}' not found in {slot} for sample '{sample_name}'. "
-                        f"Available keys in {slot}: {available}"
-                    )
-
-
-def process_h5ad_inputs(config, input_options):
-    """
-    Process h5ad input options and create sample_h5ad_dict.
-    
-    Args:
-        config: Configuration object with h5ad input fields
-        input_options: Dict mapping option names to (field_name, processing_type)
-            e.g., {'h5ad_yaml': ('h5ad_yaml', 'yaml'), 
-                   'h5ad': ('h5ad', 'list'),
-                   'h5ad_list_file': ('h5ad_list_file', 'file')}
-    
-    Returns:
-        OrderedDict of {sample_name: h5ad_path}
-    """
-
-    if config.sample_h5ad_dict  is not None:
-        return OrderedDict(config.sample_h5ad_dict)
-
-    sample_h5ad_dict = OrderedDict()
-    
-    # Check which options are provided
-    options_provided = []
-    for option_name, (field_name, _) in input_options.items():
-        if hasattr(config, field_name) and getattr(config, field_name):
-            options_provided.append(option_name)
-    
-    # Ensure at most one option is provided
-    if len(options_provided) > 1:
-        assert False, (
-            f"At most one input option can be provided. Got {len(options_provided)}: {', '.join(options_provided)}. "
-            f"Please provide only one of: {', '.join(input_options.keys())}"
-        )
-    
-    # Process the provided input option
-    for option_name, (field_name, processing_type) in input_options.items():
-        field_value = getattr(config, field_name, None)
-        if not field_value:
-            continue
-            
-        if processing_type == 'yaml':
-            logger.info(f"Using {option_name}: {field_value}")
-            with open(field_value) as f:
-                h5ad_data = yaml.safe_load(f)
-                for sample_name, h5ad_path in h5ad_data.items():
-                    sample_h5ad_dict[sample_name] = Path(h5ad_path)
-                    
-        elif processing_type == 'list':
-            logger.info(f"Using {option_name} with {len(field_value)} files")
-            for h5ad_path in field_value:
-                h5ad_path = Path(h5ad_path)
-                sample_name = h5ad_path.stem
-                if sample_name in sample_h5ad_dict:
-                    logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
-                sample_h5ad_dict[sample_name] = h5ad_path
-                
-        elif processing_type == 'file':
-            logger.info(f"Using {option_name}: {field_value}")
-            with open(field_value) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:  # Skip empty lines
-                        h5ad_path = Path(line)
-                        sample_name = h5ad_path.stem
-                        if sample_name in sample_h5ad_dict:
-                            logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
-                        sample_h5ad_dict[sample_name] = h5ad_path
-        break
-    
-    return sample_h5ad_dict
-
-def verify_homolog_file_format(config):
-    if config.homolog_file is not None:
-        logger.info(
-            f"User provided homolog file to map gene names to human: {config.homolog_file}"
-        )
-        # check the format of the homolog file
-        with open(config.homolog_file) as f:
-            first_line = f.readline().strip()
-            _n_col = len(first_line.split())
-            if _n_col != 2:
-                raise ValueError(
-                    f"Invalid homolog file format. Expected 2 columns, first column should be other species gene name, second column should be human gene name. "
-                    f"Got {_n_col} columns in the first line."
-                )
-            else:
-                first_col_name, second_col_name = first_line.split()
-                config.species = first_col_name
-                logger.info(
-                    f"Homolog file provided and will map gene name from column1:{first_col_name} to column2:{second_col_name}"
-                )
-    else:
-        logger.info("No homolog file provided. Run in human mode.")
-
-
 
 @dataclass
-class RunAllModeConfig:
-    """Configuration for running the complete gsMap pipeline."""
+class RunAllModeConfig(ConfigWithAutoPaths):
+    """Configuration for running the complete gsMap pipeline in a single command."""
     
-    # Required from parent (no defaults)
+    # Required from parent
     workdir: Annotated[Path, typer.Option(
         help="Path to the working directory",
         exists=True,
@@ -292,31 +40,9 @@ class RunAllModeConfig:
         dir_okay=True,
         resolve_path=True
     )]
-    
+
     sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
-    
-    # Required paths and configurations
-    gsmap_resource_dir: Annotated[Path, typer.Option(
-        "--gsmap-resource-dir",
-        help="Directory containing gsMap resources",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    hdf5_path: Annotated[Path, typer.Option(
-        help="Path to the input spatial transcriptomics data (H5AD format)",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )]
-    
-    annotation: Annotated[str, typer.Option(
-        help="Name of the annotation in adata.obs to use"
+        help="Scientific name of the sample"
     )]
     
     trait_name: Annotated[str, typer.Option(
@@ -331,1133 +57,55 @@ class RunAllModeConfig:
         resolve_path=True
     )]
     
-    # Optional parameter - must be after required fields
-    project_name: str = None
-    
-    data_layer: Annotated[str, typer.Option(
-        help="Data layer for gene expression"
-    )] = "counts"
-    
-    n_comps: Annotated[int, typer.Option(
-        help="Number of components",
-        min=10,
-        max=500
-    )] = 300
-    
-    pearson_residuals: Annotated[bool, typer.Option(
-        "--pearson-residuals",
-        help="Use pearson residuals"
-    )] = False
-    
-    num_neighbour: Annotated[int, typer.Option(
-        help="Number of neighbors",
-        min=1,
-        max=100
-    )] = 21
-    
-    num_neighbour_spatial: Annotated[int, typer.Option(
-        help="Number of spatial neighbors",
-        min=1,
-        max=500
-    )] = 101
-    
-    homolog_file: Annotated[Optional[Path], typer.Option(
-        help="Path to homologous gene conversion file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
-    
-    max_processes: Annotated[int, typer.Option(
-        help="Maximum number of processes for parallel execution",
-        min=1,
-        max=50
-    )] = 10
-    
-    use_jax: Annotated[bool, typer.Option(
-        "--use-jax/--no-jax",
-        help="Use JAX-accelerated spatial LDSC implementation"
-    )] = True
-    
-    # Additional fields for compatibility
-    latent_representation: Optional[str] = None
-    gM_slices: Optional[str] = None
-    sumstats_config_file: Optional[str] = None
-    species: Optional[str] = None
-    
-    def __post_init__(self):
-        """Configure JAX platform based on use_jax setting."""
-        if self.use_jax:
-            # RunAllModeConfig doesn't have use_gpu flag, so default to trying GPU
-            configure_jax_platform(use_gpu=True)
-
-
-@dataclass
-class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
-    """Configuration for finding latent representations."""
-    
-
-    h5ad_path: Annotated[Optional[List[Path]], typer.Option(
-        help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
-        exists=True,
-        file_okay=True,
-    )] = None
-
     h5ad_yaml: Annotated[Path, typer.Option(
         help="YAML file with sample names and h5ad paths",
         exists=True,
         file_okay=True,
-        dir_okay=False,
-    )] = None
-
-    h5ad_list_file: Annotated[Optional[str], typer.Option(
-        help="Each row is a h5ad file path, sample name is the file name without suffix",
-        exists = True,
-        file_okay = True,
-        dir_okay = False,
-    )] = None
-
-    sample_h5ad_dict: Optional[OrderedDict] = None
-
-    data_layer: Annotated[str, typer.Option(
-        help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
-    )] = "X"
+        dir_okay=False
+    )]
     
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm storing spatial coordinates"
-    )] = "spatial"
-    
-    annotation: Annotated[Optional[str], typer.Option(
+    annotation: Annotated[str, typer.Option(
         help="Annotation of cell type in adata.obs to use"
-    )] = None
-    
-    # Feature extraction parameters
-    n_neighbors: Annotated[int, typer.Option(
-        help="Number of neighbors for LGCN",
-        min=1,
-        max=50
-    )] = 10
-    
-    K: Annotated[int, typer.Option(
-        help="Graph convolution depth for LGCN",
-        min=1,
-        max=10
-    )] = 3
-    
-    feat_cell: Annotated[int, typer.Option(
-        help="Number of top variable features to retain",
-        min=100,
-        max=10000
-    )] = 2000
-    
-    pearson_residual: Annotated[bool, typer.Option(
-        "--pearson-residual",
-        help="Take the residuals of the input data"
-    )] = False
-    
-    # Model parameters
-    hidden_size: Annotated[int, typer.Option(
-        help="Units in the first hidden layer",
-        min=32,
-        max=512
-    )] = 128
-    
-    embedding_size: Annotated[int, typer.Option(
-        help="Size of the latent embedding layer",
-        min=8,
-        max=128
-    )] = 32
-    
-    # Transformer parameters
-    use_tf: Annotated[bool, typer.Option(
-        "--use-tf",
-        help="Enable transformer module"
-    )] = False
-    
-    module_dim: Annotated[int, typer.Option(
-        help="Dimensionality of transformer modules",
-        min=10,
-        max=100
-    )] = 30
-    
-    hidden_gmf: Annotated[int, typer.Option(
-        help="Hidden units for global mean feature extractor",
-        min=32,
-        max=512
-    )] = 128
-    
-    n_modules: Annotated[int, typer.Option(
-        help="Number of transformer modules",
-        min=4,
-        max=64
-    )] = 16
-    
-    nhead: Annotated[int, typer.Option(
-        help="Number of attention heads in transformer",
-        min=1,
-        max=16
-    )] = 4
-    
-    n_enc_layer: Annotated[int, typer.Option(
-        help="Number of transformer encoder layers",
-        min=1,
-        max=8
-    )] = 2
-    
-    # Training parameters
-    distribution: Annotated[str, typer.Option(
-        help="Distribution type for loss calculation",
-        case_sensitive=False
-    )] = "nb"
-    
-    n_cell_training: Annotated[int, typer.Option(
-        help="Number of cells used for training",
-        min=1000,
-        max=1000000
-    )] = 100000
-    
-    batch_size: Annotated[int, typer.Option(
-        help="Batch size for training",
-        min=32,
-        max=4096
-    )] = 1024
-    
-    itermax: Annotated[int, typer.Option(
-        help="Maximum number of training iterations",
-        min=10,
-        max=1000
-    )] = 100
-    
-    patience: Annotated[int, typer.Option(
-        help="Early stopping patience",
-        min=1,
-        max=50
-    )] = 10
-    
-    two_stage: Annotated[bool, typer.Option(
-        "--two-stage/--single-stage",
-        help="Tune the cell embeddings based on the provided annotation"
-    )] = True
-    
-    do_sampling: Annotated[bool, typer.Option(
-        "--do-sampling/--no-sampling",
-        help="Down-sampling cells in training"
-    )] = True
-    
-    homolog_file: Annotated[Optional[Path], typer.Option(
-        help="Path to homologous gene conversion file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
+    )]
 
-    species: Optional[str] = None
-
-    latent_representation_niche: Annotated[str, typer.Option(
-        help="Key for spatial niche embedding in obsm"
-    )] = "emb_niche"
-
-    latent_representation_cell: Annotated[str, typer.Option(
-        help="Key for cell identity embedding in obsm"
-    )] = "emb_cell"
-
-    def __post_init__(self):
-        super().__post_init__()
-        
-        # Define input options
-        input_options = {
-            'h5ad_yaml': ('h5ad_yaml', 'yaml'),
-            'h5ad_path': ('h5ad_path', 'list'),
-            'h5ad_list_file': ('h5ad_list_file', 'file'),
-        }
-        
-        # Process h5ad inputs
-        self.sample_h5ad_dict = process_h5ad_inputs(self, input_options)
-
-        if not self.sample_h5ad_dict:
-            raise ValueError(
-                "At least one of h5ad_yaml, h5ad_path, h5ad_list_file, or spe_file_list must be provided"
-            )
-        
-        # Define required and optional fields for validation
-        required_fields = {
-            'data_layer': ('layers', self.data_layer, 'Data layer'),
-            'spatial_key': ('obsm', self.spatial_key, 'Spatial key'),
-        }
-        
-        # Add annotation as required if provided
-        if self.annotation:
-            required_fields['annotation'] = ('obs', self.annotation, 'Annotation')
-        
-        # Validate h5ad structure
-        validate_h5ad_structure(self.sample_h5ad_dict, required_fields)
-        
-        # Log final sample count
-        logger.info(f"Loaded and validated {len(self.sample_h5ad_dict)} samples")
-        
-        # Check if at least one sample is provided
-        if len(self.sample_h5ad_dict) == 0:
-            raise ValueError("No valid samples found in the provided input")
-        
-        # Verify homolog file format if provided
-        verify_homolog_file_format(self)
-
-
-
-class DatasetType(str, Enum):
-    SCRNA_SEQ = 'scRNA'
-    SPATIAL_2D = 'spatial2D'
-    SPATIAL_3D = 'spatial3D'
-
-class MarkerScoreCrossSliceStrategy(str, Enum):
-    SIMILARITY_ONLY = 'similarity_only'
-    WEIGHTED_MEAN_POOLING = 'weighted_mean_pooling'
-    MAX_POOLING = 'max_pooling'
-
-@dataclass
-class LatentToGeneConfig(ConfigWithAutoPaths):
-    """Configuration for latent to gene mapping."""
-    
-
-    dataset_type: Annotated[DatasetType, typer.Option(
-        help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
-        case_sensitive=False
-    )] = 'spatial2D'
-
-    # --------input h5ad file paths which have the latent representations
-    h5ad_path: Annotated[Optional[List[Path]], typer.Option(
-        help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
-        exists=True,
-        file_okay=True,
-    )] = None
-
-    h5ad_yaml: Annotated[Path, typer.Option(
-        help="YAML file with sample names and h5ad paths",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    )] = None
-
-    h5ad_list_file: Annotated[Optional[str], typer.Option(
-        help="Each row is a h5ad file path, sample name is the file name without suffix",
-        exists = True,
-        file_okay = True,
-        dir_okay = False,
-    )] = None
-
-    sample_h5ad_dict: Optional[OrderedDict] = None
-
-    # --------input h5ad obs, obsm, layers keys
-
-    annotation: Annotated[Optional[str], typer.Option(
-        help="Cell type annotation in adata.obs to use. This would constrain finding homogeneous spots within each cell type"
-    )] = None
-
-    data_layer: Annotated[str, typer.Option(
-        help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
-    )] = "X"
-
-    
-    latent_representation_niche: Annotated[Optional[str], typer.Option(
-        help="Key for spatial niche embedding in obsm"
-    )] = None
-
-    latent_representation_cell: Annotated[str, typer.Option(
-        help="Key for cell identity embedding in obsm"
-    )] = "emb_cell"
-    
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm"
-    )] = "spatial"
-
-    # --------parameters for finding homogeneous spots
-
-    num_neighbour_spatial: Annotated[int, typer.Option(
-        help="k1: Number of spatial neighbors in it's own slice for spatial dataset",
-        min=10,
-        max=500
-    )] = 201
-
-
-    num_homogeneous: Annotated[int, typer.Option(
-        help="k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)",
-        min=1,
-        max=100
-    )] = 21
-
-    cell_embedding_similarity_threshold: Annotated[float, typer.Option(
-        help="Minimum similarity threshold for cell embedding.",
-        min=0.0,
-        max=1.0
-    )] = 0.0
-
-    spatial_domain_similarity_threshold: Annotated[float, typer.Option(
-        help="Minimum similarity threshold for spatial domain embedding.",
-        min=0.0,
-        max=1.0
-    )] = 0.5
-
-    no_expression_fraction: Annotated[bool, typer.Option(
-        "--no-expression-fraction",
-        help="Skip expression fraction filtering"
-    )] = False
-
-    # --------3D slice-aware neighbor search parameters
-    k_adjacent: Annotated[int, typer.Option(
-        help="Number of neighbors to find on each adjacent slice for 3D data",
-        min=10,
-        max=100
-    )] = 100
-
-    n_adjacent_slices: Annotated[int, typer.Option(
-        help="Number of slices to search above and below for 3D data",
-        min=0,
-        max=5
-    )] = 1
-    
-    cross_slice_marker_score_strategy: Annotated[MarkerScoreCrossSliceStrategy, typer.Option(
-        help="Strategy for computing marker scores across slices in spatial3D datasets. "
-             "'similarity_only': Select top homogeneous neighbors from all slices combined based on similarity scores. "
-             "'weighted_mean_pooling': Select fixed number of homogeneous neighbors per slice, compute weighted average using similarity as weights. "
-             "'max_pooling': Select fixed number of homogeneous neighbors per slice, take maximum marker score across slices.",
-        case_sensitive=False
-    )] = MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING
-
-    fix_cross_slice_homogenous_neighbors: bool = False
-
-    # slice_id_key: Annotated[Optional[str], typer.Option(
-    #     help="Key in adata.obs for slice IDs. For 3D data, should contain sequential integers representing z-axis order (0, 1, 2, ...). If None, assumes single 2D slice"
-    # )] = 'slice_id'
-
-    # -------- IO parameters
-    rank_batch_size:int = 500
-    mkscore_batch_size:int = 500
-    find_homogeneous_batch_size:int = 100
-    rank_write_interval = 10
-
-    # Worker configurations
-    rank_read_workers: Annotated[int, typer.Option(
-        help="Number of parallel reader threads for rank memory map",
-        min=1,
-        max=16
-    )] = 4
-    
-    compute_workers: Annotated[int, typer.Option(
-        help="Number of parallel compute threads for marker score calculation",
-        min=1,
-        max=16
-    )] = 4
-    
-    mkscore_write_workers: Annotated[int, typer.Option(
-        help="Number of parallel writer threads for marker scores",
-        min=1,
-        max=16
-    )] = 4
-
-    compute_input_queue_size: Annotated[int, typer.Option(
-        help="Maximum size of compute input queue (multiplier of compute_workers)",
-        min=1,
-        max=10
-    )] = 5
-    
-    writer_queue_size: Annotated[int, typer.Option(
-        help="Maximum size of writer input queue",
-        min=10,
-        max=500
-    )] = 100
-    
-    # Performance options
-    min_cells_per_type: Annotated[int, typer.Option(
-        help="Minimum number of cells per cell type to process",
-        min=1,
-        max=100
-    )] = 21
-    
-    enable_profiling: Annotated[bool, typer.Option(
-        "--enable-profiling/--no-profiling",
-        help="Enable viztracer profiling for performance analysis"
-    )] = False
-
+    # Additional options
     use_gpu: Annotated[bool, typer.Option(
         "--use-gpu/--no-gpu",
-        help="Use GPU for JAX computations (requires sufficient GPU memory)"
+        help="Use GPU for JAX computations"
     )] = True
 
-    find_neighbor_within_high_quality: Annotated[bool, typer.Option(
-        "--find-neighbor-within-high-quality/--no-high-quality-filter",
-        help="Only find neighbors within high quality cells (requires High_quality column in obs)"
-    )] = True
-    
-    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
-        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-             "If provided, memory maps will be copied to this directory for faster random access during computation.",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )] = None
-    
     @property
-    def total_homogeneous_neighbor_per_cell(self):
-        return self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
-
-    def __post_init__(self):
-        """Initialize and validate configuration"""
-        super().__post_init__()
-
-        # Step 1: Configure JAX platform
-        configure_jax_platform(self.use_gpu)
-        
-        # Step 2: Process and validate h5ad inputs
-        self._process_h5ad_inputs()
-        
-        # Step 3: Configure dataset-specific parameters first
-        self._configure_dataset_parameters()
-        
-        # Step 4: Set up validation fields and validate structure (after dataset config)
-        self._setup_and_validate_fields()
-
-    
-    def _process_h5ad_inputs(self):
-        """Process h5ad inputs from various sources"""
-
-        # Define input options
-        input_options = {
-            'h5ad_yaml': ('h5ad_yaml', 'yaml'),
-            'h5ad_path': ('h5ad_path', 'list'),
-            'h5ad_list_file': ('h5ad_list_file', 'file'),
-        }
-        
-        # Process h5ad inputs
-        self.sample_h5ad_dict = process_h5ad_inputs(self, input_options)
-        
-        # Auto-detect from latent directory if no inputs provided
-        if not self.sample_h5ad_dict:
-            self._auto_detect_h5ad_files()
-            
-        # Validate at least one sample exists
-        if len(self.sample_h5ad_dict) == 0:
-            raise ValueError("No valid samples found in the provided input")
-            
-        logger.info(f"Loaded and validated {len(self.sample_h5ad_dict)} samples")
-    
-    def _auto_detect_h5ad_files(self):
-        """Auto-detect h5ad files from latent directory"""
-        if self.find_latent_metadata_path.exists():
-            import yaml
-            with open(self.find_latent_metadata_path, 'r') as f:
-                find_latent_metadata = yaml.safe_load(f)
-            self.sample_h5ad_dict = OrderedDict(
-                {sample_name:Path(latent_file)
-                for sample_name, latent_file in
-                find_latent_metadata['outputs']['latent_files'].items()
-                 })
-            # assert all files exist
-            for sample_name, latent_file in self.sample_h5ad_dict.items():
-                if not latent_file.exists():
-                    raise FileNotFoundError(f"Latent file not found for sample '{sample_name}': {latent_file}")
-            logger.info(f"Auto-detected {len(self.sample_h5ad_dict)} samples from find_latent_metadata_path: {self.find_latent_metadata_path}")
-        else:
-            self.sample_h5ad_dict = OrderedDict()
-            latent_dir = self.latent_dir
-            logger.info(f"No input options provided. Auto-detecting h5ad files from latent directory: {latent_dir}")
-
-            # Look for latent files with different naming patterns
-            latent_files = list(latent_dir.glob("*_latent_adata.h5ad"))
-            if not latent_files:
-                latent_files = list(latent_dir.glob("*_add_latent.h5ad"))
-
-            if not latent_files:
-                raise ValueError(
-                    f"No h5ad files found in latent directory {latent_dir}. "
-                    f"Please run the find latent representation first. "
-                    f"Or provide one of: h5ad_yaml, h5ad_path, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
-                )
-
-            # Extract sample names from file names
-            for latent_file in latent_files:
-                sample_name = self._extract_sample_name(latent_file)
-                self.sample_h5ad_dict[sample_name] = latent_file
-
-            # sort by sample name
-            self.sample_h5ad_dict = OrderedDict(sorted(self.sample_h5ad_dict.items()))
-
-        logger.info(f"Auto-detected {len(self.sample_h5ad_dict)} samples from latent directory")
-    
-    def _extract_sample_name(self, latent_file):
-        """Extract sample name from latent file path"""
-        filename = latent_file.stem
-        
-        # Remove known suffixes
-        suffixes_to_remove = ["_latent_adata", "_add_latent"]
-        for suffix in suffixes_to_remove:
-            if filename.endswith(suffix):
-                return filename[:-len(suffix)]
-        
-        return filename
-    
-    def _setup_and_validate_fields(self):
-        """Set up required/optional fields and validate h5ad structure"""
-        # Define required fields
-        required_fields = {
-            'latent_representation_cell': ('obsm', self.latent_representation_cell, 'Latent representation of cell identity'),
-            'spatial_key': ('obsm', self.spatial_key, 'Spatial key'),
-        }
-
-        # Add annotation as required if provided
-        if self.annotation:
-            required_fields['annotation'] = ('obs', self.annotation, 'Annotation')
-
-        # Add niche representation as required if provided
-        if self.latent_representation_niche:
-            required_fields['latent_representation_niche'] = (
-                'obsm',
-                self.latent_representation_niche,
-                'Latent representation of spatial niche'
-            )
-
-        # Add High_quality as required if find_neighbor_within_high_quality is enabled
-        if self.find_neighbor_within_high_quality:
-            required_fields['High_quality'] = ('obs', 'High_quality', 'High quality cell indicator')
-
-        # Validate h5ad structure
-        validate_h5ad_structure(self.sample_h5ad_dict, required_fields)
-
-    def _configure_dataset_parameters(self):
-        """Configure parameters based on dataset type"""
-        if self.dataset_type == DatasetType.SPATIAL_2D:
-            self._configure_spatial_2d()
-        elif self.dataset_type == DatasetType.SPATIAL_3D:
-            self._configure_spatial_3d()
-        elif self.dataset_type == DatasetType.SCRNA_SEQ:
-            self._configure_scrna_seq()
-
-
-    def _configure_spatial_2d(self):
-        """Configure parameters for spatial 2D datasets"""
-        # spatial2D can have multiple slices but doesn't search across them
-        if self.n_adjacent_slices != 0:
-            self.n_adjacent_slices = 0
-            logger.info("Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting n_adjacent_slices=0.")
-
-        if self.latent_representation_niche is None:
-            logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
-
-        assert self.num_homogeneous <= self.num_neighbour_spatial, \
-            f"num_homogeneous ({self.num_homogeneous}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial}) for spatial2D datasets"
-
-    def _configure_spatial_3d(self):
-        """Configure parameters for spatial 3D datasets"""
-        if self.n_adjacent_slices == 0:
-            raise ValueError(
-                "Dataset type is spatial3D, but n_adjacent_slices=0. "
-                "You must set n_adjacent_slices to 1 or higher to enable cross-slice search. "
-                "If you don't want cross-slice search, use dataset_type='spatial2D' instead."
-            )
-        
-        if self.latent_representation_niche is None:
-            logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
-
-        assert self.k_adjacent <= self.num_neighbour_spatial, \
-            f"k_adjacent ({self.k_adjacent}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"
-        assert self.num_homogeneous <= self.k_adjacent, \
-            f"num_homogeneous ({self.num_homogeneous}) must be <= k_adjacent ({self.k_adjacent})"
-
-        n_slices = 1 + self.n_adjacent_slices # only focal + above slices
-        assert n_slices<=len(self.sample_h5ad_dict), \
-            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). " \
-            f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce n_adjacent_slices."
-
-        logger.info(f"Dataset type is spatial3D, using n_adjacent_slices={self.n_adjacent_slices} for cross-slice search")
-        logger.info(f"The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
-        logger.info(f"{' -> '.join(list(self.sample_h5ad_dict.keys()))}")
-
-        # Adjust num_homogeneous based on adjacent slices and strategy
-        # Only multiply for 'similarity_only' strategy (original behavior)
-        # For 'mean_pooling' and 'max_pooling', num_homogeneous represents per-slice count
-
-        num_homogeneous = self.num_homogeneous
-        n_adjacent_slices = self.n_adjacent_slices
-        # Check if we should use fix number of homogeneous neighbors per slice
-        if  self.cross_slice_marker_score_strategy in [
-                MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING,
-                MarkerScoreCrossSliceStrategy.MAX_POOLING
-            ]:
-
-            self.fix_cross_slice_homogenous_neighbors = True
-            logger.info(f"Using {self.cross_slice_marker_score_strategy.value} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.num_homogeneous} per slice.")
-
-
-        elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.SIMILARITY_ONLY:
-            logger.info(f"Using similarity_only strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
-
-        logger.info(f"Each focal cell will select {num_homogeneous * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
-
-
-    def _configure_scrna_seq(self):
-        """Configure parameters for scRNA-seq datasets"""
-        self.n_adjacent_slices = 0
-        self.spatial_key = None
-        self.latent_representation_niche = None
-
-
-@dataclass
-class SpatialLDSCConfig(ConfigWithAutoPaths):
-
-    w_file: Annotated[Optional[Path], typer.Option(
-        help="Path to the weights file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
-    additional_baseline_h5ad_path_list: Annotated[List[Path], typer.Option(
-        help="List of additional baseline h5ad paths"
-    )] = field(default_factory=list)
-
-    trait_name: Annotated[Optional[str], typer.Option(
-        help="Name of the trait for GWAS analysis"
-    )] = None
-
-    sumstats_file: Annotated[Optional[Path], typer.Option(
-        help="Path to GWAS summary statistics file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
-    sumstats_config_file: Annotated[Optional[Path], typer.Option(
-        help="Path to sumstats config file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
-    num_processes: Annotated[int, typer.Option(
-        help="Number of processes for parallel execution",
-        min=1
-    )] = 4
-
-    num_read_workers: Annotated[int, typer.Option(
-        help="Number of read workers",
-        min=1
-    )] = 10
-
-    ldsc_compute_workers: Annotated[int, typer.Option(
-        help="Number of compute workers",
-        min=1
-    )] = 2
-
-    not_M_5_50: Annotated[bool, typer.Option(
-        "--not-M-5-50",
-        help="Do not use M_5_50"
-    )] = False
-
-    n_blocks: Annotated[int, typer.Option(
-        help="Number of jackknife blocks",
-        min=1
-    )] = 200
-
-    chisq_max: Annotated[Optional[int], typer.Option(
-        help="Maximum chi-square value"
-    )] = None
-
-    cell_indices_range: Annotated[Optional[tuple[int, int]], typer.Option(
-        help="0-based range [start, end) of cell indices to process"
-    )] = None
-
-    sample_filter: Annotated[Optional[str], typer.Option(
-        help="Filter processing to a specific sample"
-    )] = None
-
-    spots_per_chunk_quick_mode: Annotated[int, typer.Option(
-        help="Number of spots per chunk in quick mode",
-        min=1
-    )] = 1_000
-
-    snp_gene_weight_adata_path: Annotated[Path, typer.Option(
-        help="Path to the SNP-gene weight matrix (H5AD format)",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
-    use_jax: Annotated[bool, typer.Option(
-        "--use-jax/--no-jax",
-        help="Use JAX-accelerated spatial LDSC implementation"
-    )] = True
-
-    marker_score_feather_path: Annotated[Optional[Path], typer.Option(
-        help="Path to marker score feather file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
-    marker_score_h5ad_path: Annotated[Optional[Path], typer.Option(
-        help="Path to marker score h5ad file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
-    marker_score_format: Annotated[Optional[Literal["memmap", "feather", "h5ad"]], typer.Option(
-        help="Format of marker scores"
-    )] = None
-
-    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
-        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-             "If provided, memory maps will be copied to this directory for faster random access during computation.",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )] = None
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        # Configure JAX platform if use_jax is enabled
-        if self.use_jax:
-            # SpatialLDSC doesn't have use_gpu flag, so default to trying GPU
-            configure_jax_platform(use_gpu=True)
-
-        # Auto-detect marker_score_format if not specified
-        if self.marker_score_format is None:
-            if self.marker_score_feather_path is not None:
-                self.marker_score_format = "feather"
-                logger.info("Auto-detected marker_score_format as 'feather' based on marker_score_feather_path")
-            elif self.marker_score_h5ad_path is not None:
-                self.marker_score_format = "h5ad"
-                logger.info("Auto-detected marker_score_format as 'h5ad' based on marker_score_h5ad_path")
-            else:
-                self.marker_score_format = "memmap"
-                logger.info("Using default marker_score_format 'memmap'")
-
-        # Validate cell_indices_range is 0-based
-        if self.cell_indices_range is not None:
-            # Validate exclusivity between sample_filter and cell_indices_range
-
-            if self.sample_filter is not None:
-                raise ValueError(
-                    "Only one of sample_filter or cell_indices_range can be provided, not both. "
-                    "Use sample_filter to filter by sample, or cell_indices_range to process specific cell indices."
-                )
-
-            start, end = self.cell_indices_range
-            
-            # Check that indices are 0-based
-            if start < 0:
-                raise ValueError(f"cell_indices_range start must be >= 0, got {start}")
-            if start == 1:
-                logger.warning(
-                    "cell_indices_range appears to be 1-based (start=1). "
-                    "Please ensure indices are 0-based. Adjusting start to 0."
-                )
-                start = 0
-
-            # Check that start < end
-            if start >= end:
-                raise ValueError(f"cell_indices_range start ({start}) must be less than end ({end})")
-
-            # Validate against actual data shape based on marker score format
-            if self.marker_score_format == "memmap":
-                # For memmap format, check the concatenated latent adata
-                adata_path = Path(self.workdir) / self.project_name / "latent2gene" / "concatenated_latent_adata.h5ad"
-                shape = get_anndata_shape(str(adata_path))
-                if shape is not None:
-                    n_obs, _ = shape
-                    if end > n_obs:
-                        logger.warning(
-                            f"cell_indices_range end ({end}) exceeds number of observations ({n_obs}). "
-                            f"Setting end to {n_obs}."
-                        )
-                        end = n_obs
-            elif self.marker_score_format == "h5ad":
-                # For h5ad format, check the provided h5ad path
-                adata_path = Path(self.marker_score_h5ad_path)
-                assert adata_path.exists(), f"Marker score h5ad not found at {adata_path}."
-                shape = get_anndata_shape(str(adata_path))
-                if shape is not None:
-                    n_obs, _ = shape
-                    if end > n_obs:
-                        logger.warning(
-                            f"cell_indices_range end ({end}) exceeds number of observations ({n_obs}). "
-                            f"Setting end to {n_obs}."
-                        )
-                        end = n_obs
-            elif self.marker_score_format == "feather":
-                # For feather format, validate the path exists
-                feather_path = Path(self.marker_score_feather_path)
-                assert feather_path.exists(), f"Marker score feather file not found at {feather_path}."
-
-                # Use pyarrow to get the number of rows and validate end
-                try:
-                    import pyarrow.feather as feather
-                    # Read metadata without loading full data
-                    feather_table = feather.read_table(str(feather_path), memory_map=True, columns=[])
-                    n_obs = feather_table.num_rows
-                    if end > n_obs:
-                        logger.warning(
-                            f"cell_indices_range end ({end}) exceeds number of rows ({n_obs}) in feather file. "
-                            f"Setting end to {n_obs}."
-                        )
-                        end = n_obs
-                except ImportError:
-                    logger.warning(
-                        "pyarrow not available. Cannot validate cell_indices_range against feather file. "
-                        "Install pyarrow to enable validation."
-                    )
-                except Exception as e:
-                    logger.warning(f"Could not read feather file metadata: {e}")
-
-            # Update cell_indices_range with validated values
-            self.cell_indices_range = (start, end)
-            logger.info(f"Processing cell_indices_range: [{start}, {end})")
-
-        if self.sumstats_file is None and self.sumstats_config_file is None:
-            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
-        if self.sumstats_file is not None and self.sumstats_config_file is not None:
-            raise ValueError(
-                "Only one of sumstats_file and sumstats_config_file must be provided."
-            )
-        if self.sumstats_file is not None and self.trait_name is None:
-            raise ValueError("trait_name must be provided if sumstats_file is provided.")
-        if self.sumstats_config_file is not None and self.trait_name is not None:
-            raise ValueError(
-                "trait_name must not be provided if sumstats_config_file is provided."
-            )
-        self.sumstats_config_dict = {}
-        # load the sumstats config file
-        if self.sumstats_config_file is not None:
-            import yaml
-
-            with open(self.sumstats_config_file) as f:
-                config = yaml.load(f, Loader=yaml.FullLoader)
-            for _trait_name, sumstats_file in config.items():
-                assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
-                self.sumstats_config_dict[_trait_name] = sumstats_file
-        # load the sumstats file
-        elif self.sumstats_file is not None:
-            self.sumstats_config_dict[self.trait_name] = self.sumstats_file
-        else:
-            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
-
-        for sumstats_file in self.sumstats_config_dict.values():
-            assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
-
-        if self.snp_gene_weight_adata_path is None:
-            raise ValueError("snp_gene_weight_adata_path must be provided.")
-
-        # # Handle w_file
-        # if self.w_file is None:
-        #     w_ld_dir = Path(self.ldscore_save_dir) / "w_ld"
-        #     if w_ld_dir.exists():
-        #         self.w_file = str(w_ld_dir / "weights.")
-        #         logger.info(f"Using weights generated in the generate_ldscore step: {self.w_file}")
-        #     else:
-        #         raise ValueError(
-        #             "No w_file provided and no weights found in generate_ldscore output. "
-        #             "Either provide --w_file or run generate_ldscore first."
-        #         )
-        # else:
-        #     logger.info(f"Using provided weights file: {self.w_file}")
-        #
-
-
-
-@dataclass
-class gsMapPipelineConfig(ConfigWithAutoPaths):
-    """Unified configuration for the complete gsMap pipeline"""
-
-    # Component configurations
-    find_latent: FindLatentRepresentationsConfig = None
-    latent2gene: LatentToGeneConfig = None
-    spatial_ldsc: SpatialLDSCConfig = None
-
-    def __post_init__(self):
-        super().__post_init__()
-        # Initialize component configs if they weren't provided
-        if self.find_latent is None:
-            self.find_latent = FindLatentRepresentationsConfig(
-                workdir=self.workdir,
-                project_name=self.project_name
-            )
-        if self.latent2gene is None:
-            self.latent2gene = LatentToGeneConfig(
-                workdir=self.workdir,
-                project_name=self.project_name
-            )
-        if self.spatial_ldsc is None:
-            self.spatial_ldsc = SpatialLDSCConfig(
-                workdir=self.workdir,
-                project_name=self.project_name
-            )
-
-
-@dataclass
-class ReportConfig(ConfigWithAutoPaths):
-    """Configuration for generating reports."""
-    
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
-    
-    trait_name: Annotated[str, typer.Option(
-        help="Name of the trait to generate the report for"
-    )]
-    
-    annotation: Annotated[str, typer.Option(
-        help="Annotation layer name"
-    )]
-    
-    sumstats_file: Annotated[Path, typer.Option(
-        help="Path to GWAS summary statistics file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )]
-    
-
-    top_corr_genes: Annotated[int, typer.Option(
-        help="Number of top correlated genes to display",
-        min=1,
-        max=500
-    )] = 50
-    
-    selected_genes: Annotated[Optional[str], typer.Option(
-        help="Comma-separated list of specific genes to include"
-    )] = None
-    
-    fig_width: Annotated[Optional[int], typer.Option(
-        help="Width of the generated figures in pixels"
-    )] = None
-    
-    fig_height: Annotated[Optional[int], typer.Option(
-        help="Height of the generated figures in pixels"
-    )] = None
-    
-    point_size: Annotated[Optional[int], typer.Option(
-        help="Point size for the figures"
-    )] = None
-    
-    fig_style: Annotated[str, typer.Option(
-        help="Style of the generated figures",
-        case_sensitive=False
-    )] = "light"
-    
-    # Hidden parameter
-    plot_type: str = "all"
-
-
-
-@dataclass
-class GenerateLDScoreConfig(ConfigWithAutoPaths):
-    """Configuration for generating LD scores."""
-    
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-
-
-
-    chrom: Annotated[str, typer.Option(
-        help='Chromosome id (1-22) or "all"'
-    )]
-    
-    bfile_root: Annotated[str, typer.Option(
-        help="Root path for genotype plink bfiles (.bim, .bed, .fam)"
-    )]
-    
-    gtf_annotation_file: Annotated[Path, typer.Option(
-        help="Path to GTF annotation file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )]
-
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )] = None
-
-    keep_snp_root: Optional[str] = None  # Internal field
-    
-    gene_window_size: Annotated[int, typer.Option(
-        help="Gene window size in base pairs",
-        min=1000,
-        max=1000000
-    )] = 50000
-    
-    enhancer_annotation_file: Annotated[Optional[Path], typer.Option(
-        help="Path to enhancer annotation file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
-    
-    snp_multiple_enhancer_strategy: Annotated[str, typer.Option(
-        help="Strategy for handling multiple enhancers per SNP",
-        case_sensitive=False
-    )] = "max_mkscore"
-    
-    gene_window_enhancer_priority: Annotated[Optional[str], typer.Option(
-        help="Priority between gene window and enhancer annotations"
-    )] = None
-    
-    additional_baseline_annotation: Annotated[Optional[str], typer.Option(
-        help="Path of additional baseline annotations"
-    )] = None
-    
-    spots_per_chunk: Annotated[int, typer.Option(
-        help="Number of spots per chunk",
-        min=100,
-        max=10000
-    )] = 1000
-    
-    ld_wind: Annotated[int, typer.Option(
-        help="LD window size",
-        min=1,
-        max=10
-    )] = 1
-    
-    ld_unit: Annotated[str, typer.Option(
-        help="Unit for LD window",
-        case_sensitive=False
-    )] = "CM"
-    
-    # Additional fields
-    ldscore_save_format: str = "feather"
-    save_pre_calculate_snp_gene_weight_matrix: bool = False
-    baseline_annotation_dir: Optional[str] = None
-    SNP_gene_pair_dir: Optional[str] = None
+    def find_latent_config(self) -> FindLatentRepresentationsConfig:
+        return FindLatentRepresentationsConfig(
+            workdir=self.workdir,
+            project_name=self.project_name,
+            h5ad_yaml=self.h5ad_yaml,
+            annotation=self.annotation
+        )
+
+    @property
+    def latent2gene_config(self) -> LatentToGeneConfig:
+        return LatentToGeneConfig(
+            workdir=self.workdir,
+            project_name=self.project_name,
+            annotation=self.annotation,
+            use_gpu=self.use_gpu
+        )
+
+    @property
+    def spatial_ldsc_config(self) -> SpatialLDSCConfig:
+        return SpatialLDSCConfig(
+            workdir=self.workdir,
+            project_name=self.project_name,
+            trait_name=self.trait_name,
+            sumstats_file=self.sumstats_file
+        )
 
 
 @dataclass
 class CauchyCombinationConfig(ConfigWithAutoPaths):
     """Configuration for Cauchy combination test."""
     
-
     trait_name: Annotated[str, typer.Option(
         help="Name of the trait being analyzed"
     )]
@@ -1465,7 +113,6 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
     annotation: Annotated[str, typer.Option(
         help="Name of the annotation in adata.obs to use"
     )]
-
     
     sample_name_list: Annotated[Optional[str], typer.Option(
         help="Space-separated list of sample names"
@@ -1482,23 +129,18 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
             self.sample_name_list = self.sample_name_list.split()
         
         if self.sample_name is not None:
-            if self.sample_name_list and len(self.sample_name_list) > 0:
-                raise ValueError("Only one of sample_name and sample_name_list must be provided.")
-            else:
-                # Single sample case
-                self.sample_name_list = [self.sample_name]
-                if self.output_file is None:
-                    # Use single sample naming convention
-                    self.output_file = Path(
-                        f"{self.cauchy_save_dir}/{self.project_name}_single_sample_{self.sample_name}_{self.trait_name}.Cauchy.csv.gz"
-                    )
+             # This assumes sample_name is added to ConfigWithAutoPaths or used as intended
+             # For now, following original logic:
+             self.sample_name_list = [self.sample_name]
+             if self.output_file is None:
+                self.output_file = Path(
+                    f"{self.cauchy_save_dir}/{self.project_name}_single_sample_{self.sample_name}_{self.trait_name}.Cauchy.csv.gz"
+                )
         else:
-            # Multiple samples or all samples case
-            if not (self.sample_name_list and len(self.sample_name_list) > 0):
+            if not self.sample_name_list:
                 raise ValueError("At least one sample name must be provided via sample_name or sample_name_list.")
             
             if self.output_file is None:
-                # Use all samples naming convention when no specific sample_name provided
                 self.output_file = Path(
                     f"{self.cauchy_save_dir}/{self.project_name}_all_samples_{self.trait_name}.Cauchy.csv.gz"
                 )
@@ -1543,8 +185,6 @@ class CreateSliceMeanConfig:
     h5ad_dict: Optional[dict] = None
     
     def __post_init__(self):
-
-        
         # Parse lists if provided as strings
         if isinstance(self.sample_name_list, str):
             self.sample_name_list = self.sample_name_list.split()
@@ -1554,6 +194,7 @@ class CreateSliceMeanConfig:
         if self.h5ad_list is None and self.h5ad_yaml is None:
             raise ValueError("At least one of --h5ad_list or --h5ad_yaml must be provided.")
         
+        import yaml
         if self.h5ad_yaml is not None:
             if isinstance(self.h5ad_yaml, (str, Path)):
                 logger.info(f"Reading h5ad yaml file: {self.h5ad_yaml}")
@@ -1595,476 +236,106 @@ class CreateSliceMeanConfig:
 class FormatSumstatsConfig:
     """Configuration for formatting GWAS summary statistics."""
     
-    # Required parameters
     sumstats: Annotated[Path, typer.Option(
-        help="Path to GWAS summary data",
+        help="Path to the summary statistics file",
         exists=True,
         file_okay=True,
-        dir_okay=False
+        dir_okay=False,
+        resolve_path=True
     )]
     
     out: Annotated[Path, typer.Option(
-        help="Path to save the formatted GWAS data"
+        help="Path to save the formatted summary statistics"
     )]
     
-    # Optional column name specifications
-    snp: Annotated[Optional[str], typer.Option(
-        help="Name of SNP column"
+    # Optional parameters
+    n_col: Annotated[Optional[str], typer.Option(
+        help="Column name for sample size"
     )] = None
     
-    a1: Annotated[Optional[str], typer.Option(
-        help="Name of effect allele column"
+    n_val: Annotated[Optional[float], typer.Option(
+        help="Constant sample size value"
     )] = None
     
-    a2: Annotated[Optional[str], typer.Option(
-        help="Name of non-effect allele column"
+    snp_col: Annotated[str, typer.Option(
+        help="Column name for SNP ID"
+    )] = "SNP"
+    
+    a1_col: Annotated[str, typer.Option(
+        help="Column name for effect allele"
+    )] = "A1"
+    
+    a2_col: Annotated[str, typer.Option(
+        help="Column name for other allele"
+    )] = "A2"
+    
+    p_col: Annotated[str, typer.Option(
+        help="Column name for p-value"
+    )] = "P"
+    
+    signed_sumstats: Annotated[Optional[str], typer.Option(
+        help="Column name for signed summary statistics (e.g., Z, BETA, OR)"
     )] = None
     
-    info: Annotated[Optional[str], typer.Option(
-        help="Name of info column"
-    )] = None
-    
-    beta: Annotated[Optional[str], typer.Option(
-        help="Name of GWAS beta column"
-    )] = None
-    
-    se: Annotated[Optional[str], typer.Option(
-        help="Name of standard error of beta column"
-    )] = None
-    
-    p: Annotated[Optional[str], typer.Option(
-        help="Name of p-value column"
-    )] = None
-    
-    frq: Annotated[Optional[str], typer.Option(
-        help="Name of A1 frequency column"
-    )] = None
-    
-    n: Annotated[Optional[str], typer.Option(
-        help="Name of sample size column or constant value"
-    )] = None
-    
-    z: Annotated[Optional[str], typer.Option(
-        help="Name of GWAS Z-statistics column"
-    )] = None
-    
-    OR: Annotated[Optional[str], typer.Option(
-        help="Name of GWAS OR column"
-    )] = None
-    
-    se_OR: Annotated[Optional[str], typer.Option(
-        help="Name of standard error of OR column"
-    )] = None
-    
-    # SNP position columns
-    chr: Annotated[str, typer.Option(
-        help="Name of SNP chromosome column"
-    )] = "Chr"
-    
-    pos: Annotated[str, typer.Option(
-        help="Name of SNP positions column"
-    )] = "Pos"
-    
-    dbsnp: Annotated[Optional[Path], typer.Option(
-        help="Path to reference dbSNP file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
-    
-    chunksize: Annotated[int, typer.Option(
-        help="Chunk size for loading dbSNP file",
-        min=10000,
-        max=10000000
-    )] = 1000000
-    
-    # Output format and quality
-    format: Annotated[str, typer.Option(
-        help="Format of output data",
-        case_sensitive=False
-    )] = "gsMap"
-    
-    info_min: Annotated[float, typer.Option(
-        help="Minimum INFO score",
-        min=0.0,
-        max=1.0
-    )] = 0.9
-    
-    maf_min: Annotated[float, typer.Option(
-        help="Minimum MAF",
-        min=0.0,
-        max=0.5
-    )] = 0.01
-    
-    keep_chr_pos: Annotated[bool, typer.Option(
-        "--keep-chr-pos",
-        help="Keep SNP chromosome and position columns in output"
-    )] = False
+    def __post_init__(self):
+        if self.n_col is None and self.n_val is None:
+            raise ValueError("One of --n-col or --n-val must be provided.")
+        if self.n_col is not None and self.n_val is not None:
+            raise ValueError("Only one of --n-col or --n-val must be provided.")
 
 
 @dataclass
 class DiagnosisConfig(ConfigWithAutoPaths):
-    """Configuration for diagnostic plots and analysis."""
-    
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
-    
-    annotation: Annotated[str, typer.Option(
-        help="Annotation layer name"
-    )]
-    
-    trait_name: Annotated[str, typer.Option(
-        help="Name of the trait"
-    )]
-    
-    sumstats_file: Annotated[Path, typer.Option(
-        help="Path to GWAS summary statistics file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )]
-
-    plot_type: Annotated[str, typer.Option(
-        help="Type of diagnostic plot to generate",
-        case_sensitive=False
-    )] = "all"
-    
-    top_corr_genes: Annotated[int, typer.Option(
-        help="Number of top correlated genes",
-        min=1,
-        max=500
-    )] = 50
-    
-    selected_genes: Annotated[Optional[str], typer.Option(
-        help="Comma-separated list of specific genes"
-    )] = None
-    
-    fig_width: Annotated[Optional[int], typer.Option(
-        help="Width of the generated figures in pixels"
-    )] = None
-    
-    fig_height: Annotated[Optional[int], typer.Option(
-        help="Height of the generated figures in pixels"
-    )] = None
-    
-    point_size: Annotated[Optional[int], typer.Option(
-        help="Point size for the figures"
-    )] = None
-    
-    fig_style: Annotated[str, typer.Option(
-        help="Style of the generated figures",
-        case_sensitive=False
-    )] = "light"
-    
-    customize_fig: bool = False
-    
-    def __post_init__(self):
-        super().__post_init__()
-        import logging
-        logger = logging.getLogger("gsMap")
-        
-        if any([self.fig_width, self.fig_height, self.point_size]):
-            logger.info("Customizing the figure size and point size.")
-            assert all([self.fig_width, self.fig_height, self.point_size]), (
-                "All of fig_width, fig_height, and point_size must be provided."
-            )
-            self.customize_fig = True
-        else:
-            self.customize_fig = False
+    """Configuration for diagnosis command."""
+    # Placeholder for diagnosis config fields
+    pass
 
 
 @dataclass
 class VisualizeConfig(ConfigWithAutoPaths):
-    """Configuration for visualization."""
-    
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
-    
-    trait_name: Annotated[str, typer.Option(
-        help="Name of the trait"
-    )]
+    """Configuration for visualization command."""
+    # Placeholder for visualization config fields
+    pass
 
-    annotation: Annotated[Optional[str], typer.Option(
-        help="Annotation layer name"
-    )] = None
-    
-    fig_title: Annotated[Optional[str], typer.Option(
-        help="Figure title"
-    )] = None
-    
-    fig_height: Annotated[int, typer.Option(
-        help="Height of the figure",
-        min=100,
-        max=5000
-    )] = 600
-    
-    fig_width: Annotated[int, typer.Option(
-        help="Width of the figure",
-        min=100,
-        max=5000
-    )] = 800
-    
-    point_size: Annotated[Optional[int], typer.Option(
-        help="Point size for the figure"
-    )] = None
-    
-    fig_style: Annotated[str, typer.Option(
-        help="Style of the figure",
-        case_sensitive=False
-    )] = "light"
+
+@dataclass
+class ThreeDCombineConfig(ConfigWithAutoPaths):
+    """Configuration for 3D combine command."""
+    # Placeholder for 3D combine config fields
+    pass
 
 
 @dataclass
 class RunLinkModeConfig(ConfigWithAutoPaths):
-    """Configuration for running gsMap in link mode (pre-computed LD scores)."""
-    
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
-    
-    gsmap_resource_dir: Annotated[Path, typer.Option(
-        "--gsmap-resource-dir",
-        help="Directory containing gsMap resources",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-
-    annotation: Annotated[Optional[str], typer.Option(
-        help="Annotation in adata.obs to use"
-    )] = None
-    
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm"
-    )] = "spatial"
-    
-    trait_name: Annotated[Optional[str], typer.Option(
-        help="Name of the trait for GWAS analysis"
-    )] = None
-    
-    sumstats_file: Annotated[Optional[Path], typer.Option(
-        help="Path to GWAS summary statistics file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
-    
-    sumstats_config_file: Annotated[Optional[Path], typer.Option(
-        help="Path to YAML file with trait names and sumstats paths",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
-    
-    max_processes: Annotated[int, typer.Option(
-        help="Maximum number of processes for parallel execution",
-        min=1,
-        max=50
-    )] = 10
-    
-    use_pooling: Annotated[bool, typer.Option(
-        "--use-pooling",
-        help="Use pooling across sections"
-    )] = False
-    
-    # Hidden parameters (populated in __post_init__)
-    gtffile: Optional[Path] = None
-    bfile_root: Optional[str] = None
-    keep_snp_root: Optional[str] = None
-    w_file: Optional[str] = None
-    snp_feature_weight_adata_path: Optional[str] = None
-    baseline_annotation_dir: Optional[Path] = None
-    SNP_gene_pair_dir: Optional[Path] = None
-    sumstats_config_dict: Optional[dict] = None
-    
-    def __post_init__(self):
-        super().__post_init__()
-        from pathlib import Path
-        import yaml
-        
-        # Set resource paths
-        self.gtffile = Path(f"{self.gsmap_resource_dir}/genome_annotation/gtf/gencode.v46lift37.basic.annotation.gtf")
-        self.bfile_root = f"{self.gsmap_resource_dir}/LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
-        self.keep_snp_root = f"{self.gsmap_resource_dir}/LDSC_resource/hapmap3_snps/hm"
-        self.w_file = f"{self.gsmap_resource_dir}/LDSC_resource/weights_hm3_no_hla/weights."
-        self.snp_gene_weight_adata_path = f"{self.gsmap_resource_dir}/quick_mode/snp_gene_weight_matrix.h5ad"
-        self.baseline_annotation_dir = Path(f"{self.gsmap_resource_dir}/quick_mode/baseline").resolve()
-        self.SNP_gene_pair_dir = Path(f"{self.gsmap_resource_dir}/quick_mode/SNP_gene_pair").resolve()
-        
-        # Check resource files exist
-        if not self.gtffile.exists():
-            raise FileNotFoundError(f"GTF file {self.gtffile} does not exist.")
-        
-        # Validate sumstats inputs
-        if self.sumstats_file is None and self.sumstats_config_file is None:
-            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
-        if self.sumstats_file is not None and self.sumstats_config_file is not None:
-            raise ValueError("Only one of sumstats_file and sumstats_config_file must be provided.")
-        if self.sumstats_file is not None and self.trait_name is None:
-            raise ValueError("trait_name must be provided if sumstats_file is provided.")
-        if self.sumstats_config_file is not None and self.trait_name is not None:
-            raise ValueError("trait_name must not be provided if sumstats_config_file is provided.")
-        
-        self.sumstats_config_dict = {}
-        
-        # Load sumstats config
-        if self.sumstats_config_file is not None:
-            with open(self.sumstats_config_file) as f:
-                config = yaml.safe_load(f)
-            for trait_name, sumstats_file in config.items():
-                sumstats_path = Path(sumstats_file)
-                if not sumstats_path.exists():
-                    raise FileNotFoundError(f"{sumstats_file} does not exist.")
-                self.sumstats_config_dict[trait_name] = sumstats_file
-        elif self.sumstats_file is not None and self.trait_name is not None:
-            self.sumstats_config_dict[self.trait_name] = str(self.sumstats_file)
-        
-        # Verify all sumstats files exist
-        for sumstats_file in self.sumstats_config_dict.values():
-            if not Path(sumstats_file).exists():
-                raise FileNotFoundError(f"{sumstats_file} does not exist.")
+    """Configuration for running gsMap with linked mode."""
+    # Placeholder for link mode config fields
+    pass
 
 
 @dataclass
-class ThreeDCombineConfig:
-    """Configuration for 3D visualization and combination."""
-    
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    # Optional parameters
-    trait_name: Annotated[Optional[str], typer.Option(
-        help="Name of the trait"
-    )] = None
-    
-    adata_3d: Annotated[Optional[str], typer.Option(
-        help="Path to 3D anndata file"
-    )] = None
-    
-    project_name: Annotated[Optional[str], typer.Option(
-        help="Project name"
-    )] = None
-    
-    st_id: Annotated[Optional[str], typer.Option(
-        help="Spatial transcriptomics ID"
-    )] = None
-    
-    annotation: Annotated[Optional[str], typer.Option(
-        help="Annotation layer name"
-    )] = None
-    
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm"
-    )] = "spatial"
-    
-    cmap: Annotated[Optional[str], typer.Option(
-        help="Colormap for visualization"
-    )] = None
-    
-    point_size: Annotated[float, typer.Option(
-        help="Point size for 3D visualization",
-        min=0.001,
-        max=1.0
-    )] = 0.01
-    
-    background_color: Annotated[str, typer.Option(
-        help="Background color for visualization"
-    )] = "white"
-    
-    n_snapshot: Annotated[int, typer.Option(
-        help="Number of snapshots to generate",
-        min=1,
-        max=1000
-    )] = 200
-    
-    show_outline: Annotated[bool, typer.Option(
-        "--show-outline",
-        help="Show outline in visualization"
-    )] = False
-    
-    save_mp4: Annotated[bool, typer.Option(
-        "--save-mp4",
-        help="Save as MP4 video"
-    )] = False
-    
-    save_gif: Annotated[bool, typer.Option(
-        "--save-gif",
-        help="Save as GIF animation"
-    )] = False
-    
-    project_dir: Optional[Path] = None
-    
+class gsMapPipelineConfig(ConfigWithAutoPaths):
+    """Unified configuration for the complete gsMap pipeline"""
+
+    # Component configurations
+    find_latent: FindLatentRepresentationsConfig = None
+    latent2gene: LatentToGeneConfig = None
+    spatial_ldsc: SpatialLDSCConfig = None
+
     def __post_init__(self):
-        from pathlib import Path
-        
-        if self.workdir is None:
-            raise ValueError('workdir must be provided.')
-        work_dir = Path(self.workdir)
-        if self.project_name is not None:
-            self.project_dir = work_dir / self.project_name
-        else:
-            self.project_dir = work_dir
-
-
-# Helper function for homolog file verification
-def verify_homolog_file_format(config):
-    """Verify the format of homolog file."""
-    import logging
-    logger = logging.getLogger("gsMap")
-    
-    if config.homolog_file is not None:
-        logger.info(
-            f"User provided homolog file to map gene names to human: {config.homolog_file}"
-        )
-        # Check the format of the homolog file
-        with open(config.homolog_file) as f:
-            first_line = f.readline().strip()
-            _n_col = len(first_line.split())
-            if _n_col != 2:
-                raise ValueError(
-                    f"Invalid homolog file format. Expected 2 columns, first column should be other species gene name, "
-                    f"second column should be human gene name. Got {_n_col} columns in the first line."
-                )
-            else:
-                first_col_name, second_col_name = first_line.split()
-                config.species = first_col_name
-                logger.info(
-                    f"Homolog file provided and will map gene name from column1:{first_col_name} to column2:{second_col_name}"
-                )
-    else:
-        logger.info("No homolog file provided. Run in human mode.")
+        super().__post_init__()
+        # Initialize component configs if they weren't provided
+        if self.find_latent is None:
+            self.find_latent = FindLatentRepresentationsConfig(
+                workdir=self.workdir,
+                project_name=self.project_name
+            )
+        if self.latent2gene is None:
+            self.latent2gene = LatentToGeneConfig(
+                workdir=self.workdir,
+                project_name=self.project_name
+            )
+        if self.spatial_ldsc is None:
+            self.spatial_ldsc = SpatialLDSCConfig(
+                workdir=self.workdir,
+                project_name=self.project_name
+            )

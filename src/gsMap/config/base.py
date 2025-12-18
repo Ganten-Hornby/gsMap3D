@@ -183,12 +183,12 @@ class ConfigWithAutoPaths:
     @ensure_path_exists
     def get_ldsc_result_file(self, trait_name: str) -> Path:
         return Path(f"{self.ldsc_save_dir}/{self.project_name}_{trait_name}.csv.gz")
-    #
-    # #
-    # # @property
-    # # @ensure_path_exists
-    # # def ldscore_save_dir(self) -> Path:
-    # #     return Path(f"{self.workdir}/{self.sample_name}/generate_ldscore")
+
+    @property
+    @ensure_path_exists
+    def ldscore_save_dir(self) -> Path:
+        """Directory for LD score generation results"""
+        return self.project_dir / "generate_ldscore"
     #
     # @property
     # @ensure_path_exists
@@ -206,27 +206,6 @@ class ConfigWithAutoPaths:
 
 
 
-    #
-    #
-    # @property
-    # @ensure_path_exists
-    # def mkscore_feather_path(self) -> Path:
-    #     return Path(f'{self.project_dir}/latent_to_gene/mk_score/{self.sample_name}_gene_marker_score.feather')
-    #
-    # @property
-    # @ensure_path_exists
-    # def tuned_mkscore_feather_path(self) -> Path:
-    #     return Path(f'{self.project_dir}/latent_to_gene/mk_score_pooling/{self.sample_name}_gene_marker_score.feather')
-    #
-    # @property
-    # @ensure_path_exists
-    # def ldscore_save_dir(self) -> Path:
-    #     return Path(f'{self.project_dir}/generate_ldscore/{self.sample_name}')
-    #
-    # @property
-    # @ensure_path_exists
-    # def ldsc_save_dir(self) -> Path:
-    #     return Path(f'{self.project_dir}/spatial_ldsc/{self.sample_name}')
     
     @property
     @ensure_path_exists

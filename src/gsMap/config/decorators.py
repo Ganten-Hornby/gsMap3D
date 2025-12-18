@@ -181,30 +181,40 @@ def dataclass_typer(func):
         return result
     
     # Build new parameters from dataclass fields
+    from dataclasses import MISSING
     params = []
     for field in fields(config_class):
         # Only include fields with Annotated type hints in the CLI
         # This allows internal fields to be excluded from CLI parameters
-        
+
         # Check if the field type is Annotated
         if get_origin(field.type) != Annotated:
             continue
-        
+
         # Get the actual type and typer.Option from Annotated
         # Annotated[type, typer.Option(...)] -> type is at args[0]
         actual_type = get_args(field.type)[0]
-        
-        # Check if field has a default value
-        if field.default is not field.default_factory:
+
+        # Determine the default value
+        if field.default is not MISSING:
             # Field has a default value, use it as the parameter default
+            default_value = field.default
+        elif field.default_factory is not MISSING:
+            # Field has a default factory, call it to get the default value
+            default_value = field.default_factory()
+        else:
+            # No default, parameter is required
+            default_value = inspect.Parameter.empty
+
+        # Create the parameter
+        if default_value is not inspect.Parameter.empty:
             param = inspect.Parameter(
                 field.name,
                 inspect.Parameter.KEYWORD_ONLY,
                 annotation=field.type,  # Keep the full Annotated type
-                default=field.default
+                default=default_value
             )
         else:
-            # No default, parameter is required
             param = inspect.Parameter(
                 field.name,
                 inspect.Parameter.KEYWORD_ONLY,

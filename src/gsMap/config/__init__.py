@@ -23,11 +23,6 @@ subcommand = namedtuple("subcommand", ["name", "func", "add_args_function", "des
 # Configuration dataclasses
 from .dataclasses import (
     RunAllModeConfig,
-    FindLatentRepresentationsConfig,
-    LatentToGeneConfig,
-    SpatialLDSCConfig,
-    ReportConfig,
-    GenerateLDScoreConfig,
     CauchyCombinationConfig,
     CreateSliceMeanConfig,
     FormatSumstatsConfig,
@@ -35,10 +30,15 @@ from .dataclasses import (
     VisualizeConfig,
     ThreeDCombineConfig,
     RunLinkModeConfig,
-    DatasetType,
-    MarkerScoreCrossSliceStrategy,
     gsMapPipelineConfig
 )
+
+# Migrated module configurations
+from gsMap.find_latent.config import FindLatentRepresentationsConfig
+from gsMap.latent2gene.config import LatentToGeneConfig, DatasetType, MarkerScoreCrossSliceStrategy
+from gsMap.spatial_ldsc.config import SpatialLDSCConfig
+from gsMap.report.config import ReportConfig
+from gsMap.ldscore.config import LDScoreConfig, GenerateLDScoreConfig
 
 __all__ = [
     # Base classes
