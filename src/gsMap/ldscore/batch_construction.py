@@ -42,7 +42,8 @@ def construct_batches(
     bim_df: pd.DataFrame,
     hm3_snp_names: List[str],
     batch_size_hm3: int,
-    window_size_bp: int = 1_000_000,
+    ld_wind: float = 1.0,
+    ld_unit: str = "CM",
 ) -> List[BatchInfo]:
     """
     Construct batches of HM3 SNPs with reference block boundaries.
@@ -57,8 +58,10 @@ def construct_batches(
         List of HM3 SNP names for this chromosome
     batch_size_hm3 : int
         Number of HM3 SNPs per batch
-    window_size_bp : int
-        LD window size in base pairs (default: 1Mb)
+    ld_wind : float
+        LD window size (default: 1.0)
+    ld_unit : str
+        Unit for LD window: 'SNP', 'KB', 'CM' (default: 'CM')
 
     Returns
     -------
@@ -69,8 +72,25 @@ def construct_batches(
 
     # Pre-extract arrays for performance
     bim_snps = bim_df["SNP"].values
-    bim_positions = bim_df["BP"].values
     
+    # helper to get coordinates based on unit
+    if ld_unit == "SNP":
+        coords = np.arange(len(bim_df))
+        max_dist = int(ld_wind)
+    elif ld_unit == "KB":
+        coords = bim_df["BP"].values
+        max_dist = ld_wind * 1000
+    elif ld_unit == "CM":
+        coords = bim_df["CM"].values
+        max_dist = ld_wind
+        # Fallback if CM is all zero
+        if np.all(coords == 0):
+            logger.warning(f"All CM values are 0 for chromosome {chromosome}. Fallback to 1MB window (BP).")
+            coords = bim_df["BP"].values
+            max_dist = 1_000_000
+    else:
+        raise ValueError(f"Invalid ld_unit: {ld_unit}. Must be 'SNP', 'KB', or 'CM'.")
+
     # Find indices of HM3 SNPs in BIM
     hm3_set = set(hm3_snp_names)
     # np.isin on strings is very slow, use pandas isin instead
@@ -104,25 +124,28 @@ def construct_batches(
     # Last HM3 SNP in each batch (indices are exclusive in slice, so -1 for element access)
     batch_end_bim_indices = hm3_indices_all[batch_ends - 1]
     
-    # Get positions
-    min_pos = bim_positions[batch_start_bim_indices]
-    max_pos = bim_positions[batch_end_bim_indices]
+    # Get coordinates for these batch boundaries
+    min_coords = coords[batch_start_bim_indices]
+    max_coords = coords[batch_end_bim_indices]
     
     # Calculate window boundaries
-    window_starts = min_pos - window_size_bp
-    window_ends = max_pos + window_size_bp
+    window_starts = min_coords - max_dist
+    window_ends = max_coords + max_dist
     
-    # Vectorized searchsorted
-    # Find insertion points for all window starts and ends at once
-    ref_starts = np.searchsorted(bim_positions, window_starts, side='left')
-    ref_ends = np.searchsorted(bim_positions, window_ends, side='right')
+    if ld_unit == "SNP":
+        # For SNP unit, coordinates are indices, so we just clip
+        ref_starts = np.maximum(window_starts, 0).astype(int)
+        ref_ends = np.minimum(window_ends, len(coords)).astype(int)
+    else:
+        # Vectorized searchsorted
+        # Find insertion points for all window starts and ends at once
+        ref_starts = np.searchsorted(coords, window_starts, side='left')
+        ref_ends = np.searchsorted(coords, window_ends, side='right')
     
     # Construct BatchInfo objects
     batch_infos = []
     for i in range(n_batches):
         # Slice the HM3 indices for this batch
-        # This is the only part that might still be a bit slow if n_batches is huge,
-        # but it's much faster than the searchsorted loop.
         b_hm3_indices = hm3_indices_all[batch_starts[i]:batch_ends[i]]
         
         batch_infos.append(BatchInfo(

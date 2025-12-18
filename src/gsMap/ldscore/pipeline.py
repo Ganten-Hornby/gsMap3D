@@ -73,7 +73,7 @@ class LDScorePipeline:
         logger.info(f"PLINK template: {config.bfile_root}")
         logger.info(f"HM3 directory: {config.hm3_snp_path}")
         logger.info(f"Batch size (HM3): {config.batch_size_hm3}")
-        logger.info(f"LD window: {config.window_size_bp:,} bp")
+        logger.info(f"LD window: {config.ld_wind} {config.ld_unit}")
         logger.info(f"MAF filter: {config.maf_min}")
         logger.info(f"Chromosomes: {config.chromosomes}")
         logger.info(f"Output Directory: {config.output_dir}")
@@ -243,7 +243,7 @@ class LDScorePipeline:
             bim_df=reader.bim,
             mapping_type=self.config.mapping_type,
             mapping_data=mapping_data,
-            window_size=self.config.window_size,
+            feature_window_size=self.config.feature_window_size,
             strategy=self.config.strategy,
         )
 
@@ -369,7 +369,8 @@ class LDScorePipeline:
             bim_df=reader.bim,
             hm3_snp_names=target_hm3_snps,
             batch_size_hm3=self.config.batch_size_hm3,
-            window_size_bp=self.config.window_size_bp,
+            ld_wind=self.config.ld_wind,
+            ld_unit=self.config.ld_unit,
         )
 
         if len(batch_infos) == 0:
@@ -472,7 +473,8 @@ class LDScorePipeline:
             bim_df=reader.bim,
             hm3_snp_names=available_hm3,
             batch_size_hm3=self.config.batch_size_hm3,
-            window_size_bp=self.config.window_size_bp,
+            ld_wind=self.config.ld_wind,
+            ld_unit=self.config.ld_unit,
         )
 
         logger.info(f"  w_ld: Processing {len(batch_infos)} batches for {len(available_hm3)} SNPs")

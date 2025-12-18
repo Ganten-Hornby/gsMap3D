@@ -12,7 +12,7 @@ def create_snp_feature_map(
         bim_df: pd.DataFrame,
         mapping_type: str,
         mapping_data: Union[pd.DataFrame, Dict[str, str]],
-        window_size: int = 0,
+        feature_window_size: int = 0,
         strategy: str = "score",
 ) -> Tuple[scipy.sparse.csr_matrix, List[str], Optional[pd.DataFrame]]:
     """
@@ -47,7 +47,7 @@ def create_snp_feature_map(
         - Strand (optional, from 6th column)
 
         Note: BED files should be in standard BED6 format WITHOUT a header line.
-    window_size : int
+    feature_window_size : int
         Window extension (for 'bed').
     strategy : str
         'score', 'tss', 'center', or 'allow_repeat'.
@@ -146,8 +146,8 @@ def create_snp_feature_map(
             )
 
         # 4. Apply Window Size
-        df_features['Start'] = np.maximum(0, df_features['Start'] - window_size)
-        df_features['End'] = df_features['End'] + window_size
+        df_features['Start'] = np.maximum(0, df_features['Start'] - feature_window_size)
+        df_features['End'] = df_features['End'] + feature_window_size
 
         pr_features = pr.PyRanges(df_features)
 

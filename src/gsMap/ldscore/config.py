@@ -35,11 +35,12 @@ class LDScoreConfig:
     annot_file: Optional[str] = None
 
     # Mapping Strategy parameters
-    window_size: int = 0  # bp window for mapping (e.g. TSS window)
+    feature_window_size: int = 0  # bp window for mapping (e.g. TSS window)
     strategy: str = "score"  # 'score', 'tss', 'center', 'allow_repeat'
 
     # LD Calculation parameters
-    window_size_bp: int = 1_000_000  # LD window size
+    ld_wind: float = 1.0  # LD window size (default 1.0 CM)
+    ld_unit: str = "CM"   # 'SNP', 'KB', 'CM'
     maf_min: float = 0.01  # Minimum MAF filter
 
     # Computation
