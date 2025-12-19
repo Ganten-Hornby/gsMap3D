@@ -10,6 +10,7 @@ import typer
 
 from gsMap.config import (
     dataclass_typer,
+    QuickModeConfig,
     RunAllModeConfig,
     FindLatentRepresentationsConfig,
     LatentToGeneConfig,
@@ -35,40 +36,43 @@ app = typer.Typer(
 # CLI Commands using dataclass_typer decorator
 # ============================================================================
 
-# @app.command(name="quick-mode")
-# @dataclass_typer
-# def quick_mode(config: RunAllModeConfig):
-#     """
-#     Run the complete gsMap pipeline with all steps.
-#
-#     This command runs the full gsMap analysis pipeline including:
-#     - Data loading and preprocessing
-#     - Gene expression analysis
-#     - GWAS integration
-#     - Spatial mapping
-#     - Result generation
-#     """
-#     logger.info(f"Sample: {config.sample_name}")
-#     logger.info(f"Trait: {config.trait_name}")
-#     logger.info(f"Working directory: {config.workdir}")
-#     logger.info(f"Project directory: {config.project_dir}")
-#
-#     # Show some auto-generated paths
-#     logger.info(f"Model will be saved to: {config.model_path}")
-#     logger.info(f"LD scores will be saved to: {config.ldscore_save_dir}")
-#     logger.info(f"Report will be saved to: {config.get_report_dir(config.trait_name)}")
-#
-#     if config.use_jax:
-#         logger.info("JAX acceleration enabled")
-#
-#     try:
-#         from gsMap.run_all_mode import run_pipeline
-#         run_pipeline(config)
-#         logger.info("✓ Pipeline completed successfully!")
-#     except (ImportError, AttributeError) as e:
-#         logger.info(f"Note: {e}")
-#         logger.info("Running in demo mode...")
-#         logger.info("✓ Demo completed!")
+@app.command(name="quick-mode")
+@dataclass_typer
+def quick_mode(config: QuickModeConfig):
+    """
+    Run the complete gsMap pipeline with all steps.
+
+    This command runs the gsMap analysis pipeline including:
+    - Data loading and preprocessing (Find Latent)
+    - Gene expression analysis (Latent to Gene)
+    - GWAS integration (Spatial LDSC)
+    - Cauchy Combination Test
+    - Result generation (Report)
+    
+    Requires pre-generated SNP-gene weight matrix and LD weights.
+    """
+    logger.info(f"Starting Quick Mode Pipeline")
+    logger.info(f"Sample: {config.project_name}")
+    logger.info(f"Trait: {config.trait_name}")
+    logger.info(f"Working directory: {config.workdir}")
+    
+    # Show some auto-generated paths
+    logger.info(f"Latent dir: {config.latent_dir}")
+    logger.info(f"Report will be saved to: {config.get_report_dir(config.trait_name)}")
+
+    if config.use_gpu:
+        logger.info("GPU acceleration enabled")
+
+    try:
+        from gsMap.pipeline.quick_mode import run_quick_mode
+        run_quick_mode(config)
+        logger.info("✓ Pipeline completed successfully!")
+    except (ImportError, AttributeError) as e:
+        logger.error(f"Error executing pipeline: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Execution Error: {e}")
+        raise
 
 
 @app.command(name="find-latent")

@@ -1,0 +1,194 @@
+
+import logging
+import time
+from pathlib import Path
+import yaml
+
+from gsMap.config import QuickModeConfig
+from gsMap.find_latent import run_find_latent_representation
+from gsMap.latent2gene import run_latent_to_gene
+from gsMap.spatial_ldsc.spatial_ldsc_multiple_sumstats import run_spatial_ldsc
+from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
+from gsMap.cauchy_combination_test import run_Cauchy_combination
+from gsMap.report import run_report
+
+logger = logging.getLogger("gsMap.pipeline")
+
+def format_duration(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    else:
+        return f"{minutes}m {int(seconds % 60)}s"
+
+def check_find_latent_done(config):
+    """
+    Check if find_latent step is done by verifying validity of metadata and output files.
+    """
+    metadata_path = config.find_latent_metadata_path
+    if not metadata_path.exists():
+        return False
+        
+    try:
+        with open(metadata_path, 'r') as f:
+            metadata = yaml.safe_load(f)
+            
+        if 'outputs' not in metadata or 'latent_files' not in metadata['outputs']:
+            return False
+            
+        latent_files = metadata['outputs']['latent_files']
+        if not latent_files:
+            return False
+            
+        # Verify all listed files exist
+        all_exist = True
+        for sample, path_str in latent_files.items():
+            if not Path(path_str).exists():
+                all_exist = False
+                break
+        return all_exist
+    except Exception as e:
+        logger.warning(f"Error checking find_latent metadata: {e}")
+        return False
+
+def run_quick_mode(config: QuickModeConfig):
+    """
+    Run the Quick Mode pipeline.
+    """
+    logger.info("Starting Quick Mode pipeline")
+    pipeline_start_time = time.time()
+    
+    steps = ["find_latent", "latent2gene", "spatial_ldsc", "cauchy", "report"]
+    try:
+        start_idx = steps.index(config.start_step)
+    except ValueError:
+        raise ValueError(f"Invalid start_step: {config.start_step}. Must be one of {steps}")
+        
+    stop_idx = len(steps) - 1
+    if config.stop_step:
+        try:
+            stop_idx = steps.index(config.stop_step)
+        except ValueError:
+            raise ValueError(f"Invalid stop_step: {config.stop_step}. Must be one of {steps}")
+            
+    if start_idx > stop_idx:
+        raise ValueError(f"start_step ({config.start_step}) must be before or equal to stop_step ({config.stop_step})")
+
+    # Step 1: Find Latent Representations
+    if start_idx <= 0 <= stop_idx:
+        logger.info("=== Step 1: Find Latent Representations ===")
+        start_time = time.time()
+        
+        find_latent_config = config.find_latent_config
+        if check_find_latent_done(find_latent_config):
+            logger.info(f"Find latent representations already done (verified via {find_latent_config.find_latent_metadata_path}). Skipping...")
+        else:
+            run_find_latent_representation(find_latent_config)
+            
+        logger.info(f"Step 1 completed in {format_duration(time.time() - start_time)}")
+
+    # Step 2: Latent to Gene
+    if start_idx <= 1 <= stop_idx:
+        logger.info("=== Step 2: Latent to Gene Mapping ===")
+        start_time = time.time()
+        
+        l2g_config = config.latent2gene_config
+        if l2g_config.mkscore_feather_path.exists(): 
+             logger.info(f"Marker scores already exist at {l2g_config.mkscore_feather_path}. Skipping...")
+        else:
+            run_latent_to_gene(l2g_config)
+            
+        logger.info(f"Step 2 completed in {format_duration(time.time() - start_time)}")
+        
+    # Get lists of traits to process
+    if not config.sumstats_config_dict:
+        # Check if we should warn? Only if running step 3,4,5
+        if start_idx <= 4 and stop_idx >= 2:
+             logger.warning("No summary statistics provided. Steps requiring GWAS data (Spatial LDSC, Cauchy, Report) may fail or do nothing if relying on them.")
+    
+    traits_to_process = config.sumstats_config_dict
+
+    # Step 3: Spatial LDSC
+    if start_idx <= 2 <= stop_idx:
+        logger.info("=== Step 3: Spatial LDSC ===")
+        start_time = time.time()
+        
+        sldsc_config = config.spatial_ldsc_config
+        
+        # Filter completed traits if not using JAX (JAX has internal check, but checking here gives better logs/control)
+        # Note: SpatialLDSCConfig.sumstats_config_dict contains the traits to run.
+        # We can modify it to exclude completed ones.
+        
+        traits_remaining = {}
+        for trait_name, sumstats_path in traits_to_process.items():
+            result_file = sldsc_config.get_ldsc_result_file(trait_name)
+            if result_file.exists():
+                logger.info(f"Spatial LDSC result already exists for {trait_name} at {result_file}. Skipping...")
+            else:
+                traits_remaining[trait_name] = sumstats_path
+        
+        if not traits_remaining:
+            logger.info("All traits have been processed for Spatial LDSC. Skipping step...")
+        else:
+            # Update config to run only remaining traits
+            sldsc_config.sumstats_config_dict = traits_remaining
+            
+            if sldsc_config.use_jax:
+                run_spatial_ldsc_jax(sldsc_config)
+            else:
+                run_spatial_ldsc(sldsc_config)
+                
+        logger.info(f"Step 3 completed in {format_duration(time.time() - start_time)}")
+        
+    # Step 4: Cauchy Combination
+    if start_idx <= 3 <= stop_idx:
+        logger.info("=== Step 4: Cauchy Combination ===")
+        start_time = time.time()
+
+        for trait_name in traits_to_process:
+            logger.info(f"--- Processing Cauchy for {trait_name} ---")
+            cauchy_config = config.get_cauchy_config(trait_name)
+            cauchy_result = cauchy_config.get_cauchy_result_file(trait_name)
+            
+            if cauchy_result.exists():
+                 logger.info(f"Cauchy result exists at {cauchy_result}. Skipping...")
+            else:
+                 run_Cauchy_combination(cauchy_config)
+
+        logger.info(f"Step 4 completed in {format_duration(time.time() - start_time)}")
+
+    # Step 5: Report
+    if start_idx <= 4 <= stop_idx:
+        logger.info("=== Step 5: Generate Report ===")
+        start_time = time.time()
+        
+        for trait_name, sumstats_file in traits_to_process.items():
+            logger.info(f"--- Generating Report for {trait_name} ---")
+            report_config = config.get_report_config(trait_name, sumstats_file)
+            report_file = report_config.get_gsMap_report_file(trait_name)
+            
+            if report_file.exists():
+                logger.info(f"Report already exists at {report_file}. Skipping...")
+            else:
+                # Construct run_parameters dict for the report
+                run_params = {
+                    "Sample Name": config.project_name, 
+                    "Trait Name": trait_name,
+                    "Summary Statistics File": str(sumstats_file),
+                    "Number of Processes": config.num_processes,
+                    "Spatial LDSC Save Directory": str(config.spatial_ldsc_config.ldsc_save_dir),
+                    "Cauchy Directory": str(config.get_cauchy_config(trait_name).cauchy_save_dir),
+                    "Report Directory": str(report_config.get_report_dir(trait_name)),
+                    "Spending Time": format_duration(time.time() - pipeline_start_time),
+                }
+                if config.h5ad_yaml:
+                     run_params["H5AD YAML"] = str(config.h5ad_yaml)
+                elif config.h5ad_path:
+                     run_params["H5AD Paths"] = str(config.h5ad_path)
+                
+                run_report(report_config, run_parameters=run_params)
+            
+        logger.info(f"Step 5 completed in {format_duration(time.time() - start_time)}")
+
+    logger.info(f"Pipeline completed successfully in {format_duration(time.time() - pipeline_start_time)}")
