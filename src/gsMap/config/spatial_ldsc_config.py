@@ -15,11 +15,11 @@ logger = logging.getLogger("gsMap.config")
 
 @dataclass
 class SpatialLDSCConfig(ConfigWithAutoPaths):
-    w_file: Annotated[Optional[Path], typer.Option(
-        help="Path to the weights file",
+    w_ld_dir: Annotated[Optional[Path], typer.Option(
+        help="Directory containing the weights files (w_ld)",
         exists=True,
-        file_okay=True,
-        dir_okay=False,
+        file_okay=False,
+        dir_okay=True,
         resolve_path=True
     )] = None
 
@@ -270,17 +270,16 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         if self.snp_gene_weight_adata_path is None:
             raise ValueError("snp_gene_weight_adata_path must be provided.")
 
-        # # Handle w_file
-        # if self.w_file is None:
-        #     w_ld_dir = Path(self.ldscore_save_dir) / "w_ld"
-        #     if w_ld_dir.exists():
-        #         self.w_file = str(w_ld_dir / "weights.")
-        #         logger.info(f"Using weights generated in the generate_ldscore step: {self.w_file}")
-        #     else:
-        #         raise ValueError(
-        #             "No w_file provided and no weights found in generate_ldscore output. "
-        #             "Either provide --w_file or run generate_ldscore first."
-        #         )
-        # else:
-        #     logger.info(f"Using provided weights file: {self.w_file}")
-        #
+        # Handle w_ld_dir
+        if self.w_ld_dir is None:
+            w_ld_dir = Path(self.ldscore_save_dir) / "w_ld"
+            if w_ld_dir.exists():
+                self.w_ld_dir = w_ld_dir
+                logger.info(f"Using weights directory generated in the generate_ldscore step: {self.w_ld_dir}")
+            else:
+                raise ValueError(
+                    "No w_ld_dir provided and no weights directory found in generate_ldscore output. "
+                    "Either provide --w-ld-dir or run generate_ldscore first."
+                )
+        else:
+            logger.info(f"Using provided weights directory: {self.w_ld_dir}")        #

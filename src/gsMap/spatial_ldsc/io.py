@@ -142,17 +142,21 @@ def _read_ref_ld_v2(ld_file):
     return ref_ld
 
 
-def _read_w_ld(w_file):
+def _read_w_ld(w_ld_dir):
     """Read LD weights for all chromosomes."""
     suffix = ".l2.ldscore"
-    logger.info(f"Reading LD score annotations from {w_file}[1-22]{suffix}...")
+    # Construct the base path for weights files. 
+    # The files are expected to be named like "weights.[chr].l2.ldscore*"
+    # so we construct a pattern like "path/to/w_ld_dir/weights."
+    w_file_pattern = str(Path(w_ld_dir) / "weights.")
+    logger.info(f"Reading LD score annotations from {w_file_pattern}[1-22]{suffix}...")
 
     # Get the chromosome files
-    chr_files = _read_chr_files(w_file, suffix)
+    chr_files = _read_chr_files(w_file_pattern, suffix)
 
     if not chr_files:
-        logger.error(f"No LD score files found matching pattern: {w_file}*{suffix}*")
-        raise FileNotFoundError(f"No LD score files found matching pattern: {w_file}*{suffix}*")
+        logger.error(f"No LD score files found matching pattern: {w_file_pattern}*{suffix}* inside {w_ld_dir}")
+        raise FileNotFoundError(f"No LD score files found matching pattern: {w_file_pattern}*{suffix}* inside {w_ld_dir}")
 
     # Read and process each file
     w_array = []
@@ -216,7 +220,7 @@ def load_common_resources(config: SpatialLDSCConfig) -> Tuple[pd.DataFrame, pd.D
     log_memory_usage("before loading common resources")
 
     # 1. Load weights
-    w_ld = _read_w_ld(config.w_file)
+    w_ld = _read_w_ld(config.w_ld_dir)
     w_ld.set_index("SNP", inplace=True)
 
     # 2. Load SNP-gene weight matrix
