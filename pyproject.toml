@@ -20,7 +20,7 @@ classifiers = [
 version = "1.73.7.a1"
 description = "Genetically informed spatial mapping of cells for complex traits"
 dependencies = [
-    "numpy",
+    "numpy ~= 2.2",
     "pandas",
     "scipy",
     "scikit-learn",
@@ -28,8 +28,8 @@ dependencies = [
     "seaborn",
     "tqdm",
     "pyyaml",
-    "torch",
-    "torch-geometric",
+    "torch ~= 2.5",
+    "torch-geometric ~= 2.7",
     "pyranges",
     "pyfiglet",
     'plotly',
