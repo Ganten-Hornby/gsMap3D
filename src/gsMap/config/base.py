@@ -35,25 +35,25 @@ def config_logger():
     )
     logger.addHandler(rich_handler)
     
-    # Create file handler for DEBUG level messages with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / f"gsMap_{timestamp}.log"
-    
-    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(
-        logging.Formatter(
-            "[{asctime}] {levelname:.5s} | {name}:{funcName}:{lineno} - {message}", 
-            style="{"
-        )
-    )
-    logger.addHandler(file_handler)
-    
-    # Log the setup
-    logger.info(f"Logging configured - console: INFO+, file: DEBUG+ -> {log_file}")
-    
+    # # Create file handler for DEBUG level messages with timestamp
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # log_dir = Path("logs")
+    # log_dir.mkdir(exist_ok=True)
+    # log_file = log_dir / f"gsMap_{timestamp}.log"
+    #
+    # file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    # file_handler.setLevel(logging.DEBUG)
+    # file_handler.setFormatter(
+    #     logging.Formatter(
+    #         "[{asctime}] {levelname:.5s} | {name}:{funcName}:{lineno} - {message}",
+    #         style="{"
+    #     )
+    # )
+    # logger.addHandler(file_handler)
+    #
+    # # Log the setup
+    # logger.info(f"Logging configured - console: INFO+, file: DEBUG+ -> {log_file}")
+    #
     return logger
 
 config_logger()

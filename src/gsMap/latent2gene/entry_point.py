@@ -9,7 +9,7 @@ import yaml
 
 from .rank_calculator import RankCalculator
 from .marker_scores import MarkerScoreCalculator
-from .config import LatentToGeneConfig
+from gsMap.config import LatentToGeneConfig
 from .memmap_io import MemMapDense
 
 logger = logging.getLogger(__name__)

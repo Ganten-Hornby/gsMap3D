@@ -78,7 +78,7 @@ class LDScoreConfig:
     )] = 0.01
 
     # Computation
-    chromosomes: Annotated[str | List[str], typer.Option(
+    chromosomes: Annotated[str, typer.Option(
         help="Chromosomes to process (e.g., '1,2,22' or 'all')"
     )] = "all"
 

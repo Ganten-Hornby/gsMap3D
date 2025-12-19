@@ -34,11 +34,11 @@ from .dataclasses import (
 )
 
 # Migrated module configurations
-from gsMap.find_latent.config import FindLatentRepresentationsConfig
-from gsMap.latent2gene.config import LatentToGeneConfig, DatasetType, MarkerScoreCrossSliceStrategy
-from gsMap.spatial_ldsc.config import SpatialLDSCConfig
-from gsMap.report.config import ReportConfig
-from gsMap.ldscore.config import LDScoreConfig, GenerateLDScoreConfig
+from .find_latent_config import FindLatentRepresentationsConfig
+from .latent2gene_config import LatentToGeneConfig, DatasetType, MarkerScoreCrossSliceStrategy
+from .spatial_ldsc_config import SpatialLDSCConfig
+from .report_config import ReportConfig
+from .ldscore_config import LDScoreConfig, GenerateLDScoreConfig
 
 __all__ = [
     # Base classes

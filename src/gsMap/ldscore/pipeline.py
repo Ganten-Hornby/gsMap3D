@@ -30,7 +30,7 @@ from .compute import (
     compute_batch_weights_sparse,
 )
 from .mapping import create_snp_feature_map
-from .config import LDScoreConfig
+from gsMap.config import LDScoreConfig
 
 logger = logging.getLogger(__name__)
 

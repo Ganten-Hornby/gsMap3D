@@ -27,7 +27,7 @@ from jax import jit
 from .memmap_io import MemMapDense
 from .connectivity import ConnectivityMatrixBuilder
 from .row_ordering_jax import optimize_row_order_jax
-from .config import MarkerScoreCrossSliceStrategy, DatasetType
+from gsMap.config import MarkerScoreCrossSliceStrategy, DatasetType
 
 
 logger = logging.getLogger(__name__)

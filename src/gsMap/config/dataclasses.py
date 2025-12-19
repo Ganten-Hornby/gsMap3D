@@ -20,9 +20,9 @@ from .utils import (
 )
 
 # Import module-specific configs for orchestration
-from gsMap.find_latent.config import FindLatentRepresentationsConfig
-from gsMap.latent2gene.config import LatentToGeneConfig
-from gsMap.spatial_ldsc.config import SpatialLDSCConfig
+from .find_latent_config import FindLatentRepresentationsConfig
+from .latent2gene_config import LatentToGeneConfig
+from .spatial_ldsc_config import SpatialLDSCConfig
 
 
 logger = logging.getLogger("gsMap.config")

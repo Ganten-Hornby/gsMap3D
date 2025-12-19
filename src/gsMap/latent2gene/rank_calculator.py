@@ -23,7 +23,7 @@ from scipy.sparse import csr_matrix
 from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn
 import jax.scipy
 import anndata as ad
-from .config import LatentToGeneConfig
+from gsMap.config import LatentToGeneConfig
 from .memmap_io import MemMapDense
 
 logger = logging.getLogger(__name__)

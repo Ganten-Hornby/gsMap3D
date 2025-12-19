@@ -18,7 +18,7 @@ from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn,
 import scanpy as sc
 import anndata as ad
 
-from .config import LatentToGeneConfig, MarkerScoreCrossSliceStrategy, DatasetType
+from gsMap.config import LatentToGeneConfig, MarkerScoreCrossSliceStrategy, DatasetType
 
 logger = logging.getLogger(__name__)
 

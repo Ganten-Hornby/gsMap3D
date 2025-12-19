@@ -15,6 +15,7 @@ from gsMap.config import (
     LatentToGeneConfig,
     SpatialLDSCConfig,
     ReportConfig,
+    LDScoreConfig,
 )
 
 # Setup logging
@@ -218,6 +219,35 @@ def generate_report(config: ReportConfig):
     except ImportError:
         logger.info("Running in demo mode...")
         logger.info("✓ Demo completed!")
+
+
+@app.command(name="ldscore-weight-matrix")
+@dataclass_typer
+def ldscore_weight_matrix(config: LDScoreConfig):
+    """
+    Compute LD score weight matrices for features.
+
+    This command runs the LDScorePipeline to:
+    - Load genotypes (PLINK)
+    - Load feature mappings (BED/Dict) or Annotations
+    - Compute LD-based weights between SNPs and Features
+    - Save results as AnnData (.h5ad)
+    """
+    logger.info(f"Command: ldscore-weight-matrix")
+    logger.info(f"Target Chromosomes: {config.chromosomes}")
+    logger.info(f"Output Directory: {config.output_dir}")
+
+    try:
+        from gsMap.ldscore.pipeline import LDScorePipeline
+        pipeline = LDScorePipeline(config)
+        pipeline.run()
+        logger.info("✓ LDScore Pipeline completed successfully!")
+    except ImportError as e:
+        logger.error(f"Import Error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Execution Error: {e}")
+        raise
 
 
 def version_callback(value: bool):
