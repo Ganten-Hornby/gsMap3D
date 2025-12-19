@@ -24,8 +24,12 @@ class LDScoreConfig:
         help="Reference panel prefix template (e.g., 'data/1000G.{chr}')"
     )]
 
-    hm3_snp_path: Annotated[str, typer.Option(
-        help="Path to HM3 SNP list"
+    hm3_snp_path: Annotated[Path, typer.Option(
+        help="Path to HM3 SNP list",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
     )]
 
     output_dir: Annotated[Optional[Path], typer.Option(
@@ -37,8 +41,12 @@ class LDScoreConfig:
     )] = "ld_score_weights"
 
     # Omics Input
-    omics_h5ad_path: Annotated[Optional[str], typer.Option(
-        help="Path to omics H5AD file"
+    omics_h5ad_path: Annotated[Optional[Path], typer.Option(
+        help="Path to omics H5AD file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
     )] = None
 
     # Mapping Input (Strategy A/B)
@@ -46,8 +54,12 @@ class LDScoreConfig:
          help="Mapping type: 'bed' or 'dict'"
     )] = "bed"
 
-    mapping_file: Annotated[Optional[str], typer.Option(
-        help="Path to mapping file"
+    mapping_file: Annotated[Optional[Path], typer.Option(
+        help="Path to mapping file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
     )] = None
 
     # Annotation Input (Strategy C - Direct Annotation Matrix)
@@ -91,7 +103,7 @@ class LDScoreConfig:
         help="Whether to calculate w_ld"
     )] = False
 
-    w_ld_dir: Annotated[Optional[str], typer.Option(
+    w_ld_dir: Annotated[Optional[Path], typer.Option(
         help="Directory for w_ld outputs"
     )] = None
 

@@ -119,7 +119,10 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
     )] = None
     
     output_file: Annotated[Optional[Path], typer.Option(
-        help="Path to save the combined Cauchy results"
+        help="Path to save the combined Cauchy results",
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
     )] = None
     
     def __post_init__(self):
@@ -151,7 +154,9 @@ class CreateSliceMeanConfig:
     """Configuration for creating slice mean from multiple h5ad files."""
     
     slice_mean_output_file: Annotated[Path, typer.Option(
-        help="Path to the output file for the slice mean"
+        help="Path to the output file for the slice mean",
+        dir_okay=False,
+        resolve_path=True
     )]
     
     sample_name_list: Annotated[str, typer.Option(
@@ -245,7 +250,10 @@ class FormatSumstatsConfig:
     )]
     
     out: Annotated[Path, typer.Option(
-        help="Path to save the formatted summary statistics"
+        help="Path to save the formatted summary statistics",
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
     )]
     
     # Optional parameters

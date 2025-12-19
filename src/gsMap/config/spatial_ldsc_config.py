@@ -24,7 +24,11 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     )] = None
 
     additional_baseline_h5ad_path_list: Annotated[List[Path], typer.Option(
-        help="List of additional baseline h5ad paths"
+        help="List of additional baseline h5ad paths",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
     )] = field(default_factory=list)
 
     trait_name: Annotated[Optional[str], typer.Option(

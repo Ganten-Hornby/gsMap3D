@@ -52,7 +52,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         dir_okay=False,
     )] = None
 
-    h5ad_list_file: Annotated[Optional[str], typer.Option(
+    h5ad_list_file: Annotated[Optional[Path], typer.Option(
         help="Each row is a h5ad file path, sample name is the file name without suffix",
         exists=True,
         file_okay=True,
