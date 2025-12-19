@@ -792,7 +792,7 @@ class MarkerScoreCalculator:
             f"This indicates the filtering was not applied consistently during rank calculation."
 
         # Load high quality mask based on configuration
-        if self.config.find_neighbor_within_high_quality:
+        if self.config.high_quality_neighbor_filter:
             if 'High_quality' not in adata.obs.columns:
                 raise ValueError("High_quality column not found in AnnData obs. Please ensure QC was applied during find_latent_representation step.")
             high_quality_mask = adata.obs['High_quality'].values.astype(bool)

@@ -91,7 +91,7 @@ class LDScoreConfig:
 
     # Computation
     chromosomes: Annotated[str, typer.Option(
-        help="Chromosomes to process (e.g., '1,2,22' or 'all')"
+        help="Chromosomes to process. 'all' uses 1-22 autosomes, or provide a comma-separated list of chromosomes (e.g., '1,2,3')"
     )] = "all"
 
     batch_size_hm3: Annotated[int, typer.Option(

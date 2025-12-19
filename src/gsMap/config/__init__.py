@@ -38,6 +38,7 @@ from .find_latent_config import FindLatentRepresentationsConfig
 from .latent2gene_config import LatentToGeneConfig, DatasetType, MarkerScoreCrossSliceStrategy
 from .spatial_ldsc_config import SpatialLDSCConfig
 from .report_config import ReportConfig
+from .quick_mode_config import QuickModeConfig
 from .ldscore_config import LDScoreConfig, GenerateLDScoreConfig
 
 __all__ = [
@@ -55,6 +56,7 @@ __all__ = [
     
     # Configurations
     'RunAllModeConfig',
+    'QuickModeConfig',
     'FindLatentRepresentationsConfig',
     'LatentToGeneConfig',
     'SpatialLDSCConfig',

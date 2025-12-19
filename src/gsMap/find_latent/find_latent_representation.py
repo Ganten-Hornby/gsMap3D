@@ -184,9 +184,9 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
         {sample_name: config.latent_dir / f"{sample_name}_add_latent.h5ad"
             for sample_name in config.sample_h5ad_dict.keys()}
     )
-    # Do the DEG in the training adata if annotation is provided
+    # Do the DEG in the training adata if annotation is provided and high quality cell QC is enabled
     module_score_threshold_dict = {}
-    if config.annotation is not None:
+    if config.high_quality_cell_qc and config.annotation is not None:
         # Calculate module scores for training data
         training_adata = calculate_module_score(training_adata, config.annotation)
 
@@ -219,7 +219,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
         adata = infer.infer_embedding_single(st_id, st_file)
 
         # Calculate module scores and apply QC for each annotation
-        if config.annotation is not None:
+        if config.high_quality_cell_qc and config.annotation is not None:
             # Calculate module scores for this sample using the same DEGs from training
             logger.info(f"Calculating module scores for {sample_name}...")
 

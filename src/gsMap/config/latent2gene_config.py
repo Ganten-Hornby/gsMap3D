@@ -195,10 +195,10 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         help="Use GPU for JAX computations (requires sufficient GPU memory)"
     )] = True
 
-    find_neighbor_within_high_quality: Annotated[bool, typer.Option(
-        "--find-neighbor-within-high-quality/--no-high-quality-filter",
+    high_quality_neighbor_filter: Annotated[bool, typer.Option(
+        "--high-quality-neighbor-filter/--no-high-quality-filter",
         help="Only find neighbors within high quality cells (requires High_quality column in obs)"
-    )] = True
+    )] = False
 
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
@@ -330,7 +330,7 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
             )
 
         # Add High_quality as required if find_neighbor_within_high_quality is enabled
-        if self.find_neighbor_within_high_quality:
+        if self.high_quality_neighbor_filter:
             required_fields['High_quality'] = ('obs', 'High_quality', 'High quality cell indicator')
 
         # Validate h5ad structure

@@ -145,13 +145,9 @@ def _read_ref_ld_v2(ld_file):
 def _read_w_ld(w_ld_dir):
     """Read LD weights for all chromosomes."""
     suffix = ".l2.ldscore"
-    # Construct the base path for weights files. 
-    # The files are expected to be named like "weights.[chr].l2.ldscore*"
-    # so we construct a pattern like "path/to/w_ld_dir/weights."
     w_file_pattern = str(Path(w_ld_dir) / "weights.")
     logger.info(f"Reading LD score annotations from {w_file_pattern}[1-22]{suffix}...")
 
-    # Get the chromosome files
     chr_files = _read_chr_files(w_file_pattern, suffix)
 
     if not chr_files:

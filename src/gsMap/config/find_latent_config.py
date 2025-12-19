@@ -185,6 +185,11 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         help="Key for cell identity embedding in obsm"
     )] = "emb_cell"
 
+    high_quality_cell_qc: Annotated[bool, typer.Option(
+        "--high-quality-cell-qc/--no-high-quality-cell-qc",
+        help="Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores."
+    )] = True
+
     def __post_init__(self):
         super().__post_init__()
 
