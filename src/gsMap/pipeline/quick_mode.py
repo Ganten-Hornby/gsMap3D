@@ -80,11 +80,10 @@ def run_quick_mode(config: QuickModeConfig):
         logger.info("=== Step 1: Find Latent Representations ===")
         start_time = time.time()
         
-        find_latent_config = config.find_latent_config
-        if check_find_latent_done(find_latent_config):
-            logger.info(f"Find latent representations already done (verified via {find_latent_config.find_latent_metadata_path}). Skipping...")
+        if check_find_latent_done(config):
+            logger.info(f"Find latent representations already done (verified via {config.find_latent_config.find_latent_metadata_path}). Skipping...")
         else:
-            run_find_latent_representation(find_latent_config)
+            run_find_latent_representation(config.find_latent_config)
             
         logger.info(f"Step 1 completed in {format_duration(time.time() - start_time)}")
 
@@ -93,11 +92,7 @@ def run_quick_mode(config: QuickModeConfig):
         logger.info("=== Step 2: Latent to Gene Mapping ===")
         start_time = time.time()
         
-        l2g_config = config.latent2gene_config
-        if l2g_config.mkscore_feather_path.exists(): 
-             logger.info(f"Marker scores already exist at {l2g_config.mkscore_feather_path}. Skipping...")
-        else:
-            run_latent_to_gene(l2g_config)
+        run_latent_to_gene(config.latent2gene_config)
             
         logger.info(f"Step 2 completed in {format_duration(time.time() - start_time)}")
         
@@ -114,15 +109,10 @@ def run_quick_mode(config: QuickModeConfig):
         logger.info("=== Step 3: Spatial LDSC ===")
         start_time = time.time()
         
-        sldsc_config = config.spatial_ldsc_config
-        
-        # Filter completed traits if not using JAX (JAX has internal check, but checking here gives better logs/control)
-        # Note: SpatialLDSCConfig.sumstats_config_dict contains the traits to run.
-        # We can modify it to exclude completed ones.
-        
+
         traits_remaining = {}
         for trait_name, sumstats_path in traits_to_process.items():
-            result_file = sldsc_config.get_ldsc_result_file(trait_name)
+            result_file = config.get_ldsc_result_file(trait_name)
             if result_file.exists():
                 logger.info(f"Spatial LDSC result already exists for {trait_name} at {result_file}. Skipping...")
             else:
@@ -131,13 +121,11 @@ def run_quick_mode(config: QuickModeConfig):
         if not traits_remaining:
             logger.info("All traits have been processed for Spatial LDSC. Skipping step...")
         else:
+            sldsc_config = config.spatial_ldsc_config
             # Update config to run only remaining traits
             sldsc_config.sumstats_config_dict = traits_remaining
-            
-            if sldsc_config.use_jax:
-                run_spatial_ldsc_jax(sldsc_config)
-            else:
-                run_spatial_ldsc(sldsc_config)
+            run_spatial_ldsc_jax(sldsc_config)
+
                 
         logger.info(f"Step 3 completed in {format_duration(time.time() - start_time)}")
         

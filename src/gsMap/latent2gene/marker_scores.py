@@ -38,8 +38,9 @@ from rich.progress import (
     TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn,
     TimeElapsedColumn
 )
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
+from rich.table import Table
 from .memmap_io import ComponentThroughput, ParallelMarkerScoreWriter,ParallelRankReader
 
 
@@ -520,17 +521,29 @@ class MarkerScoreMessageQueue:
         computer_cells_per_sec = self.stats.computer_throughput.throughput * self.batch_size * self.computer.num_workers if self.stats.computer_throughput.throughput > 0 else 0
         writer_cells_per_sec = self.stats.writer_throughput.throughput * self.batch_size * self.writer.num_workers if self.stats.writer_throughput.throughput > 0 else 0
         
-        console.print(Panel.fit(
-            f"[bold green]✓ Completed {self.active_cell_type}[/bold green]\n"
-            f"Total batches: {self.n_batches}\n"
-            f"Time elapsed: {self.stats.elapsed_time:.2f}s\n"
-            f"Pipeline throughput: {self.stats.throughput:.2f} batches/s ({pipeline_cells_per_sec:.0f} cells/s)\n"
-            # f"Theoretical max: {bottleneck_throughput:.2f} batches/s\n\n"
-            f"[bold]Component Performance (per worker):[/bold]\n"
-            f"  Reader:   {self.stats.reader_throughput.throughput:.2f} batches/s × {self.reader.num_workers} workers ({reader_cells_per_sec:.0f} cells/s)\n"
-            f"  Computer: {self.stats.computer_throughput.throughput:.2f} batches/s × {self.computer.num_workers} workers ({computer_cells_per_sec:.0f} cells/s)\n"
-            f"  Writer:   {self.stats.writer_throughput.throughput:.2f} batches/s × {self.writer.num_workers} workers ({writer_cells_per_sec:.0f} cells/s)",
-            title="Pipeline Summary"
+        # Create summary table
+        summary_table = Table(title=f"[bold green]✓ Completed {self.active_cell_type}[/bold green]", box=None)
+        summary_table.add_column("Property", style="dim")
+        summary_table.add_column("Value", style="green", justify="right")
+        
+        summary_table.add_row("Total Batches", str(self.n_batches))
+        summary_table.add_row("Time Elapsed", f"{self.stats.elapsed_time:.2f}s")
+        summary_table.add_row("Pipeline Throughput", f"{self.stats.throughput:.2f} batches/s ({pipeline_cells_per_sec:.0f} cells/s)")
+        
+        perf_table = Table(title="[bold]Component Performance (per worker)[/bold]", show_header=True, header_style="bold blue")
+        perf_table.add_column("Component")
+        perf_table.add_column("Throughput", justify="right")
+        perf_table.add_column("Workers", justify="right")
+        perf_table.add_column("Total Throughput", justify="right", style="green")
+        
+        perf_table.add_row("Reader", f"{self.stats.reader_throughput.throughput:.2f} b/s", str(self.reader.num_workers), f"{reader_cells_per_sec:.0f} c/s")
+        perf_table.add_row("Computer", f"{self.stats.computer_throughput.throughput:.2f} b/s", str(self.computer.num_workers), f"{computer_cells_per_sec:.0f} c/s")
+        perf_table.add_row("Writer", f"{self.stats.writer_throughput.throughput:.2f} b/s", str(self.writer.num_workers), f"{writer_cells_per_sec:.0f} c/s")
+        
+        console.print(Panel(
+            Group(summary_table, perf_table),
+            title="Pipeline Summary",
+            border_style="green"
         ))
         
         # Final garbage collection
@@ -744,6 +757,33 @@ class MarkerScoreCalculator:
         
         return global_log_gmean, global_expr_frac
     
+    def _display_input_summary(self, adata, cell_types, n_cells, n_genes):
+        """Display summary of input data and cell types"""
+        table = Table(title="[bold cyan]Marker Score Input Summary[/bold cyan]", show_header=True, header_style="bold magenta")
+        table.add_column("Property", style="dim")
+        table.add_column("Value", style="green")
+        
+        table.add_row("Total Cells", str(n_cells))
+        table.add_row("Total Genes", str(n_genes))
+        table.add_row("Cell Types", str(len(cell_types)))
+        table.add_row("Dataset Type", str(self.config.dataset_type.value))
+        table.add_row("Annotation Key", str(self.config.annotation))
+        
+        self.console.print(table)
+        
+        # Display cell type breakdown
+        ct_table = Table(title="[bold cyan]Cell Type Breakdown[/bold cyan]", show_header=True, header_style="bold blue")
+        ct_table.add_column("Cell Type", style="dim")
+        ct_table.add_column("Count", justify="right")
+        
+        ct_counts = adata.obs[self.config.annotation].value_counts()
+        for ct in cell_types:
+            count = ct_counts.get(ct, 0)
+            style = "green" if count >= self.config.min_cells_per_type else "red"
+            ct_table.add_row(ct, f"[{style}]{count}[/{style}]")
+            
+        self.console.print(ct_table)
+
     def _load_input_data(
         self,
         adata_path: str,
@@ -1074,6 +1114,13 @@ class MarkerScoreCalculator:
             Path to output marker score memory map file
         """
         logger.info("Starting marker score calculation...")
+        self.console = Console()
+        
+        self.console.print(Panel.fit(
+            "[bold cyan]Marker Score Calculation Stage[/bold cyan]",
+            subtitle="gsMap Stage 2",
+            border_style="cyan"
+        ))
 
         # Use config path if not specified
         if output_path is None:
@@ -1100,6 +1147,9 @@ class MarkerScoreCalculator:
         cell_types = self._get_cell_types(adata)
         annotation_key = self.config.annotation
         
+        # Display summary
+        self._display_input_summary(adata, cell_types, n_cells, n_genes)
+
         # Prepare embeddings
         coords, emb_niche, emb_indv, slice_ids = self._prepare_embeddings(adata)
         
@@ -1132,6 +1182,13 @@ class MarkerScoreCalculator:
         # Close memory maps
         rank_memmap.close()
         output_memmap.close()
+        
+        self.console.print(Panel.fit(
+            "[bold green]✓ Marker score calculation complete![/bold green]",
+            subtitle=f"Results saved to {output_path}",
+            border_style="green"
+        ))
+        
         logger.info("Marker score calculation complete!")
         
 

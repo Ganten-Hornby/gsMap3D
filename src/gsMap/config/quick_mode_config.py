@@ -265,7 +265,6 @@ class QuickModeConfig(ConfigWithAutoPaths):
             n_cell_training=self.n_cell_training,
             homolog_file=self.homolog_file,
             high_quality_cell_qc=self.high_quality_cell_qc,
-            use_gpu=False, # FindLatent typically uses Torch/PyG. Default is used.
         )
 
     @property
@@ -282,7 +281,7 @@ class QuickModeConfig(ConfigWithAutoPaths):
             n_adjacent_slices=self.n_adjacent_slices,
             k_adjacent=self.k_adjacent,
             memmap_tmp_dir=self.memmap_tmp_dir,
-            find_neighbor_within_high_quality=self.high_quality_cell_qc,
+            high_quality_neighbor_filter=self.high_quality_cell_qc,
             use_gpu=self.use_gpu,
             compute_workers=self.num_processes,
         )
@@ -308,7 +307,7 @@ class QuickModeConfig(ConfigWithAutoPaths):
             project_name=self.project_name,
             sample_name=self.project_name,
             trait_name=trait_name,
-            annotation=self.annotation or "cluster", 
+            annotation=self.annotation, 
             sumstats_file=sumstats_file,
             top_corr_genes=self.top_corr_genes,
             selected_genes=self.selected_genes,

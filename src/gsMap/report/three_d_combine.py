@@ -9,8 +9,8 @@ import pyvista as pv
 
 from pathlib import Path
 from scipy.stats import fisher_exact
-from gsMap.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
-from gsMap.cauchy_combination_test import acat_test
+from .three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
+from gsMap.cauchy_combination_test import _acat_test
 from gsMap.config import ThreeDCombineConfig
 from pandas.core.frame import DataFrame
 
@@ -85,9 +85,9 @@ def cauchy_combination_3d(ldsc):
                 f"Remove {
                     n_remove}/{len(p_temp)} outliers (median + 3*IQR) for {ct}."
             )
-            p_cauchy_temp = acat_test(p_use)
+            p_cauchy_temp = _acat_test(p_use)
         else:
-            p_cauchy_temp = acat_test(p_temp)
+            p_cauchy_temp = _acat_test(p_temp)
 
         p_median_temp = np.median(p_use)
         gc_median_temp = np.median(z_use**2) / 0.4549
@@ -200,12 +200,13 @@ def three_d_combine(args: ThreeDCombineConfig):
 
     # Load the spatial data
     logger.info(f"Loading {args.adata_3d}.")
-    if args.adata_3d.endswith('.parquet'):
+    adata_3d_path = str(args.adata_3d)
+    if adata_3d_path.endswith('.parquet'):
         logger.info("The input data is the metadata file of adata.")
-        meta_merged = pd.read_parquet(args.adata_3d)
-    elif args.adata_3d.endswith('.h5ad'):
+        meta_merged = pd.read_parquet(adata_3d_path)
+    elif adata_3d_path.endswith('.h5ad'):
         logger.info("The input data is the h5ad.")
-        adata_merge = sc.read_h5ad(args.adata_3d,backed='r')
+        adata_merge = sc.read_h5ad(adata_3d_path, backed='r')
         adata_merge.obs.index.name = 'index'
         spatial = pd.DataFrame(adata_merge.obsm[args.spatial_key], columns=['sx', 'sy', 'sz'], index=adata_merge.obs_names).copy()
         spatial = spatial.reset_index() 

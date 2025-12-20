@@ -9,6 +9,7 @@ logger = logging.getLogger("gsMap.utils.regression_read")
 
 def _read_sumstats(fh, alleles=False, dropna=False):
     """Parse GWAS summary statistics."""
+    fh = str(fh)
     logger.info(f"Reading summary statistics from {fh} ...")
 
     # Determine compression type
@@ -89,6 +90,7 @@ def _read_chr_files(base_path, suffix, expected_count=22):
 
 def _read_file(file_path):
     """Read a file based on its format/extension."""
+    file_path = str(file_path)
     try:
         if file_path.endswith(".feather"):
             return pd.read_feather(file_path)

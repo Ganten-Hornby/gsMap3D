@@ -8,7 +8,7 @@ from jinja2 import Environment, FileSystemLoader
 import gsMap
 from gsMap.cauchy_combination_test import run_Cauchy_combination
 from gsMap.config import CauchyCombinationConfig, ReportConfig
-from gsMap.diagnosis import run_Diagnosis
+from .diagnosis import run_Diagnosis
 
 logger = logging.getLogger(__name__)
 

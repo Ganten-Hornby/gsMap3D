@@ -89,6 +89,7 @@ def get_compression(fh):
     """
     Read filename suffixes and figure out whether it is gzipped,bzip2'ed or not compressed
     """
+    fh = str(fh)
     if fh.endswith("gz"):
         compression = "gzip"
     elif fh.endswith("bz2"):

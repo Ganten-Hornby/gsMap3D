@@ -59,6 +59,8 @@ __all__ = [
     'QuickModeConfig',
     'FindLatentRepresentationsConfig',
     'LatentToGeneConfig',
+    'DatasetType',
+    'MarkerScoreCrossSliceStrategy',
     'SpatialLDSCConfig',
     'ReportConfig',
     'GenerateLDScoreConfig',

@@ -4,6 +4,7 @@ Base configuration classes and utilities for gsMap.
 from dataclasses import dataclass, asdict
 from functools import wraps
 from pathlib import Path
+from enum import Enum
 from typing import Optional, Annotated, List, Dict, Any
 import typer
 import logging
@@ -110,14 +111,18 @@ class ConfigWithAutoPaths:
             sample_h5ad_dict_str = {k: str(v) for k, v in self.sample_h5ad_dict.items()}
             config_dict['sample_h5ad_dict'] = sample_h5ad_dict_str
         
-        # Convert all Path objects in config to strings
+        # Convert all Path and Enum objects in config to strings/values
         for key, value in config_dict.items():
             if isinstance(value, Path):
                 config_dict[key] = str(value)
+            elif isinstance(value, Enum):
+                config_dict[key] = value.value
             elif isinstance(value, dict):
-                config_dict[key] = {k: str(v) if isinstance(v, Path) else v for k, v in value.items()}
+                config_dict[key] = {k: (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
+                                   for k, v in value.items()}
             elif isinstance(value, list):
-                config_dict[key] = [str(v) if isinstance(v, Path) else v for v in value]
+                config_dict[key] = [(str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
+                                   for v in value]
         
         return config_dict
 

@@ -12,7 +12,12 @@ from .marker_scores import MarkerScoreCalculator
 from gsMap.config import LatentToGeneConfig
 from .memmap_io import MemMapDense
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
+
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
@@ -35,10 +40,21 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
             - metadata: Path to metadata YAML file
     """
     
-    logger.info("=" * 60)
+    console.print(Panel.fit(
+        "[bold cyan]Latent to Gene Conversion Pipeline[/bold cyan]",
+        subtitle="gsMap",
+        border_style="cyan"
+    ))
+    
     logger.info("Starting latent to gene conversion pipeline")
-    logger.info("=" * 60)
-    logger.info(f"Using configuration: {config}")
+    
+    # Print configuration in a nice way
+    config_yaml = yaml.dump(config.to_dict_with_paths_as_strings(), default_flow_style=False, sort_keys=False)
+    console.print(Panel(
+        Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
+        title="[bold]Configuration[/bold]",
+        expand=False
+    ))
 
     
     # Setup output directory using config paths
@@ -52,10 +68,10 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         "mean_frac": Path(config.mean_frac_path),
         "marker_scores": Path(config.marker_scores_memmap_path),
         "metadata": Path(config.latent2gene_metadata_path),
-        "rank_meta": Path(config.rank_memmap_path).with_suffix('.meta.yaml'),
-        "marker_scores_meta": Path(config.marker_scores_memmap_path).with_suffix('.meta.yaml')
+        "rank_meta": Path(config.rank_memmap_path).with_suffix('.meta.json'),
+        "marker_scores_meta": Path(config.marker_scores_memmap_path).with_suffix('.meta.json')
     }
-    
+
     if all(Path(p).exists() for p in expected_outputs.values()):
         logger.info("All outputs already exist. Checking completion status...")
         
@@ -79,7 +95,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
         if rank_memmap_complete and marker_scores_complete:
             logger.info("All memory maps are properly completed. Loading metadata...")
             with open(expected_outputs["metadata"], 'r') as f:
-                existing_metadata = yaml.safe_load(f)
+                existing_metadata = yaml.unsafe_load(f)
             logger.info(f"Found existing complete results for {existing_metadata.get('n_cells', 'unknown')} cells "
                        f"and {existing_metadata.get('n_genes', 'unknown')} genes")
             return {k: str(v) for k, v in expected_outputs.items()}
@@ -87,9 +103,10 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
             logger.warning("Memory maps exist but are not properly completed. Re-running pipeline...")
 
     # Step 1: Calculate ranks and concatenate
-    logger.info("\n" + "-" * 40)
-    logger.info("Step 1: Rank calculation and concatenation")
-    logger.info("-" * 40)
+    console.print(Panel(
+        "[bold cyan]Step 1: Rank calculation and concatenation[/bold cyan]",
+        border_style="cyan"
+    ))
     
     rank_calculator = RankCalculator(config)
     
@@ -103,9 +120,10 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     )
     
     # Step 2: Calculate marker scores
-    logger.info("\n" + "-" * 40)
-    logger.info("Step 2: Marker score calculation")
-    logger.info("-" * 40)
+    console.print(Panel(
+        "[bold cyan]Step 2: Marker score calculation[/bold cyan]",
+        border_style="cyan"
+    ))
     
     marker_calculator = MarkerScoreCalculator(config)
     
@@ -135,9 +153,13 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     with open(expected_outputs["metadata"], 'w') as f:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
     
-    logger.info("\n" + "=" * 60)
+    console.print(Panel.fit(
+        "[bold green]✓ Latent to gene conversion complete![/bold green]",
+        subtitle=f"Results saved to {output_dir}",
+        border_style="green"
+    ))
+    
     logger.info("Latent to gene conversion complete!")
     logger.info(f"All outputs saved to: {output_dir}")
-    logger.info("=" * 60)
     
     return metadata["outputs"]

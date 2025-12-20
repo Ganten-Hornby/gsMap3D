@@ -17,6 +17,7 @@ from gsMap.config import (
     SpatialLDSCConfig,
     ReportConfig,
     LDScoreConfig,
+    CauchyCombinationConfig,
 )
 
 # Setup logging
@@ -184,6 +185,34 @@ def spatial_ldsc(config: SpatialLDSCConfig):
     except ImportError:
         logger.info("Running in demo mode...")
         logger.info("✓ Demo completed!")
+
+
+@app.command(name="cauchy-combination")
+@dataclass_typer
+def cauchy_combination(config: CauchyCombinationConfig):
+    """
+    Run Cauchy combination test to combine spatial LDSC results across spots.
+    
+    This step:
+    - Loads spatial LDSC results for a trait
+    - Removes outliers
+    - Performs Cauchy combination test for each annotation
+    - Computes Fisher's exact test for enrichment
+    """
+    logger.info(f"Trait: {config.trait_name}")
+    logger.info(f"Project: {config.project_name}")
+    logger.info(f"Annotation: {config.annotation}")
+    
+    try:
+        from gsMap.cauchy_combination_test import run_Cauchy_combination
+        run_Cauchy_combination(config)
+        logger.info("✓ Cauchy combination test completed successfully!")
+    except (ImportError, AttributeError) as e:
+        logger.error(f"Error executing Cauchy combination: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Execution Error: {e}")
+        raise
 
 
 @app.command(name="report")

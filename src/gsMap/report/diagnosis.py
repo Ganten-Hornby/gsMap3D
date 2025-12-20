@@ -12,7 +12,7 @@ from scipy.stats import norm
 from gsMap.config import DiagnosisConfig
 from gsMap.utils.manhattan_plot import ManhattanPlot
 from gsMap.utils.regression_read import _read_chr_files
-from gsMap.visualize import draw_scatter, estimate_point_size_for_plot, load_ldsc, load_st_coord
+from .visualize import draw_scatter, estimate_point_size_for_plot, load_ldsc, load_st_coord
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 logger = logging.getLogger(__name__)

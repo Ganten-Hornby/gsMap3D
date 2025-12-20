@@ -21,6 +21,8 @@ import scanpy as sc
 from jax import jit
 from scipy.sparse import csr_matrix
 from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn
+from rich.console import Console
+from rich.table import Table
 import jax.scipy
 import anndata as ad
 from gsMap.config import LatentToGeneConfig
@@ -156,6 +158,7 @@ class RankCalculator:
         self.latent_dir = Path(config.latent_dir)
         self.output_dir = Path(config.latent2gene_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.console = Console()
         
     def calculate_ranks_and_concatenate(
         self,
@@ -220,15 +223,19 @@ class RankCalculator:
         # First pass: count total cells to initialize memory map
         logger.info("Counting total cells across all sections...")
         total_cells_expected = 0
+        filtering_stats = []
+
         for sample_name, h5ad_path in sample_h5ad_dict.items():
             # Apply same filtering logic as in main loop
             with h5py.File(h5ad_path, 'r') as f:
                 adata_temp_obs = read_elem(f['obs'])
+                n_cells_before = adata_temp_obs.shape[0]
+                nan_count = 0
+                small_group_removed = 0
+                
                 if annotation_key is not None:
                     assert annotation_key and annotation_key in adata_temp_obs.columns, \
                         f"Annotation key '{annotation_key}' not found in the obs of {sample_name}"
-
-                    n_cells_before = adata_temp_obs.shape[0]
 
                     # Check for and handle NaN values
                     nan_count = adata_temp_obs[annotation_key].isna().sum()
@@ -241,35 +248,50 @@ class RankCalculator:
                     valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
 
                     if len(valid_annotations) < len(annotation_counts):
-                        # Log which groups will be removed
-                        removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
-                        logger.info(f"Sample {sample_name}: Removing groups with <{min_cells_per_type} cells: {removed_groups.to_dict()}")
-
                         # Filter to valid annotations
                         mask = adata_temp_obs[annotation_key].isin(valid_annotations)
                         adata_temp_obs = adata_temp_obs[mask].copy()
+                        small_group_removed = n_cells_before - nan_count - adata_temp_obs.shape[0]
 
-                    n_cells_after = adata_temp_obs.shape[0]
-                    if n_cells_before != n_cells_after:
-                        # Build detailed filtering message
-                        removal_details = []
-                        if nan_count > 0:
-                            removal_details.append(f"{nan_count} NaN cells")
+                n_cells_after = adata_temp_obs.shape[0]
+                total_cells_expected += n_cells_after
+                
+                filtering_stats.append({
+                    "Sample": sample_name,
+                    "Total": n_cells_before,
+                    "NaN": nan_count,
+                    "Small Group": small_group_removed,
+                    "Final": n_cells_after
+                })
 
-                        small_group_removed = n_cells_before - n_cells_after - nan_count
-                        if small_group_removed > 0:
-                            # Get the removed annotation groups for detailed logging
-                            removed_groups = annotation_counts[~annotation_counts.index.isin(valid_annotations)]
-                            removed_groups_str = ", ".join([f"{group}({count})" for group, count in removed_groups.items()])
-                            removal_details.append(f"{small_group_removed} cells from small groups (<{min_cells_per_type} cells): {removed_groups_str}")
+        # Display filtering summary table
+        table = Table(title="[bold]Cell Filtering Summary[/bold]", show_header=True, header_style="bold magenta")
+        table.add_column("Sample", style="dim")
+        table.add_column("Input Cells", justify="right")
+        table.add_column("NaN Removed", justify="right", style="red")
+        table.add_column("Small Group Removed", justify="right", style="red")
+        table.add_column("Final Cells", justify="right", style="green")
 
-                        logger.info(f"Sample {sample_name}: {n_cells_before} -> {n_cells_after} cells (removed {n_cells_before - n_cells_after})")
-                        for detail in removal_details:
-                            logger.info(f"  - Removed {detail}")
-                    else:
-                        logger.info(f"Sample {sample_name}: {n_cells_after} cells (no filtering needed)")
-                total_cells_expected += adata_temp_obs.shape[0]
-
+        for stat in filtering_stats:
+            table.add_row(
+                stat["Sample"],
+                str(stat["Total"]),
+                str(stat["NaN"]),
+                str(stat["Small Group"]),
+                str(stat["Final"])
+            )
+        
+        # Add a total row
+        table.add_section()
+        table.add_row(
+            "[bold]Total[/bold]",
+            str(sum(s["Total"] for s in filtering_stats)),
+            str(sum(s["NaN"] for s in filtering_stats)),
+            str(sum(s["Small Group"] for s in filtering_stats)),
+            f"[bold green]{total_cells_expected}[/bold green]"
+        )
+        
+        self.console.print(table)
         logger.info(f"Expected total cells after filtering: {total_cells_expected}")
         
         # Create overall section progress tracking
@@ -450,25 +472,25 @@ class RankCalculator:
         logger.info(f"Mean fraction data saved to {mean_frac_path}")
         
         # Concatenate all sections
-        logger.info("Concatenating latent representations...")
         if adata_list:
-            concatenated_adata = ad.concat(adata_list, axis=0, join='outer', merge='same')
+            with self.console.status("[bold blue]Concatenating and saving latent representations..."):
+                concatenated_adata = ad.concat(adata_list, axis=0, join='outer', merge='same')
 
-            # Ensure the var_names are the common genes
-            concatenated_adata.var_names = gene_list
+                # Ensure the var_names are the common genes
+                concatenated_adata.var_names = gene_list
 
-            # Save concatenated adata
-            concatenated_adata.write_h5ad(concat_adata_path)
-            logger.info(f"Saved concatenated latent representations to {concat_adata_path}")
-            logger.info(f"  - Total cells: {concatenated_adata.n_obs}")
-            logger.info(f"  - Total genes: {concatenated_adata.n_vars}")
-            logger.info(f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}")
-            if 'slice_id' in concatenated_adata.obs.columns:
-                logger.info(f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}")
+                # Save concatenated adata
+                concatenated_adata.write_h5ad(concat_adata_path)
+                logger.info(f"Saved concatenated latent representations to {concat_adata_path}")
+                logger.info(f"  - Total cells: {concatenated_adata.n_obs}")
+                logger.info(f"  - Total genes: {concatenated_adata.n_vars}")
+                logger.info(f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}")
+                if 'slice_id' in concatenated_adata.obs.columns:
+                    logger.info(f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}")
 
-            # Clean up
-            del adata_list, concatenated_adata
-            gc.collect()
+                # Clean up
+                del adata_list, concatenated_adata
+                gc.collect()
 
         # Final completion message
         logger.info("Rank calculation and concatenation completed successfully")
