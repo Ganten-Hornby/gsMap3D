@@ -102,51 +102,7 @@ class RunAllModeConfig(ConfigWithAutoPaths):
         )
 
 
-@dataclass
-class CauchyCombinationConfig(ConfigWithAutoPaths):
-    """Configuration for Cauchy combination test."""
-    
-    trait_name: Annotated[str, typer.Option(
-        help="Name of the trait being analyzed"
-    )]
-    
-    annotation: Annotated[str, typer.Option(
-        help="Name of the annotation in adata.obs to use"
-    )]
-    
-    sample_name_list: Annotated[Optional[str], typer.Option(
-        help="Space-separated list of sample names"
-    )] = None
-    
-    output_file: Annotated[Optional[Path], typer.Option(
-        help="Path to save the combined Cauchy results",
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-    
-    def __post_init__(self):
-        super().__post_init__()
-        # Handle sample_name_list
-        if self.sample_name_list and isinstance(self.sample_name_list, str):
-            self.sample_name_list = self.sample_name_list.split()
-        
-        if self.sample_name is not None:
-             # This assumes sample_name is added to ConfigWithAutoPaths or used as intended
-             # For now, following original logic:
-             self.sample_name_list = [self.sample_name]
-             if self.output_file is None:
-                self.output_file = Path(
-                    f"{self.cauchy_save_dir}/{self.project_name}_single_sample_{self.sample_name}_{self.trait_name}.Cauchy.csv.gz"
-                )
-        else:
-            if not self.sample_name_list:
-                raise ValueError("At least one sample name must be provided via sample_name or sample_name_list.")
-            
-            if self.output_file is None:
-                self.output_file = Path(
-                    f"{self.cauchy_save_dir}/{self.project_name}_all_samples_{self.trait_name}.Cauchy.csv.gz"
-                )
+
 
 
 @dataclass

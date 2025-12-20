@@ -23,7 +23,6 @@ subcommand = namedtuple("subcommand", ["name", "func", "add_args_function", "des
 # Configuration dataclasses
 from .dataclasses import (
     RunAllModeConfig,
-    CauchyCombinationConfig,
     CreateSliceMeanConfig,
     FormatSumstatsConfig,
     DiagnosisConfig,
@@ -40,6 +39,7 @@ from .spatial_ldsc_config import SpatialLDSCConfig
 from .report_config import ReportConfig
 from .quick_mode_config import QuickModeConfig
 from .ldscore_config import LDScoreConfig, GenerateLDScoreConfig
+from .cauchy_config import CauchyCombinationConfig
 
 __all__ = [
     # Base classes

@@ -17,7 +17,7 @@ from .latent2gene_config import LatentToGeneConfig
 from .ldscore_config import GenerateLDScoreConfig
 from .spatial_ldsc_config import SpatialLDSCConfig
 from .report_config import ReportConfig
-from .dataclasses import CauchyCombinationConfig
+from .cauchy_config import CauchyCombinationConfig
 from gsMap.config.utils import process_h5ad_inputs
 
 logger = logging.getLogger("gsMap.config")
