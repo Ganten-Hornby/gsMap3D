@@ -64,7 +64,7 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     ldsc_compute_workers: Annotated[int, typer.Option(
         help="Number of compute workers",
         min=1
-    )] = 2
+    )] = 10
 
     not_M_5_50: Annotated[bool, typer.Option(
         "--not-M-5-50",

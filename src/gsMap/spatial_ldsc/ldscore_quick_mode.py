@@ -13,6 +13,7 @@ import multiprocessing as mp
 from multiprocessing import Queue, Process
 from pathlib import Path
 from typing import Tuple, Dict, List, Optional
+from collections import deque
 import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -461,40 +462,22 @@ class SpatialLDSCProcessor:
 
         logger.info(f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})")
 
-
-    def setup_trait(self, trait_name: str, sumstats_file: str):
-        """
-        Setup processor for a new trait.
-        Loads sumstats, prepares data, and initializes trait-specific components.
-        """
-        self.trait_name = trait_name
-        logger.info(f"Setting up processor for trait: {trait_name}")
-        
-        # Prepare trait data
-        data, common_snps = prepare_trait_data(
-            self.config, 
-            trait_name, 
-            sumstats_file, 
-            self.baseline_ld, 
-            self.w_ld, 
-            self.snp_gene_weight_adata
-        )
-        
-        # Prepare blocks
-        self.data_truncated = prepare_snp_data_for_blocks(data, self.config.n_blocks)
-        
-        # Reset results
-        self.results = []
-        self.processed_chunks = set()
-        self.min_spot_start = float('inf')
-        self.max_spot_end = 0
-        
-        # Initialize trait-specific components
-        self._initialize_trait_specific()
-        
+        # Find common genes and initialize indices
         gene_names_from_adata = self.marker_score_adata.var_names.to_numpy()
         self.spot_names_all = self.marker_score_adata.obs_names.to_numpy()
         
+        if self.snp_gene_weight_adata is None:
+             raise ValueError("snp_gene_weight_adata must be provided")
+
+        marker_score_genes_series = pd.Series(gene_names_from_adata)
+        common_genes_mask = marker_score_genes_series.isin(self.snp_gene_weight_adata.var.index)
+        common_genes = gene_names_from_adata[common_genes_mask]
+        
+        self.marker_score_gene_indices = np.where(common_genes_mask)[0]
+        self.weight_gene_indices = [self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes]
+
+        logger.info(f"Found {len(common_genes)} common genes")
+
         # Filter by sample if specified
         if self.config.sample_filter:
             logger.info(f"Filtering spots by sample: {self.config.sample_filter}")
@@ -520,21 +503,7 @@ class SpatialLDSCProcessor:
             self.sample_start_offset = 0
         
         self.n_spots_filtered = len(self.spot_indices)
-        
-        # Use provided SNP-gene weights adata
-        if self.snp_gene_weight_adata is None:
-             raise ValueError("snp_gene_weight_adata must be provided")
 
-        # Find common genes
-        marker_score_genes_series = pd.Series(gene_names_from_adata)
-        common_genes_mask = marker_score_genes_series.isin(self.snp_gene_weight_adata.var.index)
-        common_genes = gene_names_from_adata[common_genes_mask]
-        
-        self.marker_score_gene_indices = np.where(common_genes_mask)[0]
-        self.weight_gene_indices = [self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes]
-
-        logger.info(f"Found {len(common_genes)} common genes")
-        
         # Set up chunking
         self.chunk_size = self.config.spots_per_chunk_quick_mode
         
@@ -554,11 +523,30 @@ class SpatialLDSCProcessor:
         self.total_chunks = len(self.chunk_starts)
         logger.info(f"Total chunks to process: {self.total_chunks}")
 
-    def _initialize_trait_specific(self):
-        """Initialize trait-specific components (SNP-gene weight matrix for current trait)."""
-        logger.info(f"Initializing trait-specific components for trait: {self.trait_name}")
 
-        # Get SNP positions from data_truncated
+    def setup_trait(self, trait_name: str, sumstats_file: str):
+        """
+        Setup processor for a new trait.
+        Loads sumstats, prepares data, and initializes trait-specific components.
+        """
+        self.trait_name = trait_name
+        logger.info(f"Setting up processor for trait: {trait_name}")
+        
+        # Prepare trait data
+        data, common_snps = prepare_trait_data(
+            self.config, 
+            trait_name, 
+            sumstats_file, 
+            self.baseline_ld, 
+            self.w_ld, 
+            self.snp_gene_weight_adata
+        )
+        
+        # Prepare blocks
+        self.data_truncated = prepare_snp_data_for_blocks(data, self.config.n_blocks)
+        
+        # Extract SNP-gene weight matrix for this trait's SNPs
+        logger.info(f"Initializing trait-specific components for trait: {self.trait_name}")
         snp_positions = self.data_truncated.get('snp_positions', None)
         if snp_positions is None:
             raise ValueError("snp_positions not found in data_truncated")
@@ -570,6 +558,13 @@ class SpatialLDSCProcessor:
             self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
 
         logger.info(f"SNP-gene weight matrix shape: {self.snp_gene_weight_sparse.shape}")
+
+        # Reset results
+        self.results = []
+        self.processed_chunks = set()
+        self.min_spot_start = float('inf')
+        self.max_spot_end = 0
+
 
 
 
@@ -685,6 +680,9 @@ class SpatialLDSCProcessor:
                 last_update_time = start_time
                 last_chunks_processed = 0
                 
+                # For 10s moving average
+                speed_window = deque() # Stores (timestamp, n_cells_processed)
+                
                 while last_chunks_processed < self.total_chunks:
                     # Check for errors
                     reader.check_errors()
@@ -699,15 +697,27 @@ class SpatialLDSCProcessor:
                         # Get queue sizes
                         r_pending, r_to_c = reader.get_queue_sizes()
                         
-                        # Calculate speed in cells/s
-                        elapsed_time = current_time - start_time
-                        speed = n_cells_processed / elapsed_time if elapsed_time > 0 else 0
+                        # Calculate speed in cells/s (10s moving average)
+                        speed_window.append((current_time, n_cells_processed))
+                        
+                        # Remove entries older than 10s
+                        while speed_window and current_time - speed_window[0][0] > 10.0:
+                            speed_window.popleft()
+                        
+                        if len(speed_window) > 1:
+                            t_diff = speed_window[-1][0] - speed_window[0][0]
+                            c_diff = speed_window[-1][1] - speed_window[0][1]
+                            speed_10s = c_diff / t_diff if t_diff > 0 else 0
+                        else:
+                            # Fallback to cumulative speed if not enough data for window
+                            elapsed_total = current_time - start_time
+                            speed_10s = n_cells_processed / elapsed_total if elapsed_total > 0 else 0
                         
                         # Update progress bar
                         progress.update(
                             task,
                             completed=n_cells_processed,
-                            speed=f"{speed:,.0f}",
+                            speed=f"{speed_10s:,.0f}",
                             r_to_c_queue=f"{r_to_c}"
                         )
                         last_update_time = current_time
@@ -734,6 +744,12 @@ class SpatialLDSCProcessor:
             # Clean up resources
             reader.close()
             computer.close()
+
+            # Log overall speed
+            total_elapsed = time.time() - start_time
+            n_cells_total, _ = computer.get_stats()
+            overall_speed = n_cells_total / total_elapsed if total_elapsed > 0 else 0
+            logger.info(f"Processing complete. Overall speed: {overall_speed:,.0f} cells/s")
 
             # Note: mkscore_memmap is NOT closed here to allow reuse across multiple traits.
             # It will be closed by the caller after all traits are processed.
