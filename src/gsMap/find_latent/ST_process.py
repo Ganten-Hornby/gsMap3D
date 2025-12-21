@@ -160,10 +160,10 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
             adata = adata[~adata.obs[params.annotation].isnull()]
 
         # Perform stratified sampling within this sample
-        if params.do_sampling:
+        if params.do_sampling and adata.n_obs > n_cell_used[st_id]:
             if params.annotation is None:
                 # Simple random sampling
-                num_cell = min(adata.n_obs, n_cell_used[st_id])
+                num_cell = n_cell_used[st_id]
                 logger.info(f"Downsampling {sample_name} to {num_cell} cells...")
                 random_indices = np.random.choice(adata.n_obs, num_cell, replace=False)
                 adata = adata[random_indices].copy()
@@ -171,7 +171,7 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
                 # Stratified sampling based on sample-specific annotation distribution
                 sample_annotation_counts = adata.obs[params.annotation].value_counts()
                 sample_total_cells = len(adata)
-                target_total_cells = min(sample_total_cells, n_cell_used[st_id])
+                target_total_cells = n_cell_used[st_id]
 
                 # Calculate sample-specific annotation proportions
                 sample_annotation_proportions = sample_annotation_counts / sample_total_cells
