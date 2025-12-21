@@ -91,7 +91,7 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
     spots_per_chunk_quick_mode: Annotated[int, typer.Option(
         help="Number of spots per chunk in quick mode",
         min=1
-    )] = 1_000
+    )] = 50
 
     snp_gene_weight_adata_path: Annotated[Path, typer.Option(
         help="Path to the SNP-gene weight matrix (H5AD format)",
