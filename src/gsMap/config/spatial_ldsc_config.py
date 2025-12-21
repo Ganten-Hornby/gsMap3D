@@ -4,17 +4,23 @@ Configuration for spatial LD score regression.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Annotated, List, Literal
+from typing import Optional, Annotated, List, Literal, Dict
 import logging
 import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
-from gsMap.config.utils import configure_jax_platform, get_anndata_shape
+from gsMap.config.compute_config import SpatialLDSCComputeConfig
 
 logger = logging.getLogger("gsMap.config")
 
+
 @dataclass
-class SpatialLDSCConfig(ConfigWithAutoPaths):
+class SpatialLDSCConfig(SpatialLDSCComputeConfig, ConfigWithAutoPaths):
+    """Configuration for spatial LDSC.
+    
+    Inherits compute/IO fields from SpatialLDSCComputeConfig:
+    use_gpu, memmap_tmp_dir, num_read_workers, ldsc_compute_workers, spots_per_chunk_quick_mode
+    """
     w_ld_dir: Annotated[Optional[Path], typer.Option(
         help="Directory containing the weights files (w_ld)",
         exists=True,
@@ -51,30 +57,7 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         resolve_path=True
     )] = None
 
-    num_processes: Annotated[int, typer.Option(
-        help="Number of processes for parallel execution",
-        min=1
-    )] = 4
 
-    num_read_workers: Annotated[int, typer.Option(
-        help="Number of read workers",
-        min=1
-    )] = 10
-
-    ldsc_compute_workers: Annotated[int, typer.Option(
-        help="Number of compute workers",
-        min=1
-    )] = 10
-
-    not_M_5_50: Annotated[bool, typer.Option(
-        "--not-M-5-50",
-        help="Do not use M_5_50"
-    )] = False
-
-    n_blocks: Annotated[int, typer.Option(
-        help="Number of jackknife blocks",
-        min=1
-    )] = 200
 
     chisq_max: Annotated[Optional[int], typer.Option(
         help="Maximum chi-square value"
@@ -88,10 +71,12 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         help="Filter processing to a specific sample"
     )] = None
 
-    spots_per_chunk_quick_mode: Annotated[int, typer.Option(
-        help="Number of spots per chunk in quick mode",
+    n_blocks: Annotated[int, typer.Option(
+        help="Number of jackknife blocks",
         min=1
-    )] = 50
+    )] = 200
+
+    # spots_per_chunk_quick_mode is inherited from SpatialLDSCComputeConfig
 
     snp_gene_weight_adata_path: Annotated[Path, typer.Option(
         help="Path to the SNP-gene weight matrix (H5AD format)",
@@ -101,10 +86,7 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         resolve_path=True
     )] = None
 
-    use_jax: Annotated[bool, typer.Option(
-        "--use-jax/--no-jax",
-        help="Use JAX-accelerated spatial LDSC implementation"
-    )] = True
+    # use_gpu is inherited from SpatialLDSCComputeConfig
 
     marker_score_feather_path: Annotated[Optional[Path], typer.Option(
         help="Path to marker score feather file",
@@ -126,21 +108,18 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
         help="Format of marker scores"
     )] = None
 
-    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
-        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-             "If provided, memory maps will be copied to this directory for faster random access during computation.",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )] = None
+    # memmap_tmp_dir and spots_per_chunk_quick_mode are inherited from SpatialLDSCComputeConfig
+
+    sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
 
     def __post_init__(self):
         super().__post_init__()
 
-        # Configure JAX platform if use_jax is enabled
-        if self.use_jax:
-            # SpatialLDSC doesn't have use_gpu flag, so default to trying GPU
+        # Import here to avoid circular imports
+        from gsMap.config.utils import configure_jax_platform, get_anndata_shape
+
+        # Configure JAX platform if use_gpu is enabled
+        if self.use_gpu:
             configure_jax_platform(use_gpu=True)
 
         # Auto-detect marker_score_format if not specified
@@ -248,7 +227,6 @@ class SpatialLDSCConfig(ConfigWithAutoPaths):
             raise ValueError(
                 "trait_name must not be provided if sumstats_config_file is provided."
             )
-        self.sumstats_config_dict = {}
         # load the sumstats config file
         if self.sumstats_config_file is not None:
             import yaml

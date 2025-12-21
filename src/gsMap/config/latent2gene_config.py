@@ -10,6 +10,7 @@ import logging
 import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
+from gsMap.config.compute_config import LatentToGeneComputeConfig
 from gsMap.config.utils import (
     configure_jax_platform,
     process_h5ad_inputs,
@@ -30,8 +31,11 @@ class MarkerScoreCrossSliceStrategy(str, Enum):
     MAX_POOLING = 'max_pooling'
 
 @dataclass
-class LatentToGeneConfig(ConfigWithAutoPaths):
-    """Configuration for latent to gene mapping."""
+class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
+    """Configuration for latent to gene mapping.
+    
+    Inherits compute/IO fields from LatentToGeneComputeConfig.
+    """
 
     dataset_type: Annotated[DatasetType, typer.Option(
         help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
@@ -141,42 +145,10 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
     #     help="Key in adata.obs for slice IDs. For 3D data, should contain sequential integers representing z-axis order (0, 1, 2, ...). If None, assumes single 2D slice"
     # )] = 'slice_id'
 
-    # -------- IO parameters
-    rank_batch_size: int = 500
-    mkscore_batch_size: int = 500
-    find_homogeneous_batch_size: int = 100
-    rank_write_interval = 10
-
-    # Worker configurations
-    rank_read_workers: Annotated[int, typer.Option(
-        help="Number of parallel reader threads for rank memory map",
-        min=1,
-        max=16
-    )] = 4
-
-    compute_workers: Annotated[int, typer.Option(
-        help="Number of parallel compute threads for marker score calculation",
-        min=1,
-        max=16
-    )] = 4
-
-    mkscore_write_workers: Annotated[int, typer.Option(
-        help="Number of parallel writer threads for marker scores",
-        min=1,
-        max=16
-    )] = 4
-
-    compute_input_queue_size: Annotated[int, typer.Option(
-        help="Maximum size of compute input queue (multiplier of compute_workers)",
-        min=1,
-        max=10
-    )] = 5
-
-    writer_queue_size: Annotated[int, typer.Option(
-        help="Maximum size of writer input queue",
-        min=10,
-        max=500
-    )] = 100
+    # -------- IO parameters (inherited from LatentToGeneComputeConfig)
+    # rank_batch_size, mkscore_batch_size, find_homogeneous_batch_size, rank_write_interval
+    # rank_read_workers, mkscore_compute_workers, mkscore_write_workers
+    # compute_input_queue_size, writer_queue_size
 
     # Performance options
     min_cells_per_type: Annotated[int, typer.Option(
@@ -190,24 +162,12 @@ class LatentToGeneConfig(ConfigWithAutoPaths):
         help="Enable viztracer profiling for performance analysis"
     )] = False
 
-    use_gpu: Annotated[bool, typer.Option(
-        "--use-gpu/--no-gpu",
-        help="Use GPU for JAX computations (requires sufficient GPU memory)"
-    )] = True
+    # use_gpu and memmap_tmp_dir are inherited from LatentToGeneComputeConfig
 
     high_quality_neighbor_filter: Annotated[bool, typer.Option(
         "--high-quality-neighbor-filter/--no-high-quality-filter",
         help="Only find neighbors within high quality cells (requires High_quality column in obs)"
     )] = False
-
-    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
-        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-             "If provided, memory maps will be copied to this directory for faster random access during computation.",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )] = None
 
     @property
     def total_homogeneous_neighbor_per_cell(self):

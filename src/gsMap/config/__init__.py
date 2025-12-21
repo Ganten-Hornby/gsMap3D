@@ -36,6 +36,7 @@ from .dataclasses import (
 from .find_latent_config import FindLatentRepresentationsConfig
 from .latent2gene_config import LatentToGeneConfig, DatasetType, MarkerScoreCrossSliceStrategy
 from .spatial_ldsc_config import SpatialLDSCConfig
+from .compute_config import LatentToGeneComputeConfig, SpatialLDSCComputeConfig
 from .report_config import ReportConfig
 from .quick_mode_config import QuickModeConfig
 from .ldscore_config import LDScoreConfig, GenerateLDScoreConfig

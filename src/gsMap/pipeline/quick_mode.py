@@ -164,7 +164,12 @@ def run_quick_mode(config: QuickModeConfig):
                     "Sample Name": config.project_name, 
                     "Trait Name": trait_name,
                     "Summary Statistics File": str(sumstats_file),
-                    "Number of Processes": config.num_processes,
+                    "Worker Configuration": {
+                        "mkscore_compute_workers": config.mkscore_compute_workers,
+                        "ldsc_compute_workers": config.ldsc_compute_workers,
+                        "rank_read_workers": config.rank_read_workers,
+                        "num_read_workers": config.num_read_workers,
+                    },
                     "Spatial LDSC Save Directory": str(config.spatial_ldsc_config.ldsc_save_dir),
                     "Cauchy Directory": str(config.get_cauchy_config(trait_name).cauchy_save_dir),
                     "Report Directory": str(report_config.get_report_dir(trait_name)),

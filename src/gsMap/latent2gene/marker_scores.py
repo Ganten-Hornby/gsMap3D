@@ -932,7 +932,7 @@ class MarkerScoreCalculator:
         logger.info("Initializing shared processing pools with direct queue connections...")
 
         # Create shared queues to connect components with configured sizes
-        reader_to_computer_queue = queue.Queue(maxsize=self.config.compute_workers * self.config.compute_input_queue_size)
+        reader_to_computer_queue = queue.Queue(maxsize=self.config.mkscore_compute_workers * self.config.compute_input_queue_size)
         computer_to_writer_queue = queue.Queue(maxsize=self.config.writer_queue_size)
         
         self.reader = ParallelRankReader(
@@ -961,7 +961,7 @@ class MarkerScoreCalculator:
             global_log_gmean,
             global_expr_frac,
             self.config.num_homogeneous,
-            num_workers=self.config.compute_workers,
+            num_workers=self.config.mkscore_compute_workers,
             input_queue=reader_to_computer_queue,  # Input from reader
             output_queue=computer_to_writer_queue,  # Output to writer
             cross_slice_strategy=cross_slice_strategy,
@@ -977,7 +977,7 @@ class MarkerScoreCalculator:
         )
 
         logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
-                   f"{self.config.compute_workers} computers, "
+                   f"{self.config.mkscore_compute_workers} computers, "
                    f"{self.config.mkscore_write_workers} writers")
         
         self.marker_score_queue = MarkerScoreMessageQueue(
