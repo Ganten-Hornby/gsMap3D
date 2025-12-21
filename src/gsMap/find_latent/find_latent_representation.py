@@ -201,10 +201,10 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
             module_score_threshold_dict[label] = threshold
             logger.info(f"High quality module score threshold for {label}: {threshold:.3f}")
 
-    training_adata.uns['module_score_thresholds'] = module_score_threshold_dict
+        training_adata.uns['module_score_thresholds'] = module_score_threshold_dict
 
-    # Apply QC to training data as well
-    training_adata = apply_module_score_qc(training_adata, config.annotation, module_score_threshold_dict)
+        # Apply QC to training data as well
+        training_adata = apply_module_score_qc(training_adata, config.annotation, module_score_threshold_dict)
 
     # save the training adata
     training_adata_path = config.find_latent_metadata_path.parent / "training_adata.h5ad"
