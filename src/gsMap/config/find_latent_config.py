@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Annotated, List, OrderedDict
 import logging
+import yaml
 import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
@@ -230,3 +231,36 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
 
         # Verify homolog file format if provided
         verify_homolog_file_format(self)
+
+        self.show_config("Find Latent Configuration")
+
+
+def check_find_latent_done(config: FindLatentRepresentationsConfig) -> bool:
+    """
+    Check if find_latent step is done by verifying validity of metadata and output files.
+    """
+    metadata_path = config.find_latent_metadata_path
+    if not metadata_path.exists():
+        return False
+
+    try:
+        with open(metadata_path, 'r') as f:
+            metadata = yaml.safe_load(f)
+
+        if 'outputs' not in metadata or 'latent_files' not in metadata['outputs']:
+            return False
+
+        latent_files = metadata['outputs']['latent_files']
+        if not latent_files:
+            return False
+
+        # Verify all listed files exist
+        all_exist = True
+        for sample, path_str in latent_files.items():
+            if not Path(path_str).exists():
+                all_exist = False
+                break
+        return all_exist
+    except Exception as e:
+        logger.warning(f"Error checking find_latent metadata: {e}")
+        return False

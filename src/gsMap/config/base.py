@@ -6,11 +6,14 @@ from functools import wraps
 from pathlib import Path
 from enum import Enum
 from typing import Optional, Annotated, List, Dict, Any
+import yaml
 import typer
 import logging
 from datetime import datetime
 from rich.logging import RichHandler
 from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
 
 def config_logger():
     logger = logging.getLogger("gsMap")
@@ -125,6 +128,17 @@ class ConfigWithAutoPaths:
                                    for v in value]
         
         return config_dict
+
+    def show_config(self, title: str = "Configuration"):
+        """Show configuration in a nice way using rich."""
+        config_dict = self.to_dict_with_paths_as_strings()
+        config_yaml = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
+        console = Console()
+        console.print(Panel(
+            Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
+            title=f"[bold]{title}[/bold]",
+            expand=False
+        ))
 
     ## ---- Find latent representation paths
     @property

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Annotated, List, OrderedDict, Literal
+import yaml
 import logging
 import typer
 
@@ -243,6 +244,8 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         # Step 4: Set up validation fields and validate structure (after dataset config)
         self._setup_and_validate_fields()
 
+        self.show_config("Latent to Gene Configuration")
+
     def _process_h5ad_inputs(self):
         """Process h5ad inputs from various sources"""
 
@@ -424,8 +427,46 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         logger.info(
             f"Each focal cell will select {num_homogeneous * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
 
-    def _configure_scrna_seq(self):
-        """Configure parameters for scRNA-seq datasets"""
-        self.n_adjacent_slices = 0
         self.spatial_key = None
         self.latent_representation_niche = None
+
+
+def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
+    """
+    Check if latent2gene step is done by verifying validity of metadata and output files.
+    """
+    from gsMap.latent2gene.memmap_io import MemMapDense
+
+    expected_outputs = {
+        "concatenated_latent_adata": Path(config.concatenated_latent_adata_path),
+        "rank_memmap": Path(config.rank_memmap_path),
+        "mean_frac": Path(config.mean_frac_path),
+        "marker_scores": Path(config.marker_scores_memmap_path),
+        "metadata": Path(config.latent2gene_metadata_path),
+    }
+
+    if not all(p.exists() for p in expected_outputs.values()):
+        return False
+
+    try:
+        # Check rank memmap completion
+        rank_memmap_complete, _ = MemMapDense.check_complete(expected_outputs["rank_memmap"])
+        if not rank_memmap_complete:
+            return False
+
+        # Check marker scores memmap completion
+        marker_scores_complete, _ = MemMapDense.check_complete(expected_outputs["marker_scores"])
+        if not marker_scores_complete:
+            return False
+
+        # Check metadata
+        with open(expected_outputs["metadata"], 'r') as f:
+            metadata = yaml.unsafe_load(f)
+
+        if 'outputs' not in metadata:
+            return False
+
+        return True
+    except Exception as e:
+        logger.warning(f"Error checking latent2gene results: {e}")
+        return False

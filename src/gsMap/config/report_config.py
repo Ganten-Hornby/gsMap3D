@@ -75,3 +75,15 @@ class ReportConfig(ConfigWithAutoPaths):
     
     # Hidden parameter
     plot_type: str = "all"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.show_config("Report Generation Configuration")
+
+
+def check_report_done(config: ReportConfig, trait_name: str) -> bool:
+    """
+    Check if report step is done for a specific trait.
+    """
+    report_file = config.get_gsMap_report_file(trait_name)
+    return report_file.exists()

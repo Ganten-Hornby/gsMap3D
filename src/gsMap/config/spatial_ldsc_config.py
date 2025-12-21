@@ -146,6 +146,8 @@ class SpatialLDSCConfig(SpatialLDSCComputeConfig, ConfigWithAutoPaths):
     def __post_init__(self):
         super().__post_init__()
 
+        self.show_config("Spatial LDSC Configuration")
+
         # Import here to avoid circular imports
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape
 
@@ -291,4 +293,12 @@ class SpatialLDSCConfig(SpatialLDSCComputeConfig, ConfigWithAutoPaths):
                     "Either provide --w-ld-dir or run generate_ldscore first."
                 )
         else:
-            logger.info(f"Using provided weights directory: {self.w_ld_dir}")        #
+            logger.info(f"Using provided weights directory: {self.w_ld_dir}")
+
+
+def check_spatial_ldsc_done(config: SpatialLDSCConfig, trait_name: str) -> bool:
+    """
+    Check if spatial_ldsc step is done for a specific trait.
+    """
+    result_file = config.get_ldsc_result_file(trait_name)
+    return result_file.exists()

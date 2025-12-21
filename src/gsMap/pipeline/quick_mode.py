@@ -6,11 +6,16 @@ import yaml
 
 from gsMap.config import QuickModeConfig
 from gsMap.find_latent import run_find_latent_representation
+from gsMap.config.find_latent_config import check_find_latent_done
 from gsMap.latent2gene import run_latent_to_gene
+from gsMap.config.latent2gene_config import check_latent2gene_done
 from gsMap.spatial_ldsc.spatial_ldsc_multiple_sumstats import run_spatial_ldsc
 from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
+from gsMap.config.spatial_ldsc_config import check_spatial_ldsc_done
 from gsMap.cauchy_combination_test import run_Cauchy_combination
+from gsMap.config.cauchy_config import check_cauchy_done
 from gsMap.report import run_report
+from gsMap.config.report_config import check_report_done
 
 logger = logging.getLogger("gsMap.pipeline")
 
@@ -22,35 +27,6 @@ def format_duration(seconds):
     else:
         return f"{minutes}m {int(seconds % 60)}s"
 
-def check_find_latent_done(config):
-    """
-    Check if find_latent step is done by verifying validity of metadata and output files.
-    """
-    metadata_path = config.find_latent_metadata_path
-    if not metadata_path.exists():
-        return False
-        
-    try:
-        with open(metadata_path, 'r') as f:
-            metadata = yaml.safe_load(f)
-            
-        if 'outputs' not in metadata or 'latent_files' not in metadata['outputs']:
-            return False
-            
-        latent_files = metadata['outputs']['latent_files']
-        if not latent_files:
-            return False
-            
-        # Verify all listed files exist
-        all_exist = True
-        for sample, path_str in latent_files.items():
-            if not Path(path_str).exists():
-                all_exist = False
-                break
-        return all_exist
-    except Exception as e:
-        logger.warning(f"Error checking find_latent metadata: {e}")
-        return False
 
 def run_quick_mode(config: QuickModeConfig):
     """
@@ -92,7 +68,10 @@ def run_quick_mode(config: QuickModeConfig):
         logger.info("=== Step 2: Latent to Gene Mapping ===")
         start_time = time.time()
         
-        run_latent_to_gene(config.latent2gene_config)
+        if check_latent2gene_done(config):
+             logger.info("Latent to gene mapping already done. Skipping...")
+        else:
+             run_latent_to_gene(config.latent2gene_config)
             
         logger.info(f"Step 2 completed in {format_duration(time.time() - start_time)}")
         
@@ -112,9 +91,8 @@ def run_quick_mode(config: QuickModeConfig):
 
         traits_remaining = {}
         for trait_name, sumstats_path in traits_to_process.items():
-            result_file = config.get_ldsc_result_file(trait_name)
-            if result_file.exists():
-                logger.info(f"Spatial LDSC result already exists for {trait_name} at {result_file}. Skipping...")
+            if check_spatial_ldsc_done(config, trait_name):
+                logger.info(f"Spatial LDSC result already exists for {trait_name}. Skipping...")
             else:
                 traits_remaining[trait_name] = sumstats_path
         
@@ -136,13 +114,11 @@ def run_quick_mode(config: QuickModeConfig):
 
         for trait_name in traits_to_process:
             logger.info(f"--- Processing Cauchy for {trait_name} ---")
-            cauchy_config = config.get_cauchy_config(trait_name)
-            cauchy_result = cauchy_config.get_cauchy_result_file(trait_name)
-            
-            if cauchy_result.exists():
-                 logger.info(f"Cauchy result exists at {cauchy_result}. Skipping...")
+            if check_cauchy_done(config, trait_name):
+                 logger.info(f"Cauchy result already exists for {trait_name}. Skipping...")
             else:
-                 run_Cauchy_combination(cauchy_config)
+                cauchy_config = config.get_cauchy_config(trait_name)
+                run_Cauchy_combination(cauchy_config)
 
         logger.info(f"Step 4 completed in {format_duration(time.time() - start_time)}")
 
@@ -154,10 +130,8 @@ def run_quick_mode(config: QuickModeConfig):
         for trait_name, sumstats_file in traits_to_process.items():
             logger.info(f"--- Generating Report for {trait_name} ---")
             report_config = config.get_report_config(trait_name, sumstats_file)
-            report_file = report_config.get_gsMap_report_file(trait_name)
-            
-            if report_file.exists():
-                logger.info(f"Report already exists at {report_file}. Skipping...")
+            if check_report_done(report_config, trait_name):
+                logger.info(f"Report already exists for {trait_name}. Skipping...")
             else:
                 # Construct run_parameters dict for the report
                 run_params = {

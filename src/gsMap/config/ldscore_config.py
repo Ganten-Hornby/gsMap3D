@@ -247,3 +247,20 @@ class GenerateLDScoreConfig(ConfigWithAutoPaths):
     save_pre_calculate_snp_gene_weight_matrix: bool = False
     baseline_annotation_dir: Optional[str] = None
     SNP_gene_pair_dir: Optional[str] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.show_config("Generate LDScore Configuration")
+
+
+def check_ldscore_done(config: GenerateLDScoreConfig) -> bool:
+    """
+    Check if generate_ldscore step is done.
+    """
+    # Assuming it's done if w_ld directory exists and has files
+    w_ld_dir = Path(config.ldscore_save_dir) / "w_ld"
+    if not w_ld_dir.exists():
+        return False
+    
+    # Check if there are any .l2.ldscore.gz files
+    return any(w_ld_dir.glob("*.l2.ldscore.gz"))
