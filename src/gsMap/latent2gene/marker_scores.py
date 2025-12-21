@@ -944,7 +944,7 @@ class MarkerScoreCalculator:
         # Determine 3D strategy parameters
         cross_slice_strategy = None
         n_slices = 1
-        num_homogeneous_per_slice = self.config.num_homogeneous
+        num_homogeneous_per_slice = self.config.homogeneous_neighbors
         
         if (self.config.dataset_type == DatasetType.SPATIAL_3D and 
             self.config.cross_slice_marker_score_strategy in [
@@ -955,12 +955,12 @@ class MarkerScoreCalculator:
             cross_slice_strategy = self.config.cross_slice_marker_score_strategy
             n_slices = 1 + 2 * self.config.n_adjacent_slices
             # For pooling strategies, num_homogeneous is per slice
-            num_homogeneous_per_slice = self.config.num_homogeneous
+            num_homogeneous_per_slice = self.config.homogeneous_neighbors
         
         self.computer = ParallelMarkerScoreComputer(
             global_log_gmean,
             global_expr_frac,
-            self.config.num_homogeneous,
+            self.config.homogeneous_neighbors,
             num_workers=self.config.mkscore_compute_workers,
             input_queue=reader_to_computer_queue,  # Input from reader
             output_queue=computer_to_writer_queue,  # Output to writer
@@ -1028,8 +1028,8 @@ class MarkerScoreCalculator:
             high_quality_mask=high_quality_mask,
             slice_ids=slice_ids,
             return_dense=True,
-            k_central=self.config.num_neighbour_spatial,
-            k_adjacent=self.config.k_adjacent,
+            k_central=self.config.spatial_neighbors,
+            k_adjacent=self.config.adjacent_slice_spatial_neighbors,
             n_adjacent_slices=self.config.n_adjacent_slices
         )
         gc.collect()
@@ -1042,9 +1042,9 @@ class MarkerScoreCalculator:
         # Optimize row order using JAX implementation
         logger.info("Optimizing row order for cache efficiency...")
         row_order = optimize_row_order_jax(
-            neighbor_indices=neighbor_indices[:,:self.config.num_homogeneous],
+            neighbor_indices=neighbor_indices[:,:self.config.homogeneous_neighbors],
             cell_indices=cell_indices,
-            neighbor_weights=neighbor_weights[:,:self.config.num_homogeneous],
+            neighbor_weights=neighbor_weights[:,:self.config.homogeneous_neighbors],
         )
         
         neighbor_indices = neighbor_indices[row_order]

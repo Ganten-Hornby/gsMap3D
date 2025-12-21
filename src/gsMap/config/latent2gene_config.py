@@ -10,7 +10,6 @@ import logging
 import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
-from gsMap.config.compute_config import LatentToGeneComputeConfig
 from gsMap.config.utils import (
     configure_jax_platform,
     process_h5ad_inputs,
@@ -29,6 +28,61 @@ class MarkerScoreCrossSliceStrategy(str, Enum):
     SIMILARITY_ONLY = 'similarity_only'
     WEIGHTED_MEAN_POOLING = 'weighted_mean_pooling'
     MAX_POOLING = 'max_pooling'
+
+@dataclass
+class LatentToGeneComputeConfig:
+    """Compute configuration for latent-to-gene step."""
+
+    use_gpu: Annotated[bool, typer.Option(
+        "--use-gpu/--no-gpu",
+        help="Use GPU for JAX computations (requires sufficient GPU memory)"
+    )] = True
+
+    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
+        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
+             "If provided, memory maps will be copied to this directory for faster random access during computation.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True
+    )] = None
+
+    # Batch sizes
+    rank_batch_size: int = 500
+    mkscore_batch_size: int = 500
+    find_homogeneous_batch_size: int = 100
+    rank_write_interval: int = 10
+
+    # Worker configurations
+    rank_read_workers: Annotated[int, typer.Option(
+        help="Number of parallel reader threads for rank memory map",
+        min=1,
+        max=16
+    )] = 10
+
+    mkscore_compute_workers: Annotated[int, typer.Option(
+        help="Number of parallel compute threads for marker score calculation",
+        min=1,
+        max=16
+    )] = 4
+
+    mkscore_write_workers: Annotated[int, typer.Option(
+        help="Number of parallel writer threads for marker scores",
+        min=1,
+        max=16
+    )] = 4
+
+    compute_input_queue_size: Annotated[int, typer.Option(
+        help="Maximum size of compute input queue (multiplier of mkscore_compute_workers)",
+        min=1,
+        max=10
+    )] = 5
+
+    writer_queue_size: Annotated[int, typer.Option(
+        help="Maximum size of writer input queue",
+        min=10,
+        max=500
+    )] = 100
 
 @dataclass
 class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
@@ -89,13 +143,13 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
 
     # --------parameters for finding homogeneous spots
 
-    num_neighbour_spatial: Annotated[int, typer.Option(
+    spatial_neighbors: Annotated[int, typer.Option(
         help="k1: Number of spatial neighbors in it's own slice for spatial dataset",
         min=10,
         max=500
     )] = 201
 
-    num_homogeneous: Annotated[int, typer.Option(
+    homogeneous_neighbors: Annotated[int, typer.Option(
         help="k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)",
         min=1,
         max=100
@@ -119,14 +173,14 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
     )] = False
 
     # --------3D slice-aware neighbor search parameters
-    k_adjacent: Annotated[int, typer.Option(
-        help="Number of neighbors to find on each adjacent slice for 3D data",
+    adjacent_slice_spatial_neighbors: Annotated[int, typer.Option(
+        help="Number of spatial neighbors to find on each adjacent slice for 3D data",
         min=10,
         max=100
     )] = 100
 
     n_adjacent_slices: Annotated[int, typer.Option(
-        help="Number of slices to search above and below for 3D data",
+        help="Number of adjacent slices to search above and below (± n_adjacent_slices) in 3D space for each focal spot. Padding will be applied automatically.",
         min=0,
         max=5
     )] = 1
@@ -171,7 +225,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
 
     @property
     def total_homogeneous_neighbor_per_cell(self):
-        return self.num_homogeneous * (1 + 2 * self.n_adjacent_slices)
+        return self.homogeneous_neighbors * (1 + 2 * self.n_adjacent_slices)
 
     def __post_init__(self):
         """Initialize and validate configuration"""
@@ -311,38 +365,38 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         if self.n_adjacent_slices != 0:
             self.n_adjacent_slices = 0
             logger.info(
-                "Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting n_adjacent_slices=0.")
+                "Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting adjacent_slices=0.")
 
         if self.latent_representation_niche is None:
             logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
 
-        assert self.num_homogeneous <= self.num_neighbour_spatial, \
-            f"num_homogeneous ({self.num_homogeneous}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial}) for spatial2D datasets"
+        assert self.homogeneous_neighbors <= self.spatial_neighbors, \
+            f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors}) for spatial2D datasets"
 
     def _configure_spatial_3d(self):
         """Configure parameters for spatial 3D datasets"""
         if self.n_adjacent_slices == 0:
             raise ValueError(
-                "Dataset type is spatial3D, but n_adjacent_slices=0. "
-                "You must set n_adjacent_slices to 1 or higher to enable cross-slice search. "
+                "Dataset type is spatial3D, but adjacent_slices=0. "
+                "You must set adjacent_slices to 1 or higher to enable cross-slice search. "
                 "If you don't want cross-slice search, use dataset_type='spatial2D' instead."
             )
 
         if self.latent_representation_niche is None:
             logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
 
-        assert self.k_adjacent <= self.num_neighbour_spatial, \
-            f"k_adjacent ({self.k_adjacent}) must be <= num_neighbour_spatial ({self.num_neighbour_spatial})"
-        assert self.num_homogeneous <= self.k_adjacent, \
-            f"num_homogeneous ({self.num_homogeneous}) must be <= k_adjacent ({self.k_adjacent})"
+        assert self.adjacent_slice_spatial_neighbors <= self.spatial_neighbors, \
+            f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors})"
+        assert self.homogeneous_neighbors <= self.adjacent_slice_spatial_neighbors, \
+            f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors})"
 
         n_slices = 1 + self.n_adjacent_slices  # only focal + above slices
         assert n_slices <= len(self.sample_h5ad_dict), \
             f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). " \
-            f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce n_adjacent_slices."
+            f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce adjacent_slices."
 
         logger.info(
-            f"Dataset type is spatial3D, using n_adjacent_slices={self.n_adjacent_slices} for cross-slice search")
+            f"Dataset type is spatial3D, using adjacent_slices={self.n_adjacent_slices} for cross-slice search")
         logger.info(f"The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
         logger.info(f"{' -> '.join(list(self.sample_h5ad_dict.keys()))}")
 
@@ -350,7 +404,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         # Only multiply for 'similarity_only' strategy (original behavior)
         # For 'mean_pooling' and 'max_pooling', num_homogeneous represents per-slice count
 
-        num_homogeneous = self.num_homogeneous
+        num_homogeneous = self.homogeneous_neighbors
         n_adjacent_slices = self.n_adjacent_slices
         # Check if we should use fix number of homogeneous neighbors per slice
         if self.cross_slice_marker_score_strategy in [
@@ -360,7 +414,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
 
             self.fix_cross_slice_homogenous_neighbors = True
             logger.info(
-                f"Using {self.cross_slice_marker_score_strategy.value} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.num_homogeneous} per slice.")
+                f"Using {self.cross_slice_marker_score_strategy.value} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.homogeneous_neighbors} per slice.")
 
 
         elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.SIMILARITY_ONLY:

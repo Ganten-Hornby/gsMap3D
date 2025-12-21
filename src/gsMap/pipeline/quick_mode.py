@@ -168,7 +168,7 @@ def run_quick_mode(config: QuickModeConfig):
                         "mkscore_compute_workers": config.mkscore_compute_workers,
                         "ldsc_compute_workers": config.ldsc_compute_workers,
                         "rank_read_workers": config.rank_read_workers,
-                        "num_read_workers": config.num_read_workers,
+                        "ldsc_read_workers": config.ldsc_read_workers,
                     },
                     "Spatial LDSC Save Directory": str(config.spatial_ldsc_config.ldsc_save_dir),
                     "Cauchy Directory": str(config.get_cauchy_config(trait_name).cauchy_save_dir),

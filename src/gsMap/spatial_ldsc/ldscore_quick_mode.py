@@ -618,7 +618,7 @@ class SpatialLDSCProcessor:
         # Create the reader-computer pipeline
         reader = ParallelLDScoreReader(
             processor=self,
-            num_workers=self.config.num_read_workers,
+            num_workers=self.config.ldsc_read_workers,
         )
         
         computer = ParallelLDScoreComputer(

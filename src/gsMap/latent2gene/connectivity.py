@@ -578,7 +578,7 @@ class ConnectivityMatrixBuilder:
             return build_scrna_connectivity(
                 emb_cell=emb_indv,
                 cell_mask=cell_mask,
-                n_neighbors=self.config.num_homogeneous,
+                n_neighbors=self.config.homogeneous_neighbors,
                 metric='euclidean'
             )
         
@@ -591,9 +591,9 @@ class ConnectivityMatrixBuilder:
             
             # Use config defaults if not provided
             if k_central is None:
-                k_central = self.config.num_neighbour_spatial
+                k_central = self.config.spatial_neighbors
             if k_adjacent is None:
-                k_adjacent = self.config.k_adjacent
+                k_adjacent = self.config.adjacent_slice_spatial_neighbors
             if n_adjacent_slices is None:
                 if self.dataset_type == DatasetType.SPATIAL_2D:
                     n_adjacent_slices = 0
@@ -700,7 +700,7 @@ class ConnectivityMatrixBuilder:
                 spatial_neighbors=spatial_neighbors,
                 all_emb_niche_norm_jax=all_emb_niche_norm_jax,
                 all_emb_indv_norm_jax=all_emb_indv_norm_jax,
-                num_homogeneous_per_slice=self.config.num_homogeneous,
+                num_homogeneous_per_slice=self.config.homogeneous_neighbors,
                 k_central=k_central,
                 k_adjacent=k_adjacent,
                 n_adjacent_slices=n_adjacent_slices,
@@ -751,7 +751,7 @@ class ConnectivityMatrixBuilder:
             return homogeneous_neighbors, homogeneous_weights
         else:
             # Build sparse matrix
-            rows = np.repeat(cell_indices, self.config.num_homogeneous)
+            rows = np.repeat(cell_indices, self.config.homogeneous_neighbors)
             cols = homogeneous_neighbors.flatten()
             data = homogeneous_weights.flatten()
             

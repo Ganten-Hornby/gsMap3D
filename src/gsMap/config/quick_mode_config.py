@@ -18,13 +18,12 @@ from .ldscore_config import GenerateLDScoreConfig
 from .spatial_ldsc_config import SpatialLDSCConfig
 from .report_config import ReportConfig
 from .cauchy_config import CauchyCombinationConfig
-from .compute_config import LatentToGeneComputeConfig, SpatialLDSCComputeConfig
 from gsMap.config.utils import process_h5ad_inputs
 
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
-class QuickModeConfig(FindLatentRepresentationsConfig, LatentToGeneConfig, SpatialLDSCConfig):
+class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresentationsConfig):
     """Configuration for running the complete gsMap pipeline in a single command.
     
     Inherits fields from all major sub-configs to provide a unified interface.
@@ -56,6 +55,8 @@ class QuickModeConfig(FindLatentRepresentationsConfig, LatentToGeneConfig, Spati
         help="Comma-separated list of specific genes to include"
     )] = None
 
+    sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
+
 
     def __post_init__(self):
         # We don't call super().__post_init__() to avoid mandatory validation errors
@@ -64,19 +65,10 @@ class QuickModeConfig(FindLatentRepresentationsConfig, LatentToGeneConfig, Spati
         # Instead we call ConfigWithAutoPaths.__post_init__ directly.
         ConfigWithAutoPaths.__post_init__(self)
 
-        # Unify high quality cell flag
-        self.high_quality_neighbor_filter = self.high_quality_cell_qc
+        # Unify high quality qc cell flag
+        if self.is_both_latent_and_gene_running:
+            self.high_quality_neighbor_filter = self.high_quality_cell_qc
 
-        # Process h5ad inputs if provided (for FindLatent step)
-        input_options = {
-            'h5ad_yaml': ('h5ad_yaml', 'yaml'),
-            'h5ad_path': ('h5ad_path', 'list'),
-            'h5ad_list_file': ('h5ad_list_file', 'file'),
-        }
-        has_input = any(getattr(self, k) is not None for k in ['h5ad_path', 'h5ad_yaml', 'h5ad_list_file'])
-        if has_input:
-            self.sample_h5ad_dict = process_h5ad_inputs(self, input_options)
-            
         # Process sumstats inputs
         if self.sumstats_file is None and self.sumstats_config_file is None:
             # We don't raise error immediately because user might only run find_latent or latent2gene
@@ -98,6 +90,17 @@ class QuickModeConfig(FindLatentRepresentationsConfig, LatentToGeneConfig, Spati
                     self.sumstats_config_dict[t_name] = Path(s_file)
 
     @property
+    def is_both_latent_and_gene_running(self) -> bool:
+        """Check if both find_latent and latent2gene are in the execution range."""
+        steps = ["find_latent", "latent2gene", "spatial_ldsc", "cauchy", "report"]
+        try:
+            start_idx = steps.index(self.start_step)
+            stop_idx = steps.index(self.stop_step) if self.stop_step else len(steps) - 1
+            return start_idx <= 0 and stop_idx >= 1
+        except ValueError:
+            return False
+
+    @property
     def find_latent_config(self) -> FindLatentRepresentationsConfig:
         return FindLatentRepresentationsConfig(**{
             f.name: getattr(self, f.name) for f in fields(FindLatentRepresentationsConfig)
@@ -106,9 +109,13 @@ class QuickModeConfig(FindLatentRepresentationsConfig, LatentToGeneConfig, Spati
     @property
     def latent2gene_config(self) -> LatentToGeneConfig:
         params = {f.name: getattr(self, f.name) for f in fields(LatentToGeneConfig)}
-        # Unify high quality cell flag: QuickMode's high_quality_cell_qc maps to
-        # LatentToGeneConfig's high_quality_neighbor_filter
-        params['high_quality_neighbor_filter'] = self.high_quality_cell_qc
+
+        # If both steps run, clear explicit h5ad inputs to trigger auto-detection in LatentToGeneConfig
+        if self.is_both_latent_and_gene_running:
+            params['h5ad_path'] = None
+            params['h5ad_yaml'] = None
+            params['h5ad_list_file'] = None
+
         return LatentToGeneConfig(**params)
 
     @property

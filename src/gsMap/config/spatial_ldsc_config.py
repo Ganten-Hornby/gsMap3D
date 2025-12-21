@@ -9,17 +9,48 @@ import logging
 import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
-from gsMap.config.compute_config import SpatialLDSCComputeConfig
 
 logger = logging.getLogger("gsMap.config")
 
+@dataclass
+class SpatialLDSCComputeConfig:
+    """Compute configuration for spatial LDSC step."""
+
+    use_gpu: Annotated[bool, typer.Option(
+        "--use-gpu/--no-gpu",
+        help="Use GPU for JAX-accelerated spatial LDSC implementation"
+    )] = True
+
+    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
+        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
+             "If provided, memory maps will be copied to this directory for faster random access during computation.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True
+    )] = None
+
+    ldsc_read_workers: Annotated[int, typer.Option(
+        help="Number of read workers",
+        min=1
+    )] = 10
+
+    ldsc_compute_workers: Annotated[int, typer.Option(
+        help="Number of compute workers for LDSC regression",
+        min=1
+    )] = 10
+
+    spots_per_chunk_quick_mode: Annotated[int, typer.Option(
+        help="Number of spots per chunk in quick mode",
+        min=1
+    )] = 50
 
 @dataclass
 class SpatialLDSCConfig(SpatialLDSCComputeConfig, ConfigWithAutoPaths):
     """Configuration for spatial LDSC.
     
     Inherits compute/IO fields from SpatialLDSCComputeConfig:
-    use_gpu, memmap_tmp_dir, num_read_workers, ldsc_compute_workers, spots_per_chunk_quick_mode
+    use_gpu, memmap_tmp_dir, ldsc_read_workers, ldsc_compute_workers, spots_per_chunk_quick_mode
     """
     w_ld_dir: Annotated[Optional[Path], typer.Option(
         help="Directory containing the weights files (w_ld)",
