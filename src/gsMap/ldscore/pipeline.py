@@ -55,6 +55,7 @@ class ChromosomeResult:
     hm3_snp_names: List[str]
     weights: Union[scipy.sparse.csr_matrix, np.ndarray]
     feature_names: List[str]
+    mapping_df: Optional[pd.DataFrame] = None
     ld_scores: Optional[np.ndarray] = None
 
 
@@ -249,11 +250,7 @@ class LDScorePipeline:
 
         # Save Curated Mapping if it exists (BED type)
         if mapping_df is not None:
-            output_dir = Path(self.config.output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            mapping_out_file = output_dir / f"{self.config.output_filename}.chr{chromosome}.mapping.csv"
-            mapping_df.to_csv(mapping_out_file, index=False)
-            logger.info(f"  Saved SNP-Feature mapping ({len(mapping_df)} rows) to: {mapping_out_file}")
+             logger.debug(f"  Captured SNP-Feature mapping ({len(mapping_df)} rows) for chromosome {chromosome}")
 
         # Ensure feature names align with matrix width (handle Unmapped bin)
         if mapping_matrix.shape[1] == len(feature_names) + 1:
@@ -272,6 +269,7 @@ class LDScorePipeline:
             target_hm3_snps=target_hm3_snps,
             mapping_matrix=mapping_matrix,
             feature_names=feature_names_full,
+            mapping_df=mapping_df,
             output_format="sparse"
         )
 
@@ -349,6 +347,7 @@ class LDScorePipeline:
             target_hm3_snps=target_hm3_snps,
             mapping_matrix=annot_matrix,
             feature_names=feature_names,
+            mapping_df=None,
             output_format="dense"
         )
 
@@ -359,6 +358,7 @@ class LDScorePipeline:
         target_hm3_snps: List[str],
         mapping_matrix: Union[scipy.sparse.csr_matrix, np.ndarray],
         feature_names: List[str],
+        mapping_df: Optional[pd.DataFrame] = None,
         output_format: str = "sparse"
     ) -> Optional[ChromosomeResult]:
         """
@@ -427,7 +427,8 @@ class LDScorePipeline:
             chromosome=str(chromosome),
             hm3_snp_names=all_hm3_snp_names,
             weights=weights_out,
-            feature_names=feature_names
+            feature_names=feature_names,
+            mapping_df=mapping_df
         )
 
     def _create_sparse_matrix_from_batches(self, batch_data: List[Dict], n_rows: int, n_cols: int) -> scipy.sparse.csr_matrix:
@@ -586,3 +587,11 @@ class LDScorePipeline:
 
         adata.write(out_file)
         logger.info(f"Successfully saved AnnData to {out_file}")
+
+        # Save Combined Mapping CSV if available
+        all_mapping_dfs = [res.mapping_df for res in results.values() if res.mapping_df is not None]
+        if all_mapping_dfs:
+            combined_mapping_df = pd.concat(all_mapping_dfs, ignore_index=True)
+            mapping_out_file = out_path / f"{output_filename}.csv"
+            combined_mapping_df.to_csv(mapping_out_file, index=False)
+            logger.info(f"Successfully saved combined SNP-Feature mapping to {mapping_out_file}")

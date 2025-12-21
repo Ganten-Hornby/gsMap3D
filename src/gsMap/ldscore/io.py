@@ -91,7 +91,7 @@ class PlinkBEDReader:
         logger.info(f"Loaded metadata: {self.m_original} SNPs × {self.n_original} individuals")
 
         # Calculate MAF using matrix operations (lazy execution via dask)
-        logger.info("Calculating MAF using matrix operations...")
+        logger.info("Calculating MAF ...")
         self.maf = self._calculate_maf()
 
         # Apply filters to the xarray DataArray

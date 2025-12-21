@@ -130,8 +130,11 @@ def create_snp_feature_map(
             'BP': 'Start'
         })
         bim_pr_df['End'] = bim_pr_df['Start'] + 1
-        bim_pr_df['Chromosome'] = bim_pr_df['Chromosome'].astype(str)
-        df_features['Chromosome'] = df_features['Chromosome'].astype(str)
+        
+        # Clean chromosome names (remove 'chr' prefix if present)
+        # PLINK BIM files typically use numeric chromosome identifiers
+        bim_pr_df['Chromosome'] = bim_pr_df['Chromosome'].astype(str).str.replace('chr', '', case=False)
+        df_features['Chromosome'] = df_features['Chromosome'].astype(str).str.replace('chr', '', case=False)
 
         pr_bim = pr.PyRanges(bim_pr_df)
 
@@ -156,6 +159,10 @@ def create_snp_feature_map(
         # Overlapping cols usually: Start, End.
         # pr_bim (SNP) Start is 'Start'. pr_features (Window) Start is 'Start_b'.
         joined = pr_bim.join(pr_features, apply_strand_suffix=False).df
+
+        logger.info(f"Initial SNP-feature overlaps: {len(joined)} pairs")
+        if not joined.empty:
+            logger.info(f"  Unique SNPs in overlaps: {joined['SNP'].nunique()} | Unique Features in overlaps: {joined['Feature'].nunique()}")
 
         if not joined.empty:
             # 6. Resolve Conflicts / Filter
@@ -188,6 +195,8 @@ def create_snp_feature_map(
             # Row indices come from BIM 'snp_row_idx' which is preserved in join
             row_indices = joined['snp_row_idx'].values
             col_indices = joined['Feature'].map(feature_to_idx).values
+
+            logger.info(f"Final SNP-feature pairs after strategy '{strategy}': {len(row_indices)}")
 
             # Data values: Use Score if available and requested, otherwise 1.0
             if 'Score' in joined.columns and strategy in ['score', 'allow_repeat']:

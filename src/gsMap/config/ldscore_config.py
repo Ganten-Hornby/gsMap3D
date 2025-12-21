@@ -8,13 +8,13 @@ from typing import Dict, List, Optional, Union, Annotated
 import logging
 import typer
 
-from gsMap.config.base import ConfigWithAutoPaths
+from gsMap.config.base import BaseConfig, ConfigWithAutoPaths
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class LDScoreConfig:
+class LDScoreConfig(BaseConfig):
     """
     Configuration for LD Score pipeline.
     """
@@ -110,21 +110,15 @@ class LDScoreConfig:
     def __post_init__(self):
         """
         Post-initialization processing:
-        1. Initialize base auto-paths.
-        2. Set default output_dir if not provided.
-        3. Parse chromosome string to list.
-        4. Fix PLINK file template.
-        5. Validate file existence.
+        1. Parse chromosome string to list.
+        2. Fix PLINK file template.
+        3. Validate file existence.
         """
-        # 1. Base auto-paths (sets project_dir)
-        super().__post_init__()
-
-        # 2. Set default output_dir
-        if self.output_dir is None:
-            self.output_dir = self.ldscore_save_dir
-            logger.info(f"Using default output directory: {self.output_dir}")
-        else:
+        # Parse output_dir if provided
+        if self.output_dir is not None:
             self.output_dir = Path(self.output_dir)
+        else:
+            raise ValueError("output_dir must be provided for LDScoreConfig.")
 
         # 3. Parse Chromosomes
         if self.chromosomes == "all":

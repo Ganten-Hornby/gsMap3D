@@ -76,7 +76,53 @@ def ensure_path_exists(func):
     return wrapper
 
 @dataclass
-class ConfigWithAutoPaths:
+class BaseConfig:
+    """Base configuration class with display and conversion utility."""
+
+    def to_dict_with_paths_as_strings(self) -> Dict[str, Any]:
+        """
+        Convert the config object to a dictionary with all Path objects converted to strings.
+        Also handles nested Path and Enum objects in dictionaries and lists.
+        
+        Returns:
+            Dictionary representation of the config with all Path objects as strings
+        """
+        # Convert config to dict
+        config_dict = asdict(self)
+        
+        # Convert all Path and Enum objects in config to strings/values
+        for key, value in config_dict.items():
+            if isinstance(value, Path):
+                config_dict[key] = str(value)
+            elif isinstance(value, Enum):
+                config_dict[key] = value.value
+            elif isinstance(value, dict):
+                config_dict[key] = {
+                    k: (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
+                    for k, v in value.items()
+                }
+            elif isinstance(value, list):
+                config_dict[key] = [
+                    (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
+                    for v in value
+                ]
+        
+        return config_dict
+
+    def show_config(self, title: str = "Configuration"):
+        """Show configuration in a nice way using rich."""
+        config_dict = self.to_dict_with_paths_as_strings()
+        config_yaml = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
+        console = Console()
+        console.print(Panel(
+            Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
+            title=f"[bold]{title}[/bold]",
+            expand=False
+        ))
+
+
+@dataclass
+class ConfigWithAutoPaths(BaseConfig):
     """Base configuration class with automatic path generation."""
 
     # Required from parent
@@ -97,48 +143,6 @@ class ConfigWithAutoPaths:
             raise ValueError('workdir must be provided.')
         work_dir = Path(self.workdir)
         self.project_dir = work_dir / self.project_name
-    
-    def to_dict_with_paths_as_strings(self) -> Dict[str, Any]:
-        """
-        Convert the config object to a dictionary with all Path objects converted to strings.
-        Also handles OrderedDict with Path values (like sample_h5ad_dict).
-        
-        Returns:
-            Dictionary representation of the config with all Path objects as strings
-        """
-        # Convert config to dict
-        config_dict = asdict(self)
-        
-        # Convert sample_h5ad_dict (OrderedDict with Path values) to proper format
-        if hasattr(self, 'sample_h5ad_dict') and self.sample_h5ad_dict:
-            sample_h5ad_dict_str = {k: str(v) for k, v in self.sample_h5ad_dict.items()}
-            config_dict['sample_h5ad_dict'] = sample_h5ad_dict_str
-        
-        # Convert all Path and Enum objects in config to strings/values
-        for key, value in config_dict.items():
-            if isinstance(value, Path):
-                config_dict[key] = str(value)
-            elif isinstance(value, Enum):
-                config_dict[key] = value.value
-            elif isinstance(value, dict):
-                config_dict[key] = {k: (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
-                                   for k, v in value.items()}
-            elif isinstance(value, list):
-                config_dict[key] = [(str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
-                                   for v in value]
-        
-        return config_dict
-
-    def show_config(self, title: str = "Configuration"):
-        """Show configuration in a nice way using rich."""
-        config_dict = self.to_dict_with_paths_as_strings()
-        config_yaml = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
-        console = Console()
-        console.print(Panel(
-            Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
-            title=f"[bold]{title}[/bold]",
-            expand=False
-        ))
 
     ## ---- Find latent representation paths
     @property
