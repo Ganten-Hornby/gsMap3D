@@ -57,7 +57,7 @@ def run_quick_mode(config: QuickModeConfig):
         start_time = time.time()
         
         if check_find_latent_done(config):
-            logger.info(f"Find latent representations already done (verified via {config.find_latent_config.find_latent_metadata_path}). Skipping...")
+            logger.info(f"Find latent representations already done (verified via {config.find_latent_metadata_path}). Skipping...")
         else:
             run_find_latent_representation(config.find_latent_config)
             

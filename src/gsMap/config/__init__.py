@@ -11,7 +11,7 @@ from collections import OrderedDict
 from collections import namedtuple
 
 # Base classes and utilities
-from .base import ConfigWithAutoPaths, ensure_path_exists
+from .base import BaseConfig, ConfigWithAutoPaths, ensure_path_exists
 
 # Decorators
 from .decorators import dataclass_typer, track_resource_usage, show_banner
@@ -43,6 +43,7 @@ from .cauchy_config import CauchyCombinationConfig
 
 __all__ = [
     # Base classes
+    'BaseConfig',
     'ConfigWithAutoPaths',
     'ensure_path_exists',
     
