@@ -129,34 +129,32 @@ class LDScoreConfig(BaseConfig):
         # Else it's already a list or properly set
 
         # 4. Handle PLINK Prefix Template
-        # Ensure bfile_root has {chr} placeholder if it's treated as a template
-        if "{chr}" not in self.bfile_root and "{chromosome}" not in self.bfile_root:
-            logger.info(f"Appending placeholder to bfile_root: {self.bfile_root} -> {self.bfile_root}.{{chr}}")
+        # Ensure bfile_root has {chr} placeholder
+        if "{chr}" not in self.bfile_root:
+            logger.warning(
+                f"The 'bfile_root' ({self.bfile_root}) does not contain the '{{chr}}' placeholder. "
+                f"Appending '.{{chr}}' to the prefix."
+            )
             self.bfile_root = f"{self.bfile_root}.{{chr}}"
 
         # 5. Validate PLINK Files
         logger.info("Validating PLINK binary files based on template...")
-        missing_chroms = []
+        missing_paths = []
 
         for chrom in self.chromosomes:
-            try:
-                # Try formatting with 'chr' first (standard)
-                prefix = self.bfile_root.format(chr=chrom)
-            except KeyError:
-                # Fallback to 'chromosome'
-                prefix = self.bfile_root.format(chromosome=chrom)
-
+            prefix = self.bfile_root.format(chr=chrom)
             bed_path = Path(f"{prefix}.bed")
             if not bed_path.exists():
-                missing_chroms.append(str(chrom))
+                missing_paths.append(str(bed_path))
 
-        if missing_chroms:
-            logger.warning(
-                f"PLINK .bed files missing for {len(missing_chroms)} chromosomes: {', '.join(missing_chroms)}. "
-                "These will be skipped during processing."
+        if missing_paths:
+            error_msg = (
+                f"PLINK .bed files missing for {len(missing_paths)} chromosomes. "
+                "The following files were not found:\n" + "\n".join(f"  - {p}" for p in missing_paths)
             )
-        else:
-            logger.info(f"Confirmed all PLINK files exist for {len(self.chromosomes)} chromosomes.")
+            raise FileNotFoundError(error_msg)
+
+        logger.info(f"Confirmed all PLINK files exist for {len(self.chromosomes)} chromosomes.")
 
 
 @dataclass
