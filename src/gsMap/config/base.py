@@ -203,7 +203,6 @@ class ConfigWithAutoPaths(BaseConfig):
         """Directory for spatial LDSC results"""
         return self.project_dir / "spatial_ldsc"
 
-    @ensure_path_exists
     def get_ldsc_result_file(self, trait_name: str) -> Path:
         return Path(f"{self.ldsc_save_dir}/{self.project_name}_{trait_name}.csv.gz")
 
@@ -259,16 +258,19 @@ class ConfigWithAutoPaths(BaseConfig):
         return self.get_GSS_plot_dir(trait_name) / "plot_genes.csv"
     
 
-    @ensure_path_exists
     def get_cauchy_result_file(self, trait_name: str, all_samples: bool = False) -> Path:
+        """
+        Get the path to the Cauchy combination result file.
+        
+        Args:
+            trait_name: Name of the trait.
+            all_samples: If True, return the path for annotation-level results (all samples).
+                        If False, return the path for sample-annotation pair level results.
+        """
         if all_samples:
-            return Path(
-                f"{self.cauchy_save_dir}/{self.project_name}_all_samples_{trait_name}.Cauchy.csv.gz"
-            )
+            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.cauchy.csv.gz"
         else:
-            return Path(
-                f"{self.cauchy_save_dir}/{self.project_name}_single_sample_{self.project_name}_{trait_name}.Cauchy.csv.gz"
-            )
+            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.sample_cauchy.csv.gz"
     
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:

@@ -207,7 +207,7 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
         'overall_spots': total_spots_in_anno + total_spots_elsewhere
     }
 
-def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None):
+def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col=None):
     """
     Run Cauchy combination test on a dataframe.
     
@@ -215,38 +215,59 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None):
         df: DataFrame containing log10(p) values and annotation column.
         annotation_col: Name of column containing annotations.
         trait_cols: List of trait columns. If None, uses all columns except annotation_col.
+        extra_group_col: Optional extra column to group by (e.g., 'sample_name').
         
     Returns:
         DataFrame with results.
     """
-    results_dict = {}
-    annotations = df[annotation_col].unique()
-    
     if trait_cols is None:
-        trait_cols = [c for c in df.columns if c != annotation_col]
+        trait_cols = [c for c in df.columns if c not in [annotation_col, extra_group_col] and c != 'spot']
 
     all_results = []
     
+    # Define the groups
+    group_cols = [annotation_col]
+    if extra_group_col:
+        group_cols.append(extra_group_col)
+    
+    # Pre-calculate groups to avoid repeated filtering
+    grouped = df.groupby(group_cols, observed=True)
+    
     for trait in trait_cols:
-        # Create partial function for this trait
-        # We need to compute calculate_trait_for_anno for each annotation
-        
-        def process_one_anno(anno):
-            # Because ThreadPoolExecutor shares memory, we can slice df here without much overhead
-            # provided df is not being written to.
-            df_anno = df[df[annotation_col] == anno]
-            return process_trait(trait, df_anno, df, anno, annotation_col)
+        def process_one_group(group_key):
+            df_group = grouped.get_group(group_key)
+            
+            # For Fisher enrichment, we still need the background (all spots not in this annotation)
+            # If extra_group_col is provided, does background mean same sample or overall?
+            # Usually enrichment is within the same context. 
+            # If extra_group_col is sample_name, background should be other annotations in the SAME sample.
+            if extra_group_col:
+                # Group key is (anno, extra)
+                anno, extra = group_key
+                df_background = df[df[extra_group_col] == extra]
+                # We need all_data for process_trait to calculate background
+                res = process_trait(trait, df_group, df_background, anno, annotation_col)
+                if res:
+                    res[extra_group_col] = extra
+            else:
+                # Group key is just (anno,)
+                anno = group_key[0] if isinstance(group_key, tuple) else group_key
+                res = process_trait(trait, df_group, df, anno, annotation_col)
+            
+            return res
 
+        group_keys = list(grouped.groups.keys())
+        
         # Use rich progress bar
         with Progress(transient=True) as progress:
-            task = progress.add_task(f"[green]Processing {trait}...", total=len(annotations))
+            task = progress.add_task(f"[green]Processing {trait}...", total=len(group_keys))
             
-            # Parallelize over annotations
+            # Parallelize over groups
             with ThreadPoolExecutor(max_workers=None) as executor:
                 # Submit all tasks
-                future_to_anno = {executor.submit(process_one_anno, anno): anno for anno in annotations}
+                future_to_group = {executor.submit(process_one_group, g): g for g in group_keys}
                 
-                for future in as_completed(future_to_anno):
+                for future in as_completed(future_to_group):
                     res = future.result()
                     if res is not None:
                         all_results.append(res)
@@ -256,9 +277,11 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None):
         return pd.DataFrame()
         
     combined_results = pd.DataFrame(all_results)
-    # Sort or organize if needed? The original code sorted by p_cauchy within annotation.
-    # Here we have a flat list. We can sort by trait and p_cauchy.
-    combined_results.sort_values(by=['trait', 'p_cauchy'], inplace=True)
+    sort_cols = ['trait', 'p_cauchy']
+    if extra_group_col:
+        sort_cols = [extra_group_col] + sort_cols
+        
+    combined_results.sort_values(by=sort_cols, inplace=True)
     
     return combined_results
 
@@ -269,6 +292,12 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
     
     # We will load data for the specified trait
     ldsc_input_file = config.get_ldsc_result_file(config.trait_name)
+    # If not found with new name, try mapping trait name
+    if not ldsc_input_file.exists():
+        # The base.py was just updated, so we might need to check if it exists under old names or construct it
+        # Actually ldsc results should be trait specific
+        ldsc_input_file = config.get_ldsc_result_file(config.trait_name)
+        
     if not ldsc_input_file.exists():
         raise FileNotFoundError(f"LDSC result file not found: {ldsc_input_file}")
     
@@ -282,17 +311,10 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
     logger.info(f"------Loading annotations...")
     
     # In the new design, we use concatenated_latent_adata_path for annotations
-    # (ConfigWithAutoPaths provides this)
     latent_adata_path = config.concatenated_latent_adata_path
     
     if not latent_adata_path.exists():
-        # Fallback logic if needed, or error out
-        # Try finding it in workdir if not standard
-        fallback = Path(f"{config.workdir}/{config.project_name}/latent_to_gene/concatenated_latent_adata.h5ad")
-        if fallback.exists():
-            latent_adata_path = fallback
-        else:
-             raise FileNotFoundError(f"Latent adata with annotations not found at: {latent_adata_path}")
+        raise FileNotFoundError(f"Latent adata with annotations not found at: {latent_adata_path}")
     
     logger.info(f"Loading metadata from {latent_adata_path}")
     adata = sc.read_h5ad(latent_adata_path)
@@ -301,6 +323,17 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
     if config.annotation not in adata.obs.columns:
         raise ValueError(f"Annotation column '{config.annotation}' not found in adata.obs.")
     
+    # Check for sample_name column
+    sample_col = 'sample_name'
+    if sample_col not in adata.obs.columns:
+        # Try batch_id if sample_name is not there? 
+        if 'batch_id' in adata.obs.columns:
+             sample_col = 'batch_id'
+             logger.warning(f"'sample_name' not found in adata.obs, using 'batch_id' instead.")
+        else:
+             logger.warning(f"Neither 'sample_name' nor 'batch_id' found in adata.obs. Sample-level Cauchy will be skipped.")
+             sample_col = None
+
     # Join annotation to LDSC results
     # Ensure indices match (spots)
     common_cells = np.intersect1d(ldsc_df.index, adata.obs_names)
@@ -313,20 +346,30 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
     
     # Add annotation column
     ldsc_df[config.annotation] = adata.obs.loc[common_cells, config.annotation].values
-    
-    # 3. Run Cauchy Combination
-    logger.info(f"------Running Cauchy Combination Test...")
+    if sample_col:
+        ldsc_df[sample_col] = adata.obs.loc[common_cells, sample_col].values
+
+    # 3. Run Cauchy Combination (Annotation Level)
+    logger.info(f"------Running Cauchy Combination Test (Annotation Level)...")
     result_df = run_cauchy_on_dataframe(ldsc_df, 
                                       annotation_col=config.annotation, 
                                       trait_cols=trait_cols)
     
-    # 4. Save Results
+    # Save Results
     output_file = config.output_file
-    logger.info(f"------Saving results to {output_file}...")
-    
-    # Format columns as expected by downstream or previous versions if needed
-    # Previous columns were: p_cauchy, p_median, n_cell, annotation
-    # New columns include odds_ratio etc. keeping them is good.
-    
+    logger.info(f"------Saving annotation-level results to {output_file}...")
     result_df.to_csv(output_file, compression='gzip', index=False)
+
+    # 4. Run Cauchy Combination (Sample-Annotation level)
+    if sample_col:
+        logger.info(f"------Running Cauchy Combination Test (Sample-Annotation Level)...")
+        sample_result_df = run_cauchy_on_dataframe(ldsc_df, 
+                                                  annotation_col=config.annotation, 
+                                                  trait_cols=trait_cols,
+                                                  extra_group_col=sample_col)
+        
+        sample_output_file = config.sample_output_file
+        logger.info(f"------Saving sample-level results to {sample_output_file}...")
+        sample_result_df.to_csv(sample_output_file, compression='gzip', index=False)
+    
     logger.info("Done.")
