@@ -1185,13 +1185,9 @@ class MarkerScoreCalculator:
         
         self.console.print(Panel.fit(
             "[bold green]✓ Marker score calculation complete![/bold green]",
-            subtitle=f"Results saved to {output_path}",
             border_style="green"
         ))
         
-        logger.info("Marker score calculation complete!")
-        
-
         logger.info(f"Results saved to {output_path}")
         
         return str(output_path)

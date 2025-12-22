@@ -196,6 +196,7 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
 
     return {
         'trait': trait,
+        annotation_col: annotation,
         'p_cauchy': p_cauchy_val,
         'p_median': p_median_val,
         'odds_ratio': odds_ratio,
@@ -239,9 +240,7 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
         def process_one_group(group_key):
             df_group = grouped.get_group(group_key)
             
-            # For Fisher enrichment, we still need the background (all spots not in this annotation)
-            # If extra_group_col is provided, does background mean same sample or overall?
-            # Usually enrichment is within the same context. 
+            # Usually enrichment is within the same context.
             # If extra_group_col is sample_name, background should be other annotations in the SAME sample.
             if extra_group_col:
                 # Group key is (anno, extra)
@@ -375,7 +374,7 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
         # Save Annotation Level Results
         output_file = config.get_cauchy_result_file(trait_name, all_samples=True)
         logger.info(f"------Saving annotation-level results to {output_file}...")
-        result_df.to_csv(output_file, compression='gzip', index=False)
+        result_df.to_csv(output_file, index=False)
 
         # Run Cauchy Combination (Sample-Annotation level)
         if sample_col:
@@ -387,6 +386,6 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
             
             sample_output_file = config.get_cauchy_result_file(trait_name, all_samples=False)
             logger.info(f"------Saving sample-level results to {sample_output_file}...")
-            sample_result_df.to_csv(sample_output_file, compression='gzip', index=False)
+            sample_result_df.to_csv(sample_output_file, index=False)
     
     logger.info("Cauchy combination processing completed.")

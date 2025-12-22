@@ -233,7 +233,6 @@ class ConfigWithAutoPaths(BaseConfig):
     @ensure_path_exists
     def cauchy_save_dir(self) -> Path:
         return self.project_dir / "cauchy_combination"
-        return Path(f'{self.project_dir}/cauchy_combination/{self.sample_name}')
     
     @ensure_path_exists
     def get_report_dir(self, trait_name: str) -> Path:
@@ -256,21 +255,12 @@ class ConfigWithAutoPaths(BaseConfig):
     
     def get_GSS_plot_select_gene_file(self, trait_name: str) -> Path:
         return self.get_GSS_plot_dir(trait_name) / "plot_genes.csv"
-    
 
     def get_cauchy_result_file(self, trait_name: str, all_samples: bool = False) -> Path:
-        """
-        Get the path to the Cauchy combination result file.
-        
-        Args:
-            trait_name: Name of the trait.
-            all_samples: If True, return the path for annotation-level results (all samples).
-                        If False, return the path for sample-annotation pair level results.
-        """
         if all_samples:
-            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.cauchy.csv.gz"
+            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.cauchy.csv"
         else:
-            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.sample_cauchy.csv.gz"
+            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.sample_cauchy.csv"
     
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:

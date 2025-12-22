@@ -322,6 +322,7 @@ class RankCalculator:
                 # Add slice information
                 adata.obs['slice_id'] = st_id
                 adata.obs['slice_name'] = sample_name
+                adata.obs['sample_name'] = sample_name
 
                 # make unique index
                 adata.obs_names_make_unique()

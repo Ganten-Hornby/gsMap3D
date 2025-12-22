@@ -156,6 +156,8 @@ class LDScoreConfig(BaseConfig):
 
         logger.info(f"Confirmed all PLINK files exist for {len(self.chromosomes)} chromosomes.")
 
+        self.show_config("LD Score Weights Configuration")
+
 
 @dataclass
 class GenerateLDScoreConfig(ConfigWithAutoPaths):
