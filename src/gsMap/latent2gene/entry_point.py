@@ -39,24 +39,7 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
             - marker_scores: Path to marker scores memory map
             - metadata: Path to metadata YAML file
     """
-    
-    console.print(Panel.fit(
-        "[bold cyan]Latent to Gene Conversion Pipeline[/bold cyan]",
-        subtitle="gsMap",
-        border_style="cyan"
-    ))
-    
-    logger.info("Starting latent to gene conversion pipeline")
-    
-    # Print configuration in a nice way
-    config_yaml = yaml.dump(config.to_dict_with_paths_as_strings(), default_flow_style=False, sort_keys=False)
-    console.print(Panel(
-        Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
-        title="[bold]Configuration[/bold]",
-        expand=False
-    ))
 
-    
     # Setup output directory using config paths
     output_dir = Path(config.latent2gene_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -153,13 +136,6 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> Dict[str, Any]:
     with open(expected_outputs["metadata"], 'w') as f:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
     
-    console.print(Panel.fit(
-        "[bold green]✓ Latent to gene conversion complete![/bold green]",
-        subtitle=f"Results saved to {output_dir}",
-        border_style="green"
-    ))
-    
-    logger.info("Latent to gene conversion complete!")
     logger.info(f"All outputs saved to: {output_dir}")
     
     return metadata["outputs"]
