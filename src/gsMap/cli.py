@@ -88,7 +88,6 @@ def find_latent_representations(config: FindLatentRepresentationsConfig):
     - Learns latent representations using GNN
     - Saves the model and embeddings
     """
-    logger.info(f"Sample: {config.sample_name}")
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
     
@@ -123,7 +122,6 @@ def latent_to_gene(config: LatentToGeneConfig):
     - Performs spatial smoothing
     - Saves marker scores for LDSC
     """
-    logger.info(f"Sample: {config.sample_name}")
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
     
@@ -154,7 +152,6 @@ def spatial_ldsc(config: SpatialLDSCConfig):
     - Saves results for downstream analysis
     """
     logger.info(f"Trait: {config.trait_name}")
-    logger.info(f"Sample: {config.sample_name}")
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
     
@@ -221,7 +218,6 @@ def generate_report(config: ReportConfig):
     - Interactive HTML report
     """
     logger.info(f"Trait: {config.trait_name}")
-    logger.info(f"Sample: {config.sample_name}")
     logger.info(f"Annotation: {config.annotation}")
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")

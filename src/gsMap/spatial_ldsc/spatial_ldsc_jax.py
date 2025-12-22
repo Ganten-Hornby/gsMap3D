@@ -312,7 +312,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             feather_path = Path(config.marker_score_feather_path)
             logger.info(f"Loading marker scores from Feather: {feather_path}")
             # Use the specialized FeatherAnnData wrapper
-            marker_score_adata = FeatherAnnData(feather_path, index_col='HUMAN_GENE_SYM')
+            marker_score_adata = FeatherAnnData(feather_path, index_col='HUMAN_GENE_SYM', transpose=True)
 
         elif config.marker_score_format == "h5ad":
             if not config.marker_score_h5ad_path:
@@ -380,10 +380,10 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             if marker_score_adata is not None:
                 logger.info("Closing marker score resources...")
                 # If it's our MemMap wrapper, close it explicitly
-                if 'memmap_manager' in marker_score_adata.uns:
+                if config.marker_score_format == "memmap" and 'memmap_manager' in marker_score_adata.uns:
                     marker_score_adata.uns['memmap_manager'].close()
                 # If it's backed AnnData, close the file
-                if marker_score_adata.isbacked:
+                if config.marker_score_format == "h5ad" and marker_score_adata.isbacked:
                     marker_score_adata.file.close()
 
     except Exception as e:

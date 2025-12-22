@@ -461,11 +461,16 @@ class LazyFeatherX:
     via memory mapping without loading the full data.
     """
 
-    def __init__(self, arrow_table, feature_names):
+    def __init__(self, arrow_table, feature_names, transpose=False):
         self.table = arrow_table
         self.feature_names = feature_names
-        # Standard AnnData shape: (n_obs, n_vars)
-        self.shape = (self.table.num_rows, len(self.feature_names))
+        self.transpose = transpose
+        if not transpose:
+            # Standard AnnData shape: (n_obs, n_vars)
+            self.shape = (self.table.num_rows, len(self.feature_names))
+        else:
+            # Transposed shape: (n_obs, n_vars) where n_obs = num_features, n_vars = num_rows
+            self.shape = (len(self.feature_names), self.table.num_rows)
 
     def __getitem__(self, key):
         """
@@ -478,65 +483,110 @@ class LazyFeatherX:
         else:
             row_key, col_key = key
 
-        # --- 1. Handle Row Slicing ---
-        if isinstance(row_key, slice):
-            start = row_key.start or 0
-            stop = row_key.stop or self.shape[0]
-            step = row_key.step or 1
+        if not self.transpose:
+            # --- 1. Handle Row Slicing ---
+            if isinstance(row_key, slice):
+                start = row_key.start or 0
+                stop = row_key.stop or self.shape[0]
+                step = row_key.step or 1
 
-            # Calculate length based on step (simplified for step=1)
-            # For complex steps, we might need more logic, but basic slicing:
-            if step == 1:
-                length = stop - start
-                sliced_table = self.table.slice(offset=start, length=length)
-            else:
-                # Fallback for stepped slicing: Read range, then step in pandas
-                # (Slightly less efficient but works)
-                length = stop - start
-                sliced_table = self.table.slice(offset=start, length=length)
-                # We will handle the stepping after conversion
-
-        elif isinstance(row_key, int):
-            # Single row request
-            sliced_table = self.table.slice(offset=row_key, length=1)
-        else:
-            raise NotImplementedError("Only slice objects (start:stop) or integers are supported for rows.")
-
-        # --- 2. Handle Column Slicing ---
-        final_cols = self.feature_names
-
-        # Helper to map integer indices to column names
-        def get_col_names_by_indices(indices):
-            return [self.feature_names[i] for i in indices]
-
-        if isinstance(col_key, slice):
-            final_cols = self.feature_names[col_key]
-            sliced_table = sliced_table.select(final_cols)
-
-        elif isinstance(col_key, (list, np.ndarray)):
-            # Check if it's integers or strings
-            if len(col_key) > 0:
-                if isinstance(col_key[0], (int, np.integer)):
-                    final_cols = get_col_names_by_indices(col_key)
+                # Calculate length based on step (simplified for step=1)
+                # For complex steps, we might need more logic, but basic slicing:
+                if step == 1:
+                    length = stop - start
+                    sliced_table = self.table.slice(offset=start, length=length)
                 else:
-                    # Assume strings
-                    final_cols = col_key
-            sliced_table = sliced_table.select(final_cols)
+                    # Fallback for stepped slicing: Read range, then step in pandas
+                    # (Slightly less efficient but works)
+                    length = stop - start
+                    sliced_table = self.table.slice(offset=start, length=length)
+                    # We will handle the stepping after conversion
 
-        elif isinstance(col_key, int):
-            final_cols = [self.feature_names[col_key]]
-            sliced_table = sliced_table.select(final_cols)
+            elif isinstance(row_key, int):
+                # Single row request
+                sliced_table = self.table.slice(offset=row_key, length=1)
+            else:
+                raise NotImplementedError("Only slice objects (start:stop) or integers are supported for rows.")
 
-        # --- 3. Materialize to NumPy ---
-        # FIX: We convert to Pandas first, because pyarrow.Table
-        # doesn't have a direct to_numpy() for 2D structures.
-        df = sliced_table.to_pandas()
+            # --- 2. Handle Column Slicing ---
+            final_cols = self.feature_names
 
-        # If we had a row step > 1, apply it now on the small DataFrame
-        if isinstance(row_key, slice) and row_key.step and row_key.step != 1:
-            df = df.iloc[::row_key.step]
+            # Helper to map integer indices to column names
+            def get_col_names_by_indices(indices):
+                return [self.feature_names[i] for i in indices]
 
-        return df.to_numpy()
+            if isinstance(col_key, slice):
+                final_cols = self.feature_names[col_key]
+                sliced_table = sliced_table.select(final_cols)
+
+            elif isinstance(col_key, (list, np.ndarray)):
+                # Check if it's integers or strings
+                if len(col_key) > 0:
+                    if isinstance(col_key[0], (int, np.integer)):
+                        final_cols = get_col_names_by_indices(col_key)
+                    else:
+                        # Assume strings
+                        final_cols = col_key
+                sliced_table = sliced_table.select(final_cols)
+
+            elif isinstance(col_key, int):
+                final_cols = [self.feature_names[col_key]]
+                sliced_table = sliced_table.select(final_cols)
+
+            # --- 3. Materialize to NumPy ---
+            # FIX: We convert to Pandas first, because pyarrow.Table
+            # doesn't have a direct to_numpy() for 2D structures.
+            df = sliced_table.to_pandas()
+
+            # If we had a row step > 1, apply it now on the small DataFrame
+            if isinstance(row_key, slice) and row_key.step and row_key.step != 1:
+                df = df.iloc[::row_key.step]
+
+            return df.to_numpy()
+        
+        else:
+            # Transposed mode: 
+            # row_key selects from feature_names (which were columns in feather)
+            # col_key selects from table rows
+            
+            # --- 1. Determine which columns to read (Observations) ---
+            if isinstance(row_key, slice):
+                selected_cols = self.feature_names[row_key]
+            elif isinstance(row_key, (list, np.ndarray)):
+                if len(row_key) > 0 and isinstance(row_key[0], (int, np.integer)):
+                    selected_cols = [self.feature_names[i] for i in row_key]
+                else:
+                    selected_cols = row_key
+            elif isinstance(row_key, int):
+                selected_cols = [self.feature_names[row_key]]
+            else:
+                raise NotImplementedError("Row key type not supported for transposed FeatherAnnData.")
+
+            # --- 2. Determine which rows to read (Variables) ---
+            if isinstance(col_key, slice):
+                start = col_key.start or 0
+                stop = col_key.stop or self.table.num_rows
+                length = stop - start
+                sliced_table = self.table.slice(offset=start, length=length)
+                # Select columns and convert
+                df = sliced_table.select(selected_cols).to_pandas()
+                # Apply step for rows if needed
+                if col_key.step and col_key.step != 1:
+                    df = df.iloc[::col_key.step]
+            elif isinstance(col_key, int):
+                sliced_table = self.table.slice(offset=col_key, length=1)
+                df = sliced_table.select(selected_cols).to_pandas()
+            elif isinstance(col_key, (list, np.ndarray)):
+                # Use take for arbitrary row selection
+                # Note: col_key should be integer indices
+                sliced_table = self.table.take(col_key)
+                df = sliced_table.select(selected_cols).to_pandas()
+            else:
+                raise NotImplementedError("Column key type not supported for transposed FeatherAnnData.")
+
+            # The dataframe 'df' has table rows as index and selected_cols as columns.
+            # In transposed mode, we want selected_cols as rows and table rows as columns.
+            return df.to_numpy().T
 
 
 class FeatherAnnData:
@@ -545,34 +595,50 @@ class FeatherAnnData:
     Mimics the behavior of anndata.AnnData without loading X into memory.
     """
 
-    def __init__(self, file_path, index_col=None):
+    def __init__(self, file_path, index_col=None, transpose=False):
         # 1. Open with memory mapping (Zero RAM usage for data)
         self._table = feather.read_table(file_path, memory_map=True)
 
         # 2. Setup Index (Obs Names) and Columns (Var Names)
         all_cols = self._table.column_names
 
-        if index_col:
-            # Load the index column specifically
-            self.obs_names = self._table.column(index_col).to_pylist()
-            # The variables (genes) are all columns MINUS the index column
-            self.var_names = [c for c in all_cols if c != index_col]
+        if transpose:
+            if index_col:
+                # Genes are rows in file, but we want them as vars
+                self.var_names = self._table.column(index_col).to_pylist()
+                # Cells are columns in file, we want them as obs
+                self.obs_names = [c for c in all_cols if c != index_col]
+            else:
+                self.obs_names = all_cols
+                self.var_names = [str(i) for i in range(self._table.num_rows)]
         else:
-            # Fallback: Assume all columns are genes
-            self.obs_names = [str(i) for i in range(self._table.num_rows)]
-            self.var_names = all_cols
+            if index_col:
+                # Load the index column specifically
+                self.obs_names = self._table.column(index_col).to_pylist()
+                # The variables (genes) are all columns MINUS the index column
+                self.var_names = [c for c in all_cols if c != index_col]
+            else:
+                # Fallback: Assume all columns are genes
+                self.obs_names = [str(i) for i in range(self._table.num_rows)]
+                self.var_names = all_cols
 
         # 3. Setup Metadata DataFrames
         self.obs = pd.DataFrame(index=self.obs_names)
         self.var = pd.DataFrame(index=self.var_names)
 
         # 4. Setup Attributes (n_obs, n_vars)
-        self.n_obs = self._table.num_rows
+        self.n_obs = len(self.obs_names)
         self.n_vars = len(self.var_names)
 
         # 5. Setup the Lazy X
-        # We pass the table and the valid gene columns
-        self.X = LazyFeatherX(self._table, self.var_names)
+        if transpose:
+            # When transposed, 'feature_names' in LazyFeatherX refers to the obs columns
+            self.X = LazyFeatherX(self._table, self.obs_names, transpose=True)
+        else:
+            # Standard: 'feature_names' refers to the var columns
+            self.X = LazyFeatherX(self._table, self.var_names, transpose=False)
+
+        self.uns = {}
 
         # 6. Setup Shape
         self.shape = (self.n_obs, self.n_vars)

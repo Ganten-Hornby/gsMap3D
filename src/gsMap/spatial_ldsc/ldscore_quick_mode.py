@@ -463,8 +463,8 @@ class SpatialLDSCProcessor:
         logger.info(f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})")
 
         # Find common genes and initialize indices
-        gene_names_from_adata = self.marker_score_adata.var_names.to_numpy()
-        self.spot_names_all = self.marker_score_adata.obs_names.to_numpy()
+        gene_names_from_adata = np.array(self.marker_score_adata.var_names)
+        self.spot_names_all = np.array(self.marker_score_adata.obs_names)
         
         if self.snp_gene_weight_adata is None:
              raise ValueError("snp_gene_weight_adata must be provided")
@@ -588,7 +588,7 @@ class SpatialLDSCProcessor:
         # Load chunk from marker_score_adata
         mk_score_chunk = self.marker_score_adata.X[memmap_start:memmap_end, self.marker_score_gene_indices]
         mk_score_chunk = mk_score_chunk.T.astype(np.float32)
-        
+
         # Compute LD scores via sparse matrix multiplication
         ldscore_chunk = self.snp_gene_weight_sparse @ mk_score_chunk
         
