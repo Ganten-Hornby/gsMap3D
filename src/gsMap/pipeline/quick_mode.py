@@ -117,7 +117,8 @@ def run_quick_mode(config: QuickModeConfig):
             if check_cauchy_done(config, trait_name):
                  logger.info(f"Cauchy result already exists for {trait_name}. Skipping...")
             else:
-                cauchy_config = config.get_cauchy_config(trait_name)
+                cauchy_config = config.cauchy_config
+                cauchy_config.trait_name = trait_name
                 run_Cauchy_combination(cauchy_config)
 
         logger.info(f"Step 4 completed in {format_duration(time.time() - start_time)}")
@@ -145,7 +146,7 @@ def run_quick_mode(config: QuickModeConfig):
                         "ldsc_read_workers": config.ldsc_read_workers,
                     },
                     "Spatial LDSC Save Directory": str(config.spatial_ldsc_config.ldsc_save_dir),
-                    "Cauchy Directory": str(config.get_cauchy_config(trait_name).cauchy_save_dir),
+                    "Cauchy Directory": str(config.cauchy_config.cauchy_save_dir),
                     "Report Directory": str(report_config.get_report_dir(trait_name)),
                     "Spending Time": format_duration(time.time() - pipeline_start_time),
                 }

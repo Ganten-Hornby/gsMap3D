@@ -136,11 +136,8 @@ class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresent
             selected_genes=self.selected_genes,
         )
 
-    def get_cauchy_config(self, trait_name: str) -> CauchyCombinationConfig:
-        return CauchyCombinationConfig(
-            workdir=self.workdir,
-            project_name=self.project_name,
-            trait_name=trait_name,
-            annotation=self.annotation,
-            sample_name_list=[self.project_name],
-        )
+    @property
+    def cauchy_config(self) -> CauchyCombinationConfig:
+        return CauchyCombinationConfig(**{
+            f.name: getattr(self, f.name) for f in fields(CauchyCombinationConfig) if hasattr(self, f.name)
+        })
