@@ -446,7 +446,7 @@ class SpatialLDSCProcessor:
         self.output_dir = output_dir
         self.marker_score_adata = marker_score_adata
         self.snp_gene_weight_adata = snp_gene_weight_adata
-        self.n_spots = snp_gene_weight_adata.n_obs
+        self.n_spots = marker_score_adata.n_obs
         self.baseline_ld = baseline_ld
         self.w_ld = w_ld
         self.n_loader_threads = n_loader_threads
