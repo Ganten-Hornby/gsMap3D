@@ -427,9 +427,6 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         logger.info(
             f"Each focal cell will select {num_homogeneous * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
 
-        self.spatial_key = None
-        self.latent_representation_niche = None
-
 
 def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
     """

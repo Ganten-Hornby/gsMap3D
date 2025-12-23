@@ -115,7 +115,6 @@ class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresent
             params['h5ad_path'] = None
             params['h5ad_yaml'] = None
             params['h5ad_list_file'] = None
-
         return LatentToGeneConfig(**params)
 
     @property
