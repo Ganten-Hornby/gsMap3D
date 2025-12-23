@@ -190,11 +190,8 @@ def dataclass_typer(func):
         """Check if a field originates from a 'Core' config class."""
         for base in cls.__mro__:
             if field_name in getattr(base, "__annotations__", {}):
-                # Core classes end with CoreConfig or are specific base classes
-                if base.__name__.endswith("CoreConfig") or base.__name__ == "ConfigWithAutoPaths" or base == config_class:
-                    return True
-                # If it's a Compute or Model config, it's NOT core
-                if "Compute" in base.__name__ or "Model" in base.__name__:
+                # If ANY class in the inheritance chain for this field explicitly disables quick mode, honor it
+                if getattr(base, "__display_in_quick_mode_cli__", True) is False:
                     return False
         return True
 
@@ -206,9 +203,27 @@ def dataclass_typer(func):
         if get_origin(field.type) != Annotated:
             continue
             
-        # If core_only is requested, skip fields that don't originate from a Core class
-        if core_only and not is_core_field(field.name, config_class):
-            continue
+        # Get Annotated metadata
+        annotated_args = get_args(field.type)
+        
+        # Check for explicit display override in Annotated metadata
+        # e.g., Annotated[int, typer.Option(...), {"__display_in_quick_mode_cli__": True}]
+        display_override = None
+        for arg in annotated_args:
+            if isinstance(arg, dict) and "__display_in_quick_mode_cli__" in arg:
+                display_override = arg["__display_in_quick_mode_cli__"]
+                break
+        
+        if core_only:
+            # If field explicitly says True, we show it even if class says False
+            if display_override is True:
+                pass 
+            # If field explicitly says False, we hide it
+            elif display_override is False:
+                continue
+            # Otherwise, fall back to class-level logic
+            elif not is_core_field(field.name, config_class):
+                continue
 
         # Get the actual type and typer.Option from Annotated
         # Annotated[type, typer.Option(...)] -> type is at args[0]

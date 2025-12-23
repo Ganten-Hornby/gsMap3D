@@ -33,6 +33,7 @@ class MarkerScoreCrossSliceStrategy(str, Enum):
 @dataclass
 class LatentToGeneComputeConfig:
     """Compute configuration for latent-to-gene step."""
+    __display_in_quick_mode_cli__ = True
 
     use_gpu: Annotated[bool, typer.Option(
         "--use-gpu/--no-gpu",

@@ -23,20 +23,12 @@ from gsMap.config.utils import process_h5ad_inputs
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
-class QuickModeConfig(SpatialLDSCCoreConfig, LatentToGeneCoreConfig, FindLatentCoreConfig, SpatialLDSCComputeConfig, LatentToGeneComputeConfig, ConfigWithAutoPaths):
+class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresentationsConfig, ConfigWithAutoPaths):
     """Configuration for running the complete gsMap pipeline in a single command.
     
     Inherits fields from all major sub-configs to provide a unified interface.
     """
     __core_only__ = True
-
-    # ------------------------------------------------------------------------
-    # Global Control
-    # ------------------------------------------------------------------------
-    use_gpu: Annotated[bool, typer.Option(
-        "--use-gpu/--no-gpu",
-        help="Use GPU for JAX-accelerated implementations"
-    )] = True
 
     # ------------------------------------------------------------------------
     # Pipeline Control

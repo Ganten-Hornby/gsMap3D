@@ -20,6 +20,7 @@ logger = logging.getLogger("gsMap.config")
 
 @dataclass
 class FindLatentModelConfig:
+    __display_in_quick_mode_cli__ = False
 
     feat_cell: Annotated[int, typer.Option(
         help="Number of top variable features to retain",
@@ -124,6 +125,12 @@ class FindLatentModelConfig:
         help="Down-sampling cells in training"
     )] = True
 
+    n_cell_training: Annotated[int, typer.Option(
+        help="Number of cells used for training",
+        min=1000,
+        max=1000000
+    ), {"__display_in_quick_mode_cli__": True}] = 100000
+
 
 
 @dataclass
@@ -179,11 +186,6 @@ class FindLatentCoreConfig:
         help="Key for cell identity embedding in obsm"
     )] = "emb_cell"
 
-    n_cell_training: Annotated[int, typer.Option(
-        help="Number of cells used for training",
-        min=1000,
-        max=1000000
-    )] = 100000
 
 
     high_quality_cell_qc: Annotated[bool, typer.Option(

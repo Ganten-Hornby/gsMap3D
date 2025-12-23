@@ -15,11 +15,12 @@ logger = logging.getLogger("gsMap.config")
 @dataclass
 class SpatialLDSCComputeConfig:
     """Compute configuration for spatial LDSC step."""
+    __display_in_quick_mode_cli__ = True
 
     use_gpu: Annotated[bool, typer.Option(
         "--use-gpu/--no-gpu",
         help="Use GPU for JAX-accelerated spatial LDSC implementation"
-    )] = True
+    ), {"__display_in_quick_mode_cli__": True}] = True
 
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
