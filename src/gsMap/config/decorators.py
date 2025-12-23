@@ -13,7 +13,7 @@ from functools import wraps
 import functools
 import re
 import subprocess
-from typing import Annotated, get_origin, get_args
+from typing import Annotated, get_origin, get_args, Any, Type
 import psutil
 import pyfiglet
 
@@ -183,12 +183,31 @@ def dataclass_typer(func):
     # Build new parameters from dataclass fields
     from dataclasses import MISSING
     params = []
+    
+    core_only = getattr(config_class, "__core_only__", False)
+    
+    def is_core_field(field_name: str, cls: Type[Any]) -> bool:
+        """Check if a field originates from a 'Core' config class."""
+        for base in cls.__mro__:
+            if field_name in getattr(base, "__annotations__", {}):
+                # Core classes end with CoreConfig or are specific base classes
+                if base.__name__.endswith("CoreConfig") or base.__name__ == "ConfigWithAutoPaths" or base == config_class:
+                    return True
+                # If it's a Compute or Model config, it's NOT core
+                if "Compute" in base.__name__ or "Model" in base.__name__:
+                    return False
+        return True
+
     for field in fields(config_class):
         # Only include fields with Annotated type hints in the CLI
         # This allows internal fields to be excluded from CLI parameters
 
         # Check if the field type is Annotated
         if get_origin(field.type) != Annotated:
+            continue
+            
+        # If core_only is requested, skip fields that don't originate from a Core class
+        if core_only and not is_core_field(field.name, config_class):
             continue
 
         # Get the actual type and typer.Option from Annotated

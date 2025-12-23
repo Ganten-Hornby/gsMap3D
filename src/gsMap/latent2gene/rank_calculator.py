@@ -338,7 +338,7 @@ class RankCalculator:
                         adata = adata[adata.obs[annotation_key].notna()].copy()
 
                     # Filter cells based on annotation group size
-                    min_cells_per_type = self.config.homogeneous_neighbors
+                    min_cells_per_type = self.config.min_cells_per_type
                     annotation_counts = adata.obs[annotation_key].value_counts()
                     valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
 

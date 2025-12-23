@@ -46,12 +46,8 @@ class SpatialLDSCComputeConfig:
     )] = 50
 
 @dataclass
-class SpatialLDSCConfig(SpatialLDSCComputeConfig, ConfigWithAutoPaths):
-    """Configuration for spatial LDSC.
-    
-    Inherits compute/IO fields from SpatialLDSCComputeConfig:
-    use_gpu, memmap_tmp_dir, ldsc_read_workers, ldsc_compute_workers, spots_per_chunk_quick_mode
-    """
+class SpatialLDSCCoreConfig:
+    """Core configuration for spatial LDSC."""
     w_ld_dir: Annotated[Optional[Path], typer.Option(
         help="Directory containing the weights files (w_ld)",
         exists=True,
@@ -142,6 +138,17 @@ class SpatialLDSCConfig(SpatialLDSCComputeConfig, ConfigWithAutoPaths):
     # memmap_tmp_dir and spots_per_chunk_quick_mode are inherited from SpatialLDSCComputeConfig
 
     sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
+
+
+@dataclass
+class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigWithAutoPaths):
+    """Configuration for spatial LDSC.
+    
+    Inherits fields from:
+    - SpatialLDSCCoreConfig: Core GWAS and IO parameters
+    - SpatialLDSCComputeConfig: Compute performance parameters (use_gpu, workers, etc.)
+    - ConfigWithAutoPaths: Workspace and path management
+    """
 
     def __post_init__(self):
         super().__post_init__()

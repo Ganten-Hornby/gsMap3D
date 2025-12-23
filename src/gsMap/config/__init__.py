@@ -22,7 +22,6 @@ subcommand = namedtuple("subcommand", ["name", "func", "add_args_function", "des
 
 # Configuration dataclasses
 from .dataclasses import (
-    RunAllModeConfig,
     CreateSliceMeanConfig,
     FormatSumstatsConfig,
     DiagnosisConfig,
@@ -56,7 +55,6 @@ __all__ = [
     'cli_function_registry',
     
     # Configurations
-    'RunAllModeConfig',
     'QuickModeConfig',
     'FindLatentRepresentationsConfig',
     'LatentToGeneConfig',

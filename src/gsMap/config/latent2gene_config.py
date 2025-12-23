@@ -86,11 +86,7 @@ class LatentToGeneComputeConfig:
     )] = 100
 
 @dataclass
-class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
-    """Configuration for latent to gene mapping.
-    
-    Inherits compute/IO fields from LatentToGeneComputeConfig.
-    """
+class LatentToGeneCoreConfig:
 
     dataset_type: Annotated[DatasetType, typer.Option(
         help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
@@ -177,7 +173,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
     adjacent_slice_spatial_neighbors: Annotated[int, typer.Option(
         help="Number of spatial neighbors to find on each adjacent slice for 3D data",
         min=10,
-        max=100
+        max=500
     )] = 100
 
     n_adjacent_slices: Annotated[int, typer.Option(
@@ -194,35 +190,26 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         case_sensitive=False
     )] = MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING
 
-    fix_cross_slice_homogenous_neighbors: bool = False
-
-    # slice_id_key: Annotated[Optional[str], typer.Option(
-    #     help="Key in adata.obs for slice IDs. For 3D data, should contain sequential integers representing z-axis order (0, 1, 2, ...). If None, assumes single 2D slice"
-    # )] = 'slice_id'
-
-    # -------- IO parameters (inherited from LatentToGeneComputeConfig)
-    # rank_batch_size, mkscore_batch_size, find_homogeneous_batch_size, rank_write_interval
-    # rank_read_workers, mkscore_compute_workers, mkscore_write_workers
-    # compute_input_queue_size, writer_queue_size
-
-    # Performance options
-    min_cells_per_type: Annotated[int, typer.Option(
-        help="Minimum number of cells per cell type to process",
-        min=1,
-        max=100
-    )] = 21
-
-    enable_profiling: Annotated[bool, typer.Option(
-        "--enable-profiling/--no-profiling",
-        help="Enable viztracer profiling for performance analysis"
-    )] = False
-
-    # use_gpu and memmap_tmp_dir are inherited from LatentToGeneComputeConfig
-
     high_quality_neighbor_filter: Annotated[bool, typer.Option(
         "--high-quality-neighbor-filter/--no-high-quality-filter",
         help="Only find neighbors within high quality cells (requires High_quality column in obs)"
     )] = False
+
+    fix_cross_slice_homogenous_neighbors: bool = False
+
+    # Performance options
+    # Minimum number of cells per cell type in that dataset to be used for finding homogeneous neighbors
+    min_cells_per_type: int | None = None
+
+    enable_profiling: bool = False
+
+
+@dataclass
+class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, ConfigWithAutoPaths):
+    """Configuration for latent to gene mapping.
+    
+    Inherits compute/IO fields from LatentToGeneComputeConfig.
+    """
 
     @property
     def total_homogeneous_neighbor_per_cell(self):
@@ -355,6 +342,8 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
 
     def _configure_dataset_parameters(self):
         """Configure parameters based on dataset type"""
+        self.min_cells_per_type = self.homogeneous_neighbors if self.min_cells_per_type is None else min(self.min_cells_per_type, self.homogeneous_neighbors)
+
         if self.dataset_type == DatasetType.SPATIAL_2D:
             self._configure_spatial_2d()
         elif self.dataset_type == DatasetType.SPATIAL_3D:
@@ -427,6 +416,11 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         logger.info(
             f"Each focal cell will select {homogeneous_neighbors * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
 
+    def _configure_scrna_seq(self):
+        """Configure parameters for scRNA-seq datasets"""
+        self.n_adjacent_slices = 0
+        self.spatial_key = None
+        self.latent_representation_niche = None
 
 def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
     """

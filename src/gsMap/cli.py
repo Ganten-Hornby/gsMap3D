@@ -11,7 +11,6 @@ import typer
 from gsMap.config import (
     dataclass_typer,
     QuickModeConfig,
-    RunAllModeConfig,
     FindLatentRepresentationsConfig,
     LatentToGeneConfig,
     SpatialLDSCConfig,

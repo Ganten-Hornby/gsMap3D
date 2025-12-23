@@ -19,42 +19,13 @@ from gsMap.config.utils import (
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
-class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
-    """Configuration for finding latent representations."""
+class FindLatentModelConfig:
 
-    h5ad_path: Annotated[Optional[List[Path]], typer.Option(
-        help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
-        exists=True,
-        file_okay=True,
-    )] = None
-
-    h5ad_yaml: Annotated[Path, typer.Option(
-        help="YAML file with sample names and h5ad paths",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    )] = None
-
-    h5ad_list_file: Annotated[Optional[Path], typer.Option(
-        help="Each row is a h5ad file path, sample name is the file name without suffix",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    )] = None
-
-    sample_h5ad_dict: Optional[OrderedDict] = None
-
-    data_layer: Annotated[str, typer.Option(
-        help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
-    )] = "X"
-
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm storing spatial coordinates"
-    )] = "spatial"
-
-    annotation: Annotated[Optional[str], typer.Option(
-        help="Annotation of cell type in adata.obs to use"
-    )] = None
+    feat_cell: Annotated[int, typer.Option(
+        help="Number of top variable features to retain",
+        min=100,
+        max=10000
+    )] = 2000
 
     # Feature extraction parameters
     n_neighbors: Annotated[int, typer.Option(
@@ -68,17 +39,6 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         min=1,
         max=10
     )] = 3
-
-    feat_cell: Annotated[int, typer.Option(
-        help="Number of top variable features to retain",
-        min=100,
-        max=10000
-    )] = 2000
-
-    pearson_residual: Annotated[bool, typer.Option(
-        "--pearson-residual",
-        help="Take the residuals of the input data"
-    )] = False
 
     # Model parameters
     hidden_size: Annotated[int, typer.Option(
@@ -135,11 +95,6 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         case_sensitive=False
     )] = "nb"
 
-    n_cell_training: Annotated[int, typer.Option(
-        help="Number of cells used for training",
-        min=1000,
-        max=1000000
-    )] = 100000
 
     batch_size: Annotated[int, typer.Option(
         help="Batch size for training",
@@ -169,6 +124,44 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         help="Down-sampling cells in training"
     )] = True
 
+
+
+@dataclass
+class FindLatentCoreConfig:
+    h5ad_path: Annotated[Optional[List[Path]], typer.Option(
+        help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
+        exists=True,
+        file_okay=True,
+    )] = None
+
+    h5ad_yaml: Annotated[Path, typer.Option(
+        help="YAML file with sample names and h5ad paths",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    )] = None
+
+    h5ad_list_file: Annotated[Optional[Path], typer.Option(
+        help="Each row is a h5ad file path, sample name is the file name without suffix",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+    )] = None
+
+    sample_h5ad_dict: Optional[OrderedDict] = None
+
+    data_layer: Annotated[str, typer.Option(
+        help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
+    )] = "X"
+
+    spatial_key: Annotated[str, typer.Option(
+        help="Spatial key in adata.obsm storing spatial coordinates"
+    )] = "spatial"
+
+    annotation: Annotated[Optional[str], typer.Option(
+        help="Annotation of cell type in adata.obs to use"
+    )] = None
+
     homolog_file: Annotated[Optional[Path], typer.Option(
         help="Path to homologous gene conversion file",
         exists=True,
@@ -186,10 +179,23 @@ class FindLatentRepresentationsConfig(ConfigWithAutoPaths):
         help="Key for cell identity embedding in obsm"
     )] = "emb_cell"
 
+    n_cell_training: Annotated[int, typer.Option(
+        help="Number of cells used for training",
+        min=1000,
+        max=1000000
+    )] = 100000
+
+
     high_quality_cell_qc: Annotated[bool, typer.Option(
         "--high-quality-cell-qc/--no-high-quality-cell-qc",
         help="Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores."
     )] = True
+
+
+@dataclass
+class FindLatentRepresentationsConfig(FindLatentModelConfig, FindLatentCoreConfig, ConfigWithAutoPaths):
+    """Configuration for finding latent representations."""
+
 
     def __post_init__(self):
         super().__post_init__()
