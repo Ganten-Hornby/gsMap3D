@@ -51,7 +51,7 @@ class ParallelMarkerScoreComputer:
         self,
         global_log_gmean: np.ndarray,
         global_expr_frac: np.ndarray,
-        num_homogeneous: int,
+        homogeneous_neighbors: int,
         num_workers: int = 4,
         input_queue: queue.Queue = None,
         output_queue: queue.Queue = None,
@@ -66,7 +66,7 @@ class ParallelMarkerScoreComputer:
         Args:
             global_log_gmean: Global log geometric mean
             global_expr_frac: Global expression fraction
-            num_homogeneous: Number of homogeneous neighbors
+            homogeneous_neighbors: Number of homogeneous neighbors
             num_workers: Number of compute workers
             input_queue: Optional input queue (from reader)
             output_queue: Optional output queue (to writer)
@@ -76,10 +76,10 @@ class ParallelMarkerScoreComputer:
             no_expression_fraction: Skip expression fraction filtering if True
         """
         self.num_workers = num_workers
-        self.num_homogeneous = num_homogeneous
+        self.homogeneous_neighbors = homogeneous_neighbors
         self.cross_slice_strategy = cross_slice_strategy
         self.n_slices = n_slices
-        self.num_homogeneous_per_slice = num_homogeneous_per_slice or num_homogeneous
+        self.num_homogeneous_per_slice = num_homogeneous_per_slice or homogeneous_neighbors
         self.no_expression_fraction = no_expression_fraction
         
         # Store global statistics as JAX arrays
@@ -150,8 +150,8 @@ class ParallelMarkerScoreComputer:
                 actual_batch_size = batch_end - batch_start
                 
                 # Verify shape
-                assert original_shape == (actual_batch_size, self.num_homogeneous * self.n_slices), \
-                    f"Unexpected rank data shape: {original_shape}, expected ({actual_batch_size}, {self.num_homogeneous * self.n_slices})"
+                assert original_shape == (actual_batch_size, self.homogeneous_neighbors * self.n_slices), \
+                    f"Unexpected rank data shape: {original_shape}, expected ({actual_batch_size}, {self.homogeneous_neighbors * self.n_slices})"
 
                 # Get batch-specific data
                 batch_weights = self.neighbor_weights[batch_start:batch_end]
@@ -183,7 +183,7 @@ class ParallelMarkerScoreComputer:
                         batch_ranks,
                         batch_weights,
                         actual_batch_size,
-                        self.num_homogeneous * self.n_slices,
+                        self.homogeneous_neighbors * self.n_slices,
                         self.global_log_gmean,
                         self.global_expr_frac,
                         self.no_expression_fraction

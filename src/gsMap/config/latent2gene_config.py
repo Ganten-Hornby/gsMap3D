@@ -407,7 +407,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
         # Only multiply for 'similarity_only' strategy (original behavior)
         # For 'mean_pooling' and 'max_pooling', num_homogeneous represents per-slice count
 
-        num_homogeneous = self.homogeneous_neighbors
+        homogeneous_neighbors = self.homogeneous_neighbors
         n_adjacent_slices = self.n_adjacent_slices
         # Check if we should use fix number of homogeneous neighbors per slice
         if self.cross_slice_marker_score_strategy in [
@@ -425,7 +425,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, ConfigWithAutoPaths):
                 f"Using similarity_only strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
 
         logger.info(
-            f"Each focal cell will select {num_homogeneous * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
+            f"Each focal cell will select {homogeneous_neighbors * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
 
 
 def check_latent2gene_done(config: LatentToGeneConfig) -> bool:

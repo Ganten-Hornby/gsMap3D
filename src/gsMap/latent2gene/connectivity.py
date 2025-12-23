@@ -264,7 +264,7 @@ def _find_anchors_and_homogeneous_batch_jit(
     spatial_neighbors: jnp.ndarray,   # (batch_size, k1)
     all_emb_niche_norm: jnp.ndarray,         # (n_all, d1) - pre-normalized (always exists, may be dummy ones)
     all_emb_indv_norm: jnp.ndarray,        # (n_all, d2) - pre-normalized
-    num_homogeneous: int,
+    homogeneous_neighbors: int,
     cell_embedding_similarity_threshold: float = 0.0,
     spatial_domain_similarity_threshold: float = 0.5
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -299,12 +299,12 @@ def _find_anchors_and_homogeneous_batch_jit(
     combined_sims = jnp.where(spatial_neighbors >= 0, combined_sims, 0)
 
     # Select top homogeneous neighbors based on combined similarity
-    top_homo_idx = jnp.argsort(-combined_sims, axis=1)[:, :num_homogeneous]
+    top_homo_idx = jnp.argsort(-combined_sims, axis=1)[:, :homogeneous_neighbors]
     batch_idx = jnp.arange(batch_size)[:, None]
-    homogeneous_neighbors = spatial_neighbors[batch_idx, top_homo_idx]  # (batch_size, num_homogeneous)
+    homogeneous_neighbors_array = spatial_neighbors[batch_idx, top_homo_idx]  # (batch_size, homogeneous_neighbors)
     homogeneous_weights = combined_sims[batch_idx, top_homo_idx]
 
-    return homogeneous_neighbors, homogeneous_weights
+    return homogeneous_neighbors_array, homogeneous_weights
 
 
 def _find_homogeneous_3d_memory_efficient(
@@ -415,7 +415,7 @@ def _find_homogeneous_3d_memory_efficient(
                     spatial_neighbors=spatial_neighbors_slice_batch,
                     all_emb_niche_norm=all_emb_niche_norm_jax,
                     all_emb_indv_norm=all_emb_indv_norm_jax,
-                    num_homogeneous=num_homogeneous_per_slice,
+                    homogeneous_neighbors=num_homogeneous_per_slice,
                     cell_embedding_similarity_threshold=cell_embedding_similarity_threshold,
                     spatial_domain_similarity_threshold=spatial_domain_similarity_threshold
                 )
@@ -691,7 +691,7 @@ class ConnectivityMatrixBuilder:
 
 
         if self.config.fix_cross_slice_homogenous_neighbors:
-            logger.info(f"Using 3D constrained selection (ensuring {self.config.num_homogeneous} neighbors per slice)")
+            logger.info(f"Using 3D constrained selection (ensuring {self.config.homogeneous_neighbors} neighbors per slice)")
 
             # Use memory-efficient version that processes slices separately
             homogeneous_neighbors, homogeneous_weights = _find_homogeneous_3d_memory_efficient(
@@ -733,7 +733,7 @@ class ConnectivityMatrixBuilder:
                     spatial_neighbors=spatial_neighbors_batch,
                     all_emb_niche_norm=all_emb_niche_norm_jax,
                     all_emb_indv_norm=all_emb_indv_norm_jax,
-                    num_homogeneous=self.config.total_homogeneous_neighbor_per_cell,
+                    homogeneous_neighbors=self.config.total_homogeneous_neighbor_per_cell,
                     cell_embedding_similarity_threshold=self.config.cell_embedding_similarity_threshold,
                     spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold
             )
