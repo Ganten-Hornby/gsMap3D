@@ -132,8 +132,7 @@ def remove_outliers_IQR(data, threshold_factor=3.0):
 
 def process_trait(trait, anno_data, all_data, annotation, annotation_col):
     """
-    Process a single trait for a given annotation: calculate Cauchy combination p-value
-    and Fisher's exact test for enrichment.
+    Process a single trait for a given annotation: calculate Cauchy combination p-value.
     """
     # Calculate significance threshold (Bonferroni correction)
     sig_threshold = 0.05 / len(all_data)
@@ -151,63 +150,31 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
     if len(p_values) == 0:
         p_cauchy_val = 1.0
         p_median_val = 1.0
+        top_95_median = 0.0
     else:
         p_cauchy_val = _acat_test(p_values)
         p_median_val = np.median(p_values)
+        
+        # Calculate top 95% median of -log10pvalue
+        sorted_log10p = np.sort(log10p)
+        n_top_95 = int(np.ceil(len(sorted_log10p) * 0.95))
+        if n_top_95 > 0:
+            top_95_median = np.median(sorted_log10p[-n_top_95:])
+        else:
+            top_95_median = 0.0
 
     # Calculate significance statistics
     sig_spots_in_anno = np.sum(p_values < sig_threshold)
     total_spots_in_anno = len(p_values)
 
-    # Get p-values for other annotations (background)
-    other_annotations_mask = all_data[annotation_col] != annotation
-    
-    other_p_values = 10 ** (-all_data.loc[other_annotations_mask, trait].values)
-    sig_spots_elsewhere = np.sum(other_p_values < sig_threshold)
-    total_spots_elsewhere = len(other_p_values)
-
-    # Odds ratio calculation using Fisher's exact test
-    try:
-        # Create contingency table
-        # [[Sig In, Non-Sig In],
-        #  [Sig Out, Non-Sig Out]]
-        contingency_table = np.array([
-            [sig_spots_in_anno, total_spots_in_anno - sig_spots_in_anno],
-            [sig_spots_elsewhere, total_spots_elsewhere - sig_spots_elsewhere]
-        ])
-
-        # Calculate odds ratio and p-value using Fisher's exact test
-        odds_ratio, p_value = fisher_exact(contingency_table)
-
-        # if odds_ratio is infinite, set it to a large number
-        if odds_ratio == np.inf:
-            odds_ratio = 1e4
-
-        # Calculate confidence intervals
-        table = sm.stats.Table2x2(contingency_table)
-        conf_int = table.oddsratio_confint()
-        ci_low, ci_high = conf_int
-    except Exception as e:
-        # Handle calculation errors
-        odds_ratio = 0
-        p_value = 1
-        ci_low, ci_high = 0, 0
-        # logger.warning(f"Fisher's exact test failed for {trait} in {annotation}: {e}")
-
     return {
         'trait': trait,
-        annotation_col: annotation,
+        'annotation': annotation,
         'p_cauchy': p_cauchy_val,
         'p_median': p_median_val,
-        'odds_ratio': odds_ratio,
-        'ci_low': ci_low,
-        'ci_high': ci_high,
-        'p_odds_ratio': p_value,
+        'top_95_median': top_95_median,
         'sig_spots': sig_spots_in_anno,
         'total_spots': total_spots_in_anno,
-        'sig_ratio': sig_spots_in_anno / total_spots_in_anno if total_spots_in_anno > 0 else 0,
-        'overall_sig_spots': sig_spots_in_anno + sig_spots_elsewhere,
-        'overall_spots': total_spots_in_anno + total_spots_elsewhere
     }
 
 def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col=None):
