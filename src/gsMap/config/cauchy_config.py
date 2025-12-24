@@ -28,6 +28,6 @@ def check_cauchy_done(config: ConfigWithAutoPaths, trait_name: str) -> bool:
     Check if cauchy step is done for a specific trait.
     Checks both annotation-level and sample-level results.
     """
-    anno_result = config.get_cauchy_result_file(trait_name, all_samples=True)
-    sample_result = config.get_cauchy_result_file(trait_name, all_samples=False)
+    anno_result = config.get_cauchy_result_file(trait_name, annotation=annotation, all_samples=True)
+    sample_result = config.get_cauchy_result_file(trait_name, annotation=annotation, all_samples=False)
     return anno_result.exists() and sample_result.exists()

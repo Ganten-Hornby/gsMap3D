@@ -146,22 +146,22 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
     log10p, mask = remove_outliers_IQR(log10p)
     p_values = 10 ** (-log10p)  # convert from log10(p) to p
 
-    # Calculate Cauchy combination and median
+    # Calculate Cauchy combination and mean/median metrics
     if len(p_values) == 0:
         p_cauchy_val = 1.0
         p_median_val = 1.0
-        top_95_median = 0.0
+        top_95_mean = 0.0
     else:
         p_cauchy_val = _acat_test(p_values)
         p_median_val = np.median(p_values)
         
-        # Calculate top 95% median of -log10pvalue
+        # Calculate top 5% mean of -log10pvalue (referred to as top_95_mean)
         sorted_log10p = np.sort(log10p)
-        n_top_95 = int(np.ceil(len(sorted_log10p) * 0.95))
-        if n_top_95 > 0:
-            top_95_median = np.median(sorted_log10p[-n_top_95:])
+        n_top_05 = int(np.ceil(len(sorted_log10p) * 0.05))
+        if n_top_05 > 0:
+            top_95_mean = np.mean(sorted_log10p[-n_top_05:])
         else:
-            top_95_median = 0.0
+            top_95_mean = 0.0
 
     # Calculate significance statistics
     sig_spots_in_anno = np.sum(p_values < sig_threshold)
@@ -169,10 +169,11 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
 
     return {
         'trait': trait,
+        'annotation_name': annotation_col,
         'annotation': annotation,
         'p_cauchy': p_cauchy_val,
         'p_median': p_median_val,
-        'top_95_median': top_95_median,
+        'top_95_mean': top_95_mean,
         'sig_spots': sig_spots_in_anno,
         'total_spots': total_spots_in_anno,
     }
@@ -339,7 +340,7 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
                                           trait_cols=trait_cols)
         
         # Save Annotation Level Results
-        output_file = config.get_cauchy_result_file(trait_name, all_samples=True)
+        output_file = config.get_cauchy_result_file(trait_name, annotation=config.annotation, all_samples=True)
         logger.info(f"------Saving annotation-level results to {output_file}...")
         result_df.to_csv(output_file, index=False)
 
@@ -351,7 +352,7 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
                                                       trait_cols=trait_cols,
                                                       extra_group_col=sample_col)
             
-            sample_output_file = config.get_cauchy_result_file(trait_name, all_samples=False)
+            sample_output_file = config.get_cauchy_result_file(trait_name, annotation=config.annotation, all_samples=False)
             logger.info(f"------Saving sample-level results to {sample_output_file}...")
             sample_result_df.to_csv(sample_output_file, index=False)
     

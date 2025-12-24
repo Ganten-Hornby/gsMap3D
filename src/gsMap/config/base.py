@@ -256,11 +256,13 @@ class ConfigWithAutoPaths(BaseConfig):
     def get_GSS_plot_select_gene_file(self, trait_name: str) -> Path:
         return self.get_GSS_plot_dir(trait_name) / "plot_genes.csv"
 
-    def get_cauchy_result_file(self, trait_name: str, all_samples: bool = False) -> Path:
+    def get_cauchy_result_file(self, trait_name: str, annotation: Optional[str] = None, all_samples: bool = False) -> Path:
+        if annotation is None:
+            annotation = getattr(self, 'annotation', 'unknown')
         if all_samples:
-            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.cauchy.csv"
+            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.{annotation}.cauchy.csv"
         else:
-            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.sample_cauchy.csv"
+            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.{annotation}.sample_cauchy.csv"
     
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:
