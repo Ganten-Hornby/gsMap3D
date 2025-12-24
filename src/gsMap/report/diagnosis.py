@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import warnings
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -26,7 +27,7 @@ def convert_z_to_p(gwas_data):
     return gwas_data
 
 
-def load_gene_diagnostic_info(config: DiagnosisConfig):
+def load_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[sc.AnnData] = None):
     """Load or compute gene diagnostic info."""
     gene_diagnostic_info_save_path = config.get_gene_diagnostic_info_save_path(config.trait_name)
     if gene_diagnostic_info_save_path.exists():
@@ -38,13 +39,16 @@ def load_gene_diagnostic_info(config: DiagnosisConfig):
         logger.info(
             "Gene diagnostic information not found. Calculating gene diagnostic information..."
         )
-        return compute_gene_diagnostic_info(config)
+        return compute_gene_diagnostic_info(config, adata=adata)
 
 
-def compute_gene_diagnostic_info(config: DiagnosisConfig):
+def compute_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[sc.AnnData] = None):
     """Calculate gene diagnostic info and save it to adata."""
     logger.info("Loading ST data and LDSC results...")
-    # adata = sc.read_h5ad(config.hdf5_with_latent_path, backed='r')
+    
+    if adata is None:
+        adata = sc.read_h5ad(config.hdf5_with_latent_path)
+
     mk_score = pd.read_feather(config.mkscore_feather_path)
     mk_score.set_index("HUMAN_GENE_SYM", inplace=True)
     mk_score = mk_score.T
@@ -131,7 +135,7 @@ def filter_snps(gwas_data_with_gene_annotation_sort, SUBSAMPLE_SNP_NUMBER):
     return snps2plot
 
 
-def generate_manhattan_plot(config: DiagnosisConfig):
+def generate_manhattan_plot(config: DiagnosisConfig, adata: Optional[sc.AnnData] = None):
     """Generate Manhattan plot."""
     # report_save_dir = config.get_report_dir(config.trait_name)
     gwas_data = load_gwas_data(config)
@@ -139,7 +143,7 @@ def generate_manhattan_plot(config: DiagnosisConfig):
     gwas_data_with_gene = snp_gene_pair.merge(gwas_data, on="SNP", how="inner").rename(
         columns={"gene_name": "GENE"}
     )
-    gene_diagnostic_info = load_gene_diagnostic_info(config)
+    gene_diagnostic_info = load_gene_diagnostic_info(config, adata=adata)
     gwas_data_with_gene_annotation = gwas_data_with_gene.merge(
         gene_diagnostic_info, left_on="GENE", right_on="Gene", how="left"
     )
@@ -189,15 +193,16 @@ def generate_manhattan_plot(config: DiagnosisConfig):
     logger.info(f"Diagnostic Manhattan Plot saved to {save_manhattan_plot_path}.")
 
 
-def generate_GSS_distribution(config: DiagnosisConfig):
+def generate_GSS_distribution(config: DiagnosisConfig, adata: sc.AnnData):
     """Generate GSS distribution plots."""
-    # logger.info('Loading ST data...')
-    # adata = sc.read_h5ad(config.hdf5_with_latent_path)
+    # mk_score = pd.read_feather(config.mkscore_feather_path).set_index("HUMAN_GENE_SYM").T
+    # We should avoid loading large files inside workers if possible, or use memmap.
+    # For now, let's load it once here.
     mk_score = pd.read_feather(config.mkscore_feather_path).set_index("HUMAN_GENE_SYM").T
 
     plot_genes = (
         config.selected_genes
-        or load_gene_diagnostic_info(config).Gene.iloc[: config.top_corr_genes].tolist()
+        or load_gene_diagnostic_info(config, adata=adata).Gene.iloc[: config.top_corr_genes].tolist()
     )
     if config.selected_genes is not None:
         logger.info(
@@ -234,14 +239,14 @@ def generate_GSS_distribution(config: DiagnosisConfig):
         paralleized_params.append(
             (
                 adata,
-                mk_score,
+                mk_score[[selected_gene]], # Pass only needed gene to save memory
                 expression_series,
                 selected_gene,
                 point_size,
                 pixel_width,
                 pixel_height,
                 sub_fig_save_dir,
-                config.sample_name,
+                config.project_name,
                 config.annotation,
             )
         )
@@ -291,14 +296,6 @@ def generate_and_save_plots(
     )
     save_plot(sub_fig_2, sub_fig_save_dir, sample_name, selected_gene, "GSS")
 
-    # combined_fig = make_subplots(rows=1, cols=2,
-    #                              subplot_titles=(f'{selected_gene} (Expression)', f'{selected_gene} (GSS)'))
-    # for trace in sub_fig_1.data:
-    #     combined_fig.add_trace(trace, row=1, col=1)
-    # for trace in sub_fig_2.data:
-    #     combined_fig.add_trace(trace, row=1, col=2)
-    #
-
 
 def save_plot(sub_fig, sub_fig_save_dir, sample_name, selected_gene, plot_type):
     """Save the plot to HTML and PNG."""
@@ -311,7 +308,7 @@ def save_plot(sub_fig, sub_fig_save_dir, sample_name, selected_gene, plot_type):
     assert save_sub_fig_path.exists(), f"Failed to save {plot_type} plot for {selected_gene}."
 
 
-def generate_gsMap_plot(config: DiagnosisConfig):
+def generate_gsMap_plot(config: DiagnosisConfig, adata: sc.AnnData):
     """Generate gsMap plot."""
     logger.info("Creating gsMap plot...")
 
@@ -351,15 +348,14 @@ def generate_gsMap_plot(config: DiagnosisConfig):
 
 def run_Diagnosis(config: DiagnosisConfig):
     """Main function to run the diagnostic plot generation."""
-    global adata
     adata = sc.read_h5ad(config.hdf5_with_latent_path)
     if "log1p" not in adata.uns.keys() and adata.X.max() > 14:
         sc.pp.normalize_total(adata, target_sum=1e4)
         sc.pp.log1p(adata)
 
     if config.plot_type in ["gsMap", "all"]:
-        generate_gsMap_plot(config)
+        generate_gsMap_plot(config, adata=adata)
     if config.plot_type in ["manhattan", "all"]:
-        generate_manhattan_plot(config)
+        generate_manhattan_plot(config, adata=adata)
     if config.plot_type in ["GSS", "all"]:
-        generate_GSS_distribution(config)
+        generate_GSS_distribution(config, adata=adata)

@@ -9,6 +9,8 @@ import gsMap
 from gsMap.cauchy_combination_test import run_Cauchy_combination
 from gsMap.config import CauchyCombinationConfig, ReportConfig
 from .diagnosis import run_Diagnosis
+from .report_data import prepare_report_data
+from .app import launch_report
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +38,11 @@ def copy_files_to_report_dir(result_dir, report_dir, files_to_copy):
 
 
 def load_cauchy_table(csv_file):
-    """Load the Cauchy combination table from a compressed CSV file using Pandas."""
-    df = pd.read_csv(csv_file, compression="gzip")
-    table_data = df[["annotation", "p_cauchy", "p_median"]].to_dict(orient="records")
+    """Load the Cauchy combination table from a CSV file using Pandas."""
+    # Try reading without compression first, then with gzip if it fails or if file ends in .gz
+    compression = "gzip" if str(csv_file).endswith(".gz") else None
+    df = pd.read_csv(csv_file, compression=compression)
+    table_data = df[["annotation_name", "annotation", "p_cauchy", "p_median", "top_95_mean", "total_spots"]].to_dict(orient="records")
     return table_data
 
 
@@ -56,7 +60,7 @@ def embed_html_content(file_path):
 
 
 def check_and_run_cauchy_combination(config):
-    cauchy_result_file = config.get_cauchy_result_file(config.trait_name)
+    cauchy_result_file = config.get_cauchy_result_file(config.trait_name, annotation=config.annotation)
     if cauchy_result_file.exists():
         logger.info(
             f"Cauchy combination already done for trait {config.trait_name}. Results saved at {cauchy_result_file}. Skipping..."
@@ -65,16 +69,13 @@ def check_and_run_cauchy_combination(config):
         logger.info(f"Running Cauchy combination for trait {config.trait_name}...")
         cauchy_config = CauchyCombinationConfig(
             workdir=config.workdir,
-            sample_name=config.sample_name,
+            project_name=config.project_name,
             annotation=config.annotation,
             trait_name=config.trait_name,
         )
         run_Cauchy_combination(cauchy_config)
 
-    df = pd.read_csv(cauchy_result_file, compression="gzip")
-    table_data = df[["annotation", "p_cauchy", "p_median"]].to_dict(orient="records")
-
-    return table_data
+    return load_cauchy_table(cauchy_result_file)
 
 
 def run_report(config: ReportConfig, run_parameters=None):
@@ -93,59 +94,66 @@ def run_report(config: ReportConfig, run_parameters=None):
     gss_distribution_dir = config.get_GSS_plot_dir(config.trait_name)
 
     gene_plots = []
-    plot_select_gene_list = (
-        config.get_GSS_plot_select_gene_file(config.trait_name).read_text().splitlines()
-    )
-    for gene_name in plot_select_gene_list:
-        expression_png = (
-            gss_distribution_dir / f"{config.sample_name}_{gene_name}_Expression_Distribution.png"
-        )
-        gss_png = gss_distribution_dir / f"{config.sample_name}_{gene_name}_GSS_Distribution.png"
-        # check if expression and GSS plots exist
-        if not os.path.exists(expression_png) or not os.path.exists(gss_png):
-            print(f"Skipping gene {gene_name} as expression or GSS plot is missing.")
-            continue
-        gene_plots.append(
-            {
-                "name": gene_name,
-                "expression_plot": expression_png.relative_to(
-                    report_dir
-                ),  # Path for gene expression plot
-                "gss_plot": gss_png.relative_to(report_dir),  # Path for GSS distribution plot
-            }
-        )
-
-    # # Copy PNG files to the report directory
-    # copy_files_to_report_dir(result_dir, report_dir, [gene['expression_plot'] for gene in gene_plots] + [gene['gss_plot'] for gene in gene_plots])
-
-    # Update paths to point to copied images inside the report folder
-    # for gene in gene_plots:
-    #     gene['expression_plot'] = os.path.join(os.path.basename(gene['expression_plot']))
-    #     gene['gss_plot'] = os.path.join(os.path.basename(gene['gss_plot']))
+    plot_select_gene_file = config.get_GSS_plot_select_gene_file(config.trait_name)
+    if plot_select_gene_file.exists():
+        plot_select_gene_list = plot_select_gene_file.read_text().splitlines()
+        for gene_name in plot_select_gene_list:
+            gene_name = gene_name.strip()
+            if not gene_name:
+                continue
+            expression_png = (
+                gss_distribution_dir / f"{config.project_name}_{gene_name}_Expression_Distribution.png"
+            )
+            gss_png = gss_distribution_dir / f"{config.project_name}_{gene_name}_GSS_Distribution.png"
+            # check if expression and GSS plots exist
+            if not expression_png.exists() or not gss_png.exists():
+                logger.warning(f"Skipping gene {gene_name} as expression or GSS plot is missing.")
+                continue
+            gene_plots.append(
+                {
+                    "name": gene_name,
+                    "expression_plot": os.path.join("GSS_plot", expression_png.name),
+                    "gss_plot": os.path.join("GSS_plot", gss_png.name),
+                }
+            )
+    else:
+        logger.warning(f"Plot select gene file not found: {plot_select_gene_file}")
 
     # Sample data for other report components
-    title = f"{config.sample_name} Genetic Spatial Mapping Report"
+    title = f"{config.project_name} Genetic Spatial Mapping Report"
 
-    genetic_mapping_plot = embed_html_content(
-        config.get_gsMap_html_plot_save_path(config.trait_name)
-    )
-    manhattan_plot = embed_html_content(config.get_manhattan_html_plot_path(config.trait_name))
+    gsmap_html_plot_path = config.get_gsMap_html_plot_save_path(config.trait_name)
+    if gsmap_html_plot_path.exists():
+        genetic_mapping_plot = embed_html_content(gsmap_html_plot_path)
+    else:
+        logger.warning(f"gsMap plot not found: {gsmap_html_plot_path}")
+        genetic_mapping_plot = "<p>gsMap plot not found</p>"
 
-    gsmap_version = gsMap.__version__
+    manhattan_html_plot_path = config.get_manhattan_html_plot_path(config.trait_name)
+    if manhattan_html_plot_path.exists():
+        manhattan_plot = embed_html_content(manhattan_html_plot_path)
+    else:
+        logger.warning(f"Manhattan plot not found: {manhattan_html_plot_path}")
+        manhattan_plot = "<p>Manhattan plot not found</p>"
+
+    try:
+        gsmap_version = gsMap.__version__
+    except AttributeError:
+        gsmap_version = "unknown"
+
     # Render the template with dynamic content, including the run parameters
-
     trait_name = config.trait_name
     default_run_parameters = {
-        "Sample Name": config.sample_name,
+        "Sample Name": config.project_name,
         "Trait Name": trait_name,
-        "Summary Statistics File": config.sumstats_file,
-        "HDF5 Path": config.hdf5_with_latent_path,
+        "Summary Statistics File": str(config.sumstats_file) if config.sumstats_file else "N/A",
+        "HDF5 Path": str(config.hdf5_with_latent_path),
         "Annotation": config.annotation,
-        "Spatial LDSC Save Directory": config.ldsc_save_dir,
-        "Cauchy Directory": config.cauchy_save_dir,
-        "Report Directory": config.get_report_dir(trait_name),
-        "gsMap Report File": config.get_gsMap_report_file(trait_name),
-        "Gene Diagnostic Info File": config.get_gene_diagnostic_info_save_path(trait_name),
+        "Spatial LDSC Save Directory": str(config.ldsc_save_dir),
+        "Cauchy Directory": str(config.cauchy_save_dir),
+        "Report Directory": str(config.get_report_dir(trait_name)),
+        "gsMap Report File": str(config.get_gsMap_report_file(trait_name)),
+        "Gene Diagnostic Info File": str(config.get_gene_diagnostic_info_save_path(trait_name)),
         "Report Generation Date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -172,3 +180,30 @@ def run_report(config: ReportConfig, run_parameters=None):
     logger.info(
         "Copy the report directory to your local PC and open the HTML report file in a web browser to view the report."
     )
+
+
+def run_interactive_report(config: ReportConfig):
+    """
+    Prepare data for the interactive report and optionally launch it.
+    """
+    logger.info("Preparing data for the interactive report...")
+    data_dir = prepare_report_data(config)
+    
+    if config.browser:
+        logger.info(f"Launching interactive report viewer on port {config.port}...")
+        run_report_viewer(config)
+    else:
+        logger.info(f"Interactive report data prepared in {data_dir}. Use 'gsmap report-view' to view it.")
+
+
+def run_report_viewer(config: ReportConfig):
+    """
+    Launch the interactive report viewer.
+    """
+    data_dir = config.get_report_dir("interactive")
+    if not data_dir.exists():
+        logger.error(f"Interactive report data not found in {data_dir}. Please run 'gsmap report' first.")
+        return
+    
+    logger.info(f"Starting gsMap Interactive Report viewer on http://localhost:{config.port}")
+    launch_report(data_dir, port=config.port, show=True, config=config)

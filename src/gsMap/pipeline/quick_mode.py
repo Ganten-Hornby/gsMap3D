@@ -130,7 +130,9 @@ def run_quick_mode(config: QuickModeConfig):
         
         for trait_name, sumstats_file in traits_to_process.items():
             logger.info(f"--- Generating Report for {trait_name} ---")
-            report_config = config.get_report_config(trait_name, sumstats_file)
+            report_config = config.report_config
+            report_config.trait_name = trait_name
+            report_config.sumstats_file = sumstats_file
             if check_report_done(report_config, trait_name):
                 logger.info(f"Report already exists for {trait_name}. Skipping...")
             else:

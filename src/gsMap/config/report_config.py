@@ -25,26 +25,27 @@ class ReportConfig(ConfigWithAutoPaths):
         resolve_path=True
     )]
     
-    sample_name: Annotated[str, typer.Option(
-        help="Name of the sample"
-    )]
+    trait_name: Annotated[Optional[str], typer.Option(
+        help="Name of the trait (optional, will include all traits if not provided)"
+    )] = None
     
-    trait_name: Annotated[str, typer.Option(
-        help="Name of the trait to generate the report for"
-    )]
-    
-    annotation: Annotated[str, typer.Option(
+    annotation: Annotated[Optional[str], typer.Option(
         help="Annotation layer name"
-    )]
+    )] = None
     
-    sumstats_file: Annotated[Path, typer.Option(
-        help="Path to GWAS summary statistics file",
+    sumstats_file: Annotated[Optional[Path], typer.Option(
+        help="Path to GWAS summary statistics file (optional)",
         exists=True,
         file_okay=True,
         dir_okay=False,
         resolve_path=True
-    )]
-    
+    )] = None
+
+    downsampling_n_spots: Annotated[int, typer.Option(
+        help="Number of spots to downsample for PCC calculation if n_spots > this value",
+        min=1000,
+        max=100000
+    )] = 10000
 
     top_corr_genes: Annotated[int, typer.Option(
         help="Number of top correlated genes to display",
@@ -72,9 +73,20 @@ class ReportConfig(ConfigWithAutoPaths):
         help="Style of the generated figures",
         case_sensitive=False
     )] = "light"
-    
-    # Hidden parameter
-    plot_type: str = "all"
+
+    plot_type: Annotated[str, typer.Option(
+        help="Type of plots to generate: 'gsMap', 'manhattan', 'GSS', or 'all'",
+        case_sensitive=False
+    )] = "all"
+
+    @property
+    def customize_fig(self) -> bool:
+        """Check if figure customization is requested."""
+        return any([self.fig_width, self.fig_height, self.point_size])
+
+    # Settings for the viewer
+    port: Annotated[int, typer.Option(help="Port to serve the interactive report on")] = 5006
+    browser: Annotated[bool, typer.Option(help="Whether to open the browser automatically")] = True
 
     def __post_init__(self):
         super().__post_init__()
