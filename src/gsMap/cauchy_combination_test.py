@@ -255,41 +255,10 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
     return combined_results
 
 
-def get_trait_files_dict(config: CauchyCombinationConfig) -> dict[str, Path]:
-    """
-    Discover LDSC result files and return a dictionary mapping trait names to file paths.
-    """
-    if config.trait_name is None:
-        logger.info(f"Trait name not specified. Scanning {config.ldsc_save_dir} for spatial LDSC results...")
-        # Pattern: {self.project_name}_{trait_name}.csv.gz
-        pattern = f"{config.project_name}_*.csv.gz"
-        ldsc_files = list(config.ldsc_save_dir.glob(pattern))
-        
-        if not ldsc_files:
-            logger.warning(f"No spatial LDSC result files found matching pattern '{pattern}' in {config.ldsc_save_dir}")
-            return {}
-
-        traits_dict = {}
-        for f in ldsc_files:
-             # Extract trait name: projectname_{trait}.csv.gz
-             fname = f.name
-             trait = fname[len(config.project_name)+1:].replace(".csv.gz", "")
-             traits_dict[trait] = f
-        
-        logger.info(f"Found {len(traits_dict)} traits: {list(traits_dict.keys())}")
-        return traits_dict
-    else:
-        ldsc_input_file = config.get_ldsc_result_file(config.trait_name)
-        if not ldsc_input_file.exists():
-            logger.warning(f"LDSC result file not found for {config.trait_name}: {ldsc_input_file}")
-            return {}
-        return {config.trait_name: ldsc_input_file}
 
 def run_Cauchy_combination(config: CauchyCombinationConfig):
     # 1. Discover traits and load combined LDSC results
-    traits_dict = get_trait_files_dict(config)
-    if not traits_dict:
-        return
+    traits_dict = config.ldsc_traits_result_path_dict
 
     logger.info(f"Joining LDSC results for {len(traits_dict)} traits...")
     df_combined = join_ldsc_results(traits_dict)

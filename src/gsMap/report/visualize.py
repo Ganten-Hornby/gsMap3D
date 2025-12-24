@@ -284,7 +284,7 @@ class VisualizeRunner:
             # This function saves files directly and does not return a figure object.
             self._create_single_sample_multi_trait_plots(
                 obs_ldsc_merged=obs_ldsc_merged,
-                trait_names=self.config.trait_names,
+                trait_names=self.config.trait_name_list,
                 sample_name=sample_name,
                 output_png_path=traits_png,
                 output_pdf_path=traits_pdf,
@@ -300,7 +300,7 @@ class VisualizeRunner:
             sample_data = obs_ldsc_merged.query(f'sample_name == "{sample_name}"')
             (pixel_width, pixel_height), point_size = estimate_point_size_for_plot(sample_data[['sx', 'sy']].values)
 
-            for annotation in self.config.cauchy_annotation_list:
+            for annotation in self.config.cauchy_annotations:
                 annotation_dir = annotation_folder / annotation
                 annotation_dir.mkdir(exist_ok=True)
 
@@ -323,7 +323,7 @@ class VisualizeRunner:
             max_cols=self.config.single_sample_multi_trait_max_cols
         )
 
-        for annotation in tqdm(self.config.cauchy_annotation_list,
+        for annotation in tqdm(self.config.cauchy_annotations,
                                desc='Generating multi-sample annotation plots'):
             annotation_dir = annotation_folder / annotation
             annotation_dir.mkdir(exist_ok=True)
@@ -340,7 +340,7 @@ class VisualizeRunner:
     def _create_single_trait_multi_sample_plots(self, obs_ldsc_merged: pd.DataFrame):
         """Generate single trait multi-sample visualizations using matplotlib"""
 
-        trait_names = self.config.trait_names
+        trait_names = self.config.trait_name_list
 
         # Create output directory
         single_trait_folder = self.config.visualization_result_dir / 'single_trait_multi_sample_plot'
@@ -961,9 +961,9 @@ class VisualizeRunner:
     def _run_cauchy_analysis(self, obs_ldsc_merged: pd.DataFrame):
         """Run Cauchy combination analysis"""
 
-        trait_names = self.config.trait_names
+        trait_names = self.config.trait_name_list
 
-        for annotation_col in self.config.cauchy_annotation_list:
+        for annotation_col in self.config.cauchy_annotations:
             print(f"Running Cauchy analysis for {annotation_col}...")
 
             cauchy_results = self._run_cauchy_combination_per_annotation(

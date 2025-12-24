@@ -173,15 +173,61 @@ class FormatSumstatsConfig:
 @dataclass
 class DiagnosisConfig(ConfigWithAutoPaths):
     """Configuration for diagnosis command."""
-    # Placeholder for diagnosis config fields
-    pass
+    trait_name: Annotated[str, typer.Option(help="Name of the trait")]
+    annotation: Annotated[str, typer.Option(help="Annotation layer name")]
+    
+    sumstats_file: Annotated[Optional[Path], typer.Option(
+        help="Path to GWAS summary statistics file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = None
+    
+    top_corr_genes: Annotated[int, typer.Option(help="Number of top correlated genes to display")] = 50
+    selected_genes: Annotated[Optional[str], typer.Option(help="Comma-separated list of specific genes to include")] = None
+    
+    fig_width: Annotated[Optional[int], typer.Option(help="Width of figures")] = None
+    fig_height: Annotated[Optional[int], typer.Option(help="Height of figures")] = None
+    point_size: Annotated[Optional[int], typer.Option(help="Point size")] = None
+    
+    plot_type: Annotated[str, typer.Option(help="Plot type (gsMap, manhattan, GSS, all)")] = "all"
+
+    @property
+    def customize_fig(self) -> bool:
+        return any([self.fig_width, self.fig_height, self.point_size])
+
+    @property
+    def hdf5_with_latent_path(self) -> Path:
+        return self.concatenated_latent_adata_path
+
+    @property
+    def mkscore_feather_path(self) -> Path:
+        # Fallback to a default name in the latent2gene directory
+        return self.latent2gene_dir / f"{self.project_name}_marker_score.feather"
 
 
 @dataclass
 class VisualizeConfig(ConfigWithAutoPaths):
     """Configuration for visualization command."""
-    # Placeholder for visualization config fields
-    pass
+    trait_name: Annotated[str, typer.Option(help="Name of the trait")]
+    annotation: Annotated[Optional[str], typer.Option(help="Annotation layer name")] = None
+    
+    fig_title: Annotated[Optional[str], typer.Option(help="Title for the figure")] = None
+    fig_style: Annotated[str, typer.Option(help="Style of the figures (light/dark)")] = "light"
+    point_size: Annotated[Optional[int], typer.Option(help="Point size")] = None
+    fig_width: Annotated[int, typer.Option(help="Figure width")] = 800
+    fig_height: Annotated[int, typer.Option(help="Figure height")] = 600
+    
+    output_dir: Annotated[Optional[Path], typer.Option(help="Directory to save output files")] = None
+    hdf5_with_latent_path: Annotated[Optional[Path], typer.Option(help="Path to HDF5 with latent")] = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.hdf5_with_latent_path is None:
+            self.hdf5_with_latent_path = self.concatenated_latent_adata_path
+        if self.output_dir is None:
+            self.output_dir = self.get_report_dir(self.trait_name)
 
 
 @dataclass

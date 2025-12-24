@@ -8,30 +8,14 @@ from typing import Optional, Annotated
 import logging
 import typer
 
+from gsMap.config import CauchyCombinationConfig
 from gsMap.config.base import ConfigWithAutoPaths
 
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
-class ReportConfig(ConfigWithAutoPaths):
+class ReportConfig(CauchyCombinationConfig):
     """Configuration for generating reports."""
-    
-    # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
-    
-    trait_name: Annotated[Optional[str], typer.Option(
-        help="Name of the trait (optional, will include all traits if not provided)"
-    )] = None
-    
-    annotation: Annotated[Optional[str], typer.Option(
-        help="Annotation layer name"
-    )] = None
     
     sumstats_file: Annotated[Optional[Path], typer.Option(
         help="Path to GWAS summary statistics file (optional)",
@@ -78,6 +62,25 @@ class ReportConfig(ConfigWithAutoPaths):
         help="Type of plots to generate: 'gsMap', 'manhattan', 'GSS', or 'all'",
         case_sensitive=False
     )] = "all"
+
+    # Advanced visualization parameters
+    single_sample_multi_trait_max_cols: int = 5
+    subsample_n_points: Optional[int] = None
+    single_sample_multi_trait_subplot_width_inches: float = 4.0
+    single_sample_multi_trait_dpi: int = 300
+    enable_pdf_output: bool = True
+    hover_text_list: Optional[list] = None
+    single_trait_multi_sample_max_cols: int = 8
+    single_trait_multi_sample_subplot_width_inches: float = 4.0
+    single_trait_multi_sample_scaling_factor: float = 1.0
+    single_trait_multi_sample_dpi: int = 300
+    share_coords: bool = False
+
+    # Compatibility properties for visualization paths
+    @property
+    def visualization_result_dir(self) -> Path:
+        return self.project_dir / "report" / self.project_name / (self.trait_name or "multi_trait")
+
 
     @property
     def customize_fig(self) -> bool:
