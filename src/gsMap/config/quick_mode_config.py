@@ -23,7 +23,7 @@ from gsMap.config.utils import process_h5ad_inputs
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
-class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresentationsConfig, ConfigWithAutoPaths):
+class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresentationsConfig, ConfigWithAutoPaths):
     """Configuration for running the complete gsMap pipeline in a single command.
     
     Inherits fields from all major sub-configs to provide a unified interface.
@@ -41,19 +41,6 @@ class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresent
     stop_step: Annotated[Optional[str], typer.Option(
         help="Step to stop execution at (inclusive)",
         case_sensitive=False
-    )] = None
-
-    # ------------------------------------------------------------------------
-    # Report Parameters
-    # ------------------------------------------------------------------------
-    top_corr_genes: Annotated[int, typer.Option(
-        help="Number of top correlated genes to display",
-        min=1,
-        max=500
-    )] = 50
-
-    selected_genes: Annotated[Optional[str], typer.Option(
-        help="Comma-separated list of specific genes to include"
     )] = None
 
     sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
@@ -116,6 +103,7 @@ class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresent
             params['h5ad_path'] = None
             params['h5ad_yaml'] = None
             params['h5ad_list_file'] = None
+            params['sample_h5ad_dict'] = None
         return LatentToGeneConfig(**params)
 
     @property
@@ -124,17 +112,11 @@ class QuickModeConfig(SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresent
             f.name: getattr(self, f.name) for f in fields(SpatialLDSCConfig)
         })
 
-    def get_report_config(self, trait_name: str, sumstats_file: Path) -> ReportConfig:
-        return ReportConfig(
-            workdir=self.workdir,
-            project_name=self.project_name,
-            sample_name=self.project_name,
-            trait_name=trait_name,
-            annotation=self.annotation, 
-            sumstats_file=sumstats_file,
-            top_corr_genes=self.top_corr_genes,
-            selected_genes=self.selected_genes,
-        )
+    @property
+    def report_config(self) -> ReportConfig:
+        return ReportConfig(**{
+            f.name: getattr(self, f.name) for f in fields(ReportConfig) if hasattr(self, f.name)
+        })
 
     @property
     def cauchy_config(self) -> CauchyCombinationConfig:

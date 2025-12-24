@@ -255,8 +255,10 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
     return combined_results
 
 
-def run_Cauchy_combination(config: CauchyCombinationConfig):
-    # 1. Determine traits to process
+def get_trait_files_dict(config: CauchyCombinationConfig) -> dict[str, Path]:
+    """
+    Discover LDSC result files and return a dictionary mapping trait names to file paths.
+    """
     if config.trait_name is None:
         logger.info(f"Trait name not specified. Scanning {config.ldsc_save_dir} for spatial LDSC results...")
         # Pattern: {self.project_name}_{trait_name}.csv.gz
@@ -265,32 +267,46 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
         
         if not ldsc_files:
             logger.warning(f"No spatial LDSC result files found matching pattern '{pattern}' in {config.ldsc_save_dir}")
-            return
+            return {}
 
-        traits = []
+        traits_dict = {}
         for f in ldsc_files:
              # Extract trait name: projectname_{trait}.csv.gz
              fname = f.name
              trait = fname[len(config.project_name)+1:].replace(".csv.gz", "")
-             traits.append(trait)
+             traits_dict[trait] = f
         
-        logger.info(f"Found {len(traits)} traits: {traits}")
+        logger.info(f"Found {len(traits_dict)} traits: {list(traits_dict.keys())}")
+        return traits_dict
     else:
-        traits = [config.trait_name]
+        ldsc_input_file = config.get_ldsc_result_file(config.trait_name)
+        if not ldsc_input_file.exists():
+            logger.warning(f"LDSC result file not found for {config.trait_name}: {ldsc_input_file}")
+            return {}
+        return {config.trait_name: ldsc_input_file}
 
+def run_Cauchy_combination(config: CauchyCombinationConfig):
+    # 1. Discover traits and load combined LDSC results
+    traits_dict = get_trait_files_dict(config)
+    if not traits_dict:
+        return
+
+    logger.info(f"Joining LDSC results for {len(traits_dict)} traits...")
+    df_combined = join_ldsc_results(traits_dict)
+    
     # 2. Add Annotation & Metadata
     logger.info(f"------Loading annotations...")
     latent_adata_path = config.concatenated_latent_adata_path
-    
     if not latent_adata_path.exists():
         raise FileNotFoundError(f"Latent adata with annotations not found at: {latent_adata_path}")
     
     logger.info(f"Loading metadata from {latent_adata_path}")
     adata = sc.read_h5ad(latent_adata_path)
     
-    # Check for annotation column
-    if config.annotation not in adata.obs.columns:
-        raise ValueError(f"Annotation column '{config.annotation}' not found in adata.obs.")
+    # Check for all requested annotation columns
+    for anno in config.annotation_list:
+        if anno not in adata.obs.columns:
+            raise ValueError(f"Annotation column '{anno}' not found in adata.obs.")
     
     # Check for sample_name column
     sample_col = 'sample_name'
@@ -302,58 +318,54 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
              logger.warning(f"Neither 'sample_name' nor 'batch_id' found in adata.obs. Sample-level Cauchy will be skipped.")
              sample_col = None
 
-    # 3. Process each trait
-    for trait_name in traits:
-        logger.info(f"=== Processing Cauchy combination for trait: {trait_name} ===")
+    # Filter to common spots
+    common_cells = np.intersect1d(df_combined.index, adata.obs_names)
+    logger.info(f"Found {len(common_cells)} common spots between LDSC results and metadata.")
+    if len(common_cells) == 0:
+        logger.warning(f"No common spots found. Skipping...")
+        return
         
-        # Load the LDSC results for this trait
-        ldsc_input_file = config.get_ldsc_result_file(trait_name)
-        if not ldsc_input_file.exists():
-            logger.warning(f"LDSC result file not found for {trait_name}: {ldsc_input_file}. Skipping...")
-            continue
-        
-        ldsc_df = load_ldsc(ldsc_input_file)
-        
-        # Rename the log10_p column to the trait name
-        ldsc_df.rename(columns={'log10_p': trait_name}, inplace=True)
-        trait_cols = [trait_name]
-        
-        # Join annotation to LDSC results
-        common_cells = np.intersect1d(ldsc_df.index, adata.obs_names)
-        logger.info(f"Found {len(common_cells)} common spots between LDSC results and annotation.")
-        
-        if len(common_cells) == 0:
-            logger.warning(f"No common spots found for {trait_name}. Skipping...")
-            continue
-        
-        ldsc_subset = ldsc_df.loc[common_cells].copy()
-        
-        # Add annotation column
-        ldsc_subset[config.annotation] = adata.obs.loc[common_cells, config.annotation].values
-        if sample_col:
-            ldsc_subset[sample_col] = adata.obs.loc[common_cells, sample_col].values
+    df_combined = df_combined.loc[common_cells].copy()
+    
+    # Add metadata columns
+    metadata_cols = config.annotation_list.copy()
+    if sample_col:
+        metadata_cols.append(sample_col)
+    
+    for col in metadata_cols:
+        df_combined[col] = adata.obs.loc[common_cells, col].values
 
+    # 3. Save combined data to parquet
+    logger.info(f"Saving combined data to {config.combined_parquet_path}")
+    df_to_save = df_combined.reset_index().rename(columns={'index': 'spot'})
+    df_to_save.to_parquet(config.combined_parquet_path)
+
+    # 4. Process each annotation and each trait
+    trait_cols = list(traits_dict.keys())
+    for annotation_col in config.annotation_list:
+        logger.info(f"=== Processing Cauchy combination for annotation: {annotation_col} ===")
+        
         # Run Cauchy Combination (Annotation Level)
-        logger.info(f"------Running Cauchy Combination Test (Annotation Level)...")
-        result_df = run_cauchy_on_dataframe(ldsc_subset, 
-                                          annotation_col=config.annotation, 
+        result_df = run_cauchy_on_dataframe(df_combined, 
+                                          annotation_col=annotation_col, 
                                           trait_cols=trait_cols)
         
-        # Save Annotation Level Results
-        output_file = config.get_cauchy_result_file(trait_name, annotation=config.annotation, all_samples=True)
-        logger.info(f"------Saving annotation-level results to {output_file}...")
-        result_df.to_csv(output_file, index=False)
+        # Save results per trait
+        for trait_name in trait_cols:
+            trait_result = result_df[result_df['trait'] == trait_name]
+            output_file = config.get_cauchy_result_file(trait_name, annotation=annotation_col, all_samples=True)
+            trait_result.to_csv(output_file, index=False)
 
         # Run Cauchy Combination (Sample-Annotation level)
         if sample_col:
-            logger.info(f"------Running Cauchy Combination Test (Sample-Annotation Level)...")
-            sample_result_df = run_cauchy_on_dataframe(ldsc_subset, 
-                                                      annotation_col=config.annotation, 
+            sample_result_df = run_cauchy_on_dataframe(df_combined, 
+                                                      annotation_col=annotation_col, 
                                                       trait_cols=trait_cols,
                                                       extra_group_col=sample_col)
             
-            sample_output_file = config.get_cauchy_result_file(trait_name, annotation=config.annotation, all_samples=False)
-            logger.info(f"------Saving sample-level results to {sample_output_file}...")
-            sample_result_df.to_csv(sample_output_file, index=False)
+            for trait_name in trait_cols:
+                trait_sample_result = sample_result_df[sample_result_df['trait'] == trait_name]
+                sample_output_file = config.get_cauchy_result_file(trait_name, annotation=annotation_col, all_samples=False)
+                trait_sample_result.to_csv(sample_output_file, index=False)
     
     logger.info("Cauchy combination processing completed.")
