@@ -12,6 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExec
 from pathlib import Path
 from typing import Dict, List
 from typing import Optional, Literal, Union
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
@@ -256,6 +257,9 @@ def _create_color_map(category_list: List, hex=False, rng=42) -> Dict[str, tuple
 
 
 class VisualizeRunner:
+    def __init__(self, config):
+        self.config = config
+
     custom_colors_list = [
         '#d73027', '#f46d43', '#fdae61', '#fee090', '#e0f3f8',
         '#abd9e9', '#74add1', '#4575b4', '#313695'
@@ -527,11 +531,12 @@ class VisualizeRunner:
             output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
             plt.savefig(output_pdf_path, bbox_inches='tight', )
 
-        # Close the figure to free memory
+        # Close the figure to free memory only if not returning it
         if show:
             plt.show()
-        plt.close(fig)
+        
         gc.collect()
+        return fig
 
     def _create_single_sample_multi_trait_plots(self,
                                                 obs_ldsc_merged: pd.DataFrame,
@@ -824,7 +829,7 @@ class VisualizeRunner:
             x_data_min, x_data_max = np.min(coordinates[:, 0]), np.max(coordinates[:, 0])
 
         if y_limits is not None:
-            y_data_min, y_data_max = y_limits
+            y_data_min, y_data_max = np.min(coordinates[:, 1]), np.max(coordinates[:, 1])
         else:
             y_data_min, y_data_max = np.min(coordinates[:, 1]), np.max(coordinates[:, 1])
 
@@ -951,12 +956,13 @@ class VisualizeRunner:
             fig.subplots_adjust(right=0.8)
             fig.legend(handles=handles, title=annotation, loc='center left', bbox_to_anchor=(0.85, 0.5))
 
-        # Save the plot
-        output_path = output_dir / f'multi_sample_{annotation}.png'
-        plt.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
-        plt.close(fig)
-
-        print(f"Saved multi-sample annotation plot: {output_path}")
+        # Save the plot if output_dir is provided
+        if output_dir:
+            output_path = output_dir / f'multi_sample_{annotation}.png'
+            plt.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+            print(f"Saved multi-sample annotation plot: {output_path}")
+        
+        return fig
 
     def _run_cauchy_analysis(self, obs_ldsc_merged: pd.DataFrame):
         """Run Cauchy combination analysis"""

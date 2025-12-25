@@ -234,12 +234,33 @@ def generate_report(config: ReportConfig):
         logger.info(f"Selected genes: {len(config.selected_genes)}")
     
     try:
-        from gsMap.report import run_report
-        run_report(config)
-        logger.info("✓ Report generated successfully!")
-    except ImportError:
-        logger.info("Running in demo mode...")
-        logger.info("✓ Demo completed!")
+        from gsMap.report import run_interactive_report
+        run_interactive_report(config)
+        logger.info("✓ Interactive report data prepared successfully!")
+    except (ImportError, AttributeError) as e:
+        logger.error(f"Error executing report: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Execution Error: {e}")
+        raise
+
+
+@app.command(name="report-view")
+@dataclass_typer
+def report_view(config: ReportConfig):
+    """
+    Launch the interactive report viewer.
+    """
+    logger.info(f"Launching interactive report viewer from {config.project_dir}")
+    try:
+        from gsMap.report import run_report_viewer
+        run_report_viewer(config)
+    except (ImportError, AttributeError) as e:
+        logger.error(f"Error launching viewer: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Execution Error: {e}")
+        raise
 
 
 @app.command(name="ldscore-weight-matrix")

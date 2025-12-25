@@ -67,17 +67,23 @@
                 <table class="table table-hover table-bordered">
                     <thead class="table-light">
                         <tr>
+                            <th>Annotation Name</th>
                             <th>Annotation</th>
                             <th>P Cauchy</th>
                             <th>P Median</th>
+                            <th>Top 95% Mean</th>
+                            <th>Total Spots</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for row in cauchy_table %}
                         <tr>
+                            <td>{{ row.annotation_name }}</td>
                             <td>{{ row.annotation }}</td>
                             <td>{{ "%.4e"|format(row.p_cauchy) }}</td>
                             <td>{{ "%.4e"|format(row.p_median) }}</td>
+                            <td>{{ "%.4f"|format(row.top_95_mean) }}</td>
+                            <td>{{ row.total_spots }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>

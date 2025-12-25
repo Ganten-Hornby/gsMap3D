@@ -8,8 +8,8 @@ from typing import Optional, Annotated
 import logging
 import typer
 
-from gsMap.config import CauchyCombinationConfig
-from gsMap.config.base import ConfigWithAutoPaths
+from .cauchy_config import CauchyCombinationConfig
+from .base import ConfigWithAutoPaths
 
 logger = logging.getLogger("gsMap.config")
 
@@ -62,6 +62,14 @@ class ReportConfig(CauchyCombinationConfig):
         help="Type of plots to generate: 'gsMap', 'manhattan', 'GSS', or 'all'",
         case_sensitive=False
     )] = "all"
+
+    spatial_key: Annotated[str, typer.Option(
+        help="Spatial key in adata.obsm storing spatial coordinates"
+    )] = "spatial"
+
+    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
+        help="Temporary directory for memory-mapped files"
+    )] = None
 
     # Advanced visualization parameters
     single_sample_multi_trait_max_cols: int = 5
