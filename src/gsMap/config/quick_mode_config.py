@@ -24,10 +24,7 @@ logger = logging.getLogger("gsMap.config")
 
 @dataclass
 class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresentationsConfig, ConfigWithAutoPaths):
-    """Configuration for running the complete gsMap pipeline in a single command.
-    
-    Inherits fields from all major sub-configs to provide a unified interface.
-    """
+    """Quick Mode Pipeline Configuration"""
     __core_only__ = True
 
     # ------------------------------------------------------------------------
@@ -44,6 +41,7 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
     )] = None
 
     sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
+
 
 
     def __post_init__(self):
@@ -77,6 +75,8 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
                 for t_name, s_file in config_loaded.items():
                     self.sumstats_config_dict[t_name] = Path(s_file)
 
+        self.show_config(QuickModeConfig)
+
     @property
     def is_both_latent_and_gene_running(self) -> bool:
         """Check if both find_latent and latent2gene are in the execution range."""
@@ -91,12 +91,12 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
     @property
     def find_latent_config(self) -> FindLatentRepresentationsConfig:
         return FindLatentRepresentationsConfig(**{
-            f.name: getattr(self, f.name) for f in fields(FindLatentRepresentationsConfig)
+            f.name: getattr(self, f.name) for f in fields(FindLatentRepresentationsConfig) if f.init
         })
 
     @property
     def latent2gene_config(self) -> LatentToGeneConfig:
-        params = {f.name: getattr(self, f.name) for f in fields(LatentToGeneConfig)}
+        params = {f.name: getattr(self, f.name) for f in fields(LatentToGeneConfig) if f.init}
 
         # If both steps run, clear explicit h5ad inputs to trigger auto-detection in LatentToGeneConfig
         if self.is_both_latent_and_gene_running:
@@ -109,17 +109,17 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
     @property
     def spatial_ldsc_config(self) -> SpatialLDSCConfig:
         return SpatialLDSCConfig(**{
-            f.name: getattr(self, f.name) for f in fields(SpatialLDSCConfig)
+            f.name: getattr(self, f.name) for f in fields(SpatialLDSCConfig) if f.init
         })
 
     @property
     def report_config(self) -> ReportConfig:
         return ReportConfig(**{
-            f.name: getattr(self, f.name) for f in fields(ReportConfig) if hasattr(self, f.name)
+            f.name: getattr(self, f.name) for f in fields(ReportConfig) if f.init and hasattr(self, f.name)
         })
 
     @property
     def cauchy_config(self) -> CauchyCombinationConfig:
         return CauchyCombinationConfig(**{
-            f.name: getattr(self, f.name) for f in fields(CauchyCombinationConfig) if hasattr(self, f.name)
+            f.name: getattr(self, f.name) for f in fields(CauchyCombinationConfig) if f.init and hasattr(self, f.name)
         })

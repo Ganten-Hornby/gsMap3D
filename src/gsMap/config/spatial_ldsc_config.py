@@ -143,18 +143,11 @@ class SpatialLDSCCoreConfig:
 
 @dataclass
 class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigWithAutoPaths):
-    """Configuration for spatial LDSC.
-    
-    Inherits fields from:
-    - SpatialLDSCCoreConfig: Core GWAS and IO parameters
-    - SpatialLDSCComputeConfig: Compute performance parameters (use_gpu, workers, etc.)
-    - ConfigWithAutoPaths: Workspace and path management
-    """
+    """Spatial LDSC Configuration"""
 
     def __post_init__(self):
         super().__post_init__()
 
-        self.show_config("Spatial LDSC Configuration")
 
         # Import here to avoid circular imports
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape
@@ -302,6 +295,8 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
                 )
         else:
             logger.info(f"Using provided weights directory: {self.w_ld_dir}")
+
+        self.show_config(SpatialLDSCConfig)
 
 
 def check_spatial_ldsc_done(config: SpatialLDSCConfig, trait_name: str) -> bool:

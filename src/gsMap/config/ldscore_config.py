@@ -15,9 +15,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LDScoreConfig(BaseConfig):
-    """
-    Configuration for LD Score pipeline.
-    """
+    """LD Score Weights Configuration"""
 
     # Paths
     bfile_root: Annotated[str, typer.Option(
@@ -107,6 +105,7 @@ class LDScoreConfig(BaseConfig):
         help="Directory for w_ld outputs"
     )] = None
 
+
     def __post_init__(self):
         """
         Post-initialization processing:
@@ -156,12 +155,12 @@ class LDScoreConfig(BaseConfig):
 
         logger.info(f"Confirmed all PLINK files exist for {len(self.chromosomes)} chromosomes.")
 
-        self.show_config("LD Score Weights Configuration")
+        self.show_config(LDScoreConfig)
 
 
 @dataclass
 class GenerateLDScoreConfig(ConfigWithAutoPaths):
-    """Configuration for generating LD scores."""
+    """Generate LDScore Configuration"""
     
     # Required from parent
     workdir: Annotated[Path, typer.Option(
@@ -242,9 +241,10 @@ class GenerateLDScoreConfig(ConfigWithAutoPaths):
     baseline_annotation_dir: Optional[str] = None
     SNP_gene_pair_dir: Optional[str] = None
 
+
     def __post_init__(self):
         super().__post_init__()
-        self.show_config("Generate LDScore Configuration")
+        self.show_config(GenerateLDScoreConfig)
 
 
 def check_ldscore_done(config: GenerateLDScoreConfig) -> bool:

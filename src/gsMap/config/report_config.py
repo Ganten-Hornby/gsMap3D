@@ -2,29 +2,21 @@
 Configuration for generating reports.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Annotated
 import logging
 import typer
 
 from .cauchy_config import CauchyCombinationConfig
-from .base import ConfigWithAutoPaths
+from .base import ConfigWithAutoPaths, ensure_path_exists
 
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
 class ReportConfig(CauchyCombinationConfig):
-    """Configuration for generating reports."""
+    """Report Generation Configuration"""
     
-    sumstats_file: Annotated[Optional[Path], typer.Option(
-        help="Path to GWAS summary statistics file (optional)",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
     downsampling_n_spots: Annotated[int, typer.Option(
         help="Number of spots to downsample for PCC calculation if n_spots > this value",
         min=1000,
@@ -86,6 +78,7 @@ class ReportConfig(CauchyCombinationConfig):
 
     # Compatibility properties for visualization paths
     @property
+    @ensure_path_exists
     def visualization_result_dir(self) -> Path:
         return self.project_dir / "report" / self.project_name / (self.trait_name or "multi_trait")
 
@@ -99,9 +92,10 @@ class ReportConfig(CauchyCombinationConfig):
     port: Annotated[int, typer.Option(help="Port to serve the interactive report on")] = 5006
     browser: Annotated[bool, typer.Option(help="Whether to open the browser automatically")] = True
 
+
     def __post_init__(self):
         super().__post_init__()
-        self.show_config("Report Generation Configuration")
+        self.show_config(ReportConfig)
 
 
 def check_report_done(config: ReportConfig, trait_name: str) -> bool:

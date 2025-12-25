@@ -196,7 +196,7 @@ class FindLatentCoreConfig:
 
 @dataclass
 class FindLatentRepresentationsConfig(FindLatentModelConfig, FindLatentCoreConfig, ConfigWithAutoPaths):
-    """Configuration for finding latent representations."""
+    """Find Latent Configuration"""
 
 
     def __post_init__(self):
@@ -240,7 +240,7 @@ class FindLatentRepresentationsConfig(FindLatentModelConfig, FindLatentCoreConfi
         # Verify homolog file format if provided
         verify_homolog_file_format(self)
 
-        self.show_config("Find Latent Configuration")
+        self.show_config(FindLatentRepresentationsConfig)
 
 
 def check_find_latent_done(config: FindLatentRepresentationsConfig) -> bool:

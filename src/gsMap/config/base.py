@@ -1,7 +1,7 @@
 """
 Base configuration classes and utilities for gsMap.
 """
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from functools import wraps
 from pathlib import Path
 from enum import Enum
@@ -9,6 +9,7 @@ from typing import Optional, Annotated, List, Dict, Any
 import yaml
 import typer
 import logging
+import inspect
 from datetime import datetime
 from rich.logging import RichHandler
 from rich.console import Console
@@ -109,10 +110,18 @@ class BaseConfig:
         
         return config_dict
 
-    def show_config(self, title: str = "Configuration"):
+    def show_config(self, cls: Optional[type] = None):
         """Show configuration in a nice way using rich."""
+        if cls is not None and type(self) is not cls:
+            return
+            
         config_dict = self.to_dict_with_paths_as_strings()
         config_yaml = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
+        
+        # Get title from docstring (first line)
+        doc = inspect.getdoc(type(self))
+        title = doc.split('\n')[0] if doc else "Configuration"
+            
         console = Console()
         console.print(Panel(
             Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
@@ -138,11 +147,15 @@ class ConfigWithAutoPaths(BaseConfig):
         help="Name of the project"
     )]
 
+    @property
+    @ensure_path_exists
+    def project_dir(self) -> Path:
+        """The main project directory, which is workdir / project_name."""
+        return Path(self.workdir) / self.project_name
+
     def __post_init__(self):
         if self.workdir is None:
             raise ValueError('workdir must be provided.')
-        work_dir = Path(self.workdir)
-        self.project_dir = work_dir / self.project_name
 
     ## ---- Find latent representation paths
     @property

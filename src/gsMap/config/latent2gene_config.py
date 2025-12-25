@@ -207,10 +207,7 @@ class LatentToGeneCoreConfig:
 
 @dataclass
 class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, ConfigWithAutoPaths):
-    """Configuration for latent to gene mapping.
-    
-    Inherits compute/IO fields from LatentToGeneComputeConfig.
-    """
+    """Latent to Gene Configuration"""
 
     @property
     def total_homogeneous_neighbor_per_cell(self):
@@ -232,7 +229,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         # Step 4: Set up validation fields and validate structure (after dataset config)
         self._setup_and_validate_fields()
 
-        self.show_config("Latent to Gene Configuration")
+        self.show_config(LatentToGeneConfig)
 
     def _process_h5ad_inputs(self):
         """Process h5ad inputs from various sources"""

@@ -9,7 +9,7 @@ from .base import ConfigWithAutoPaths
 
 @dataclass
 class CauchyCombinationConfig(ConfigWithAutoPaths):
-    """Configuration for Cauchy combination test."""
+    """Cauchy Combination Configuration"""
 
     annotation: Annotated[Optional[str], typer.Option(
         help="Name of the annotation in adata.obs to use",
@@ -34,7 +34,7 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
     # Dictionary to store trait names to sumstats file mappings
     sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
 
-    annotation_list = []
+    annotation_list: List[str] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self):
         super().__post_init__()
@@ -67,7 +67,7 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
             self.annotation_list.extend(self.cauchy_annotations)
         self.annotation_list = list(OrderedDict.fromkeys(self.annotation_list))
 
-        self.show_config("Cauchy Combination Configuration")
+        self.show_config(CauchyCombinationConfig)
 
     @property
     def trait_name_list(self) -> List[str]:
