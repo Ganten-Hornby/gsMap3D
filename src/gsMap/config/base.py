@@ -257,7 +257,7 @@ class ConfigWithAutoPaths(BaseConfig):
         return self.get_GSS_plot_dir(trait_name) / "plot_genes.csv"
 
     @property
-    def combined_parquet_path(self) -> Path:
+    def ldsc_combined_parquet_path(self) -> Path:
         return self.cauchy_save_dir / f"{self.project_name}_combined_ldsc.parquet"
 
     def get_cauchy_result_file(self, trait_name: str, annotation: Optional[str] = None, all_samples: bool = False) -> Path:

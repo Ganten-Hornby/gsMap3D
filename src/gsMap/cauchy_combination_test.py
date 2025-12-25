@@ -305,9 +305,9 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
         df_combined[col] = adata.obs.loc[common_cells, col].values
 
     # 3. Save combined data to parquet
-    logger.info(f"Saving combined data to {config.combined_parquet_path}")
+    logger.info(f"Saving combined data to {config.ldsc_combined_parquet_path}")
     df_to_save = df_combined.reset_index().rename(columns={'index': 'spot'})
-    df_to_save.to_parquet(config.combined_parquet_path)
+    df_to_save.to_parquet(config.ldsc_combined_parquet_path)
 
     # 4. Process each annotation and each trait
     trait_cols = list(traits_dict.keys())

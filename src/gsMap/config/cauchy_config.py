@@ -10,7 +10,7 @@ from .base import ConfigWithAutoPaths
 @dataclass
 class CauchyCombinationConfig(ConfigWithAutoPaths):
     """Configuration for Cauchy combination test."""
-    
+
     annotation: Annotated[Optional[str], typer.Option(
         help="Name of the annotation in adata.obs to use",
     )] = None
@@ -31,36 +31,42 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
         resolve_path=True
     )] = None
 
+    # Dictionary to store trait names to sumstats file mappings
+    sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
+
+    annotation_list = []
 
     def __post_init__(self):
         super().__post_init__()
         if not self.annotation and not self.cauchy_annotations:
             raise ValueError("At least one of 'annotation' or 'cauchy_annotations' must be provided.")
-        
+
         if self.trait_name is None and self.sumstats_config_file is None:
              raise ValueError("At least one of 'trait_name' or 'sumstats_config_file' must be provided.")
-        
+
         self._trait_names = []
         # Load the sumstats config file if provided
         if self.sumstats_config_file is not None:
             with open(self.sumstats_config_file) as f:
                 config_data = yaml.load(f, Loader=yaml.FullLoader)
             self._trait_names.extend(list(config_data.keys()))
-        
+            # Populate sumstats_config_dict with trait_name -> sumstats_file mapping
+            for trait_name, sumstats_file in config_data.items():
+                self.sumstats_config_dict[trait_name] = Path(sumstats_file)
+
         # Add single trait if provided
         if self.trait_name is not None:
             if self.trait_name not in self._trait_names:
                 self._trait_names.append(self.trait_name)
-        
+
         # Build unique list of annotations
         from collections import OrderedDict
-        self.annotation_list = []
         if self.annotation:
             self.annotation_list.append(self.annotation)
         if self.cauchy_annotations:
             self.annotation_list.extend(self.cauchy_annotations)
         self.annotation_list = list(OrderedDict.fromkeys(self.annotation_list))
-        
+
         self.show_config("Cauchy Combination Configuration")
 
     @property
