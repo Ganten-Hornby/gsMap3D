@@ -17,6 +17,10 @@ def prepare_report_data(config: ReportConfig):
     Prepare and aggregate data for the interactive report.
     Returns a directory containing the processed data.
     """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
     report_dir = config.get_report_dir("interactive")
     report_dir.mkdir(parents=True, exist_ok=True)
     
@@ -83,7 +87,7 @@ def prepare_report_data(config: ReportConfig):
         # Save gene list for app regardless of PCC success
         gene_names = adata_gss.var_names.tolist()
         genes_df = pd.DataFrame({'gene': gene_names})
-        genes_df.to_feather(report_dir / "genes.feather")
+        genes_df.to_csv(report_dir / "genes.csv", index=False)
 
         if len(common_spots) == 0:
             logger.error("No common spots found between GSS and LDSC results.")
@@ -141,7 +145,7 @@ def prepare_report_data(config: ReportConfig):
                 all_pcc.append(top_50)
 
             if all_pcc:
-                pd.concat(all_pcc).to_feather(report_dir / "top_genes_pcc.feather")
+                pd.concat(all_pcc).to_csv(report_dir / "top_genes_pcc.csv", index=False)
                 
     except Exception as e:
         logger.error(f"Failed to process marker scores or calculate PCC: {e}")
@@ -159,7 +163,7 @@ def prepare_report_data(config: ReportConfig):
     
     metadata.index.name = 'spot'
     metadata = metadata.reset_index()
-    metadata.to_feather(report_dir / "metadata.feather")
+    metadata.to_csv(report_dir / "metadata.csv", index=False)
 
     # 6. Prepare Manhattan Data
     logger.info("Preparing Manhattan data...")
@@ -175,7 +179,7 @@ def prepare_report_data(config: ReportConfig):
                 from gsMap.utils.regression_read import filter_snps
                 snps2plot = filter_snps(gwas_data_with_gene.sort_values("P"), SUBSAMPLE_SNP_NUMBER=100_000)
                 gwas_plot_data = gwas_data_with_gene[gwas_data_with_gene["SNP"].isin(snps2plot)].reset_index(drop=True)
-                gwas_plot_data.to_feather(report_dir / f"{trait}_manhattan.feather")
+                gwas_plot_data.to_csv(report_dir / f"{trait}_manhattan.csv", index=False)
     except Exception as e:
         logger.warning(f"Failed to prepare Manhattan data: {e}")
 
@@ -213,17 +217,72 @@ def prepare_report_data(config: ReportConfig):
         for anno in config.annotation_list:
             logger.info(f"Pre-rendering plot for annotation: {anno}...")
             anno_plot_path = static_plots_dir / f"anno_{anno}.png"
-            visualizer._create_multi_sample_annotation_plot(
+            fig = visualizer._create_multi_sample_annotation_plot(
                 obs_ldsc_merged=obs_data,
                 annotation=anno,
                 sample_names_list=sample_names,
-                output_dir=None, # We use the returned fig to save to custom path
+                output_dir=None,
                 n_rows=n_rows, n_cols=n_cols,
                 fig_width=5 * n_cols, fig_height=5 * n_rows
             )
+            fig.savefig(anno_plot_path, dpi=300, bbox_inches='tight')
             import matplotlib.pyplot as plt
-            plt.savefig(anno_plot_path, dpi=300, bbox_inches='tight')
-            plt.close()
+            plt.close(fig)
+
+        # 7.3 Pre-render Top Gene Diagnostic plots (Top 10 per trait)
+        trait_pcc_file = report_dir / "top_genes_pcc.csv"
+        if trait_pcc_file.exists() and (adata_train is not None or 'adata_gss' in locals()):
+            top_genes_df = pd.read_csv(trait_pcc_file)
+            
+            for trait in traits:
+                logger.info(f"Pre-rendering top gene plots for {trait}...")
+                top_genes = top_genes_df[top_genes_df['trait'] == trait].head(10)['gene'].tolist()
+                
+                for gene in top_genes:
+                    for sample in sample_names:
+                        # Expression plot (from adata_train)
+                        if adata_train is not None and gene in adata_train.var_names:
+                            gene_sample_exp_path = static_plots_dir / f"gene_{trait}_{gene}_exp_{sample}.png"
+                            if not gene_sample_exp_path.exists():
+                                try:
+                                    sample_mask = adata_train.obs['sample_name'] == sample
+                                    if sample_mask.any():
+                                        sub = adata_train[sample_mask]
+                                        fig, ax = plt.subplots(figsize=(5, 5))
+                                        sc.pl.spatial(sub, color=gene, ax=ax, show=False, 
+                                                     title=f"{sample} - {gene} Exp", spot_size=1.0)
+                                        fig.savefig(gene_sample_exp_path, dpi=100, bbox_inches='tight')
+                                        plt.close(fig)
+                                except Exception as e:
+                                    logger.warning(f"Failed to plot gene exp {gene} for {sample}: {e}")
+
+                        # GSS plot (from adata_gss)
+                        if 'adata_gss' in locals() and gene in adata_gss.var_names:
+                            gene_sample_gss_path = static_plots_dir / f"gene_{trait}_{gene}_gss_{sample}.png"
+                            if not gene_sample_gss_path.exists():
+                                try:
+                                    gene_idx = adata_gss.var_names.get_loc(gene)
+                                    sample_spots = metadata[metadata['sample'] == sample]['spot'].values
+                                    valid_spots = [s for s in sample_spots if s in adata_gss.obs_names]
+                                    if valid_spots:
+                                        row_indices = adata_gss.obs_names.get_indexer(valid_spots)
+                                        # Handle both memmap and normal numpy/sparse X
+                                        gss_vals = adata_gss.X[row_indices, gene_idx]
+                                        if hasattr(gss_vals, 'toarray'): gss_vals = gss_vals.toarray()
+                                        
+                                        df_temp = metadata[metadata['spot'].isin(valid_spots)].copy()
+                                        df_temp['GSS'] = np.ravel(gss_vals)
+                                        
+                                        fig, ax = plt.subplots(figsize=(5, 5))
+                                        scatter = ax.scatter(df_temp['sx'], df_temp['sy'], 
+                                                           c=df_temp['GSS'], cmap='plasma', s=5)
+                                        ax.set_title(f"{sample} - {gene} GSS")
+                                        plt.colorbar(scatter, ax=ax)
+                                        ax.axis('off')
+                                        fig.savefig(gene_sample_gss_path, dpi=100, bbox_inches='tight')
+                                        plt.close(fig)
+                                except Exception as e:
+                                    logger.warning(f"Failed to plot gene GSS {gene} for {sample}: {e}")
 
     except Exception as e:
         logger.warning(f"Failed to pre-render static plots: {e}")
@@ -263,7 +322,7 @@ def prepare_report_data(config: ReportConfig):
         combined_cauchy = pd.concat(all_cauchy, ignore_index=True)
         if 'sample_name' in combined_cauchy.columns and 'sample' not in combined_cauchy.columns:
             combined_cauchy = combined_cauchy.rename(columns={'sample_name': 'sample'})
-        combined_cauchy.to_feather(report_dir / "all_cauchy.feather")
+        combined_cauchy.to_csv(report_dir / "all_cauchy.csv", index=False)
 
     logger.info(f"Interactive report data prepared in {report_dir}")
     return report_dir

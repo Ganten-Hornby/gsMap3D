@@ -28,7 +28,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import submitit
 import yaml
 from filelock import FileLock
 from more_itertools import chunked_even
@@ -1244,7 +1243,8 @@ class VisualizeRunner:
                                normalize_axis: Optional[Literal["row", "column"]] = None,
                                cluster_rows: bool = False, cluster_cols: bool = False,
                                color_continuous_scale: Union[str, list] = "RdBu_r",
-                               width: int = 1200, height: int = 1200, text_format: str = ".2f",
+                               width: Optional[int] = None, height: Optional[int] = None, 
+                               text_format: str = ".2f",
                                show_text: bool = True, font_size: int = 10, margin_pad: int = 150) -> go.Figure:
         """
         Create an enhanced heatmap visualization for trait-annotation relationships.
@@ -1258,6 +1258,15 @@ class VisualizeRunner:
             raise ValueError("Input DataFrame is empty")
         if not np.issubdtype(data.values.dtype, np.number):
             raise ValueError("DataFrame must contain numeric values")
+
+        n_rows, n_cols = data.shape
+        # Set dynamic width/height if not provided to ensure good aspect ratio
+        # Previously we used 50 and 30, which led to vertical stretching.
+        # Let's use more balanced units.
+        if width is None:
+            width = max(600, n_cols * 150 + margin_pad * 2)
+        if height is None:
+            height = max(500, n_rows * 60 + margin_pad * 2)
 
         # Normalization with error handling
         if normalize_axis in ['row', 'column']:
@@ -1310,6 +1319,8 @@ class VisualizeRunner:
                 data,
                 color_continuous_scale=color_continuous_scale,
                 aspect='auto',
+                width=width,
+                height=height,
                 text_auto=text_format if show_text else False  # Automatic text generation
             )
         else:
@@ -1318,6 +1329,8 @@ class VisualizeRunner:
                 data,
                 color_continuous_scale=color_continuous_scale,
                 aspect='auto',
+                width=width,
+                height=height,
                 text_auto=False  # Disable automatic text generation
             )
 
