@@ -13,21 +13,17 @@
             theme: {
                 extend: {
                     colors: {
-                        primary: {
-                            50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd',
-                            400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8',
-                            800: '#1e40af', 900: '#1e3a8a'
-                        }
+                        primary: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' }
                     }
                 }
             }
         }
     </script>
 
-    <!-- Alpine.js -->
+    <!-- Alpine.js (single file, no plugins) -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
 
-    <!-- Plotly.js (full bundle with ScatterGL) -->
+    <!-- Plotly.js -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
     <style>
@@ -38,298 +34,302 @@
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #a1a1a1; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner { animation: spin 1s linear infinite; }
-        .collapsible-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; }
-        .collapsible-content.open { max-height: 2000px; }
         .table-row-hover:hover { background-color: #f8fafc; }
         .gradient-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-        .plot-container { min-height: 500px; }
-        @media (min-width: 1024px) { .plot-container { min-height: 600px; } }
+        .plot-container { min-height: 450px; }
+        /* Simple collapse animation without plugin */
+        .section-content { transition: max-height 0.3s ease-out, opacity 0.2s ease-out; overflow: hidden; }
+        .section-content.collapsed { max-height: 0 !important; opacity: 0; }
+        .section-content.expanded { max-height: 3000px; opacity: 1; }
     </style>
 </head>
 
-<body class="bg-gray-50 text-gray-800 font-sans antialiased" x-data="gsMapApp()" x-init="init()" x-cloak>
+<body class="bg-gray-100 text-gray-800 font-sans antialiased" x-data="gsMapApp()" x-init="init()" x-cloak>
 
     <!-- Header -->
     <header class="gradient-header text-white shadow-lg sticky top-0 z-50">
-        <div class="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
-                <div class="flex items-center gap-4">
-                    <div class="flex items-center gap-3">
-                        <div class="bg-white/20 backdrop-blur-sm p-2 rounded-lg">
-                            <span class="text-2xl font-bold">gsMap</span>
-                        </div>
-                        <div class="hidden sm:block">
-                            <h1 class="font-semibold text-lg">{{ project_name }}</h1>
-                            <p class="text-xs text-white/70">Generated: {{ generated_at }} | v{{ gsmap_version }}</p>
-                        </div>
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-14">
+                <div class="flex items-center gap-3">
+                    <div class="bg-white/20 backdrop-blur-sm px-3 py-1 rounded-lg">
+                        <span class="text-xl font-bold">gsMap</span>
+                    </div>
+                    <div class="hidden sm:block">
+                        <h1 class="font-semibold">{{ project_name }}</h1>
+                        <p class="text-xs text-white/70">{{ generated_at }}</p>
                     </div>
                 </div>
-                <nav class="flex space-x-1 bg-white/10 backdrop-blur-sm p-1 rounded-lg">
-                    <template x-for="tab in tabs" :key="tab.id">
-                        <button @click="setTab(tab.id)"
-                            :class="currentTab === tab.id ? 'bg-white text-primary-700 shadow-md' : 'text-white/80 hover:text-white hover:bg-white/10'"
-                            class="px-4 py-2 text-sm font-medium rounded-md transition-all duration-200 flex items-center gap-2">
-                            <span x-html="tab.icon"></span>
-                            <span class="hidden md:inline" x-text="tab.label"></span>
-                        </button>
-                    </template>
-                </nav>
+                <div class="text-sm text-white/80">v{{ gsmap_version }}</div>
             </div>
         </div>
     </header>
 
-    <main class="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    <!-- Main Content - Vertical Layout -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
 
-        <!-- MANHATTAN PLOT TAB -->
-        <div x-show="currentTab === 'manhattan'" x-transition class="space-y-6">
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-                <div class="flex flex-wrap items-end gap-4">
-                    <div class="flex-1 min-w-[200px]">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Select Trait</label>
-                        <select x-model="manhattan.selectedTrait" @change="loadManhattanData()"
-                            class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
-                            <template x-for="t in reportMeta.traits" :key="t">
-                                <option :value="t" x-text="t"></option>
-                            </template>
-                        </select>
-                    </div>
-                    <div class="flex-1 min-w-[200px]">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Highlight Gene</label>
-                        <input type="text" x-model="manhattan.highlightGene" @input="renderManhattanPlot()"
-                            placeholder="Enter gene name..." class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border">
-                    </div>
-                    <div class="flex-none">
-                        <span x-show="manhattan.isLoading" class="inline-flex items-center text-sm text-primary-600">
-                            <svg class="spinner -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                            </svg>
-                            Loading...
-                        </span>
-                    </div>
-                </div>
-            </div>
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100">
-                    <h2 class="text-lg font-semibold text-gray-800">Manhattan Plot</h2>
-                    <p class="text-sm text-gray-500">Red = top PCC genes. Green diamond = highlighted gene.</p>
-                </div>
-                <div id="manhattanPlot" class="plot-container w-full"></div>
-            </div>
+        <!-- Debug info (hidden by default, shown if no data) -->
+        <div x-show="!dataLoaded" class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <p class="text-yellow-800 font-medium">Loading data...</p>
+            <p class="text-yellow-600 text-sm mt-1">If this message persists, please check that js_data/ folder exists with the required .js files.</p>
         </div>
 
-        <!-- ANNOTATION PLOTS TAB -->
-        <div x-show="currentTab === 'annotation'" x-transition class="space-y-6">
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-                <div class="flex-1 min-w-[200px]">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Select Annotation</label>
-                    <select x-model="annotation.selected" class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
-                        <template x-for="anno in reportMeta.annotations" :key="anno">
-                            <option :value="anno" x-text="anno"></option>
-                        </template>
-                    </select>
-                </div>
-            </div>
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100">
-                    <h2 class="text-lg font-semibold text-gray-800">Annotation Distribution</h2>
-                </div>
-                <div class="p-4">
-                    <img :src="'annotations/anno_' + annotation.selected + '.png'" :alt="annotation.selected" class="w-full h-auto max-h-[800px] object-contain mx-auto" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 50%22><text x=%2210%22 y=%2230%22 fill=%22gray%22>Plot not available</text></svg>'">
-                </div>
-            </div>
-        </div>
-
-        <!-- gsMap RESULTS TAB -->
-        <div x-show="currentTab === 'gsmap'" x-transition class="space-y-6">
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-                <div class="flex-1 min-w-[200px]">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Select Trait</label>
-                    <select x-model="gsmap.selectedTrait" class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
-                        <template x-for="t in reportMeta.traits" :key="t">
+        <!-- ==================== GLOBAL CONTROLS ==================== -->
+        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div class="flex flex-wrap items-end gap-4">
+                <!-- Trait Selector -->
+                <div class="flex-1 min-w-[180px]">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Trait</label>
+                    <select x-model="selectedTrait" @change="onTraitChange()"
+                        class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
+                        <template x-for="t in traits" :key="t">
                             <option :value="t" x-text="t"></option>
                         </template>
                     </select>
                 </div>
-            </div>
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100">
-                    <h2 class="text-lg font-semibold text-gray-800">LDSC Results - <span x-text="gsmap.selectedTrait"></span></h2>
+
+                <!-- Annotation Category Selector -->
+                <div class="flex-1 min-w-[180px]">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Annotation Category</label>
+                    <select x-model="selectedAnnotationCategory"
+                        class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
+                        <template x-for="anno in annotations" :key="anno">
+                            <option :value="anno" x-text="anno"></option>
+                        </template>
+                    </select>
                 </div>
-                <div class="p-4">
-                    <img :src="'gsmap_plot/ldsc_' + gsmap.selectedTrait + '.png'" :alt="gsmap.selectedTrait" class="w-full h-auto max-h-[800px] object-contain mx-auto" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 50%22><text x=%2210%22 y=%2230%22 fill=%22gray%22>Plot not available</text></svg>'">
+
+                <!-- Gene Selector -->
+                <div class="flex-1 min-w-[200px]">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Top Gene (by PCC)</label>
+                    <select x-model="selectedGene" @change="onGeneChange()"
+                        class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
+                        <template x-for="g in topGenesList" :key="g.gene">
+                            <option :value="g.gene" x-text="g.gene + ' (' + (g.PCC ? g.PCC.toFixed(3) : 'N/A') + ')'"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <!-- Loading Indicator -->
+                <div class="flex-none">
+                    <span x-show="isLoading" class="inline-flex items-center text-sm text-primary-600">
+                        <svg class="spinner -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        Loading...
+                    </span>
                 </div>
             </div>
         </div>
 
-        <!-- GENE DIAGNOSTIC TAB -->
-        <div x-show="currentTab === 'genes'" x-transition class="space-y-6">
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-                <div class="flex flex-wrap items-end gap-4">
-                    <div class="flex-1 min-w-[200px]">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Select Trait</label>
-                        <select x-model="genes.selectedTrait" @change="updateGeneList()" class="block w-full rounded-lg border-gray-300 shadow-sm text-sm p-2.5 border bg-white">
-                            <template x-for="t in reportMeta.traits" :key="t">
-                                <option :value="t" x-text="t"></option>
-                            </template>
-                        </select>
-                    </div>
-                    <div class="flex-1 min-w-[200px]">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Select Gene</label>
-                        <select x-model="genes.selectedGene" class="block w-full rounded-lg border-gray-300 shadow-sm text-sm p-2.5 border bg-white">
-                            <template x-for="g in genes.topGenesList" :key="g.gene">
-                                <option :value="g.gene" x-text="g.gene + ' (PCC: ' + (g.PCC ? g.PCC.toFixed(3) : 'N/A') + ')'"></option>
-                            </template>
-                        </select>
-                    </div>
+        <!-- ==================== SECTION 1: MANHATTAN PLOT ==================== -->
+        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer" @click="sections.manhattan = !sections.manhattan">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-800">1. Manhattan Plot</h2>
+                    <p class="text-sm text-gray-500">GWAS results. Red = top PCC genes. Green diamond = selected gene.</p>
                 </div>
+                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.manhattan ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
             </div>
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                    <div class="p-4 border-b border-gray-100"><h3 class="font-semibold text-gray-800">Gene Expression</h3></div>
-                    <div class="p-4">
-                        <img :src="getGeneExpPlotPath()" :alt="genes.selectedGene + ' expression'" class="w-full h-auto object-contain" onerror="this.parentElement.innerHTML='<p class=\'text-center text-gray-500 py-8\'>Plot not available</p>'">
-                    </div>
-                </div>
-                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                    <div class="p-4 border-b border-gray-100"><h3 class="font-semibold text-gray-800">GSS Distribution</h3></div>
-                    <div class="p-4">
-                        <img :src="getGeneGssPlotPath()" :alt="genes.selectedGene + ' GSS'" class="w-full h-auto object-contain" onerror="this.parentElement.innerHTML='<p class=\'text-center text-gray-500 py-8\'>Plot not available</p>'">
-                    </div>
-                </div>
+            <div class="section-content" :class="sections.manhattan ? 'expanded' : 'collapsed'">
+                <div id="manhattanPlot" class="plot-container w-full"></div>
             </div>
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100 flex justify-between items-center">
-                    <div><h2 class="text-lg font-semibold text-gray-800">Gene Diagnostic Table</h2></div>
-                    <input type="text" x-model="genes.searchQuery" placeholder="Search genes..." class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border">
+        </div>
+
+        <!-- ==================== SECTION 2: gsMap LDSC Results ==================== -->
+        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer" @click="sections.gsmap = !sections.gsmap">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-800">2. gsMap LDSC Results - <span x-text="selectedTrait"></span></h2>
+                    <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values across samples.</p>
                 </div>
-                <div class="overflow-x-auto custom-scrollbar max-h-[500px]">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50 sticky top-0">
-                            <tr>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('gene')">Gene</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('PCC')">PCC</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('Annotation')">Annotation</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('Median_GSS')">Median GSS</th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            <template x-for="row in filteredGeneTable" :key="row.gene">
-                                <tr class="table-row-hover cursor-pointer" :class="genes.selectedGene === row.gene ? 'bg-primary-50' : ''" @click="genes.selectedGene = row.gene">
-                                    <td class="px-4 py-3 text-sm font-medium text-gray-900" x-text="row.gene"></td>
-                                    <td class="px-4 py-3 text-sm text-gray-600 font-mono" x-text="row.PCC ? row.PCC.toFixed(4) : 'N/A'"></td>
-                                    <td class="px-4 py-3 text-sm"><span class="px-2 py-1 text-xs rounded-full bg-gray-100" x-text="row.Annotation || 'N/A'"></span></td>
-                                    <td class="px-4 py-3 text-sm text-gray-600 font-mono" x-text="row.Median_GSS ? row.Median_GSS.toFixed(4) : 'N/A'"></td>
+                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.gsmap ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </div>
+            <div class="section-content p-4" :class="sections.gsmap ? 'expanded' : 'collapsed'">
+                <img x-show="selectedTrait" :src="'gsmap_plot/ldsc_' + selectedTrait + '.png'" :alt="selectedTrait" class="w-full h-auto max-h-[700px] object-contain mx-auto" onerror="this.style.display='none';">
+                <p x-show="!selectedTrait" class="text-center text-gray-500 py-8">Select a trait to view the plot.</p>
+            </div>
+        </div>
+
+        <!-- ==================== SECTION 3: Annotation Distribution ==================== -->
+        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer" @click="sections.annotation = !sections.annotation">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-800">3. Annotation Distribution - <span x-text="selectedAnnotationCategory"></span></h2>
+                    <p class="text-sm text-gray-500">Spatial distribution of annotations across samples.</p>
+                </div>
+                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.annotation ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </div>
+            <div class="section-content p-4" :class="sections.annotation ? 'expanded' : 'collapsed'">
+                <img x-show="selectedAnnotationCategory" :src="'annotations/anno_' + selectedAnnotationCategory + '.png'" :alt="selectedAnnotationCategory" class="w-full h-auto max-h-[700px] object-contain mx-auto" onerror="this.style.display='none';">
+                <p x-show="!selectedAnnotationCategory" class="text-center text-gray-500 py-8">Select an annotation category to view the plot.</p>
+            </div>
+        </div>
+
+        <!-- ==================== SECTION 4: Gene Analysis ==================== -->
+        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer" @click="sections.genes = !sections.genes">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-800">4. Gene Analysis - <span x-text="selectedGene"></span></h2>
+                    <p class="text-sm text-gray-500">Gene expression and GSS distribution plots.</p>
+                </div>
+                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.genes ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </div>
+            <div class="section-content" :class="sections.genes ? 'expanded' : 'collapsed'">
+                <!-- Gene Plots Grid -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4">
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <div class="bg-gray-50 px-4 py-2 border-b border-gray-200"><h3 class="font-medium text-gray-700">Gene Expression</h3></div>
+                        <div class="p-2">
+                            <img x-show="selectedGene && selectedTrait" :src="getGeneExpPlotPath()" :alt="selectedGene + ' expression'" class="w-full h-auto object-contain" onerror="this.style.display='none';">
+                            <p x-show="!selectedGene || !selectedTrait" class="text-center text-gray-400 py-4 text-sm">Select a gene to view expression plot</p>
+                        </div>
+                    </div>
+                    <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <div class="bg-gray-50 px-4 py-2 border-b border-gray-200"><h3 class="font-medium text-gray-700">GSS Distribution</h3></div>
+                        <div class="p-2">
+                            <img x-show="selectedGene && selectedTrait" :src="getGeneGssPlotPath()" :alt="selectedGene + ' GSS'" class="w-full h-auto object-contain" onerror="this.style.display='none';">
+                            <p x-show="!selectedGene || !selectedTrait" class="text-center text-gray-400 py-4 text-sm">Select a gene to view GSS plot</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Gene Diagnostic Table -->
+                <div class="border-t border-gray-200">
+                    <div class="p-4 bg-gray-50 flex justify-between items-center">
+                        <h3 class="font-medium text-gray-700">Gene Diagnostic Table (Top <span x-text="topCorrGenes"></span> genes)</h3>
+                        <input type="text" x-model="geneSearchQuery" placeholder="Search genes..." class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border w-48">
+                    </div>
+                    <div class="overflow-x-auto custom-scrollbar max-h-[400px]">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('gene')">Gene</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('PCC')">PCC</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('Annotation')">Annotation</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortGenesBy('Median_GSS')">Median GSS</th>
                                 </tr>
-                            </template>
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                <template x-for="row in filteredGeneTable" :key="row.gene">
+                                    <tr class="table-row-hover cursor-pointer" :class="selectedGene === row.gene ? 'bg-primary-50' : ''" @click="selectedGene = row.gene; onGeneChange();">
+                                        <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.gene"></td>
+                                        <td class="px-4 py-2 text-sm text-gray-600 font-mono" x-text="row.PCC ? row.PCC.toFixed(4) : 'N/A'"></td>
+                                        <td class="px-4 py-2 text-sm"><span class="px-2 py-0.5 text-xs rounded-full bg-gray-100" x-text="row.Annotation || 'N/A'"></span></td>
+                                        <td class="px-4 py-2 text-sm text-gray-600 font-mono" x-text="row.Median_GSS ? row.Median_GSS.toFixed(4) : 'N/A'"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- CAUCHY COMBINATION TAB -->
-        <div x-show="currentTab === 'cauchy'" x-transition class="space-y-6">
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-                <div class="flex flex-wrap items-end gap-4">
-                    <div class="flex-1 min-w-[150px]">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">View Mode</label>
-                        <select x-model="cauchy.viewMode" @change="renderCauchyHeatmap()" class="block w-full rounded-lg border-gray-300 shadow-sm text-sm p-2.5 border bg-white">
+        <!-- ==================== SECTION 5: CAUCHY COMBINATION ==================== -->
+        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer" @click="sections.cauchy = !sections.cauchy">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-800">5. Cauchy Combination Results</h2>
+                    <p class="text-sm text-gray-500">Statistical significance of annotations. Red = p &lt; 0.05</p>
+                </div>
+                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.cauchy ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </div>
+            <div class="section-content" :class="sections.cauchy ? 'expanded' : 'collapsed'">
+                <!-- Cauchy Controls -->
+                <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap gap-4">
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm font-medium text-gray-700">View:</label>
+                        <select x-model="cauchyViewMode" @change="renderCauchyHeatmap()" class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
                             <option value="all">All Samples (Aggregated)</option>
                             <option value="sample">Per Sample</option>
                         </select>
                     </div>
-                    <div class="flex-1 min-w-[150px]">
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Annotation Filter</label>
-                        <select x-model="cauchy.selectedAnnotation" @change="renderCauchyHeatmap()" class="block w-full rounded-lg border-gray-300 shadow-sm text-sm p-2.5 border bg-white">
-                            <option value="">All Annotations</option>
-                            <template x-for="anno in reportMeta.annotations" :key="anno">
-                                <option :value="anno" x-text="anno"></option>
-                            </template>
-                        </select>
-                    </div>
                 </div>
-            </div>
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100">
-                    <h2 class="text-lg font-semibold text-gray-800">Cauchy Combination Results</h2>
-                    <p class="text-sm text-gray-500">Sorted by p_median. Red = p &lt; 0.05</p>
-                </div>
-                <div class="overflow-x-auto custom-scrollbar max-h-[600px]">
+
+                <!-- Cauchy Table -->
+                <div class="overflow-x-auto custom-scrollbar max-h-[400px]">
                     <table class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50 sticky top-0">
                             <tr>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('trait')">Trait</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('annotation_name')">Annotation</th>
-                                <th x-show="cauchy.viewMode === 'sample'" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('sample_name')">Sample</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('p_cauchy')">P (Cauchy)</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('p_median')">P (Median)</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Odds Ratio</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('trait')">Trait</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('annotation')">Annotation</th>
+                                <th x-show="cauchyViewMode === 'sample'" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('sample_name')">Sample</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('p_cauchy')">P (Cauchy)</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100" @click="sortCauchyBy('p_median')">P (Median)</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sig Spots</th>
+                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Total Spots</th>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             <template x-for="(row, idx) in filteredCauchyTable" :key="idx">
                                 <tr class="table-row-hover">
-                                    <td class="px-4 py-3 text-sm font-medium text-gray-900" x-text="row.trait"></td>
-                                    <td class="px-4 py-3 text-sm"><span class="px-2 py-1 text-xs rounded-full bg-primary-100 text-primary-700" x-text="row.annotation_name"></span></td>
-                                    <td x-show="cauchy.viewMode === 'sample'" class="px-4 py-3 text-sm text-gray-600" x-text="row.sample_name"></td>
-                                    <td class="px-4 py-3 text-sm font-mono" :class="row.p_cauchy < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'" x-text="row.p_cauchy ? row.p_cauchy.toExponential(2) : 'N/A'"></td>
-                                    <td class="px-4 py-3 text-sm font-mono" :class="row.p_median < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'" x-text="row.p_median ? row.p_median.toExponential(2) : 'N/A'"></td>
-                                    <td class="px-4 py-3 text-sm text-gray-600 font-mono" x-text="row.odds_ratio ? row.odds_ratio.toFixed(2) : 'N/A'"></td>
+                                    <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
+                                    <td class="px-4 py-2 text-sm"><span class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700" x-text="row.annotation"></span></td>
+                                    <td x-show="cauchyViewMode === 'sample'" class="px-4 py-2 text-sm text-gray-600" x-text="row.sample_name"></td>
+                                    <td class="px-4 py-2 text-sm font-mono" :class="row.p_cauchy < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'" x-text="row.p_cauchy != null ? row.p_cauchy.toExponential(2) : 'N/A'"></td>
+                                    <td class="px-4 py-2 text-sm font-mono" :class="row.p_median < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'" x-text="row.p_median != null ? row.p_median.toExponential(2) : 'N/A'"></td>
+                                    <td class="px-4 py-2 text-sm text-gray-600" x-text="row.sig_spots"></td>
+                                    <td class="px-4 py-2 text-sm text-gray-600" x-text="row.total_spots"></td>
                                 </tr>
                             </template>
                         </tbody>
                     </table>
                 </div>
-            </div>
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100">
-                    <h2 class="text-lg font-semibold text-gray-800">Cauchy P-Value Heatmap</h2>
+
+                <!-- Cauchy Heatmap -->
+                <div class="border-t border-gray-200">
+                    <div class="p-4 bg-gray-50 border-b border-gray-200">
+                        <h3 class="font-medium text-gray-700">Cauchy P-Value Heatmap (Annotation vs Trait)</h3>
+                    </div>
+                    <div id="cauchyHeatmap" class="plot-container w-full"></div>
                 </div>
-                <div id="cauchyHeatmap" class="plot-container w-full"></div>
             </div>
         </div>
 
-        <!-- INFO TAB -->
-        <div x-show="currentTab === 'info'" x-transition class="space-y-6">
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <button @click="info.configOpen = !info.configOpen" class="w-full p-4 border-b border-gray-100 flex justify-between items-center hover:bg-gray-50">
-                    <div class="flex items-center gap-2">
-                        <svg class="w-5 h-5 text-gray-500 transition-transform" :class="info.configOpen ? 'rotate-90' : ''" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                        <h2 class="text-lg font-semibold text-gray-800">Run Configuration</h2>
-                    </div>
-                </button>
-                <div class="collapsible-content custom-scrollbar" :class="info.configOpen ? 'open' : ''">
-                    <div class="p-4 bg-gray-50"><pre class="text-sm text-gray-700 whitespace-pre-wrap font-mono" x-text="JSON.stringify(reportMeta, null, 2)"></pre></div>
+        <!-- ==================== SECTION 6: RUN INFO ==================== -->
+        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer" @click="sections.info = !sections.info">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-800">6. Run Information</h2>
+                    <p class="text-sm text-gray-500">Configuration and summary statistics.</p>
                 </div>
+                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.info ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
             </div>
-            <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100"><h2 class="text-lg font-semibold text-gray-800">Report Summary</h2></div>
-                <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="section-content" :class="sections.info ? 'expanded' : 'collapsed'">
+                <!-- Summary Cards -->
+                <div class="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div class="text-center p-4 bg-primary-50 rounded-lg">
-                        <p class="text-3xl font-bold text-primary-600" x-text="reportMeta.traits ? reportMeta.traits.length : 0"></p>
-                        <p class="text-sm text-gray-600 mt-1">Traits Analyzed</p>
+                        <p class="text-2xl font-bold text-primary-600" x-text="traits.length"></p>
+                        <p class="text-sm text-gray-600">Traits</p>
                     </div>
                     <div class="text-center p-4 bg-green-50 rounded-lg">
-                        <p class="text-3xl font-bold text-green-600" x-text="reportMeta.samples ? reportMeta.samples.length : 0"></p>
-                        <p class="text-sm text-gray-600 mt-1">Samples</p>
+                        <p class="text-2xl font-bold text-green-600" x-text="samples.length"></p>
+                        <p class="text-sm text-gray-600">Samples</p>
                     </div>
                     <div class="text-center p-4 bg-purple-50 rounded-lg">
-                        <p class="text-3xl font-bold text-purple-600" x-text="reportMeta.annotations ? reportMeta.annotations.length : 0"></p>
-                        <p class="text-sm text-gray-600 mt-1">Annotations</p>
+                        <p class="text-2xl font-bold text-purple-600" x-text="annotations.length"></p>
+                        <p class="text-sm text-gray-600">Annotation Categories</p>
                     </div>
+                </div>
+                <!-- Config JSON -->
+                <div class="border-t border-gray-200 p-4 bg-gray-50">
+                    <h3 class="font-medium text-gray-700 mb-2">Configuration</h3>
+                    <pre class="text-xs text-gray-600 whitespace-pre-wrap font-mono bg-white p-3 rounded border max-h-64 overflow-auto" x-text="JSON.stringify(reportMeta, null, 2)"></pre>
                 </div>
             </div>
         </div>
+
     </main>
 
+    <!-- Footer -->
     <footer class="bg-white border-t border-gray-200 mt-8">
-        <div class="max-w-7xl mx-auto px-4 py-4">
+        <div class="max-w-7xl mx-auto px-4 py-3">
             <p class="text-center text-sm text-gray-500">gsMap Report | Version {{ gsmap_version }}</p>
         </div>
     </footer>
 
-    <!-- Data Scripts -->
+    <!-- Data Scripts - MUST load before Alpine initializes -->
     <script src="js_data/report_meta.js"></script>
     <script src="js_data/metadata.js"></script>
     <script src="js_data/cauchy.js"></script>
@@ -339,185 +339,362 @@
     <script>
         function gsMapApp() {
             return {
-                currentTab: 'manhattan',
-                tabs: [
-                    { id: 'manhattan', label: 'Manhattan', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>' },
-                    { id: 'annotation', label: 'Annotations', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"/></svg>' },
-                    { id: 'gsmap', label: 'gsMap Results', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>' },
-                    { id: 'genes', label: 'Gene Analysis', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"/></svg>' },
-                    { id: 'cauchy', label: 'Cauchy Results', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>' },
-                    { id: 'info', label: 'Info', icon: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' }
-                ],
-                reportMeta: { traits: [], samples: [], annotations: [], chrom_tick_positions: {} },
-                metadata: {}, cauchyData: [], genesData: [], topGenesPcc: [],
-                manhattan: { selectedTrait: '', highlightGene: '', isLoading: false, loadedTraits: new Set(), data: null },
-                annotation: { selected: '' },
-                gsmap: { selectedTrait: '' },
-                genes: { selectedTrait: '', selectedGene: '', topGenesList: [], searchQuery: '', sortKey: 'PCC', sortAsc: false },
-                cauchy: { viewMode: 'all', selectedAnnotation: '', sortKey: 'p_median', sortAsc: true },
-                info: { configOpen: false },
+                // Data loaded flag
+                dataLoaded: false,
 
+                // Global state
+                selectedTrait: '',
+                selectedAnnotationCategory: '',
+                selectedGene: '',
+                isLoading: false,
+
+                // Data arrays (populated from window globals)
+                traits: [],
+                samples: [],
+                annotations: [],
+                topCorrGenes: 50,
+                chromTickPositions: {},
+
+                // Section collapse state
+                sections: {
+                    manhattan: true,
+                    gsmap: true,
+                    annotation: true,
+                    genes: true,
+                    cauchy: true,
+                    info: false
+                },
+
+                // Raw data
+                reportMeta: {},
+                cauchyData: [],
+                topGenesPcc: [],
+                topGenesList: [],
+
+                // Manhattan state
+                manhattanLoadedTraits: {},
+                manhattanData: null,
+
+                // Gene table state
+                geneSearchQuery: '',
+                geneSortKey: 'PCC',
+                geneSortAsc: false,
+
+                // Cauchy state
+                cauchyViewMode: 'all',
+                cauchySortKey: 'p_median',
+                cauchySortAsc: true,
+
+                // Computed: filtered gene table
                 get filteredGeneTable() {
-                    let data = this.genes.topGenesList || [];
-                    if (this.genes.searchQuery) {
-                        const q = this.genes.searchQuery.toLowerCase();
-                        data = data.filter(g => g.gene.toLowerCase().includes(q));
+                    let data = this.topGenesList || [];
+                    if (this.geneSearchQuery) {
+                        const q = this.geneSearchQuery.toLowerCase();
+                        data = data.filter(g => g.gene && g.gene.toLowerCase().includes(q));
                     }
-                    const key = this.genes.sortKey, asc = this.genes.sortAsc;
+                    const key = this.geneSortKey, asc = this.geneSortAsc;
                     return [...data].sort((a, b) => {
                         let va = a[key], vb = b[key];
-                        if (typeof va === 'string') { va = va.toLowerCase(); vb = vb.toLowerCase(); }
+                        if (va == null) return 1;
+                        if (vb == null) return -1;
+                        if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
                         if (va < vb) return asc ? -1 : 1;
                         if (va > vb) return asc ? 1 : -1;
                         return 0;
                     });
                 },
 
+                // Computed: filtered cauchy table
                 get filteredCauchyTable() {
                     let data = this.cauchyData || [];
-                    data = data.filter(r => this.cauchy.viewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample');
-                    if (this.cauchy.selectedAnnotation) data = data.filter(r => r.annotation_name === this.cauchy.selectedAnnotation);
-                    const key = this.cauchy.sortKey, asc = this.cauchy.sortAsc;
+                    data = data.filter(r => this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample');
+                    const key = this.cauchySortKey, asc = this.cauchySortAsc;
                     return [...data].sort((a, b) => {
                         let va = a[key], vb = b[key];
+                        if (va == null) return 1;
+                        if (vb == null) return -1;
                         if (typeof va === 'string') { va = (va || '').toLowerCase(); vb = (vb || '').toLowerCase(); }
-                        if (va == null) return 1; if (vb == null) return -1;
                         if (va < vb) return asc ? -1 : 1;
                         if (va > vb) return asc ? 1 : -1;
                         return 0;
                     });
                 },
 
+                // Initialize
                 init() {
-                    if (window.GSMAP_REPORT_META) this.reportMeta = window.GSMAP_REPORT_META;
-                    if (window.GSMAP_METADATA) this.metadata = window.GSMAP_METADATA;
-                    if (window.GSMAP_CAUCHY) this.cauchyData = window.GSMAP_CAUCHY;
-                    if (window.GSMAP_GENES) this.genesData = window.GSMAP_GENES;
-                    if (window.GSMAP_TOP_GENES_PCC) this.topGenesPcc = window.GSMAP_TOP_GENES_PCC;
+                    console.log("Initializing gsMap Report...");
 
-                    if (this.reportMeta.traits?.length > 0) {
-                        this.manhattan.selectedTrait = this.reportMeta.traits[0];
-                        this.gsmap.selectedTrait = this.reportMeta.traits[0];
-                        this.genes.selectedTrait = this.reportMeta.traits[0];
+                    // Load data from window globals
+                    if (window.GSMAP_REPORT_META) {
+                        this.reportMeta = window.GSMAP_REPORT_META;
+                        this.traits = this.reportMeta.traits || [];
+                        this.samples = this.reportMeta.samples || [];
+                        this.annotations = this.reportMeta.annotations || [];
+                        this.topCorrGenes = this.reportMeta.top_corr_genes || 50;
+                        this.chromTickPositions = this.reportMeta.chrom_tick_positions || {};
+                        console.log("Loaded report meta:", this.traits.length, "traits,", this.samples.length, "samples");
+                    } else {
+                        console.warn("GSMAP_REPORT_META not found!");
                     }
-                    if (this.reportMeta.annotations?.length > 0) this.annotation.selected = this.reportMeta.annotations[0];
-                    this.updateGeneList();
 
-                    this.$watch('currentTab', (val) => {
-                        if (val === 'manhattan') this.$nextTick(() => { Plotly.Plots.resize('manhattanPlot'); if (this.manhattan.selectedTrait && !this.manhattan.data) this.loadManhattanData(); });
-                        if (val === 'cauchy') this.$nextTick(() => this.renderCauchyHeatmap());
-                    });
-                    setTimeout(() => { if (this.currentTab === 'manhattan' && this.manhattan.selectedTrait) this.loadManhattanData(); }, 300);
+                    if (window.GSMAP_CAUCHY) {
+                        this.cauchyData = window.GSMAP_CAUCHY;
+                        console.log("Loaded", this.cauchyData.length, "Cauchy results");
+                    }
+
+                    if (window.GSMAP_TOP_GENES_PCC) {
+                        this.topGenesPcc = window.GSMAP_TOP_GENES_PCC;
+                        console.log("Loaded", this.topGenesPcc.length, "gene PCC records");
+                    }
+
+                    // Check if data loaded successfully
+                    if (this.traits.length > 0) {
+                        this.dataLoaded = true;
+
+                        // Initialize selections
+                        this.selectedTrait = this.traits[0];
+                        if (this.annotations.length > 0) {
+                            this.selectedAnnotationCategory = this.annotations[0];
+                        }
+
+                        // Update gene list
+                        this.updateGeneList();
+
+                        // Defer plot loading
+                        setTimeout(() => {
+                            this.loadManhattanData();
+                            this.renderCauchyHeatmap();
+                        }, 500);
+                    } else {
+                        console.error("No traits found - data may not have loaded correctly");
+                    }
                 },
 
-                setTab(tabId) { this.currentTab = tabId; },
+                // Event handlers
+                onTraitChange() {
+                    this.updateGeneList();
+                    this.loadManhattanData();
+                },
 
-                loadManhattanData() {
-                    const trait = this.manhattan.selectedTrait;
-                    if (!trait) return;
-                    this.manhattan.isLoading = true;
-                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, "_"), varName = `GSMAP_MANHATTAN_${safeTrait}`;
-                    if (this.manhattan.loadedTraits.has(trait) && window[varName]) {
-                        this.manhattan.data = window[varName]; this.renderManhattanPlot(); this.manhattan.isLoading = false; return;
+                onGeneChange() {
+                    if (this.manhattanData) {
+                        this.renderManhattanPlot();
                     }
+                },
+
+                // Update gene list when trait changes
+                updateGeneList() {
+                    const trait = this.selectedTrait;
+                    if (!trait || !this.topGenesPcc || this.topGenesPcc.length === 0) {
+                        this.topGenesList = [];
+                        return;
+                    }
+                    let traitGenes = this.topGenesPcc
+                        .filter(g => g.trait === trait)
+                        .sort((a, b) => (b.PCC || 0) - (a.PCC || 0));
+                    this.topGenesList = traitGenes.slice(0, this.topCorrGenes);
+                    if (this.topGenesList.length > 0) {
+                        this.selectedGene = this.topGenesList[0].gene;
+                    }
+                },
+
+                // Gene plot paths
+                getGeneExpPlotPath() {
+                    const sample = this.samples.length > 0 ? this.samples[0] : '';
+                    return `gss_plot/gene_${this.selectedTrait}_${this.selectedGene}_exp_${sample}.png`;
+                },
+                getGeneGssPlotPath() {
+                    const sample = this.samples.length > 0 ? this.samples[0] : '';
+                    return `gss_plot/gene_${this.selectedTrait}_${this.selectedGene}_gss_${sample}.png`;
+                },
+
+                // Sorting
+                sortGenesBy(key) {
+                    if (this.geneSortKey === key) this.geneSortAsc = !this.geneSortAsc;
+                    else { this.geneSortKey = key; this.geneSortAsc = key === 'gene'; }
+                },
+                sortCauchyBy(key) {
+                    if (this.cauchySortKey === key) this.cauchySortAsc = !this.cauchySortAsc;
+                    else { this.cauchySortKey = key; this.cauchySortAsc = ['trait', 'annotation', 'sample_name'].includes(key); }
+                },
+
+                // Manhattan Plot
+                loadManhattanData() {
+                    const trait = this.selectedTrait;
+                    if (!trait) return;
+
+                    this.isLoading = true;
+                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, "_");
+                    const varName = `GSMAP_MANHATTAN_${safeTrait}`;
+
+                    // Check if already loaded
+                    if (this.manhattanLoadedTraits[trait] && window[varName]) {
+                        this.manhattanData = window[varName];
+                        this.renderManhattanPlot();
+                        this.isLoading = false;
+                        return;
+                    }
+
+                    // Load script dynamically
                     const script = document.createElement('script');
                     script.src = `js_data/manhattan_${trait}.js`;
                     script.onload = () => {
-                        this.manhattan.loadedTraits.add(trait);
-                        if (window[varName]) { this.manhattan.data = window[varName]; this.renderManhattanPlot(); }
-                        this.manhattan.isLoading = false;
+                        this.manhattanLoadedTraits[trait] = true;
+                        if (window[varName]) {
+                            this.manhattanData = window[varName];
+                            this.renderManhattanPlot();
+                        }
+                        this.isLoading = false;
                     };
-                    script.onerror = () => { console.error(`Failed to load Manhattan data for ${trait}`); this.manhattan.isLoading = false; };
+                    script.onerror = () => {
+                        console.error(`Failed to load Manhattan data for ${trait}`);
+                        this.isLoading = false;
+                    };
                     document.body.appendChild(script);
                 },
 
                 renderManhattanPlot() {
-                    const data = this.manhattan.data;
-                    if (!data) return;
-                    const plotDiv = document.getElementById('manhattanPlot'), trait = this.manhattan.selectedTrait;
-                    const highlightGene = this.manhattan.highlightGene ? this.manhattan.highlightGene.toUpperCase() : '';
+                    const data = this.manhattanData;
+                    if (!data || !data.x || data.x.length === 0) return;
+
+                    const plotDiv = document.getElementById('manhattanPlot');
+                    if (!plotDiv) return;
+
+                    const trait = this.selectedTrait;
+                    const highlightGene = this.selectedGene ? this.selectedGene.toUpperCase() : '';
                     const chrColors = ['#1f77b4', '#aec7e8'];
-                    const colors = data.chr.map(c => chrColors[parseInt(c) % 2]);
+
+                    // Separate indices
                     const regularIdx = [], topPccIdx = [], highlightIdx = [];
                     for (let i = 0; i < data.x.length; i++) {
                         const gene = (data.gene[i] || '').toUpperCase();
                         if (highlightGene && gene === highlightGene) highlightIdx.push(i);
-                        else if (data.is_top[i] === 1) topPccIdx.push(i);
+                        else if (data.is_top && data.is_top[i] === 1) topPccIdx.push(i);
                         else regularIdx.push(i);
                     }
-                    const traces = [{
-                        x: regularIdx.map(i => data.x[i]), y: regularIdx.map(i => data.y[i]),
-                        mode: 'markers', type: 'scattergl',
-                        text: regularIdx.map(i => `SNP: ${data.snp[i] || ''}<br>Gene: ${data.gene[i] || ''}<br>Chr: ${data.chr[i]}<br>-log10(p): ${data.y[i].toFixed(2)}`),
-                        hoverinfo: 'text', marker: { size: 4, color: regularIdx.map(i => colors[i]), opacity: 0.7 }, name: 'SNPs'
-                    }];
-                    if (topPccIdx.length > 0) traces.push({
-                        x: topPccIdx.map(i => data.x[i]), y: topPccIdx.map(i => data.y[i]),
-                        mode: 'markers', type: 'scattergl',
-                        text: topPccIdx.map(i => `<b>${data.gene[i]}</b><br>SNP: ${data.snp[i] || ''}<br>-log10(p): ${data.y[i].toFixed(2)}`),
-                        hoverinfo: 'text', marker: { size: 7, color: '#e53e3e', opacity: 0.9 }, name: 'Top PCC Genes'
-                    });
-                    if (highlightIdx.length > 0) traces.push({
-                        x: highlightIdx.map(i => data.x[i]), y: highlightIdx.map(i => data.y[i]),
-                        mode: 'markers+text', type: 'scattergl', text: highlightIdx.map(i => data.gene[i]),
-                        textposition: 'top center', textfont: { size: 11, color: '#059669' }, hoverinfo: 'text',
-                        hovertext: highlightIdx.map(i => `<b>${data.gene[i]}</b><br>SNP: ${data.snp[i] || ''}<br>-log10(p): ${data.y[i].toFixed(2)}`),
-                        marker: { size: 12, color: '#10b981', symbol: 'diamond', line: { width: 2, color: '#059669' } }, name: 'Highlighted'
-                    });
-                    const chromTicks = this.reportMeta.chrom_tick_positions?.[trait] || {};
+
+                    const traces = [];
+
+                    // Regular SNPs
+                    if (regularIdx.length > 0) {
+                        traces.push({
+                            x: regularIdx.map(i => data.x[i]),
+                            y: regularIdx.map(i => data.y[i]),
+                            mode: 'markers',
+                            type: 'scattergl',
+                            text: regularIdx.map(i => `SNP: ${data.snp[i] || ''}<br>Gene: ${data.gene[i] || ''}<br>Chr: ${data.chr[i]}<br>-log10(p): ${data.y[i].toFixed(2)}`),
+                            hoverinfo: 'text',
+                            marker: { size: 4, color: regularIdx.map(i => chrColors[data.chr[i] % 2]), opacity: 0.7 },
+                            name: 'SNPs'
+                        });
+                    }
+
+                    // Top PCC genes (red)
+                    if (topPccIdx.length > 0) {
+                        traces.push({
+                            x: topPccIdx.map(i => data.x[i]),
+                            y: topPccIdx.map(i => data.y[i]),
+                            mode: 'markers',
+                            type: 'scattergl',
+                            text: topPccIdx.map(i => `<b>${data.gene[i]}</b><br>SNP: ${data.snp[i] || ''}<br>-log10(p): ${data.y[i].toFixed(2)}`),
+                            hoverinfo: 'text',
+                            marker: { size: 7, color: '#e53e3e', opacity: 0.9 },
+                            name: 'Top PCC Genes'
+                        });
+                    }
+
+                    // Highlighted gene (green diamond)
+                    if (highlightIdx.length > 0) {
+                        traces.push({
+                            x: highlightIdx.map(i => data.x[i]),
+                            y: highlightIdx.map(i => data.y[i]),
+                            mode: 'markers+text',
+                            type: 'scattergl',
+                            text: highlightIdx.map(i => data.gene[i]),
+                            textposition: 'top center',
+                            textfont: { size: 11, color: '#059669' },
+                            hoverinfo: 'text',
+                            hovertext: highlightIdx.map(i => `<b>${data.gene[i]}</b><br>SNP: ${data.snp[i] || ''}<br>-log10(p): ${data.y[i].toFixed(2)}`),
+                            marker: { size: 12, color: '#10b981', symbol: 'diamond', line: { width: 2, color: '#059669' } },
+                            name: 'Selected Gene'
+                        });
+                    }
+
+                    // Calculate max x safely
+                    let maxX = 0;
+                    for (let i = 0; i < data.x.length; i++) {
+                        if (data.x[i] > maxX) maxX = data.x[i];
+                    }
+
+                    // Get chromosome tick positions
+                    const chromTicks = this.chromTickPositions[trait] || {};
+                    const tickvals = Object.values(chromTicks);
+                    const ticktext = Object.keys(chromTicks);
+
                     const layout = {
-                        title: { text: `Manhattan Plot: ${trait}`, font: { size: 18 } },
-                        xaxis: { title: 'Chromosome', showgrid: false, zeroline: false, tickvals: Object.values(chromTicks), ticktext: Object.keys(chromTicks) },
+                        title: { text: `Manhattan Plot: ${trait}`, font: { size: 16 } },
+                        xaxis: {
+                            title: 'Chromosome',
+                            showgrid: false,
+                            zeroline: false,
+                            tickvals: tickvals,
+                            ticktext: ticktext
+                        },
                         yaxis: { title: '-log10(p)', showgrid: true, gridcolor: '#eee', zeroline: false },
-                        hovermode: 'closest', margin: { l: 60, r: 30, t: 60, b: 60 }, legend: { orientation: 'h', y: -0.15 },
-                        shapes: [{ type: 'line', x0: 0, x1: Math.max(...data.x), y0: -Math.log10(5e-8), y1: -Math.log10(5e-8), line: { color: '#e53e3e', width: 1, dash: 'dash' } }]
+                        hovermode: 'closest',
+                        margin: { l: 60, r: 30, t: 50, b: 50 },
+                        legend: { orientation: 'h', y: -0.15 },
+                        shapes: [{
+                            type: 'line',
+                            x0: 0,
+                            x1: maxX,
+                            y0: -Math.log10(5e-8),
+                            y1: -Math.log10(5e-8),
+                            line: { color: '#e53e3e', width: 1, dash: 'dash' }
+                        }]
                     };
+
                     Plotly.newPlot(plotDiv, traces, layout, { responsive: true, displayModeBar: true });
                 },
 
-                updateGeneList() {
-                    const trait = this.genes.selectedTrait;
-                    if (!trait || !this.topGenesPcc) { this.genes.topGenesList = []; return; }
-                    let traitGenes = this.topGenesPcc.filter(g => g.trait === trait).sort((a, b) => (b.PCC || 0) - (a.PCC || 0));
-                    const topN = this.reportMeta.top_corr_genes || 50;
-                    this.genes.topGenesList = traitGenes.slice(0, topN);
-                    if (this.genes.topGenesList.length > 0) this.genes.selectedGene = this.genes.topGenesList[0].gene;
-                },
-
-                getGeneExpPlotPath() {
-                    const sample = this.reportMeta.samples?.[0] || '';
-                    return `gss_plot/gene_${this.genes.selectedTrait}_${this.genes.selectedGene}_exp_${sample}.png`;
-                },
-                getGeneGssPlotPath() {
-                    const sample = this.reportMeta.samples?.[0] || '';
-                    return `gss_plot/gene_${this.genes.selectedTrait}_${this.genes.selectedGene}_gss_${sample}.png`;
-                },
-
-                sortGenesBy(key) {
-                    if (this.genes.sortKey === key) this.genes.sortAsc = !this.genes.sortAsc;
-                    else { this.genes.sortKey = key; this.genes.sortAsc = key === 'gene'; }
-                },
-                sortCauchyBy(key) {
-                    if (this.cauchy.sortKey === key) this.cauchy.sortAsc = !this.cauchy.sortAsc;
-                    else { this.cauchy.sortKey = key; this.cauchy.sortAsc = ['trait', 'annotation_name', 'sample_name'].includes(key); }
-                },
-
+                // Cauchy Heatmap
                 renderCauchyHeatmap() {
                     const plotDiv = document.getElementById('cauchyHeatmap');
-                    if (!plotDiv || !this.cauchyData?.length) return;
-                    let data = this.cauchyData.filter(r => this.cauchy.viewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample');
-                    if (!data.length) { Plotly.purge(plotDiv); return; }
-                    const annotations = [...new Set(data.map(r => r.annotation_name))].sort();
-                    const traits = [...new Set(data.map(r => r.trait))].sort();
-                    const zData = annotations.map(anno => traits.map(trait => {
-                        const match = data.find(r => r.annotation_name === anno && r.trait === trait);
-                        return match?.p_median ? -Math.log10(match.p_median + 1e-300) : 0;
+                    if (!plotDiv || !this.cauchyData || this.cauchyData.length === 0) return;
+
+                    let data = this.cauchyData.filter(r => this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample');
+                    if (data.length === 0) {
+                        Plotly.purge(plotDiv);
+                        return;
+                    }
+
+                    // Use 'annotation' column (e.g., "WM", "Layer1") not 'annotation_name'
+                    const annotationValues = [...new Set(data.map(r => r.annotation))].sort();
+                    const traitValues = [...new Set(data.map(r => r.trait))].sort();
+
+                    const zData = annotationValues.map(anno => traitValues.map(trait => {
+                        const match = data.find(r => r.annotation === anno && r.trait === trait);
+                        return match && match.p_median ? -Math.log10(match.p_median + 1e-300) : 0;
                     }));
-                    Plotly.newPlot(plotDiv, [{ z: zData, x: traits, y: annotations, type: 'heatmap', colorscale: 'RdBu', reversescale: true, hovertemplate: 'Annotation: %{y}<br>Trait: %{x}<br>-log10(p): %{z:.2f}<extra></extra>' }],
-                        { title: 'Cauchy P-Value Heatmap (-log10 scale)', xaxis: { title: 'Trait', tickangle: 45 }, yaxis: { title: 'Annotation' }, margin: { l: 150, r: 50, t: 80, b: 120 } }, { responsive: true });
+
+                    Plotly.newPlot(plotDiv, [{
+                        z: zData,
+                        x: traitValues,
+                        y: annotationValues,
+                        type: 'heatmap',
+                        colorscale: 'RdBu',
+                        reversescale: true,
+                        hovertemplate: 'Annotation: %{y}<br>Trait: %{x}<br>-log10(p_median): %{z:.2f}<extra></extra>'
+                    }], {
+                        title: 'Cauchy P-Value Heatmap (-log10 scale)',
+                        xaxis: { title: 'Trait', tickangle: 45 },
+                        yaxis: { title: 'Annotation' },
+                        margin: { l: 120, r: 50, t: 60, b: 100 }
+                    }, { responsive: true });
                 }
             };
         }
     </script>
+
 </body>
 </html>
