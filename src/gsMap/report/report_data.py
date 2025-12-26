@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from gsMap.config import ReportConfig
+from gsMap.config import ReportConfig, QuickModeConfig
 from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.visualize import load_ldsc
 from gsMap.report.diagnosis import load_gwas_data, load_snp_gene_pairs, filter_snps, convert_z_to_p
@@ -65,7 +65,7 @@ def _extract_gene_expression_task(gene, adata_obs_names, adata_X, gene_idx):
     except Exception:
         return None
 
-def prepare_report_data(config: ReportConfig):
+def prepare_report_data(config: QuickModeConfig):
     """
     Prepare and aggregate data for the interactive report.
     Returns a directory containing the processed data.
@@ -94,11 +94,7 @@ def prepare_report_data(config: ReportConfig):
     
     # Identify traits
     traits = config.trait_name_list
-    if not traits:
-        # Fallback: identify numeric columns that are not annotations or metadata
-        exclude_cols = config.annotation_list + ['sample_name', 'x', 'y', 'sx', 'sy']
-        traits = [c for c in all_ldsc.columns if pd.api.types.is_numeric_dtype(all_ldsc[c]) and c not in exclude_cols]
-    
+
     # 2. Load Coordinates from concatenated_latent_adata_path
     logger.info(f"Loading coordinates from {config.concatenated_latent_adata_path}")
     coords = None
@@ -246,9 +242,7 @@ def prepare_report_data(config: ReportConfig):
             sumstats_file = config.sumstats_config_dict.get(trait)
             if sumstats_file and Path(sumstats_file).exists():
                 logger.info(f"Processing Manhattan for {trait}...")
-                from dataclasses import replace
-                tmp_config = replace(config, sumstats_file=Path(sumstats_file), trait_name=trait)
-                gwas_data = load_gwas_data(tmp_config)
+                gwas_data = load_gwas_data(sumstats_file)
                 
                 # Get common SNPs in the order of weight_adata
                 common_snps = weight_adata.obs_names[weight_adata.obs_names.isin(gwas_data["SNP"])]

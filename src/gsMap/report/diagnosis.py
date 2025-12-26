@@ -97,10 +97,10 @@ def compute_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[ad.Ann
     return gene_diagnostic_info.reset_index()
 
 
-def load_gwas_data(config: DiagnosisConfig):
+def load_gwas_data(sumstats_file):
     """Load and process GWAS data."""
     logger.info("Loading and processing GWAS data...")
-    gwas_data = pd.read_csv(config.sumstats_file, compression="gzip", sep="\t")
+    gwas_data = pd.read_csv(sumstats_file, compression="gzip", sep="\t")
     return convert_z_to_p(gwas_data)
 
 
@@ -138,7 +138,7 @@ def filter_snps(gwas_data_with_gene_annotation_sort, SUBSAMPLE_SNP_NUMBER):
 def generate_manhattan_plot(config: DiagnosisConfig, adata: Optional[ad.AnnData] = None):
     """Generate Manhattan plot."""
     # report_save_dir = config.get_report_dir(config.trait_name)
-    gwas_data = load_gwas_data(config)
+    gwas_data = load_gwas_data(config.sumstats_file)
     snp_gene_pair = load_snp_gene_pairs(config)
     gwas_data_with_gene = snp_gene_pair.merge(gwas_data, on="SNP", how="inner").rename(
         columns={"gene_name": "GENE"}

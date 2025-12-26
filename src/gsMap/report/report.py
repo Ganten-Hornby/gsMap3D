@@ -6,12 +6,12 @@ from datetime import datetime
 from pathlib import Path
 
 import gsMap
-from gsMap.config import ReportConfig
+from gsMap.config import QuickModeConfig
 from .report_data import prepare_report_data
 
 logger = logging.getLogger(__name__)
 
-def run_report(config: ReportConfig, run_parameters: dict = None):
+def run_report(config: QuickModeConfig, run_parameters: dict = None):
     """
     Main entry point for report generation.
     Prepares data and saves the interactive report as a standalone Jinja2 + Tailwind HTML folder.
@@ -91,7 +91,7 @@ def run_report(config: ReportConfig, run_parameters: dict = None):
         import traceback
         traceback.print_exc()
 
-def run_interactive_report(config: ReportConfig):
+def run_interactive_report(config: QuickModeConfig):
     """
     Prepare data for the interactive report and optionally launch it.
     """
@@ -101,7 +101,7 @@ def run_interactive_report(config: ReportConfig):
         logger.info(f"Launching report viewer on port {config.port}...")
         run_report_viewer(config)
 
-def run_report_viewer(config: ReportConfig):
+def run_report_viewer(config: QuickModeConfig):
     """
     Launch a simple HTTP server to view the generated report.
     """
