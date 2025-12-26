@@ -350,6 +350,11 @@ def prepare_report_data(config: QuickModeConfig):
         # 7.3 Pre-render Top Gene Diagnostic plots
         # Based on user request: Choose one representative sample and parallelize over genes
         trait_pcc_file = report_dir / "top_genes_pcc.csv"
+
+        if config.sample_h5ad_dict is None:
+            # load and validate h5ad inputs
+            config._process_h5ad_inputs()
+
         if trait_pcc_file.exists() and config.sample_h5ad_dict:
             top_genes_df = pd.read_csv(trait_pcc_file)
             

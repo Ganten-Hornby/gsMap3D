@@ -25,18 +25,22 @@ class CauchyCombinationConfig(GWASSumstatsConfig,ConfigWithAutoPaths):
 
     def __post_init__(self):
         super().__post_init__()
+        self._init_annotation_list()
+        self.show_config(CauchyCombinationConfig)
+
+    def _init_annotation_list(self):
+        """Build the unique list of annotations from 'annotation' and 'cauchy_annotations'."""
         if not self.annotation and not self.cauchy_annotations:
             raise ValueError("At least one of 'annotation' or 'cauchy_annotations' must be provided.")
 
         # Build unique list of annotations
         from collections import OrderedDict
+        self.annotation_list = []
         if self.annotation:
             self.annotation_list.append(self.annotation)
         if self.cauchy_annotations:
             self.annotation_list.extend(self.cauchy_annotations)
         self.annotation_list = list(OrderedDict.fromkeys(self.annotation_list))
-
-        self.show_config(CauchyCombinationConfig)
 
 
 

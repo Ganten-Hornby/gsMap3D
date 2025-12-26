@@ -13,7 +13,7 @@ from gsMap.config.base import ConfigWithAutoPaths
 # Use relative imports to avoid circular dependency
 from .find_latent_config import FindLatentRepresentationsConfig, FindLatentCoreConfig
 from .latent2gene_config import LatentToGeneConfig, LatentToGeneCoreConfig, LatentToGeneComputeConfig
-from .spatial_ldsc_config import SpatialLDSCConfig, SpatialLDSCCoreConfig, SpatialLDSCComputeConfig
+from .spatial_ldsc_config import SpatialLDSCConfig, SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, GWASSumstatsConfig
 from .report_config import ReportConfig
 from .cauchy_config import CauchyCombinationConfig
 
@@ -39,15 +39,15 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
 
 
     def __post_init__(self):
-
         ConfigWithAutoPaths.__post_init__(self)
 
-        # Unify high quality qc cell flag in find_latent and latent2gene when both steps run
+        self._init_sumstats()
+        self._init_annotation_list()
+
         if self.is_both_latent_and_gene_running:
             self.high_quality_neighbor_filter = self.high_quality_cell_qc
 
-        # Process sumstats inputs
-        self.sumstats_config_dict = self.process_sumstats_inputs()
+        self.show_config(QuickModeConfig)
 
     @property
     def is_both_latent_and_gene_running(self) -> bool:

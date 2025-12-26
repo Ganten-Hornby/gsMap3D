@@ -78,9 +78,9 @@ class GWASSumstatsConfig:
         return list(self.sumstats_config_dict.keys())
 
     def __post_init__(self):
-        self.sumstats_config_dict = self.process_sumstats_inputs()
+        self._init_sumstats()
 
-    def process_sumstats_inputs(self):
+    def _init_sumstats(self):
         """
         Process sumstats input options and populate sumstats_config_dict.
 
@@ -119,7 +119,7 @@ class GWASSumstatsConfig:
         for sumstats_file in sumstats_config_dict.values():
             assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
 
-        return sumstats_config_dict
+        self.sumstats_config_dict = sumstats_config_dict
 
 
 @dataclass
