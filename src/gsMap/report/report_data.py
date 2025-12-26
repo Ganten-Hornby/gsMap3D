@@ -519,8 +519,34 @@ def prepare_report_data(config: QuickModeConfig):
     # 9. Save additional metadata for JavaScript
     logger.info("Saving report configuration metadata...")
     report_meta = config.to_dict_with_paths_as_strings()
+
+    # Explicitly ensure these are present and match the data used
+    report_meta['traits'] = traits
+    report_meta['samples'] = sample_names
+    report_meta['annotations'] = config.annotation_list
+
     with open(report_dir / "report_meta.json", "w") as f:
         json.dump(report_meta, f)
+
+    # 10. Download external JS assets for local usage (Fixes tracking/offline issues)
+    logger.info("Downloading JS assets for local usage...")
+    js_lib_dir = report_dir / "js_lib"
+    js_lib_dir.mkdir(exist_ok=True)
+
+    def _download_asset(url, filename):
+        import urllib.request
+        try:
+            dest = js_lib_dir / filename
+            if not dest.exists(): # Only download if not present to save time
+                logger.info(f"Downloading {filename}...")
+                with urllib.request.urlopen(url) as response, open(dest, 'wb') as out_file:
+                    out_file.write(response.read())
+        except Exception as e:
+            logger.warning(f"Failed to download {url}: {e}")
+
+    _download_asset("https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js", "alpine.min.js")
+    _download_asset("https://cdn.tailwindcss.com", "tailwindcss.js")
+    _download_asset("https://cdn.plot.ly/plotly-2.27.0.min.js", "plotly.min.js")
 
     logger.info(f"Interactive report data prepared in {report_dir}")
     return report_dir
