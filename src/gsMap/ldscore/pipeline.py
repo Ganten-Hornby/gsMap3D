@@ -42,8 +42,6 @@ class ChromosomeResult:
 
     Attributes
     ----------
-    chromosome : str
-        Chromosome identifier
     hm3_snp_names : List[str]
         Names of HM3 SNPs processed
     weights : Union[scipy.sparse.csr_matrix, np.ndarray]
@@ -51,8 +49,9 @@ class ChromosomeResult:
     feature_names : List[str]
         Names of mapped features
     """
-    chromosome: str
     hm3_snp_names: List[str]
+    hm3_snp_chr: List[int]
+    hm3_snp_bp: List[int]
     weights: Union[scipy.sparse.csr_matrix, np.ndarray]
     feature_names: List[str]
     mapping_df: Optional[pd.DataFrame] = None
@@ -382,6 +381,8 @@ class LDScorePipeline:
 
         batch_weight_data = []
         all_hm3_snp_names = []
+        all_hm3_snp_chr = []
+        all_hm3_snp_bp = []
 
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
@@ -398,8 +399,11 @@ class LDScorePipeline:
                 X_ref_block = reader.genotypes[:, ref_indices]
 
                 # Metadata
-                batch_snp_names = reader.bim.iloc[batch_info.hm3_indices]["SNP"].tolist()
+                batch_bim = reader.bim.iloc[batch_info.hm3_indices]
+                batch_snp_names = batch_bim["SNP"].tolist()
                 all_hm3_snp_names.extend(batch_snp_names)
+                all_hm3_snp_chr.extend(batch_bim["CHR"].tolist())
+                all_hm3_snp_bp.extend(batch_bim["BP"].tolist())
 
                 # Slice Mapping
                 block_mapping = mapping_matrix[ref_indices, :]
@@ -424,8 +428,9 @@ class LDScorePipeline:
             weights_out = self._create_dense_matrix_from_batches(batch_weight_data, n_hm3_total, n_features)
 
         return ChromosomeResult(
-            chromosome=str(chromosome),
             hm3_snp_names=all_hm3_snp_names,
+            hm3_snp_chr=all_hm3_snp_chr,
+            hm3_snp_bp=all_hm3_snp_bp,
             weights=weights_out,
             feature_names=feature_names,
             mapping_df=mapping_df
@@ -547,7 +552,8 @@ class LDScorePipeline:
         logger.info("=" * 80)
 
         all_snp_names = []
-        all_snp_chroms = []
+        all_snp_chr = [] # numeric CHR from BIM
+        all_snp_bp = []  # numeric BP from BIM
         matrices = []
 
         # Check consistency
@@ -563,7 +569,8 @@ class LDScorePipeline:
                 continue
 
             all_snp_names.extend(res.hm3_snp_names)
-            all_snp_chroms.extend([chrom] * len(res.hm3_snp_names))
+            all_snp_chr.extend(res.hm3_snp_chr)
+            all_snp_bp.extend(res.hm3_snp_bp)
             matrices.append(res.weights)
 
         # Concatenate
@@ -573,8 +580,12 @@ class LDScorePipeline:
             X_full = np.vstack(matrices)
 
         # AnnData
-        obs = pd.DataFrame({'chrom': all_snp_chroms}, index=all_snp_names)
+        obs = pd.DataFrame({
+            'CHR': all_snp_chr,
+            'BP': all_snp_bp
+        }, index=all_snp_names)
         obs.index.name = 'SNP'
+        
         var = pd.DataFrame(index=feature_names)
         var.index.name = 'Feature'
 
