@@ -16,7 +16,7 @@ from .base import ConfigWithAutoPaths, ensure_path_exists
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
-class ReportConfig(CauchyCombinationConfig, SpatialLDSCConfig, LatentToGeneConfig, ConfigWithAutoPaths):
+class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     """Report Generation Configuration"""
     
     downsampling_n_spots: Annotated[int, typer.Option(
@@ -30,41 +30,6 @@ class ReportConfig(CauchyCombinationConfig, SpatialLDSCConfig, LatentToGeneConfi
         min=1,
         max=500
     )] = 50
-
-    
-    selected_genes: Annotated[Optional[str], typer.Option(
-        help="Comma-separated list of specific genes to include"
-    )] = None
-    
-    fig_width: Annotated[Optional[int], typer.Option(
-        help="Width of the generated figures in pixels"
-    )] = None
-    
-    fig_height: Annotated[Optional[int], typer.Option(
-        help="Height of the generated figures in pixels"
-    )] = None
-    
-    point_size: Annotated[Optional[int], typer.Option(
-        help="Point size for the figures"
-    )] = None
-    
-    fig_style: Annotated[str, typer.Option(
-        help="Style of the generated figures",
-        case_sensitive=False
-    )] = "light"
-
-    plot_type: Annotated[str, typer.Option(
-        help="Type of plots to generate: 'gsMap', 'manhattan', 'GSS', or 'all'",
-        case_sensitive=False
-    )] = "all"
-
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm storing spatial coordinates"
-    )] = "spatial"
-
-    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
-        help="Temporary directory for memory-mapped files"
-    )] = None
 
     # Advanced visualization parameters
     single_sample_multi_trait_max_cols: int = 5
@@ -85,19 +50,13 @@ class ReportConfig(CauchyCombinationConfig, SpatialLDSCConfig, LatentToGeneConfi
     def visualization_result_dir(self) -> Path:
         return self.project_dir / "report" / self.project_name / (self.trait_name or "multi_trait")
 
-
-    @property
-    def customize_fig(self) -> bool:
-        """Check if figure customization is requested."""
-        return any([self.fig_width, self.fig_height, self.point_size])
-
     # Settings for the viewer
     port: Annotated[int, typer.Option(help="Port to serve the interactive report on")] = 5006
     browser: Annotated[bool, typer.Option(help="Whether to open the browser automatically")] = True
 
 
     def __post_init__(self):
-        super().__post_init__()
+        CauchyCombinationConfig.__post_init__(self)
         self.show_config(ReportConfig)
 
 

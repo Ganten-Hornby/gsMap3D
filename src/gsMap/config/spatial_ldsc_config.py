@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Annotated, List, Literal, Dict
 import logging
 import typer
+import yaml
 
 from gsMap.config.base import ConfigWithAutoPaths
 
@@ -47,24 +48,8 @@ class SpatialLDSCComputeConfig:
     )] = 50
 
 @dataclass
-class SpatialLDSCCoreConfig:
-    """Core configuration for spatial LDSC."""
-    w_ld_dir: Annotated[Optional[Path], typer.Option(
-        help="Directory containing the weights files (w_ld)",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )] = None
-
-    additional_baseline_h5ad_path_list: Annotated[List[Path], typer.Option(
-        help="List of additional baseline h5ad paths",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = field(default_factory=list)
-
+class GWASSumstatsConfig:
+    """Configuration for GWAS summary statistics."""
     trait_name: Annotated[Optional[str], typer.Option(
         help="Name of the trait for GWAS analysis"
     )] = None
@@ -85,6 +70,76 @@ class SpatialLDSCCoreConfig:
         resolve_path=True
     )] = None
 
+    sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
+
+    @property
+    def trait_name_list(self) -> List[str]:
+        """Return the list of trait names to process."""
+        return list(self.sumstats_config_dict.keys())
+
+    def __post_init__(self):
+        self.sumstats_config_dict = self.process_sumstats_inputs()
+
+    def process_sumstats_inputs(self):
+        """
+        Process sumstats input options and populate sumstats_config_dict.
+
+        Args:
+            self: Configuration object with sumstats_file, sumstats_config_file, and trait_name fields.
+
+        Returns:
+            Dict mapping trait names to sumstats file paths.
+        """
+        sumstats_config_dict = {}
+
+        if self.sumstats_file is None and self.sumstats_config_file is None:
+            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
+        if self.sumstats_file is not None and self.sumstats_config_file is not None:
+            raise ValueError(
+                "Only one of sumstats_file and sumstats_config_file must be provided."
+            )
+        if self.sumstats_file is not None and self.trait_name is None:
+            raise ValueError("trait_name must be provided if sumstats_file is provided.")
+        if self.sumstats_config_file is not None and self.trait_name is not None:
+            raise ValueError(
+                "trait_name must not be provided if sumstats_config_file is provided."
+            )
+        # load the sumstats self file
+        if self.sumstats_config_file is not None:
+            with open(self.sumstats_config_file) as f:
+                config_loaded = yaml.load(f, Loader=yaml.FullLoader)
+            for _trait_name, sumstats_file in config_loaded.items():
+                sumstats_config_dict[_trait_name] = Path(sumstats_file)
+        # load the sumstats file
+        elif self.sumstats_file is not None:
+            sumstats_config_dict[self.trait_name] = Path(self.sumstats_file)
+        else:
+            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
+
+        for sumstats_file in sumstats_config_dict.values():
+            assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
+
+        return sumstats_config_dict
+
+
+@dataclass
+class SpatialLDSCCoreConfig(GWASSumstatsConfig):
+    """Core configuration for spatial LDSC."""
+    w_ld_dir: Annotated[Optional[Path], typer.Option(
+        help="Directory containing the weights files (w_ld)",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True
+    )] = None
+
+    additional_baseline_h5ad_path_list: Annotated[List[Path], typer.Option(
+        help="List of additional baseline h5ad paths",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True
+    )] = field(default_factory=list)
 
 
     chisq_max: Annotated[Optional[int], typer.Option(
@@ -136,9 +191,6 @@ class SpatialLDSCCoreConfig:
         help="Format of marker scores"
     )] = None
 
-    # memmap_tmp_dir and spots_per_chunk_quick_mode are inherited from SpatialLDSCComputeConfig
-
-    sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
 
 
 @dataclass
@@ -248,36 +300,6 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
             # Update cell_indices_range with validated values
             self.cell_indices_range = (start, end)
             logger.info(f"Processing cell_indices_range: [{start}, {end})")
-
-        if self.sumstats_file is None and self.sumstats_config_file is None:
-            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
-        if self.sumstats_file is not None and self.sumstats_config_file is not None:
-            raise ValueError(
-                "Only one of sumstats_file and sumstats_config_file must be provided."
-            )
-        if self.sumstats_file is not None and self.trait_name is None:
-            raise ValueError("trait_name must be provided if sumstats_file is provided.")
-        if self.sumstats_config_file is not None and self.trait_name is not None:
-            raise ValueError(
-                "trait_name must not be provided if sumstats_config_file is provided."
-            )
-        # load the sumstats config file
-        if self.sumstats_config_file is not None:
-            import yaml
-
-            with open(self.sumstats_config_file) as f:
-                config = yaml.load(f, Loader=yaml.FullLoader)
-            for _trait_name, sumstats_file in config.items():
-                assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
-                self.sumstats_config_dict[_trait_name] = sumstats_file
-        # load the sumstats file
-        elif self.sumstats_file is not None:
-            self.sumstats_config_dict[self.trait_name] = self.sumstats_file
-        else:
-            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
-
-        for sumstats_file in self.sumstats_config_dict.values():
-            assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
 
         if self.snp_gene_weight_adata_path is None:
             raise ValueError("snp_gene_weight_adata_path must be provided.")

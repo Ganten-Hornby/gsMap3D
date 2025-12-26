@@ -426,6 +426,8 @@ def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
     """
     from gsMap.latent2gene.memmap_io import MemMapDense
 
+    config._process_h5ad_inputs()
+
     expected_outputs = {
         "concatenated_latent_adata": Path(config.concatenated_latent_adata_path),
         "rank_memmap": Path(config.rank_memmap_path),

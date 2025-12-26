@@ -6,9 +6,11 @@ import yaml
 import typer
 
 from .base import ConfigWithAutoPaths
+from .spatial_ldsc_config import GWASSumstatsConfig
+
 
 @dataclass
-class CauchyCombinationConfig(ConfigWithAutoPaths):
+class CauchyCombinationConfig(GWASSumstatsConfig,ConfigWithAutoPaths):
     """Cauchy Combination Configuration"""
 
     annotation: Annotated[Optional[str], typer.Option(
@@ -19,44 +21,12 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
         help="List of annotations in adata.obs to use",
     )] = field(default_factory=list)
 
-    trait_name: Annotated[Optional[str], typer.Option(
-        help="Name of the trait being analyzed. If None, all available traits will be processed."
-    )] = None
-
-    sumstats_config_file: Annotated[Optional[Path], typer.Option(
-        help="Path to sumstats config file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
-
-    # Dictionary to store trait names to sumstats file mappings
-    sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
-
     annotation_list: List[str] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self):
         super().__post_init__()
         if not self.annotation and not self.cauchy_annotations:
-            # We don't raise error here for ReportView which might not need it, 
-            # but we show a warning or rely on downstream discovery.
-            pass
-
-        self._trait_names = []
-        # Load the sumstats config file if provided
-        if self.sumstats_config_file is not None:
-            with open(self.sumstats_config_file) as f:
-                config_data = yaml.load(f, Loader=yaml.FullLoader)
-            self._trait_names.extend(list(config_data.keys()))
-            # Populate sumstats_config_dict with trait_name -> sumstats_file mapping
-            for trait_name, sumstats_file in config_data.items():
-                self.sumstats_config_dict[trait_name] = Path(sumstats_file)
-
-        # Add single trait if provided
-        if self.trait_name is not None:
-            if self.trait_name not in self._trait_names:
-                self._trait_names.append(self.trait_name)
+            raise ValueError("At least one of 'annotation' or 'cauchy_annotations' must be provided.")
 
         # Build unique list of annotations
         from collections import OrderedDict
@@ -68,10 +38,7 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
 
         self.show_config(CauchyCombinationConfig)
 
-    @property
-    def trait_name_list(self) -> List[str]:
-        """Return the list of trait names to process."""
-        return self._trait_names
+
 
     @property
     def ldsc_traits_result_path_dict(self) -> Dict[str, Path]:
