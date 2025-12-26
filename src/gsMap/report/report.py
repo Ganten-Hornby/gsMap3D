@@ -45,10 +45,12 @@ def run_report(config: ReportConfig, run_parameters: dict = None):
     # 4. Prepare embedded data for truly static usage (no server required)
     logger.info("Embedding data for static viewing...")
     embedded_data = {}
-    for csv_file in data_dir.glob("*.csv"):
+    for csv_file in data_dir.rglob("*.csv"):
         try:
+            # Use relative path as key for embedded data
+            rel_path = csv_file.relative_to(data_dir).as_posix()
             with open(csv_file, 'r', encoding='utf-8') as f:
-                embedded_data[csv_file.name] = f.read()
+                embedded_data[rel_path] = f.read()
         except Exception as e:
             logger.warning(f"Failed to embed {csv_file.name}: {e}")
 

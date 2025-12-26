@@ -179,19 +179,18 @@ def prepare_report_data(config: ReportConfig):
     metadata.to_csv(report_dir / "metadata.csv", index=False)
 
     # 6. Prepare Manhattan Data
-    logger.info("Preparing Manhattan data with LDSC weights...")
+    logger.info("Preparing Manhattan data with filtering and gene mapping...")
     manhattan_dir = report_dir / "manhattan_plot"
     manhattan_dir.mkdir(exist_ok=True)
     
-    # Load weighted adata if available
-    weight_adata = None
-    if config.snp_gene_weight_adata_path and config.snp_gene_weight_adata_path.exists():
-        logger.info(f"Loading weights from {config.snp_gene_weight_adata_path}")
-        weight_adata = ad.read_h5ad(config.snp_gene_weight_adata_path, backed='r')
+    # Assuming weight_adata must exist
+    logger.info(f"Loading weights from {config.snp_gene_weight_adata_path}")
+    weight_adata = ad.read_h5ad(config.snp_gene_weight_adata_path)
     
     # Get top genes df (saved in step 3)
     pcc_file = report_dir / "top_genes_pcc.csv"
     all_top_pcc = pd.read_csv(pcc_file) if pcc_file.exists() else None
+    gene_names_ref = pd.read_csv(report_dir / "genes.csv")['gene'].tolist() if (report_dir / "genes.csv").exists() else []
 
     try:
         for trait in traits:
@@ -202,98 +201,102 @@ def prepare_report_data(config: ReportConfig):
                 tmp_config = replace(config, sumstats_file=Path(sumstats_file), trait_name=trait)
                 gwas_data = load_gwas_data(tmp_config)
                 
-                # Filter to common SNPs with weights
-                common_snps = np.intersect1d(gwas_data["SNP"], weight_adata.obs_names) if weight_adata is not None else gwas_data["SNP"].values
-                gwas_plot_data = gwas_data[gwas_data["SNP"].isin(common_snps)].copy()
+                # Sort by P value for filter_snps
+                gwas_data = gwas_data.sort_values("P")
                 
-                # Ensure CHR and BP are present and numeric (required for ManhattanPlot)
-                if weight_adata is not None:
-                    missing_cols = [c for c in ["CHR", "BP"] if c not in gwas_plot_data.columns]
-                    if missing_cols:
-                        # Use numpy array for indexing to avoid potential inhomogeneous shape issues
-                        shared_obs = weight_adata.obs.loc[np.array(common_snps), [c for c in missing_cols if c in weight_adata.obs.columns]]
+                # Filter to common SNPs with weights
+                common_snps_initial = weight_adata.obs_names.intersection(gwas_data["SNP"])
+                gwas_subset = gwas_data[gwas_data["SNP"].isin(common_snps_initial)].copy()
+
+                # Subsample SNPs
+                snps2plot_ids = filter_snps(gwas_subset, SUBSAMPLE_SNP_NUMBER=100000)
+                gwas_plot_data = gwas_subset[gwas_subset["SNP"].isin(snps2plot_ids)].copy()
+                
+                # Ensure CHR and BP are present and numeric
+                if 'CHR' not in gwas_plot_data.columns and 'chrom' in gwas_plot_data.columns:
+                    gwas_plot_data = gwas_plot_data.rename(columns={'chrom': 'CHR'})
+                
+                missing_cols = [c for c in ["CHR", "BP"] if c not in gwas_plot_data.columns]
+                if missing_cols:
+                    # Map 'chrom' from weight_adata to 'CHR' if needed
+                    cols_to_pull = []
+                    rename_map = {}
+                    for mc in missing_cols:
+                        if mc in weight_adata.obs.columns:
+                            cols_to_pull.append(mc)
+                        elif mc == 'CHR' and 'chrom' in weight_adata.obs.columns:
+                            cols_to_pull.append('chrom')
+                            rename_map['chrom'] = 'CHR'
+                        elif mc == 'BP':
+                            for alt in ['pos', 'position', 'basepair']:
+                                if alt in weight_adata.obs.columns:
+                                    cols_to_pull.append(alt)
+                                    rename_map[alt] = 'BP'
+                                    break
+                    
+                    if cols_to_pull:
+                        shared_obs = weight_adata.obs.loc[gwas_plot_data["SNP"], cols_to_pull]
+                        if rename_map:
+                            shared_obs = shared_obs.rename(columns=rename_map)
                         gwas_plot_data = gwas_plot_data.set_index("SNP").join(shared_obs).reset_index()
                 
                 if "CHR" in gwas_plot_data.columns:
                     gwas_plot_data["CHR"] = pd.to_numeric(gwas_plot_data["CHR"], errors='coerce')
+                else:
+                    logger.warning(f"CHR column missing for {trait}. Using dummy values.")
+                    gwas_plot_data["CHR"] = 1
+
                 if "BP" in gwas_plot_data.columns:
                     gwas_plot_data["BP"] = pd.to_numeric(gwas_plot_data["BP"], errors='coerce')
+                else:
+                    logger.warning(f"BP column missing for {trait}. Using index as dummy BP.")
+                    gwas_plot_data["BP"] = np.arange(len(gwas_plot_data))
+
+                subset_to_drop = [c for c in ["CHR", "BP"] if c in gwas_plot_data.columns]
+                gwas_plot_data = gwas_plot_data.dropna(subset=subset_to_drop)
                 
-                subset_cols = [c for c in ["CHR", "BP"] if c in gwas_plot_data.columns]
-                if subset_cols:
-                    gwas_plot_data = gwas_plot_data.dropna(subset=subset_cols)
-                
-                if weight_adata is not None and all_top_pcc is not None:
-                    trait_top_genes = all_top_pcc[all_top_pcc['trait'] == trait].head(config.top_corr_genes)['gene'].tolist()
-                    # Intersection of genes
-                    available_genes = [g for g in trait_top_genes if g in weight_adata.var_names]
-                    # Intersection of SNPs
-                    plot_snps_in_weight = [s for s in gwas_plot_data['SNP'] if s in weight_adata.obs_names]
+                # Gene Assignment via Argmax Weight
+                # Filter weight_adata to common genes and exclude unmapped
+                target_genes = [g for g in weight_adata.var_names if g in gene_names_ref and g != "unmapped"]
+                if target_genes:
+                    sub_weight = weight_adata[gwas_plot_data["SNP"], target_genes].to_memory()
+                    weights_matrix = sub_weight.X
                     
-                    if available_genes and plot_snps_in_weight:
-                        logger.info(f"Adding weights for {len(plot_snps_in_weight)} SNPs and {len(available_genes)} genes")
-                        
-                        # Use integer indexing and load to memory explicitly to avoid SparseDataset issues
-                        row_indices = weight_adata.obs_names.get_indexer(plot_snps_in_weight)
-                        col_indices = weight_adata.var_names.get_indexer(available_genes)
-                        
-                        # Slicing backed AnnData with many indices can be slow or fail. 
-                        # Index once to get rows, load to memory, then index columns.
-                        sub_adata = weight_adata[row_indices, :].to_memory()
-                        sub_adata = sub_adata[:, col_indices]
-                        weights_matrix = sub_adata.X
-                        
-                        # Vectorized Total weight per SNP (sparse sum compatible)
-                        total_weights = np.ravel(weights_matrix.sum(axis=1))
-                        weight_lookup = pd.Series(total_weights, index=plot_snps_in_weight)
-                        
-                        # Vectorized Max gene lookup
-                        max_gene_idx = np.ravel(weights_matrix.argmax(axis=1))
-                        max_gene_lookup = pd.Series([available_genes[i] for i in max_gene_idx], index=plot_snps_in_weight)
-                        
-                        # Vectorized Hover text logic (using sparse COO format)
-                        import scipy.sparse as sp
-                        coo = weights_matrix.tocoo() if sp.issparse(weights_matrix) else sp.coo_matrix(weights_matrix)
-                        # Filter by weight threshold (following USER's >= 1 requirement)
-                        mask = coo.data >= 1
-                        if mask.any():
-                            hover_df = pd.DataFrame({
-                                'row': coo.row[mask],
-                                'gene': np.array(available_genes)[coo.col[mask]],
-                                'weight': coo.data[mask]
-                            })
-                            hover_df['text'] = hover_df['gene'] + " (" + hover_df['weight'].round(3).astype(str) + ")"
-                            hover_strings = hover_df.groupby('row')['text'].apply(lambda x: "LDSC Weights: " + ", ".join(x))
-                            
-                            hover_lookup = pd.Series("", index=range(len(plot_snps_in_weight)))
-                            hover_lookup.update(hover_strings)
-                            hover_lookup.index = plot_snps_in_weight
-                        else:
-                            hover_lookup = pd.Series("", index=plot_snps_in_weight)
-                        
-                        # Merge back to plot data
-                        gwas_plot_data["LDSC_Weight"] = gwas_plot_data["SNP"].map(weight_lookup).fillna(0)
-                        gwas_plot_data["GENE"] = gwas_plot_data["SNP"].map(max_gene_lookup).fillna("None")
-                        gwas_plot_data["hover_info"] = gwas_plot_data["SNP"].map(hover_lookup).fillna("")
+                    import scipy.sparse as sp
+                    if sp.issparse(weights_matrix):
+                        max_idx = np.array(weights_matrix.argmax(axis=1)).ravel()
+                        max_val = np.array(weights_matrix.max(axis=1).toarray()).ravel()
+                    else:
+                        max_idx = np.argmax(weights_matrix, axis=1)
+                        max_val = np.max(weights_matrix, axis=1)
+                    
+                    # Apply threshold > 1
+                    gene_map = [target_genes[i] if v > 1 else "None" for i, v in zip(max_idx, max_val)]
+                    gwas_plot_data["GENE"] = gene_map
+                    
+                    # Top PCC flag (using all_top_pcc)
+                    if all_top_pcc is not None:
+                        trait_top_genes = all_top_pcc[all_top_pcc['trait'] == trait]['gene'].tolist()
+                        gwas_plot_data["is_top_pcc"] = gwas_plot_data["GENE"].isin(trait_top_genes)
+                    else:
+                        gwas_plot_data["is_top_pcc"] = False
                 
-                # Add Cumulative Position for Plotting
+                if "GENE" not in gwas_plot_data.columns:
+                    gwas_plot_data["GENE"] = "None"
+                if "is_top_pcc" not in gwas_plot_data.columns:
+                    gwas_plot_data["is_top_pcc"] = False
+                
+                # Add Cumulative Position and Chromosome Index for Plotting
                 from gsMap.utils.manhattan_plot import _ManhattanPlot
                 try:
-                    # ManhattanPlot helper expects certain columns
-                    if "GENE" not in gwas_plot_data.columns:
-                        gwas_plot_data["GENE"] = "None"
                     mp_helper = _ManhattanPlot(gwas_plot_data)
                     gwas_plot_data["BP_cum"] = mp_helper.data["POSITION"].values
+                    gwas_plot_data["CHR_INDEX"] = mp_helper.data["INDEX"].values # For alternating colors
                 except Exception as e:
-                    logger.warning(f"Failed to calculate BP_cum: {e}")
-                    import traceback
-                    logger.debug(traceback.format_exc())
+                    logger.warning(f"Failed to calculate Manhattan coordinates: {e}")
                     gwas_plot_data["BP_cum"] = np.arange(len(gwas_plot_data))
+                    gwas_plot_data["CHR_INDEX"] = gwas_plot_data["CHR"] % 2
 
-                # Final rename for compatibility
-                if "hover_info" not in gwas_plot_data.columns:
-                    gwas_plot_data["hover_info"] = ""
-                
                 gwas_plot_data.to_csv(manhattan_dir / f"{trait}_manhattan.csv", index=False)
     except Exception as e:
         logger.warning(f"Failed to prepare Manhattan data: {e}")
@@ -398,7 +401,7 @@ def prepare_report_data(config: ReportConfig):
                                 try:
                                     gene_idx = adata_gss.var_names.get_loc(gene)
                                     sample_spots = metadata[metadata['sample_name'] == sample]['spot'].values
-                                    valid_spots = [s for s in sample_spots if s in adata_gss.obs_names]
+                                    valid_spots = pd.Index(sample_spots).intersection(adata_gss.obs_names, sort=False).tolist()
                                     if valid_spots:
                                         row_indices = adata_gss.obs_names.get_indexer(valid_spots)
                                         # Handle both memmap and normal numpy/sparse X
