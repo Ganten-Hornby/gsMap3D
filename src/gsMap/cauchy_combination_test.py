@@ -280,12 +280,8 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
     # Check for sample_name column
     sample_col = 'sample_name'
     if sample_col not in adata.obs.columns:
-        if 'batch_id' in adata.obs.columns:
-             sample_col = 'batch_id'
-             logger.warning(f"'sample_name' not found in adata.obs, using 'batch_id' instead.")
-        else:
-             logger.warning(f"Neither 'sample_name' nor 'batch_id' found in adata.obs. Sample-level Cauchy will be skipped.")
-             sample_col = None
+        logger.warning(f"'sample_name' column not found in adata.obs. Sample-level Cauchy will be skipped.")
+        sample_col = None
 
     # Filter to common spots
     common_cells = np.intersect1d(df_combined.index, adata.obs_names)

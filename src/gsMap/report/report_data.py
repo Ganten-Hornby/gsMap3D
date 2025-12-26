@@ -83,144 +83,126 @@ def prepare_report_data(config: QuickModeConfig):
         logger.error(f"Combined LDSC parquet not found at {config.ldsc_combined_parquet_path}. Please run Cauchy combination first.")
         return report_dir
 
-    all_ldsc = pd.read_parquet(config.ldsc_combined_parquet_path)
+    ldsc_combined_df = pd.read_parquet(config.ldsc_combined_parquet_path)
     # Ensure 'spot' is the index
-    if 'spot' in all_ldsc.columns:
-        all_ldsc.set_index('spot', inplace=True)
+    if 'spot' in ldsc_combined_df.columns:
+        ldsc_combined_df.set_index('spot', inplace=True)
 
-    # Ensure all_ldsc has a 'sample_name' column
-    if 'sample' in all_ldsc.columns and 'sample_name' not in all_ldsc.columns:
-        all_ldsc = all_ldsc.rename(columns={'sample': 'sample_name'})
-    
+    # Ensure ldsc_combined_df has a 'sample_name' column
+    assert 'sample_name' in ldsc_combined_df.columns, "LDSC combined results must have 'sample_name' column."
+
     # Identify traits
     traits = config.trait_name_list
 
     # 2. Load Coordinates from concatenated_latent_adata_path
     logger.info(f"Loading coordinates from {config.concatenated_latent_adata_path}")
-    coords = None
-    if config.concatenated_latent_adata_path.exists():
-        # Load in backed mode to save memory, we only need obs and obsm
-        adata_concat = ad.read_h5ad(config.concatenated_latent_adata_path, backed='r')
-        
-        # Check for spatial coordinates
-        spatial_key = config.spatial_key or 'spatial'
-        if spatial_key in adata_concat.obsm:
-            coords_data = adata_concat.obsm[spatial_key][:, :2]
-            coords = pd.DataFrame(coords_data, columns=['sx', 'sy'], index=adata_concat.obs_names)
-        elif 'sx' in adata_concat.obs.columns and 'sy' in adata_concat.obs.columns:
-            coords = adata_concat.obs[['sx', 'sy']]
-        
-        # Also get sample information if possible to ensure alignment
-        if 'sample_name' in adata_concat.obs.columns:
-            sample_info = adata_concat.obs[['sample_name']]
-            coords = pd.concat([coords, sample_info], axis=1)
 
-    if coords is None:
-        logger.warning("Could not find spatial coordinates in concatenated latent adata.")
+    # Load in backed mode to save memory, we only need obs and obsm
+    adata_concat = ad.read_h5ad(config.concatenated_latent_adata_path, backed='r')
+
+    # Check for spatial coordinates
+    assert config.spatial_key in adata_concat.obsm
+    coords_data = adata_concat.obsm[config.spatial_key][:, :2]
+    coords = pd.DataFrame(coords_data, columns=['sx', 'sy'], index=adata_concat.obs_names)
+
+    # Also get sample information if possible to ensure alignment
+    sample_info = adata_concat.obs[['sample_name']]
+    coords = pd.concat([coords, sample_info], axis=1)
 
     # 3. Load GSS data
     logger.info("Loading GSS data...")
 
     # Load GSS (Marker Scores)
-    try:
-        adata_gss = load_marker_scores_memmap_format(config)
-        
-        # We need spots that are present in both all_ldsc and adata_gss
-        common_spots = np.intersect1d(adata_gss.obs_names, all_ldsc.index)
-        logger.info(f"Common spots (gss & ldsc): {len(common_spots)}")
+    adata_gss = load_marker_scores_memmap_format(config)
 
-        # Save gene list for app regardless of PCC success
-        gene_names = adata_gss.var_names.tolist()
-        genes_df = pd.DataFrame({'gene': gene_names})
-        genes_df.to_csv(report_dir / "genes.csv", index=False)
+    # We need spots that are present in both ldsc_combined_df and adata_gss
+    common_spots = np.intersect1d(adata_gss.obs_names, ldsc_combined_df.index)
+    logger.info(f"Common spots (gss & ldsc): {len(common_spots)}")
 
-        if len(common_spots) == 0:
-            logger.error("No common spots found between GSS and LDSC results.")
-        else:
-            logger.info(f"Analyzing {len(common_spots)} common spots.")
-            
-            # Subsample if requested
-            analysis_spots = common_spots
-            if config.downsampling_n_spots and len(common_spots) > config.downsampling_n_spots:
-                analysis_spots = np.random.choice(common_spots, config.downsampling_n_spots, replace=False)
-                logger.info(f"Downsampled to {len(analysis_spots)} spots for PCC calculation.")
+    # Save gene list for app regardless of PCC success
+    gene_names = adata_gss.var_names.tolist()
+    genes_df = pd.DataFrame({'gene': gene_names})
+    genes_df.to_csv(report_dir / "genes.csv", index=False)
 
-            adata_gss_sub = adata_gss[analysis_spots]
-            gss_matrix = adata_gss_sub.X
-            
-            def fast_corr_with_matrix(matrix, vector):
-                m_mean = matrix.mean(axis=0)
-                v_mean = vector.mean()
-                m_centered = matrix - m_mean
-                v_centered = vector - v_mean
-                numerator = np.dot(v_centered, m_centered)
-                denominator = np.sqrt(np.sum(v_centered**2) * np.sum(m_centered**2, axis=0))
-                return numerator / (denominator + 1e-12)
+    if len(common_spots) == 0:
+        logger.error("No common spots found between GSS and LDSC results.")
+    else:
+        logger.info(f"Analyzing {len(common_spots)} common spots.")
 
-            all_pcc = []
-            for trait in traits:
-                if trait not in all_ldsc.columns:
-                    continue
-                    
-                logger.info(f"Processing PCC for trait: {trait}")
-                logp_vec = all_ldsc.loc[analysis_spots, trait].values.astype(np.float32)
-                
-                # Ensure no NaNs
-                valid_mask = ~np.isnan(logp_vec)
-                if valid_mask.sum() < len(logp_vec):
-                    logp_vec = logp_vec[valid_mask]
-                    current_gss = gss_matrix[valid_mask]
-                else:
-                    current_gss = gss_matrix
+        # Subsample if requested
+        analysis_spots = common_spots
+        if config.downsampling_n_spots and len(common_spots) > config.downsampling_n_spots:
+            analysis_spots = np.random.choice(common_spots, config.downsampling_n_spots, replace=False)
+            logger.info(f"Downsampled to {len(analysis_spots)} spots for PCC calculation.")
 
-                pccs = fast_corr_with_matrix(current_gss, logp_vec)
-                
-                trait_pcc = pd.DataFrame({
-                    'gene': gene_names,
-                    'PCC': pccs,
-                    'trait': trait
-                })
-                
-                # Save top 50 gene diagnostic info
-                top_50 = trait_pcc.sort_values('PCC', ascending=False).head(50)
-                
-                # Organize into gss_plot folder
-                gss_plot_dir = report_dir / "gss_plot"
-                gss_plot_dir.mkdir(exist_ok=True)
-                diag_info_path = config.get_gene_diagnostic_info_save_path(trait)
-                # Ensure the path is relative to report_dir/gss_plot if we want it there
-                # For now let's keep the config-specified path but ensures it exists
-                diag_info_path.parent.mkdir(parents=True, exist_ok=True)
-                top_50.to_csv(diag_info_path, index=False)
-                
-                all_pcc.append(top_50)
+        adata_gss_sub = adata_gss[analysis_spots]
+        gss_matrix = adata_gss_sub.X
 
-            if all_pcc:
-                pd.concat(all_pcc).to_csv(report_dir / "top_genes_pcc.csv", index=False)
-                
-    except Exception as e:
-        logger.error(f"Failed to process marker scores or calculate PCC: {e}")
-        import traceback
-        traceback.print_exc()
+        # Pre-calculate GSS statistics for speedup
+        logger.info("Pre-calculating GSS statistics...")
+        if hasattr(gss_matrix, 'toarray'):
+            gss_matrix = gss_matrix.toarray()
+        gss_mean = gss_matrix.mean(axis=0).astype(np.float32)
+        gss_centered = (gss_matrix - gss_mean).astype(np.float32)
+        gss_ssq = np.sum(gss_centered**2, axis=0)
+
+        def fast_corr_with_centered_matrix(centered_matrix, ssq_matrix, vector):
+            v_centered = vector - vector.mean()
+            numerator = np.dot(v_centered, centered_matrix)
+            denominator = np.sqrt(np.sum(v_centered**2) * ssq_matrix)
+            return numerator / (denominator + 1e-12)
+
+        all_pcc = []
+        for trait in traits:
+            if trait not in ldsc_combined_df.columns:
+                logger.warning(f"Trait {trait} not found in LDSC combined results. Skipping PCC calculation.")
+                continue
+
+            logger.info(f"Processing PCC for trait: {trait}")
+            logp_vec = ldsc_combined_df.loc[analysis_spots, trait].values.astype(np.float32)
+
+            # Ensure no NaNs
+            assert not np.any(np.isnan(logp_vec)), f"NaN values found in LDSC results for trait {trait}."
+            pccs = fast_corr_with_centered_matrix(gss_centered, gss_ssq, logp_vec)
+
+            trait_pcc = pd.DataFrame({
+                'gene': gene_names,
+                'PCC': pccs,
+                'trait': trait
+            })
+
+            # Save top 50 gene diagnostic info
+            top_50 = trait_pcc.sort_values('PCC', ascending=False).head(50)
+
+            # Organize into gss_plot folder
+            gss_plot_dir = report_dir / "gss_plot"
+            gss_plot_dir.mkdir(exist_ok=True)
+            diag_info_path = config.get_gene_diagnostic_info_save_path(trait)
+            # Ensure the path is relative to report_dir/gss_plot if we want it there
+            # For now let's keep the config-specified path but ensures it exists
+            diag_info_path.parent.mkdir(parents=True, exist_ok=True)
+            top_50.to_csv(diag_info_path, index=False)
+
+            all_pcc.append(top_50)
+
+        if all_pcc:
+            pd.concat(all_pcc).to_csv(report_dir / "top_genes_pcc.csv", index=False)
+
 
     # 5. Save metadata and coordinates
     logger.info("Saving metadata and coordinates...")
-    if coords is not None:
-        common_indices = all_ldsc.index.intersection(coords.index)
-        # Avoid duplicate columns during concat
-        ldsc_subset = all_ldsc.loc[common_indices]
-        cols_to_use = ldsc_subset.columns.difference(coords.columns)
-        metadata = pd.concat([coords.loc[common_indices], ldsc_subset[cols_to_use]], axis=1)
-    else:
-        metadata = all_ldsc.copy()
+    common_indices = ldsc_combined_df.index.intersection(coords.index)
+    # Avoid duplicate columns during concat
+    ldsc_subset = ldsc_combined_df.loc[common_indices]
+    cols_to_use = ldsc_subset.columns.difference(coords.columns)
+    metadata = pd.concat([coords.loc[common_indices], ldsc_subset[cols_to_use]], axis=1)
+
     
     metadata.index.name = 'spot'
     metadata = metadata.reset_index()
     # Ensure no duplicate columns in metadata
     metadata = metadata.loc[:, ~metadata.columns.duplicated()]
     # Ensure 'sample' column exists for JS compatibility
-    if 'sample_name' in metadata.columns and 'sample' not in metadata.columns:
-        metadata['sample'] = metadata['sample_name']
     metadata.to_csv(report_dir / "metadata.csv", index=False)
 
     # 6. Prepare Manhattan Data
