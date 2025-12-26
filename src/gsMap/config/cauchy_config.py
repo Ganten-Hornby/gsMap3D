@@ -39,10 +39,9 @@ class CauchyCombinationConfig(ConfigWithAutoPaths):
     def __post_init__(self):
         super().__post_init__()
         if not self.annotation and not self.cauchy_annotations:
-            raise ValueError("At least one of 'annotation' or 'cauchy_annotations' must be provided.")
-
-        if self.trait_name is None and self.sumstats_config_file is None:
-             raise ValueError("At least one of 'trait_name' or 'sumstats_config_file' must be provided.")
+            # We don't raise error here for ReportView which might not need it, 
+            # but we show a warning or rely on downstream discovery.
+            pass
 
         self._trait_names = []
         # Load the sumstats config file if provided

@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import scanpy as sc
+import anndata as ad
 from scipy.stats import norm
 
 from gsMap.config import DiagnosisConfig
@@ -27,7 +27,7 @@ def convert_z_to_p(gwas_data):
     return gwas_data
 
 
-def load_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[sc.AnnData] = None):
+def load_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[ad.AnnData] = None):
     """Load or compute gene diagnostic info."""
     gene_diagnostic_info_save_path = config.get_gene_diagnostic_info_save_path(config.trait_name)
     if gene_diagnostic_info_save_path.exists():
@@ -42,12 +42,12 @@ def load_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[sc.AnnDat
         return compute_gene_diagnostic_info(config, adata=adata)
 
 
-def compute_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[sc.AnnData] = None):
+def compute_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[ad.AnnData] = None):
     """Calculate gene diagnostic info and save it to adata."""
     logger.info("Loading ST data and LDSC results...")
     
     if adata is None:
-        adata = sc.read_h5ad(config.hdf5_with_latent_path)
+        adata = ad.read_h5ad(config.hdf5_with_latent_path)
 
     mk_score = pd.read_feather(config.mkscore_feather_path)
     mk_score.set_index("HUMAN_GENE_SYM", inplace=True)
@@ -135,7 +135,7 @@ def filter_snps(gwas_data_with_gene_annotation_sort, SUBSAMPLE_SNP_NUMBER):
     return snps2plot
 
 
-def generate_manhattan_plot(config: DiagnosisConfig, adata: Optional[sc.AnnData] = None):
+def generate_manhattan_plot(config: DiagnosisConfig, adata: Optional[ad.AnnData] = None):
     """Generate Manhattan plot."""
     # report_save_dir = config.get_report_dir(config.trait_name)
     gwas_data = load_gwas_data(config)
@@ -193,7 +193,7 @@ def generate_manhattan_plot(config: DiagnosisConfig, adata: Optional[sc.AnnData]
     logger.info(f"Diagnostic Manhattan Plot saved to {save_manhattan_plot_path}.")
 
 
-def generate_GSS_distribution(config: DiagnosisConfig, adata: sc.AnnData):
+def generate_GSS_distribution(config: DiagnosisConfig, adata: ad.AnnData):
     """Generate GSS distribution plots."""
     # mk_score = pd.read_feather(config.mkscore_feather_path).set_index("HUMAN_GENE_SYM").T
     # We should avoid loading large files inside workers if possible, or use memmap.
@@ -308,7 +308,7 @@ def save_plot(sub_fig, sub_fig_save_dir, sample_name, selected_gene, plot_type):
     assert save_sub_fig_path.exists(), f"Failed to save {plot_type} plot for {selected_gene}."
 
 
-def generate_gsMap_plot(config: DiagnosisConfig, adata: sc.AnnData):
+def generate_gsMap_plot(config: DiagnosisConfig, adata: ad.AnnData):
     """Generate gsMap plot."""
     logger.info("Creating gsMap plot...")
 
@@ -348,10 +348,21 @@ def generate_gsMap_plot(config: DiagnosisConfig, adata: sc.AnnData):
 
 def run_Diagnosis(config: DiagnosisConfig):
     """Main function to run the diagnostic plot generation."""
-    adata = sc.read_h5ad(config.hdf5_with_latent_path)
-    if "log1p" not in adata.uns.keys() and adata.X.max() > 14:
-        sc.pp.normalize_total(adata, target_sum=1e4)
-        sc.pp.log1p(adata)
+    adata = ad.read_h5ad(config.hdf5_with_latent_path)
+    if "pcc" not in adata.var.columns:
+        # Manual normalization and log1p to avoid scanpy dependency/warnings
+        if hasattr(adata.X, 'toarray'):
+            x_dense = adata.X.toarray()
+        else:
+            x_dense = adata.X
+        
+        # Normalize to target sum 1e4
+        row_sums = x_dense.sum(axis=1)
+        row_sums[row_sums == 0] = 1 # Avoid division by zero
+        x_norm = (x_dense / row_sums.reshape(-1, 1)) * 1e4
+        
+        # Log transformation
+        adata.X = np.log1p(x_norm)
 
     if config.plot_type in ["gsMap", "all"]:
         generate_gsMap_plot(config, adata=adata)

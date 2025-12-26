@@ -1,4 +1,4 @@
-import scanpy as sc
+import anndata as ad
 import pandas as pd
 import logging
 import os
@@ -206,7 +206,7 @@ def three_d_combine(args: ThreeDCombineConfig):
         meta_merged = pd.read_parquet(adata_3d_path)
     elif adata_3d_path.endswith('.h5ad'):
         logger.info("The input data is the h5ad.")
-        adata_merge = sc.read_h5ad(adata_3d_path, backed='r')
+        adata_merge = ad.read_h5ad(adata_3d_path, backed='r')
         adata_merge.obs.index.name = 'index'
         spatial = pd.DataFrame(adata_merge.obsm[args.spatial_key], columns=['sx', 'sy', 'sz'], index=adata_merge.obs_names).copy()
         spatial = spatial.reset_index() 

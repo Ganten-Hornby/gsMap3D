@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import matplotlib.axes
 from rich import print
 import anndata as ad
@@ -444,11 +443,9 @@ class VisualizeRunner:
             print(f"Warning: Trait {trait_abbreviation} not found in the data. Skipping.")
             return
 
-        # Set font to Arial if available
-        try:
-            plt.rcParams['font.family'] = 'Arial'
-        except:
-            print("Arial font not found, using default font")
+        # Set font to Arial with fallbacks to avoid warnings
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Liberation Sans', 'Bitstream Vera Sans', 'sans-serif']
 
         custom_cmap = mcolors.LinearSegmentedColormap.from_list('custom_cmap', cls.custom_colors_list)
         custom_cmap = custom_cmap.reversed()
@@ -585,10 +582,9 @@ class VisualizeRunner:
         fig.suptitle(f"Sample: {sample_name}", fontsize=16, fontweight='bold')
 
         # 4. Define custom colormap and font
-        try:
-            plt.rcParams['font.family'] = 'Arial'
-        except RuntimeError:
-            print("Arial font not found, using default Matplotlib font.")
+        # Set font to Arial with fallbacks to avoid warnings
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Liberation Sans', 'Bitstream Vera Sans', 'sans-serif']
 
         custom_cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom_cmap',
                                                                           self.custom_colors_list).reversed()
