@@ -1,16 +1,69 @@
 import logging
 import pandas as pd
 import numpy as np
+import anndata as ad
 from pathlib import Path
 from typing import Optional, List, Dict
-import anndata as ad
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
 from gsMap.config import ReportConfig
 from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.visualize import load_ldsc
 from gsMap.report.diagnosis import load_gwas_data, load_snp_gene_pairs, filter_snps, convert_z_to_p
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
+from gsMap.find_latent.st_process import setup_data_layer, normalize_for_analysis
 
 logger = logging.getLogger(__name__)
+
+def _render_gene_plot_task(task_data):
+    """Parallel task to render Expression or GSS plots."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from pathlib import Path
+        
+        gene = task_data['gene']
+        trait = task_data['trait']
+        sample_name = task_data['sample_name']
+        coords = task_data['coords']
+        vals = task_data['values']
+        output_path = Path(task_data['output_path'])
+        title = task_data['title']
+        cmap = task_data.get('cmap', 'viridis')
+        
+        fig, ax = plt.subplots(figsize=(5, 5))
+        scatter = ax.scatter(coords[:, 0], coords[:, 1], c=vals, cmap=cmap, s=1.0, alpha=0.8)
+        ax.set_title(title)
+        plt.colorbar(scatter, ax=ax)
+        ax.axis('off')
+        fig.savefig(output_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+        return True
+    except Exception as e:
+        return str(e)
+
+def _extract_gene_expression_task(gene, adata_obs_names, adata_X, gene_idx):
+    """Simple task to extract gene expression for a single gene (for parallelization)."""
+    try:
+        import numpy as np
+        # Extract column from X
+        # For sparse matrix, we need to be careful with indexing
+        import scipy.sparse as sp
+        if sp.issparse(adata_X):
+            vals = adata_X[:, gene_idx].toarray().ravel()
+        else:
+            vals = np.ravel(adata_X[:, gene_idx])
+            
+        df = pd.DataFrame({
+            'gene_val': vals,
+            'spot': adata_obs_names,
+            'gene': gene
+        })
+        return df
+    except Exception:
+        return None
 
 def prepare_report_data(config: ReportConfig):
     """
@@ -69,12 +122,8 @@ def prepare_report_data(config: ReportConfig):
     if coords is None:
         logger.warning("Could not find spatial coordinates in concatenated latent adata.")
 
-    # 3. Load Expression and GSS data
-    logger.info("Loading Expression and GSS data...")
-    adata_train_path = config.find_latent_metadata_path.parent / "training_adata.h5ad"
-    adata_train = None
-    if adata_train_path.exists():
-        adata_train = ad.read_h5ad(adata_train_path)
+    # 3. Load GSS data
+    logger.info("Loading GSS data...")
 
     # Load GSS (Marker Scores)
     try:
@@ -201,59 +250,28 @@ def prepare_report_data(config: ReportConfig):
                 tmp_config = replace(config, sumstats_file=Path(sumstats_file), trait_name=trait)
                 gwas_data = load_gwas_data(tmp_config)
                 
-                # Sort by P value for filter_snps
-                gwas_data = gwas_data.sort_values("P")
+                # Get common SNPs in the order of weight_adata
+                common_snps = weight_adata.obs_names[weight_adata.obs_names.isin(gwas_data["SNP"])]
                 
-                # Filter to common SNPs with weights
-                common_snps_initial = weight_adata.obs_names.intersection(gwas_data["SNP"])
-                gwas_subset = gwas_data[gwas_data["SNP"].isin(common_snps_initial)].copy()
+                # Filter gwas_data and reorder according to weight_adata
+                gwas_subset = gwas_data.set_index("SNP").loc[common_snps].reset_index()
+                
+                # Join CHR and BP from weight_adata.obs
+                # Drop existing CHR/BP in gwas_subset if any to avoid suffixes
+                gwas_subset = gwas_subset.drop(columns=[c for c in ["CHR", "BP"] if c in gwas_subset.columns])
+                gwas_subset = gwas_subset.set_index("SNP").join(weight_adata.obs[["CHR", "BP"]]).reset_index()
 
-                # Subsample SNPs
-                snps2plot_ids = filter_snps(gwas_subset, SUBSAMPLE_SNP_NUMBER=100000)
+                # Subsample SNPs while prioritizing significant hits (filter_snps handles this)
+                snps2plot_ids = filter_snps(gwas_subset.sort_values("P"), SUBSAMPLE_SNP_NUMBER=100000)
+                
+                # Filter gwas_subset by subsampled IDs but preserve the weight_adata order
                 gwas_plot_data = gwas_subset[gwas_subset["SNP"].isin(snps2plot_ids)].copy()
                 
-                # Ensure CHR and BP are present and numeric
-                if 'CHR' not in gwas_plot_data.columns and 'chrom' in gwas_plot_data.columns:
-                    gwas_plot_data = gwas_plot_data.rename(columns={'chrom': 'CHR'})
-                
-                missing_cols = [c for c in ["CHR", "BP"] if c not in gwas_plot_data.columns]
-                if missing_cols:
-                    # Map 'chrom' from weight_adata to 'CHR' if needed
-                    cols_to_pull = []
-                    rename_map = {}
-                    for mc in missing_cols:
-                        if mc in weight_adata.obs.columns:
-                            cols_to_pull.append(mc)
-                        elif mc == 'CHR' and 'chrom' in weight_adata.obs.columns:
-                            cols_to_pull.append('chrom')
-                            rename_map['chrom'] = 'CHR'
-                        elif mc == 'BP':
-                            for alt in ['pos', 'position', 'basepair']:
-                                if alt in weight_adata.obs.columns:
-                                    cols_to_pull.append(alt)
-                                    rename_map[alt] = 'BP'
-                                    break
-                    
-                    if cols_to_pull:
-                        shared_obs = weight_adata.obs.loc[gwas_plot_data["SNP"], cols_to_pull]
-                        if rename_map:
-                            shared_obs = shared_obs.rename(columns=rename_map)
-                        gwas_plot_data = gwas_plot_data.set_index("SNP").join(shared_obs).reset_index()
-                
-                if "CHR" in gwas_plot_data.columns:
-                    gwas_plot_data["CHR"] = pd.to_numeric(gwas_plot_data["CHR"], errors='coerce')
-                else:
-                    logger.warning(f"CHR column missing for {trait}. Using dummy values.")
-                    gwas_plot_data["CHR"] = 1
+                # Ensure CHR and BP are numeric
+                gwas_plot_data["CHR"] = pd.to_numeric(gwas_plot_data["CHR"], errors='coerce')
+                gwas_plot_data["BP"] = pd.to_numeric(gwas_plot_data["BP"], errors='coerce')
 
-                if "BP" in gwas_plot_data.columns:
-                    gwas_plot_data["BP"] = pd.to_numeric(gwas_plot_data["BP"], errors='coerce')
-                else:
-                    logger.warning(f"BP column missing for {trait}. Using index as dummy BP.")
-                    gwas_plot_data["BP"] = np.arange(len(gwas_plot_data))
-
-                subset_to_drop = [c for c in ["CHR", "BP"] if c in gwas_plot_data.columns]
-                gwas_plot_data = gwas_plot_data.dropna(subset=subset_to_drop)
+                gwas_plot_data = gwas_plot_data.dropna(subset=["CHR", "BP"])
                 
                 # Gene Assignment via Argmax Weight
                 # Filter weight_adata to common genes and exclude unmapped
@@ -271,7 +289,7 @@ def prepare_report_data(config: ReportConfig):
                         max_val = np.max(weights_matrix, axis=1)
                     
                     # Apply threshold > 1
-                    gene_map = [target_genes[i] if v > 1 else "None" for i, v in zip(max_idx, max_val)]
+                    gene_map = np.where(max_val > 1, np.array(target_genes)[max_idx], "None")
                     gwas_plot_data["GENE"] = gene_map
                     
                     # Top PCC flag (using all_top_pcc)
@@ -353,74 +371,68 @@ def prepare_report_data(config: ReportConfig):
             import matplotlib.pyplot as plt
             plt.close(fig)
 
-        # 7.3 Pre-render Top Gene Diagnostic plots (Top 10 per trait)
+        # 7.3 Pre-render Top Gene Diagnostic plots
+        # Based on user request: Choose one representative sample and parallelize over genes
         trait_pcc_file = report_dir / "top_genes_pcc.csv"
-        if trait_pcc_file.exists() and (adata_train is not None or 'adata_gss' in locals()):
+        if trait_pcc_file.exists() and config.sample_h5ad_dict:
             top_genes_df = pd.read_csv(trait_pcc_file)
             
-            for trait in traits:
-                logger.info(f"Pre-rendering top gene plots for {trait}...")
-                top_genes = top_genes_df[top_genes_df['trait'] == trait].head(10)['gene'].tolist()
+            # Select first sample as representative
+            rep_sample_name = list(config.sample_h5ad_dict.keys())[0]
+            rep_h5ad_path = config.sample_h5ad_dict[rep_sample_name]
+            
+            logger.info(f"Preparing representative sample {rep_sample_name} for diagnostic plots...")
+            adata_rep = ad.read_h5ad(rep_h5ad_path)
+            # Align naming convention and slice directly (known subset)
+            adata_rep.obs_names = adata_rep.obs_names.astype(str) + '|' + str(rep_sample_name)
+            
+            is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
+            if is_count:
+                adata_rep = normalize_for_analysis(adata_rep, is_count, preserve_raw=False)
+            
+            sample_metadata = metadata[metadata['sample_name'] == rep_sample_name]
+            sample_spots = sample_metadata['spot'].values
+            
+            # Direct slicing using the prior that sample_spots is a subset
+            adata_rep_sub = adata_rep[sample_spots].copy()
+            coords_rep = adata_rep_sub.obsm[config.spatial_key or 'spatial'][:, :2]
+            adata_gss_sample = adata_gss[sample_spots]
+            
+            tasks = []
+            for _, row in top_genes_df.iterrows():
+                trait = row['trait']
+                gene = row['gene']
                 
-                for gene in top_genes:
-                    for sample in sample_names:
-                        # Expression plot (from adata_train)
-                        if adata_train is not None and gene in adata_train.var_names:
-                            gene_sample_exp_path = gss_plot_dir / f"gene_{trait}_{gene}_exp_{sample}.png"
-                            if not gene_sample_exp_path.exists():
-                                try:
-                                    sample_mask = adata_train.obs['sample_name'] == sample
-                                    if sample_mask.any():
-                                        sub = adata_train[sample_mask]
-                                        fig, ax = plt.subplots(figsize=(5, 5))
-                                        # Use manual scatter plot to avoid scanpy dependency/warnings
-                                        spatial_coords = sub.obsm[config.spatial_key or 'spatial']
-                                        
-                                        # Correctly access gene expression
-                                        gene_idx = sub.var_names.get_loc(gene)
-                                        exp_vals = sub.X[:, gene_idx]
-                                        if hasattr(exp_vals, 'toarray'): exp_vals = exp_vals.toarray()
-                                        exp_vals = np.ravel(exp_vals)
-                                        
-                                        scatter = ax.scatter(
-                                            spatial_coords[:, 0], spatial_coords[:, 1],
-                                            c=exp_vals, cmap='viridis', s=1.0, alpha=0.8
-                                        )
-                                        ax.set_title(f"{sample} - {gene} Exp")
-                                        plt.colorbar(scatter, ax=ax)
-                                        ax.axis('off')
-                                        fig.savefig(gene_sample_exp_path, dpi=100, bbox_inches='tight')
-                                        plt.close(fig)
-                                except Exception as e:
-                                    logger.warning(f"Failed to plot gene exp {gene} for {sample}: {e}")
+                # Expression task
+                if gene in adata_rep_sub.var_names:
+                    exp_vals = adata_rep_sub[:, gene].X
+                    if hasattr(exp_vals, 'toarray'): exp_vals = exp_vals.toarray()
+                    exp_vals = np.ravel(exp_vals)
+                    
+                    tasks.append({
+                        'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
+                        'coords': coords_rep, 'values': exp_vals,
+                        'output_path': gss_plot_dir / f"gene_{trait}_{gene}_exp_{rep_sample_name}.png",
+                        'title': f"{rep_sample_name} - {gene} Exp", 'cmap': 'viridis'
+                    })
+                
+                # GSS task
+                if gene in adata_gss_sample.var_names:
+                    gss_vals = adata_gss_sample[:, gene].X
+                    if hasattr(gss_vals, 'toarray'): gss_vals = gss_vals.toarray()
+                    gss_vals = np.ravel(gss_vals)
+                    
+                    tasks.append({
+                        'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
+                        'coords': coords_rep, 'values': gss_vals,
+                        'output_path': gss_plot_dir / f"gene_{trait}_{gene}_gss_{rep_sample_name}.png",
+                        'title': f"{rep_sample_name} - {gene} GSS", 'cmap': 'plasma'
+                    })
 
-                        # GSS plot (from adata_gss)
-                        if 'adata_gss' in locals() and gene in adata_gss.var_names:
-                            gene_sample_gss_path = gss_plot_dir / f"gene_{trait}_{gene}_gss_{sample}.png"
-                            if not gene_sample_gss_path.exists():
-                                try:
-                                    gene_idx = adata_gss.var_names.get_loc(gene)
-                                    sample_spots = metadata[metadata['sample_name'] == sample]['spot'].values
-                                    valid_spots = pd.Index(sample_spots).intersection(adata_gss.obs_names, sort=False).tolist()
-                                    if valid_spots:
-                                        row_indices = adata_gss.obs_names.get_indexer(valid_spots)
-                                        # Handle both memmap and normal numpy/sparse X
-                                        gss_vals = adata_gss.X[row_indices, gene_idx]
-                                        if hasattr(gss_vals, 'toarray'): gss_vals = gss_vals.toarray()
-                                        
-                                        df_temp = metadata[metadata['spot'].isin(valid_spots)].copy()
-                                        df_temp['GSS'] = np.ravel(gss_vals)
-                                        
-                                        fig, ax = plt.subplots(figsize=(5, 5))
-                                        scatter = ax.scatter(df_temp['sx'], df_temp['sy'], 
-                                                           c=df_temp['GSS'], cmap='plasma', s=5)
-                                        ax.set_title(f"{sample} - {gene} GSS")
-                                        plt.colorbar(scatter, ax=ax)
-                                        ax.axis('off')
-                                        fig.savefig(gene_sample_gss_path, dpi=100, bbox_inches='tight')
-                                        plt.close(fig)
-                                except Exception as e:
-                                    logger.warning(f"Failed to plot gene GSS {gene} for {sample}: {e}")
+            if tasks:
+                logger.info(f"Rendering {len(tasks)} diagnostic plots in parallel...")
+                with ProcessPoolExecutor(max_workers=min(len(tasks), 8)) as executor:
+                    executor.map(_render_gene_plot_task, tasks)
 
     except Exception as e:
         logger.warning(f"Failed to pre-render static plots: {e}")
@@ -460,7 +472,5 @@ def prepare_report_data(config: ReportConfig):
         combined_cauchy = pd.concat(all_cauchy, ignore_index=True)
         if 'sample' in combined_cauchy.columns and 'sample_name' not in combined_cauchy.columns:
             combined_cauchy = combined_cauchy.rename(columns={'sample': 'sample_name'})
-        combined_cauchy.to_csv(report_dir / "all_cauchy.csv", index=False)
-
     logger.info(f"Interactive report data prepared in {report_dir}")
     return report_dir

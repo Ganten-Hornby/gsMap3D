@@ -8,14 +8,15 @@ from typing import Optional, Annotated
 import logging
 import typer
 
+from . import LatentToGeneConfig
 from .cauchy_config import CauchyCombinationConfig
-from .spatial_ldsc_config import SpatialLDSCCoreConfig
+from .spatial_ldsc_config import SpatialLDSCCoreConfig, SpatialLDSCConfig
 from .base import ConfigWithAutoPaths, ensure_path_exists
 
 logger = logging.getLogger("gsMap.config")
 
 @dataclass
-class ReportConfig(CauchyCombinationConfig, SpatialLDSCCoreConfig, ConfigWithAutoPaths):
+class ReportConfig(CauchyCombinationConfig, SpatialLDSCConfig, LatentToGeneConfig, ConfigWithAutoPaths):
     """Report Generation Configuration"""
     
     downsampling_n_spots: Annotated[int, typer.Option(

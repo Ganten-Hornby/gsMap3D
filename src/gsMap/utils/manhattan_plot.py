@@ -67,9 +67,9 @@ def ManhattanPlot(
     genomewideline_value=-np.log10(5e-8),
     genomewideline_color="#EF553B",
     genomewideline_width=1,
-    highlight=True,
     highlight_color="red",
     highlight_gene_list=None,
+    **kwargs,
 ):
     """Returns a figure for a manhattan plot.
 
@@ -158,7 +158,8 @@ def ManhattanPlot(
 
     """
     mh = _ManhattanPlot(
-        dataframe, chrm=chrm, bp=bp, p=p, snp=snp, gene=gene, annotation=annotation, logp=logp
+        dataframe, chrm=chrm, bp=bp, p=p, snp=snp, gene=gene, annotation=annotation, logp=logp, 
+        color_by=kwargs.get('highlight_color_by')
     )
 
     return mh.figure(
@@ -183,7 +184,7 @@ def ManhattanPlot(
 
 class _ManhattanPlot:
     def __init__(
-        self, x, chrm="CHR", bp="BP", p="P", snp="SNP", gene="GENE", annotation=None, logp=True
+        self, x, chrm="CHR", bp="BP", p="P", snp="SNP", gene="GENE", annotation=None, logp=True, color_by=None
     ):
         """
         Keyword arguments:
@@ -292,6 +293,13 @@ class _ManhattanPlot:
                 # DataFrame
                 self.data[annotation] = x[annotation]
 
+        if color_by is not None:
+            if color_by in x.columns:
+                self.data[color_by] = x[color_by]
+            else:
+                 import logging
+                 logging.getLogger(__name__).warning(f"color_by column {color_by} not found in input.")
+
         self.xlabel = ""
         self.ticks = []
         self.ticksLabels = []
@@ -395,6 +403,7 @@ class _ManhattanPlot:
         highlight=True,
         highlight_color="red",
         highlight_gene_list=None,
+        highlight_color_by=None,
     ):
         """Keyword arguments:
         - title (string; default 'Manhattan Plot'): The title of the
@@ -432,6 +441,8 @@ class _ManhattanPlot:
         - highlight_color (string; default 'red'): Color of the data
         points highlighted because they are significant. Can be in any
         color format accepted by plotly.graph_objects.
+        - highlight_color_by (string; optional): A column name in the
+        dataframe to use for coloring the highlighted points (gradient).
 
         Returns
         -------
@@ -486,11 +497,13 @@ class _ManhattanPlot:
             else:
                 if not highlight_gene_list:
                     raise KeyError("Please provide a list of genes to highlight")
-                common_genes = set(self.data[self.geneName].values).intersection(
+                common_genes = set(self.data[self.geneName].unique()).intersection(
                     highlight_gene_list
                 )
                 if len(common_genes) == 0:
-                    raise Warning("No common genes found in the data to highlight")
+                    # Don't raise error, just warn
+                    import logging
+                    logging.getLogger(__name__).warning("No common genes found in the data to highlight")
                 elif len(common_genes) < len(highlight_gene_list):
                     warnings.warn(
                         f"Some genes don't contain any SNP to highlight: "
@@ -498,9 +511,7 @@ class _ManhattanPlot:
                         stacklevel=2,
                     )
 
-                highlight_tmp = self.data
-
-                highlight_tmp = highlight_tmp[highlight_tmp[self.geneName].isin(common_genes)]
+                highlight_tmp = self.data[self.data[self.geneName].isin(common_genes)]
 
                 highlight_hover_text = _get_hover_text(
                     highlight_tmp,
@@ -513,7 +524,7 @@ class _ManhattanPlot:
         if highlight_tmp.empty:
             data = self.data
         else:
-            data = self.data.drop(self.data.index[highlight_tmp.index])
+            data = self.data.drop(highlight_tmp.index)
 
         if self.nChr == 1:
             if col is None:
@@ -544,7 +555,7 @@ class _ManhattanPlot:
                     y=-np.log10(data[self.pName].values) if self.logp else data[self.pName].values,
                     mode="markers",
                     showlegend=showlegend,
-                    name="chr%i" % data[self.chrName].unique(),
+                    name="chr%i" % data[self.chrName].unique()[0],
                     marker={"color": col[0], "size": point_size},
                     text=hover_text,
                 )
@@ -590,7 +601,7 @@ class _ManhattanPlot:
                         else tmp[self.pName].values,
                         mode="markers",
                         showlegend=showlegend,
-                        name="Chr%i" % chromo,
+                        name="Chr%i" % chromo[0],
                         marker={"color": col[icol], "size": point_size},
                         text=hover_text,
                     )
@@ -599,6 +610,20 @@ class _ManhattanPlot:
                 icol = icol + 1
 
         if not highlight_tmp.empty:
+            if highlight_color_by and highlight_color_by in highlight_tmp.columns:
+                marker_dict = dict(
+                    color=highlight_tmp[highlight_color_by].values,
+                    colorscale="Plasma",
+                    showscale=True,
+                    colorbar=dict(title=highlight_color_by, x=1.1, len=0.5),
+                    size=point_size * 2,
+                )
+            else:
+                marker_dict = dict(
+                    color=highlight_color,
+                    size=point_size * 2,
+                )
+                
             data_to_plot.append(
                 go.Scattergl(
                     x=highlight_tmp[self.pos].values,
@@ -607,10 +632,7 @@ class _ManhattanPlot:
                     else highlight_tmp[self.pName].values,
                     mode="markers",
                     text=highlight_hover_text,
-                    marker=dict(
-                        color=highlight_color,
-                        size=point_size * 2,
-                    ),
+                    marker=marker_dict,
                     name="SNP-Gene Pairs of interest",
                 )
             )
