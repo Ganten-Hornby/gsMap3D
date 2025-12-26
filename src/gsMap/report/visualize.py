@@ -128,6 +128,7 @@ def draw_scatter(
     height=600,
     annotation=None,
     color_by="logp",
+    color_continuous_scale=None,
 ):
     # Set theme based on fig_style
     if fig_style == "dark":
@@ -135,18 +136,20 @@ def draw_scatter(
     else:
         px.defaults.template = "plotly_white"
 
-    custom_color_scale = [
-        (1, "#d73027"),  # Red
-        (7 / 8, "#f46d43"),  # Red-Orange
-        (6 / 8, "#fdae61"),  # Orange
-        (5 / 8, "#fee090"),  # Light Orange
-        (4 / 8, "#e0f3f8"),  # Light Blue
-        (3 / 8, "#abd9e9"),  # Sky Blue
-        (2 / 8, "#74add1"),  # Medium Blue
-        (1 / 8, "#4575b4"),  # Dark Blue
-        (0, "#313695"),  # Deep Blue
-    ]
-    custom_color_scale.reverse()
+    if color_continuous_scale is None:
+        custom_color_scale = [
+            (1, "#d73027"),  # Red
+            (7 / 8, "#f46d43"),  # Red-Orange
+            (6 / 8, "#fdae61"),  # Orange
+            (5 / 8, "#fee090"),  # Light Orange
+            (4 / 8, "#e0f3f8"),  # Light Blue
+            (3 / 8, "#abd9e9"),  # Sky Blue
+            (2 / 8, "#74add1"),  # Medium Blue
+            (1 / 8, "#4575b4"),  # Dark Blue
+            (0, "#313695"),  # Deep Blue
+        ]
+        custom_color_scale.reverse()
+        color_continuous_scale = custom_color_scale
 
     # Create the scatter plot
     fig = px.scatter(
@@ -156,7 +159,7 @@ def draw_scatter(
         color=color_by,
         symbol="annotation" if annotation is not None else None,
         title=title,
-        color_continuous_scale=custom_color_scale,
+        color_continuous_scale=color_continuous_scale,
         range_color=[0, max(space_coord_concat[color_by])],
     )
 
@@ -218,7 +221,6 @@ def draw_scatter(
     # Adjust margins to ensure no clipping and equal axis ratio
     fig.update_layout(
         margin=dict(l=0, r=0, t=20, b=10),  # Adjust margins to prevent clipping
-        height=width,  # Ensure the figure height matches the width for equal axis ratio
     )
 
     # Adjust the title location and font size

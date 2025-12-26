@@ -1,29 +1,36 @@
+"""
+Report Data Preparation Module - Modern Version
+
+This module prepares data for the Alpine.js + Tailwind CSS + Plotly.js report.
+All data is exported as JS files with window global variables to bypass CORS restrictions
+when opening index.html via file:// protocol.
+"""
+
 import logging
+import json
 import pandas as pd
 import numpy as np
 import anndata as ad
 from pathlib import Path
-from typing import Optional, List, Dict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Optional, List, Dict, Any
+from concurrent.futures import ProcessPoolExecutor
 
 from gsMap.config import ReportConfig, QuickModeConfig
 from gsMap.latent2gene.memmap_io import MemMapDense
-from gsMap.report.visualize import load_ldsc
+from gsMap.report.visualize import load_ldsc, draw_scatter, estimate_point_size_for_plot
 from gsMap.report.diagnosis import load_gwas_data, load_snp_gene_pairs, filter_snps, convert_z_to_p
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 from gsMap.find_latent.st_process import setup_data_layer, normalize_for_analysis
 
 logger = logging.getLogger(__name__)
 
+
 def _render_gene_plot_task(task_data):
-    """Parallel task to render Expression or GSS plots."""
+    """Parallel task to render Expression or GSS plots using draw_scatter."""
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import numpy as np
+        import pandas as pd
         from pathlib import Path
-        
+
         gene = task_data['gene']
         trait = task_data['trait']
         sample_name = task_data['sample_name']
@@ -31,39 +38,32 @@ def _render_gene_plot_task(task_data):
         vals = task_data['values']
         output_path = Path(task_data['output_path'])
         title = task_data['title']
-        cmap = task_data.get('cmap', 'viridis')
-        
-        fig, ax = plt.subplots(figsize=(5, 5))
-        scatter = ax.scatter(coords[:, 0], coords[:, 1], c=vals, cmap=cmap, s=1.0, alpha=0.8)
-        ax.set_title(title)
-        plt.colorbar(scatter, ax=ax)
-        ax.axis('off')
-        fig.savefig(output_path, dpi=100, bbox_inches='tight')
-        plt.close(fig)
+        point_size = task_data.get('point_size')
+        width = task_data.get('width', 800)
+        height = task_data.get('height', 800)
+
+        # Construct DataFrame for draw_scatter
+        df = pd.DataFrame({
+            'sx': coords[:, 0],
+            'sy': coords[:, 1],
+            'val': vals
+        })
+
+        fig = draw_scatter(
+            df,
+            title=title,
+            point_size=point_size,
+            width=width,
+            height=height,
+            color_by='val',
+        )
+
+        # Save plot - Note: requires kaleido
+        fig.write_image(str(output_path))
         return True
     except Exception as e:
         return str(e)
 
-def _extract_gene_expression_task(gene, adata_obs_names, adata_X, gene_idx):
-    """Simple task to extract gene expression for a single gene (for parallelization)."""
-    try:
-        import numpy as np
-        # Extract column from X
-        # For sparse matrix, we need to be careful with indexing
-        import scipy.sparse as sp
-        if sp.issparse(adata_X):
-            vals = adata_X[:, gene_idx].toarray().ravel()
-        else:
-            vals = np.ravel(adata_X[:, gene_idx])
-            
-        df = pd.DataFrame({
-            'gene_val': vals,
-            'spot': adata_obs_names,
-            'gene': gene
-        })
-        return df
-    except Exception:
-        return None
 
 def prepare_report_data(config: QuickModeConfig):
     """
@@ -73,10 +73,10 @@ def prepare_report_data(config: QuickModeConfig):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    
+
     report_dir = config.get_report_dir("interactive")
     report_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 1. Load combined LDSC results
     logger.info(f"Loading combined LDSC results from {config.ldsc_combined_parquet_path}")
     if not config.ldsc_combined_parquet_path.exists():
@@ -93,6 +93,7 @@ def prepare_report_data(config: QuickModeConfig):
 
     # Identify traits
     traits = config.trait_name_list
+    sample_names = sorted(ldsc_combined_df['sample_name'].unique().tolist())
 
     # 2. Load Coordinates from concatenated_latent_adata_path
     logger.info(f"Loading coordinates from {config.concatenated_latent_adata_path}")
@@ -124,6 +125,9 @@ def prepare_report_data(config: QuickModeConfig):
     genes_df = pd.DataFrame({'gene': gene_names})
     genes_df.to_csv(report_dir / "genes.csv", index=False)
 
+    all_pcc = []
+    gene_stats_df = None
+
     if len(common_spots) == 0:
         logger.error("No common spots found between GSS and LDSC results.")
     else:
@@ -152,7 +156,26 @@ def prepare_report_data(config: QuickModeConfig):
             denominator = np.sqrt(np.sum(v_centered**2) * ssq_matrix)
             return numerator / (denominator + 1e-12)
 
-        all_pcc = []
+        # Calculate Annotation Stats (Annotation & Median_GSS)
+        logger.info("Calculating gene annotation stats...")
+
+        # Determine annotation column
+        anno_col = config.annotation_list[0]
+        annotations = adata_concat.obs.loc[analysis_spots, anno_col]
+
+        gss_df_temp = pd.DataFrame(gss_matrix, index=analysis_spots, columns=gene_names)
+        grouped_gss = gss_df_temp.groupby(annotations).median()
+
+        max_annos = grouped_gss.idxmax()
+        max_medians = grouped_gss.max()
+
+        gene_stats_df = pd.DataFrame({
+            'gene': max_annos.index,
+            'Annotation': max_annos.values,
+            'Median_GSS': max_medians.values
+        })
+        del gss_df_temp
+
         for trait in traits:
             if trait not in ldsc_combined_df.columns:
                 logger.warning(f"Trait {trait} not found in LDSC combined results. Skipping PCC calculation.")
@@ -171,8 +194,12 @@ def prepare_report_data(config: QuickModeConfig):
                 'trait': trait
             })
 
-            # Save top 50 gene diagnostic info
-            top_50 = trait_pcc.sort_values('PCC', ascending=False).head(50)
+            # Merge with gene stats if available
+            if gene_stats_df is not None:
+                trait_pcc = trait_pcc.merge(gene_stats_df, on='gene', how='left')
+
+            # Save ALL gene diagnostic info (sorted by PCC)
+            trait_pcc_sorted = trait_pcc.sort_values('PCC', ascending=False)
 
             # Organize into gss_plot folder
             gss_plot_dir = report_dir / "gss_plot"
@@ -181,9 +208,9 @@ def prepare_report_data(config: QuickModeConfig):
             # Ensure the path is relative to report_dir/gss_plot if we want it there
             # For now let's keep the config-specified path but ensures it exists
             diag_info_path.parent.mkdir(parents=True, exist_ok=True)
-            top_50.to_csv(diag_info_path, index=False)
+            trait_pcc_sorted.to_csv(diag_info_path, index=False)
 
-            all_pcc.append(top_50)
+            all_pcc.append(trait_pcc_sorted)
 
         if all_pcc:
             pd.concat(all_pcc).to_csv(report_dir / "top_genes_pcc.csv", index=False)
@@ -197,7 +224,7 @@ def prepare_report_data(config: QuickModeConfig):
     cols_to_use = ldsc_subset.columns.difference(coords.columns)
     metadata = pd.concat([coords.loc[common_indices], ldsc_subset[cols_to_use]], axis=1)
 
-    
+
     metadata.index.name = 'spot'
     metadata = metadata.reset_index()
     # Ensure no duplicate columns in metadata
@@ -209,15 +236,18 @@ def prepare_report_data(config: QuickModeConfig):
     logger.info("Preparing Manhattan data with filtering and gene mapping...")
     manhattan_dir = report_dir / "manhattan_plot"
     manhattan_dir.mkdir(exist_ok=True)
-    
+
     # Assuming weight_adata must exist
     logger.info(f"Loading weights from {config.snp_gene_weight_adata_path}")
     weight_adata = ad.read_h5ad(config.snp_gene_weight_adata_path)
-    
+
     # Get top genes df (saved in step 3)
     pcc_file = report_dir / "top_genes_pcc.csv"
     all_top_pcc = pd.read_csv(pcc_file) if pcc_file.exists() else None
     gene_names_ref = pd.read_csv(report_dir / "genes.csv")['gene'].tolist() if (report_dir / "genes.csv").exists() else []
+
+    # Store chromosome tick positions for Manhattan plot
+    chrom_tick_positions = {}
 
     try:
         for trait in traits:
@@ -225,37 +255,37 @@ def prepare_report_data(config: QuickModeConfig):
             if sumstats_file and Path(sumstats_file).exists():
                 logger.info(f"Processing Manhattan for {trait}...")
                 gwas_data = load_gwas_data(sumstats_file)
-                
+
                 # Get common SNPs in the order of weight_adata
                 common_snps = weight_adata.obs_names[weight_adata.obs_names.isin(gwas_data["SNP"])]
-                
+
                 # Filter gwas_data and reorder according to weight_adata
                 gwas_subset = gwas_data.set_index("SNP").loc[common_snps].reset_index()
-                
+
                 # Join CHR and BP from weight_adata.obs
                 # Drop existing CHR/BP in gwas_subset if any to avoid suffixes
                 gwas_subset = gwas_subset.drop(columns=[c for c in ["CHR", "BP"] if c in gwas_subset.columns])
                 gwas_subset = gwas_subset.set_index("SNP").join(weight_adata.obs[["CHR", "BP"]]).reset_index()
 
                 # Subsample SNPs while prioritizing significant hits (filter_snps handles this)
-                snps2plot_ids = filter_snps(gwas_subset.sort_values("P"), SUBSAMPLE_SNP_NUMBER=100000)
-                
+                snps2plot_ids = filter_snps(gwas_subset.sort_values("P"), SUBSAMPLE_SNP_NUMBER=50000)
+
                 # Filter gwas_subset by subsampled IDs but preserve the weight_adata order
                 gwas_plot_data = gwas_subset[gwas_subset["SNP"].isin(snps2plot_ids)].copy()
-                
+
                 # Ensure CHR and BP are numeric
                 gwas_plot_data["CHR"] = pd.to_numeric(gwas_plot_data["CHR"], errors='coerce')
                 gwas_plot_data["BP"] = pd.to_numeric(gwas_plot_data["BP"], errors='coerce')
 
                 gwas_plot_data = gwas_plot_data.dropna(subset=["CHR", "BP"])
-                
+
                 # Gene Assignment via Argmax Weight
                 # Filter weight_adata to common genes and exclude unmapped
                 target_genes = [g for g in weight_adata.var_names if g in gene_names_ref and g != "unmapped"]
                 if target_genes:
                     sub_weight = weight_adata[gwas_plot_data["SNP"], target_genes].to_memory()
                     weights_matrix = sub_weight.X
-                    
+
                     import scipy.sparse as sp
                     if sp.issparse(weights_matrix):
                         max_idx = np.array(weights_matrix.argmax(axis=1)).ravel()
@@ -263,29 +293,38 @@ def prepare_report_data(config: QuickModeConfig):
                     else:
                         max_idx = np.argmax(weights_matrix, axis=1)
                         max_val = np.max(weights_matrix, axis=1)
-                    
+
                     # Apply threshold > 1
                     gene_map = np.where(max_val > 1, np.array(target_genes)[max_idx], "None")
                     gwas_plot_data["GENE"] = gene_map
-                    
+
                     # Top PCC flag (using all_top_pcc)
                     if all_top_pcc is not None:
-                        trait_top_genes = all_top_pcc[all_top_pcc['trait'] == trait]['gene'].tolist()
+                        top_n = getattr(config, 'top_corr_genes', 50)
+                        trait_pcc_df = all_top_pcc[all_top_pcc['trait'] == trait]
+                        trait_top_genes = trait_pcc_df.sort_values('PCC', ascending=False).head(top_n)['gene'].tolist()
                         gwas_plot_data["is_top_pcc"] = gwas_plot_data["GENE"].isin(trait_top_genes)
                     else:
                         gwas_plot_data["is_top_pcc"] = False
-                
+
                 if "GENE" not in gwas_plot_data.columns:
                     gwas_plot_data["GENE"] = "None"
                 if "is_top_pcc" not in gwas_plot_data.columns:
                     gwas_plot_data["is_top_pcc"] = False
-                
+
                 # Add Cumulative Position and Chromosome Index for Plotting
                 from gsMap.utils.manhattan_plot import _ManhattanPlot
                 try:
                     mp_helper = _ManhattanPlot(gwas_plot_data)
                     gwas_plot_data["BP_cum"] = mp_helper.data["POSITION"].values
                     gwas_plot_data["CHR_INDEX"] = mp_helper.data["INDEX"].values # For alternating colors
+
+                    # Calculate chromosome tick positions (median position for each chrom)
+                    chrom_groups = gwas_plot_data.groupby("CHR")["BP_cum"]
+                    chrom_tick_positions[trait] = {
+                        int(chrom): float(positions.median())
+                        for chrom, positions in chrom_groups
+                    }
                 except Exception as e:
                     logger.warning(f"Failed to calculate Manhattan coordinates: {e}")
                     gwas_plot_data["BP_cum"] = np.arange(len(gwas_plot_data))
@@ -305,7 +344,6 @@ def prepare_report_data(config: QuickModeConfig):
         static_plots_dir = report_dir / "static_plots"
         static_plots_dir.mkdir(exist_ok=True)
 
-        sample_names = sorted(metadata['sample_name'].unique().tolist())
         n_samples = len(sample_names)
         n_cols = min(4, n_samples)
         n_rows = (n_samples + n_cols - 1) // n_cols
@@ -357,57 +395,72 @@ def prepare_report_data(config: QuickModeConfig):
 
         if trait_pcc_file.exists() and config.sample_h5ad_dict:
             top_genes_df = pd.read_csv(trait_pcc_file)
-            
+
             # Select first sample as representative
             rep_sample_name = list(config.sample_h5ad_dict.keys())[0]
             rep_h5ad_path = config.sample_h5ad_dict[rep_sample_name]
-            
+
             logger.info(f"Preparing representative sample {rep_sample_name} for diagnostic plots...")
             adata_rep = ad.read_h5ad(rep_h5ad_path)
             # Align naming convention and slice directly (known subset)
             adata_rep.obs_names = adata_rep.obs_names.astype(str) + '|' + str(rep_sample_name)
-            
+
             is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
             if is_count:
                 adata_rep = normalize_for_analysis(adata_rep, is_count, preserve_raw=False)
-            
+
             sample_metadata = metadata[metadata['sample_name'] == rep_sample_name]
             sample_spots = sample_metadata['spot'].values
-            
+
             # Direct slicing using the prior that sample_spots is a subset
             adata_rep_sub = adata_rep[sample_spots].copy()
             coords_rep = adata_rep_sub.obsm[config.spatial_key or 'spatial'][:, :2]
             adata_gss_sample = adata_gss[sample_spots]
-            
+
+            # Pre-calculate point size and dimensions for the representative sample
+            (pixel_width, pixel_height), point_size = estimate_point_size_for_plot(coords_rep)
+
+            # Filter for top genes per trait for plotting
             tasks = []
-            for _, row in top_genes_df.iterrows():
-                trait = row['trait']
-                gene = row['gene']
-                
-                # Expression task
-                if gene in adata_rep_sub.var_names:
-                    exp_vals = adata_rep_sub[:, gene].X
-                    if hasattr(exp_vals, 'toarray'): exp_vals = exp_vals.toarray()
-                    exp_vals = np.ravel(exp_vals)
-                    
+
+            # Use configured top_corr_genes or default to 50
+            top_n = getattr(config, 'top_corr_genes', 50)
+
+            # Efficiently get top N genes for each trait
+            # top_genes_df contains ALL genes now.
+            # We iterate by trait to slice the top N.
+            for trait, group in top_genes_df.groupby('trait'):
+                top_group = group.sort_values('PCC', ascending=False).head(top_n)
+
+                for _, row in top_group.iterrows():
+                    gene = row['gene']
+
+                    # Expression task
+                    if gene in adata_rep_sub.var_names:
+                        exp_vals = adata_rep_sub[:, gene].X
+                        if hasattr(exp_vals, 'toarray'): exp_vals = exp_vals.toarray()
+                        exp_vals = np.ravel(exp_vals)
+
                     tasks.append({
                         'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
                         'coords': coords_rep, 'values': exp_vals,
                         'output_path': gss_plot_dir / f"gene_{trait}_{gene}_exp_{rep_sample_name}.png",
-                        'title': f"{rep_sample_name} - {gene} Exp", 'cmap': 'viridis'
+                        'title': f"{rep_sample_name} - {gene} Exp",
+                        'point_size': point_size, 'width': pixel_width, 'height': pixel_height
                     })
-                
+
                 # GSS task
                 if gene in adata_gss_sample.var_names:
                     gss_vals = adata_gss_sample[:, gene].X
                     if hasattr(gss_vals, 'toarray'): gss_vals = gss_vals.toarray()
                     gss_vals = np.ravel(gss_vals)
-                    
+
                     tasks.append({
                         'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
                         'coords': coords_rep, 'values': gss_vals,
                         'output_path': gss_plot_dir / f"gene_{trait}_{gene}_gss_{rep_sample_name}.png",
-                        'title': f"{rep_sample_name} - {gene} GSS", 'cmap': 'plasma'
+                        'title': f"{rep_sample_name} - {gene} GSS",
+                        'point_size': point_size, 'width': pixel_width, 'height': pixel_height
                     })
 
             if tasks:
@@ -437,7 +490,7 @@ def prepare_report_data(config: QuickModeConfig):
                     all_cauchy.append(df)
                 except Exception as e:
                     logger.warning(f"Failed to load aggregated Cauchy result {cauchy_file_all}: {e}")
-            
+
             cauchy_file = config.get_cauchy_result_file(trait, annotation=annotation, all_samples=False)
             if cauchy_file.exists():
                 try:
@@ -453,5 +506,117 @@ def prepare_report_data(config: QuickModeConfig):
         combined_cauchy = pd.concat(all_cauchy, ignore_index=True)
         if 'sample' in combined_cauchy.columns and 'sample_name' not in combined_cauchy.columns:
             combined_cauchy = combined_cauchy.rename(columns={'sample': 'sample_name'})
+
+        # Save to report directory
+        cauchy_save_path = report_dir / "all_cauchy.csv"
+        combined_cauchy.to_csv(cauchy_save_path, index=False)
+        logger.info(f"Saved {len(combined_cauchy)} Cauchy results to {cauchy_save_path}")
+    else:
+        # Create empty file with columns to avoid errors in JS
+        pd.DataFrame(columns=['trait', 'annotation_name', 'p_cauchy', 'type', 'sample_name']).to_csv(report_dir / "all_cauchy.csv", index=False)
+        logger.warning("No Cauchy results found to save.")
+
+    # 9. Save additional metadata for JavaScript
+    logger.info("Saving report configuration metadata...")
+    report_meta = config.to_dict_with_paths_as_strings()
+    with open(report_dir / "report_meta.json", "w") as f:
+        json.dump(report_meta, f)
+
     logger.info(f"Interactive report data prepared in {report_dir}")
     return report_dir
+
+
+def export_data_as_js_modules(data_dir: Path):
+    """
+    Convert the CSV data in the report directory into JavaScript modules (.js files)
+    that assign the data to window global variables.
+    This allows loading data via <script> tags locally without CORS issues.
+    """
+    logger.info("Exporting data as JS modules...")
+    js_data_dir = data_dir / "js_data"
+    js_data_dir.mkdir(exist_ok=True)
+
+    # 1. Metadata (coordinates + trait values for gsMap plot)
+    metadata_file = data_dir / "metadata.csv"
+    if metadata_file.exists():
+        df = pd.read_csv(metadata_file)
+        # Column-oriented format for efficiency with large datasets
+        data_struct = {col: df[col].tolist() for col in df.columns}
+        js_content = f"window.GSMAP_METADATA = {json.dumps(data_struct, separators=(',', ':'))};"
+        with open(js_data_dir / "metadata.js", "w", encoding='utf-8') as f:
+            f.write(js_content)
+
+    # 2. Cauchy Results
+    cauchy_file = data_dir / "all_cauchy.csv"
+    if cauchy_file.exists():
+        df = pd.read_csv(cauchy_file)
+        # Keep as records for table display (easier to work with in Alpine.js)
+        data_json = df.to_json(orient='records')
+        js_content = f"window.GSMAP_CAUCHY = {data_json};"
+        with open(js_data_dir / "cauchy.js", "w", encoding='utf-8') as f:
+            f.write(js_content)
+
+    # 3. Manhattan Data - Column-oriented for Plotly efficiency
+    manhattan_dir = data_dir / "manhattan_plot"
+    if manhattan_dir.exists():
+        for csv_file in manhattan_dir.glob("*_manhattan.csv"):
+            trait = csv_file.name.replace("_manhattan.csv", "")
+            try:
+                df = pd.read_csv(csv_file)
+                # Calculate -log10(P) if not already present
+                if 'P' in df.columns and 'logp' not in df.columns:
+                    df['logp'] = -np.log10(df['P'] + 1e-300) # prevent inf
+
+                # Column-oriented data structure for ScatterGL
+                data_struct = {
+                    'x': df['BP_cum'].tolist(),
+                    'y': df['logp'].tolist(),
+                    'gene': df['GENE'].fillna("").tolist(),
+                    'chr': df['CHR'].astype(int).tolist(),
+                    'snp': df['SNP'].tolist() if 'SNP' in df.columns else [],
+                    'is_top': df['is_top_pcc'].astype(int).tolist() if 'is_top_pcc' in df.columns else [],
+                    'bp': df['BP'].astype(int).tolist() if 'BP' in df.columns else []
+                }
+
+                # Use separators to remove whitespace for smaller file size
+                json_str = json.dumps(data_struct, separators=(',', ':'))
+
+                # Safe variable name
+                safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+                js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
+
+                with open(js_data_dir / f"manhattan_{trait}.js", "w", encoding='utf-8') as f:
+                    f.write(js_content)
+
+            except Exception as e:
+                logger.warning(f"Failed to export Manhattan JS for {trait}: {e}")
+
+    # 4. Gene List
+    genes_file = data_dir / "genes.csv"
+    if genes_file.exists():
+        df = pd.read_csv(genes_file)
+        genes = df['gene'].tolist()
+        js_content = f"window.GSMAP_GENES = {json.dumps(genes)};"
+        with open(js_data_dir / "genes.js", "w", encoding='utf-8') as f:
+            f.write(js_content)
+
+    # 5. Top Genes PCC (per-trait gene diagnostic table)
+    pcc_file = data_dir / "top_genes_pcc.csv"
+    if pcc_file.exists():
+        df = pd.read_csv(pcc_file)
+        # Keep as records for table display
+        data_json = df.to_json(orient='records')
+        js_content = f"window.GSMAP_TOP_GENES_PCC = {data_json};"
+        with open(js_data_dir / "top_genes_pcc.js", "w", encoding='utf-8') as f:
+            f.write(js_content)
+
+    # 6. Report Metadata (traits, samples, annotations)
+    meta_file = data_dir / "report_meta.json"
+    if meta_file.exists():
+        with open(meta_file, "r") as f:
+            meta = json.load(f)
+        js_content = f"window.GSMAP_REPORT_META = {json.dumps(meta, separators=(',', ':'))};"
+        with open(js_data_dir / "report_meta.js", "w", encoding='utf-8') as f:
+            f.write(js_content)
+
+    logger.info(f"JS modules exported to {js_data_dir}")

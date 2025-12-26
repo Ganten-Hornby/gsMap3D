@@ -7,16 +7,16 @@ from pathlib import Path
 
 import gsMap
 from gsMap.config import QuickModeConfig
-from .report_data import prepare_report_data
+from .report_data import prepare_report_data, export_data_as_js_modules
 
 logger = logging.getLogger(__name__)
 
 def run_report(config: QuickModeConfig, run_parameters: dict = None):
     """
     Main entry point for report generation.
-    Prepares data and saves the interactive report as a standalone Jinja2 + Tailwind HTML folder.
+    Prepares data and saves the interactive report as a standalone Alpine+Tailwind HTML folder.
     """
-    logger.info("Running gsMap Report Module (Jinja2 + Tailwind based)")
+    logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")
     
     # 1. Prepare data (CSVs and PNGs)
     data_dir = prepare_report_data(config)
@@ -26,13 +26,17 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         import yaml
         with open(data_dir / "execution_summary.yaml", "w") as f:
             yaml.dump(run_parameters, f)
+            
+    # 2. Export Data as JS Modules
+    export_data_as_js_modules(data_dir)
     
-    # 2. Setup output directory
+    # 3. Setup output directory
     report_output_dir = config.get_report_dir("gsMap_Report")
     report_output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 3. Copy all prepared data files to the report output dir
+    # 4. Copy all prepared data files to the report output dir
     logger.info(f"Copying data to {report_output_dir}...")
+    # Copy everything including the new js_data folder
     for item in data_dir.iterdir():
         dest = report_output_dir / item.name
         if item.is_file():
@@ -42,20 +46,8 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
                 shutil.rmtree(dest)
             shutil.copytree(item, dest)
 
-    # 4. Prepare embedded data for truly static usage (no server required)
-    logger.info("Embedding data for static viewing...")
-    embedded_data = {}
-    for csv_file in data_dir.rglob("*.csv"):
-        try:
-            # Use relative path as key for embedded data
-            rel_path = csv_file.relative_to(data_dir).as_posix()
-            with open(csv_file, 'r', encoding='utf-8') as f:
-                embedded_data[rel_path] = f.read()
-        except Exception as e:
-            logger.warning(f"Failed to embed {csv_file.name}: {e}")
-
-    # 5. Render the Jinja2 template
-    template_path = Path(__file__).parent / "template.html"
+    # 5. Render the Jinja2 template (Modern)
+    template_path = Path(__file__).parent / "template_modern.html"
     if not template_path.exists():
         logger.error(f"Template file not found at {template_path}")
         return
@@ -65,14 +57,12 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         with open(template_path, "r", encoding="utf-8") as f:
             template = Template(f.read())
         
-        # Prepare context
+        # Prepare context (Metadata is now in JS, but we still need title etc.)
         context = {
             "title": f"gsMap Report - {config.project_name}",
             "project_name": config.project_name,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "gsmap_version": getattr(gsMap, "__version__", "unknown"),
-            "run_parameters_json": json.dumps(run_parameters if run_parameters else {}),
-            "embedded_data_json": json.dumps(embedded_data),
         }
         
         rendered_html = template.render(**context)

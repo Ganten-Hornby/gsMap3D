@@ -52,7 +52,8 @@ dependencies = [
 #    'pyvista >= 0.35.0',
     'typer ~= 0.20.0',
     'panel >= 1.2.0',
-    'holoviews'
+    'holoviews',
+    'einops'
 ]
 
 [project.optional-dependencies]
