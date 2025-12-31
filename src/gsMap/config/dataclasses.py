@@ -115,60 +115,6 @@ class CreateSliceMeanConfig:
             verify_homolog_file_format(self)
 
 
-@dataclass
-class FormatSumstatsConfig:
-    """Configuration for formatting GWAS summary statistics."""
-    
-    sumstats: Annotated[Path, typer.Option(
-        help="Path to the summary statistics file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )]
-    
-    out: Annotated[Path, typer.Option(
-        help="Path to save the formatted summary statistics",
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )]
-    
-    # Optional parameters
-    n_col: Annotated[Optional[str], typer.Option(
-        help="Column name for sample size"
-    )] = None
-    
-    n_val: Annotated[Optional[float], typer.Option(
-        help="Constant sample size value"
-    )] = None
-    
-    snp_col: Annotated[str, typer.Option(
-        help="Column name for SNP ID"
-    )] = "SNP"
-    
-    a1_col: Annotated[str, typer.Option(
-        help="Column name for effect allele"
-    )] = "A1"
-    
-    a2_col: Annotated[str, typer.Option(
-        help="Column name for other allele"
-    )] = "A2"
-    
-    p_col: Annotated[str, typer.Option(
-        help="Column name for p-value"
-    )] = "P"
-    
-    signed_sumstats: Annotated[Optional[str], typer.Option(
-        help="Column name for signed summary statistics (e.g., Z, BETA, OR)"
-    )] = None
-    
-    def __post_init__(self):
-        if self.n_col is None and self.n_val is None:
-            raise ValueError("One of --n-col or --n-val must be provided.")
-        if self.n_col is not None and self.n_val is not None:
-            raise ValueError("Only one of --n-col or --n-val must be provided.")
-
 
 @dataclass
 class DiagnosisConfig(ConfigWithAutoPaths):

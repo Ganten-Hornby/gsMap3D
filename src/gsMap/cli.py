@@ -17,6 +17,7 @@ from gsMap.config import (
     ReportConfig,
     LDScoreConfig,
     CauchyCombinationConfig,
+    FormatSumstatsConfig,
 )
 
 # Setup logging
@@ -287,6 +288,26 @@ def ldscore_weight_matrix(config: LDScoreConfig):
     except ImportError as e:
         logger.error(f"Import Error: {e}")
         raise
+    except Exception as e:
+        logger.error(f"Execution Error: {e}")
+        raise
+
+
+@app.command(name="format-sumstats")
+@dataclass_typer
+def format_sumstats(config: FormatSumstatsConfig):
+    """
+    Format GWAS summary statistics for gsMap or COJO.
+    
+    This command:
+    - Filters SNPs based on INFO, MAF, and P-value
+    - Converts SNP positions to RSID (if dbsnp is provided)
+    - Saves formatted summary statistics
+    """
+    try:
+        from gsMap.format_sumstats import gwas_format
+        gwas_format(config)
+        logger.info("✓ Summary statistics formatted successfully!")
     except Exception as e:
         logger.error(f"Execution Error: {e}")
         raise

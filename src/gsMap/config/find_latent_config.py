@@ -118,7 +118,7 @@ class FindLatentModelConfig:
     two_stage: Annotated[bool, typer.Option(
         "--two-stage/--single-stage",
         help="Tune the cell embeddings based on the provided annotation"
-    )] = True
+    ),{"__display_in_quick_mode_cli__": True}] = True
 
     do_sampling: Annotated[bool, typer.Option(
         "--do-sampling/--no-sampling",

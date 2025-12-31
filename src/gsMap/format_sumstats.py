@@ -405,7 +405,7 @@ def gwas_format(config: FormatSumstatsConfig):
     compression_type = get_compression(config.sumstats)
     gwas = pd.read_csv(
         config.sumstats,
-        delim_whitespace=True,
+        sep=r"\s+",
         header=0,
         compression=compression_type,
         na_values=[".", "NA"],
