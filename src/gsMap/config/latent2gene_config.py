@@ -144,13 +144,13 @@ class LatentToGeneCoreConfig:
     spatial_neighbors: Annotated[int, typer.Option(
         help="k1: Number of spatial neighbors in it's own slice for spatial dataset",
         min=10,
-        max=500
+        max=5000
     )] = 201
 
     homogeneous_neighbors: Annotated[int, typer.Option(
         help="k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)",
         min=1,
-        max=100
+        max=200
     )] = 21
 
     cell_embedding_similarity_threshold: Annotated[float, typer.Option(
@@ -163,7 +163,7 @@ class LatentToGeneCoreConfig:
         help="Minimum similarity threshold for spatial domain embedding.",
         min=0.0,
         max=1.0
-    )] = 0.5
+    )] = 0.6
 
     no_expression_fraction: Annotated[bool, typer.Option(
         "--no-expression-fraction",
@@ -174,8 +174,8 @@ class LatentToGeneCoreConfig:
     adjacent_slice_spatial_neighbors: Annotated[int, typer.Option(
         help="Number of spatial neighbors to find on each adjacent slice for 3D data",
         min=10,
-        max=500
-    )] = 100
+        max=2000
+    )] = 500
 
     n_adjacent_slices: Annotated[int, typer.Option(
         help="Number of adjacent slices to search above and below (± n_adjacent_slices) in 3D space for each focal spot. Padding will be applied automatically.",
