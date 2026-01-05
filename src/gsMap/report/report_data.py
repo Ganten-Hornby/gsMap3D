@@ -11,6 +11,7 @@ import json
 import pandas as pd
 import numpy as np
 import anndata as ad
+import scanpy as sc
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from concurrent.futures import ProcessPoolExecutor
@@ -119,101 +120,103 @@ def prepare_report_data(config: QuickModeConfig):
     # We need spots that are present in both ldsc_combined_df and adata_gss
     common_spots = np.intersect1d(adata_gss.obs_names, ldsc_combined_df.index)
     logger.info(f"Common spots (gss & ldsc): {len(common_spots)}")
+    assert len(common_spots) > 0, "No common spots found between GSS and LDSC results."
+
+    all_pcc = []
+
+    # Subsample if requested
+    analysis_spots = common_spots
+    if config.downsampling_n_spots and len(common_spots) > config.downsampling_n_spots:
+        analysis_spots = np.random.choice(common_spots, config.downsampling_n_spots, replace=False)
+        logger.info(f"Downsampled to {len(analysis_spots)} spots for PCC calculation.")
+
+    exp_frac = pd.read_parquet(config.mean_frac_path,)
+    high_expr_genes = exp_frac[exp_frac['frac'] > 0.01].index.tolist()
+    logger.info(f"Using {len(high_expr_genes)} high expression genes for PCC calculation.")
+
+    adata_gss_sub = adata_gss[analysis_spots, high_expr_genes]
+    gss_matrix = adata_gss_sub.X
 
     # Save gene list for app regardless of PCC success
-    gene_names = adata_gss.var_names.tolist()
+    gene_names = adata_gss_sub.var_names.tolist()
     genes_df = pd.DataFrame({'gene': gene_names})
     genes_df.to_csv(report_dir / "genes.csv", index=False)
 
-    all_pcc = []
-    gene_stats_df = None
+    # Pre-calculate GSS statistics for speedup
+    logger.info("Pre-calculating GSS statistics...")
+    if hasattr(gss_matrix, 'toarray'):
+        gss_matrix = gss_matrix.toarray()
+    gss_mean = gss_matrix.mean(axis=0).astype(np.float32)
+    gss_centered = (gss_matrix - gss_mean).astype(np.float32)
+    gss_ssq = np.sum(gss_centered**2, axis=0)
 
-    if len(common_spots) == 0:
-        logger.error("No common spots found between GSS and LDSC results.")
-    else:
-        logger.info(f"Analyzing {len(common_spots)} common spots.")
+    def fast_corr_with_centered_matrix(centered_matrix, ssq_matrix, vector):
+        v_centered = vector - vector.mean()
+        numerator = np.dot(v_centered, centered_matrix)
+        denominator = np.sqrt(np.sum(v_centered**2) * ssq_matrix)
+        return numerator / (denominator + 1e-12)
 
-        # Subsample if requested
-        analysis_spots = common_spots
-        if config.downsampling_n_spots and len(common_spots) > config.downsampling_n_spots:
-            analysis_spots = np.random.choice(common_spots, config.downsampling_n_spots, replace=False)
-            logger.info(f"Downsampled to {len(analysis_spots)} spots for PCC calculation.")
+    # Calculate Annotation Stats (Annotation & Median_GSS)
+    logger.info("Calculating gene annotation stats...")
 
-        adata_gss_sub = adata_gss[analysis_spots]
-        gss_matrix = adata_gss_sub.X
+    # Determine annotation column
+    anno_col = config.annotation_list[0]
+    annotations = adata_concat.obs.loc[analysis_spots, anno_col]
 
-        # Pre-calculate GSS statistics for speedup
-        logger.info("Pre-calculating GSS statistics...")
-        if hasattr(gss_matrix, 'toarray'):
-            gss_matrix = gss_matrix.toarray()
-        gss_mean = gss_matrix.mean(axis=0).astype(np.float32)
-        gss_centered = (gss_matrix - gss_mean).astype(np.float32)
-        gss_ssq = np.sum(gss_centered**2, axis=0)
+    gss_df_temp = pd.DataFrame(gss_matrix, index=analysis_spots, columns=gene_names)
+    grouped_gss = gss_df_temp.groupby(annotations).median()
 
-        def fast_corr_with_centered_matrix(centered_matrix, ssq_matrix, vector):
-            v_centered = vector - vector.mean()
-            numerator = np.dot(v_centered, centered_matrix)
-            denominator = np.sqrt(np.sum(v_centered**2) * ssq_matrix)
-            return numerator / (denominator + 1e-12)
+    max_annos = grouped_gss.idxmax()
+    max_medians = grouped_gss.max()
 
-        # Calculate Annotation Stats (Annotation & Median_GSS)
-        logger.info("Calculating gene annotation stats...")
+    gene_stats_df = pd.DataFrame({
+        'gene': max_annos.index,
+        'Annotation': max_annos.values,
+        'Median_GSS': max_medians.values
+    })
 
-        # Determine annotation column
-        anno_col = config.annotation_list[0]
-        annotations = adata_concat.obs.loc[analysis_spots, anno_col]
+    gene_stats_df.dropna(subset=['Median_GSS'], inplace=True)
 
-        gss_df_temp = pd.DataFrame(gss_matrix, index=analysis_spots, columns=gene_names)
-        grouped_gss = gss_df_temp.groupby(annotations).median()
+    del gss_df_temp
 
-        max_annos = grouped_gss.idxmax()
-        max_medians = grouped_gss.max()
+    for trait in traits:
+        if trait not in ldsc_combined_df.columns:
+            logger.warning(f"Trait {trait} not found in LDSC combined results. Skipping PCC calculation.")
+            continue
 
-        gene_stats_df = pd.DataFrame({
-            'gene': max_annos.index,
-            'Annotation': max_annos.values,
-            'Median_GSS': max_medians.values
+        logger.info(f"Processing PCC for trait: {trait}")
+        logp_vec = ldsc_combined_df.loc[analysis_spots, trait].values.astype(np.float32)
+
+        # Ensure no NaNs
+        assert not np.any(np.isnan(logp_vec)), f"NaN values found in LDSC results for trait {trait}."
+        pccs = fast_corr_with_centered_matrix(gss_centered, gss_ssq, logp_vec)
+
+        trait_pcc = pd.DataFrame({
+            'gene': gene_names,
+            'PCC': pccs,
+            'trait': trait
         })
-        del gss_df_temp
 
-        for trait in traits:
-            if trait not in ldsc_combined_df.columns:
-                logger.warning(f"Trait {trait} not found in LDSC combined results. Skipping PCC calculation.")
-                continue
+        # Merge with gene stats if available
+        if gene_stats_df is not None:
+            trait_pcc = trait_pcc.merge(gene_stats_df, on='gene', how='left')
 
-            logger.info(f"Processing PCC for trait: {trait}")
-            logp_vec = ldsc_combined_df.loc[analysis_spots, trait].values.astype(np.float32)
+        # Save ALL gene diagnostic info (sorted by PCC)
+        trait_pcc_sorted = trait_pcc.sort_values('PCC', ascending=False)
 
-            # Ensure no NaNs
-            assert not np.any(np.isnan(logp_vec)), f"NaN values found in LDSC results for trait {trait}."
-            pccs = fast_corr_with_centered_matrix(gss_centered, gss_ssq, logp_vec)
+        # Organize into gss_plot folder
+        gss_plot_dir = report_dir / "gss_plot"
+        gss_plot_dir.mkdir(exist_ok=True)
+        diag_info_path = config.get_gene_diagnostic_info_save_path(trait)
+        # Ensure the path is relative to report_dir/gss_plot if we want it there
+        # For now let's keep the config-specified path but ensures it exists
+        diag_info_path.parent.mkdir(parents=True, exist_ok=True)
+        trait_pcc_sorted.to_csv(diag_info_path, index=False)
 
-            trait_pcc = pd.DataFrame({
-                'gene': gene_names,
-                'PCC': pccs,
-                'trait': trait
-            })
+        all_pcc.append(trait_pcc_sorted)
 
-            # Merge with gene stats if available
-            if gene_stats_df is not None:
-                trait_pcc = trait_pcc.merge(gene_stats_df, on='gene', how='left')
-
-            # Save ALL gene diagnostic info (sorted by PCC)
-            trait_pcc_sorted = trait_pcc.sort_values('PCC', ascending=False)
-
-            # Organize into gss_plot folder
-            gss_plot_dir = report_dir / "gss_plot"
-            gss_plot_dir.mkdir(exist_ok=True)
-            diag_info_path = config.get_gene_diagnostic_info_save_path(trait)
-            # Ensure the path is relative to report_dir/gss_plot if we want it there
-            # For now let's keep the config-specified path but ensures it exists
-            diag_info_path.parent.mkdir(parents=True, exist_ok=True)
-            trait_pcc_sorted.to_csv(diag_info_path, index=False)
-
-            all_pcc.append(trait_pcc_sorted)
-
-        if all_pcc:
-            pd.concat(all_pcc).to_csv(report_dir / "top_genes_pcc.csv", index=False)
+    if all_pcc:
+        pd.concat(all_pcc).to_csv(report_dir / "top_genes_pcc.csv", index=False)
 
 
     # 5. Save metadata and coordinates
@@ -449,19 +452,19 @@ def prepare_report_data(config: QuickModeConfig):
                         'point_size': point_size, 'width': pixel_width, 'height': pixel_height
                     })
 
-                # GSS task
-                if gene in adata_gss_sample.var_names:
-                    gss_vals = adata_gss_sample[:, gene].X
-                    if hasattr(gss_vals, 'toarray'): gss_vals = gss_vals.toarray()
-                    gss_vals = np.ravel(gss_vals)
+                    # GSS task
+                    if gene in adata_gss_sample.var_names:
+                        gss_vals = adata_gss_sample[:, gene].X
+                        if hasattr(gss_vals, 'toarray'): gss_vals = gss_vals.toarray()
+                        gss_vals = np.ravel(gss_vals)
 
-                    tasks.append({
-                        'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
-                        'coords': coords_rep, 'values': gss_vals,
-                        'output_path': gss_plot_dir / f"gene_{trait}_{gene}_gss_{rep_sample_name}.png",
-                        'title': f"{rep_sample_name} - {gene} GSS",
-                        'point_size': point_size, 'width': pixel_width, 'height': pixel_height
-                    })
+                        tasks.append({
+                            'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
+                            'coords': coords_rep, 'values': gss_vals,
+                            'output_path': gss_plot_dir / f"gene_{trait}_{gene}_gss_{rep_sample_name}.png",
+                            'title': f"{rep_sample_name} - {gene} GSS",
+                            'point_size': point_size, 'width': pixel_width, 'height': pixel_height
+                        })
 
             if tasks:
                 logger.info(f"Rendering {len(tasks)} diagnostic plots in parallel...")
