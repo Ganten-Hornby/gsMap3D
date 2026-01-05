@@ -47,17 +47,26 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             adata_temp = adata_temp[:,gene_keep].copy()
 
             is_count_data, actual_data_layer = setup_data_layer(adata_temp, params.data_layer, verbose=False)
-
-            # Identify highly variable genes
-            flavor = "seurat_v3" if is_count_data else "seurat"
-            sc.pp.highly_variable_genes(
-                adata_temp, n_top_genes=params.feat_cell, subset=False, flavor=flavor
-            )
-            var_df = adata_temp.var
-            var_df["gene"] = var_df.index.tolist()
-            variances_list.append(var_df)
-
             cell_number.append(adata_temp.n_obs)
+            
+            try:
+                # Identify highly variable genes
+                if is_count_data:
+                    sc.experimental.pp.highly_variable_genes(
+                        adata_temp, n_top_genes=params.feat_cell, subset=False
+                    )
+                else:
+                    sc.pp.highly_variable_genes(
+                        adata_temp, n_top_genes=params.feat_cell, subset=False, flavor='seurat'
+                    )                
+                    
+                var_df = adata_temp.var
+                var_df["gene"] = var_df.index.tolist()
+                variances_list.append(var_df)
+            except Exception as e:
+                logger.warning(f"[HVG skipped] {e}")
+                continue
+            
 
             progress.update(task, advance=1)
 
@@ -70,17 +79,18 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     # Aggregate variances and identify HVGs
     df = pd.concat(variances_list, axis=0)
     df["highly_variable"] = df["highly_variable"].astype(int)
-    if flavor=='seurat_v3':
+    
+    if is_count_data:
         df = df.groupby("gene", observed=True).agg(
             dict(
-                variances_norm="median",
+                residual_variances="median",
                 highly_variable="sum",
             )
         )
         df = df.loc[common_genes]
         df["highly_variable_nbatches"] = df["highly_variable"]
         df.sort_values(
-            ["highly_variable_nbatches", "variances_norm"],
+            ["highly_variable_nbatches", "residual_variances"],
             ascending=False,
             na_position="last",
             inplace=True,
