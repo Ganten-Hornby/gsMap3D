@@ -128,36 +128,11 @@ def run_quick_mode(config: QuickModeConfig):
         logger.info("=== Step 5: Generate Report ===")
         start_time = time.time()
         
-        report_config = config.report_config
-        # The report now handles multiple traits. 
-        # We ensure traits_to_process is reflected in the report config
-        # Actually, report_config already has access to config.trait_name_list if needed,
-        # but the current run_report might need to know which traits to focus on.
-        
-        if check_report_done(report_config, "full_report"):
+        if check_report_done(config, "full_report"):
             logger.info("Report already exists. Skipping...")
         else:
-            # Construct run_parameters dict for the report
-            run_params = {
-                "Project Name": config.project_name, 
-                "Traits": list(traits_to_process.keys()),
-                "Worker Configuration": {
-                    "mkscore_compute_workers": config.mkscore_compute_workers,
-                    "ldsc_compute_workers": config.ldsc_compute_workers,
-                    "rank_read_workers": config.rank_read_workers,
-                    "ldsc_read_workers": config.ldsc_read_workers,
-                },
-                "Spatial LDSC Save Directory": str(config.spatial_ldsc_config.ldsc_save_dir),
-                "Cauchy Directory": str(config.cauchy_config.cauchy_save_dir),
-                "Report Directory": str(report_config.get_report_dir("gsMap_Report")),
-                "Spending Time": format_duration(time.time() - pipeline_start_time),
-            }
-            if config.h5ad_yaml:
-                 run_params["H5AD YAML"] = str(config.h5ad_yaml)
-            elif config.h5ad_path:
-                 run_params["H5AD Paths"] = [str(p) for p in config.h5ad_path]
-            
-            run_report(report_config, run_parameters=run_params)
+
+            run_report(config,)
             
         logger.info(f"Step 5 completed in {format_duration(time.time() - start_time)}")
 
