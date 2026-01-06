@@ -303,7 +303,7 @@
                 <div>
                     <h2 class="text-lg font-semibold text-gray-800">4. Gene Analysis - <span
                             x-text="selectedGene"></span></h2>
-                    <p class="text-sm text-gray-500">Gene expression and GSS distribution plots.</p>
+                    <p class="text-sm text-gray-500">Gene expression and GSS distribution plots across all samples.</p>
                 </div>
                 <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.genes ? 'rotate-180' : ''"
                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -311,30 +311,34 @@
                 </svg>
             </div>
             <div class="section-content" :class="sections.genes ? 'expanded' : 'collapsed'">
-                <!-- Gene Plots Grid -->
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4">
+                <!-- Gene Plot Controls -->
+                <div class="p-4 bg-gray-50 border-b border-gray-200 flex items-center gap-6">
+                    <span class="text-sm font-medium text-gray-700">View:</span>
+                    <label class="inline-flex items-center cursor-pointer">
+                        <input type="radio" name="genePlotType" value="exp" x-model="genePlotType"
+                            class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                        <span class="ml-2 text-sm text-gray-700">Expression</span>
+                    </label>
+                    <label class="inline-flex items-center cursor-pointer">
+                        <input type="radio" name="genePlotType" value="gss" x-model="genePlotType"
+                            class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                        <span class="ml-2 text-sm text-gray-700">GSS</span>
+                    </label>
+                </div>
+
+                <!-- Gene Plot (Single view, switches between Expression and GSS) -->
+                <div class="p-4">
                     <div class="border border-gray-200 rounded-lg overflow-hidden">
                         <div class="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                            <h3 class="font-medium text-gray-700">Gene Expression</h3>
+                            <h3 class="font-medium text-gray-700" x-text="genePlotType === 'exp' ? 'Gene Expression (All Samples)' : 'GSS Distribution (All Samples)'"></h3>
                         </div>
                         <div class="p-2">
-                            <img x-show="selectedGene && selectedTrait" :src="getGeneExpPlotPath()"
-                                :alt="selectedGene + ' expression'" class="w-full h-auto object-contain"
+                            <img x-show="selectedGene && selectedTrait" :src="getGenePlotPath()"
+                                :alt="selectedGene + ' ' + (genePlotType === 'exp' ? 'expression' : 'GSS')"
+                                class="w-full h-auto object-contain max-h-[800px] mx-auto"
                                 loading="lazy" onerror="this.style.display='none';">
-                            <p x-show="!selectedGene || !selectedTrait" class="text-center text-gray-400 py-4 text-sm">
-                                Select a gene to view expression plot</p>
-                        </div>
-                    </div>
-                    <div class="border border-gray-200 rounded-lg overflow-hidden">
-                        <div class="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                            <h3 class="font-medium text-gray-700">GSS Distribution</h3>
-                        </div>
-                        <div class="p-2">
-                            <img x-show="selectedGene && selectedTrait" :src="getGeneGssPlotPath()"
-                                :alt="selectedGene + ' GSS'" class="w-full h-auto object-contain"
-                                loading="lazy" onerror="this.style.display='none';">
-                            <p x-show="!selectedGene || !selectedTrait" class="text-center text-gray-400 py-4 text-sm">
-                                Select a gene to view GSS plot</p>
+                            <p x-show="!selectedGene || !selectedTrait" class="text-center text-gray-400 py-8 text-sm">
+                                Select a gene to view the plot</p>
                         </div>
                     </div>
                 </div>
@@ -544,6 +548,7 @@
                 selectedAnnotationCategory: '',
                 selectedGene: '',
                 isLoading: false,
+                genePlotType: 'exp',  // 'exp' for Expression, 'gss' for GSS
 
                 // Data arrays (populated from window globals)
                 traits: [],
@@ -776,14 +781,9 @@
                     }
                 },
 
-                // Gene plot paths
-                getGeneExpPlotPath() {
-                    const sample = this.samples.length > 0 ? this.samples[0] : '';
-                    return `gss_plot/gene_${this.selectedTrait}_${this.selectedGene}_exp_${sample}.png`;
-                },
-                getGeneGssPlotPath() {
-                    const sample = this.samples.length > 0 ? this.samples[0] : '';
-                    return `gss_plot/gene_${this.selectedTrait}_${this.selectedGene}_gss_${sample}.png`;
+                // Gene plot path (multi-sample, switches between exp and gss based on genePlotType)
+                getGenePlotPath() {
+                    return `gss_plot/gene_${this.selectedTrait}_${this.selectedGene}_${this.genePlotType}.png`;
                 },
 
                 // Sorting

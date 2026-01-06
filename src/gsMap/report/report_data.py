@@ -66,6 +66,116 @@ def _render_gene_plot_task(task_data):
         return str(e)
 
 
+def _render_multi_sample_gene_plot_task(task_data):
+    """
+    Parallel task to render multi-sample Expression or GSS plots.
+    Creates a grid of subplots showing gene values across all samples.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import matplotlib.colors as mcolors
+        import numpy as np
+        import pandas as pd
+        from pathlib import Path
+        from scipy.spatial import KDTree
+        import gc
+
+        gene = task_data['gene']
+        trait = task_data['trait']
+        plot_type = task_data['plot_type']  # 'exp' or 'gss'
+        sample_data_list = task_data['sample_data_list']  # List of (sample_name, coords, values)
+        output_path = Path(task_data['output_path'])
+        n_rows = task_data.get('n_rows', 2)
+        n_cols = task_data.get('n_cols', 4)
+        subplot_width = task_data.get('subplot_width', 4.0)
+        dpi = task_data.get('dpi', 150)
+
+        # Custom colormap (same as used in visualize.py)
+        custom_colors = ['#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8',
+                        '#fee090', '#fdae61', '#f46d43', '#d73027']
+        custom_cmap = mcolors.LinearSegmentedColormap.from_list('custom_cmap', custom_colors)
+
+        # Calculate figure size
+        fig_width = n_cols * subplot_width
+        fig_height = n_rows * subplot_width
+
+        fig = plt.figure(figsize=(fig_width, fig_height))
+        title_text = f"{gene} - {'Expression' if plot_type == 'exp' else 'GSS'}"
+        fig.suptitle(title_text, fontsize=16, fontweight='bold', y=0.98)
+
+        # Create grid
+        grid_specs = fig.add_gridspec(nrows=n_rows, ncols=n_cols, wspace=0.1, hspace=0.15)
+
+        # Calculate global min/max for consistent color scale
+        all_values = np.concatenate([data[2] for data in sample_data_list if data[2] is not None and len(data[2]) > 0])
+        vmin = 0
+        vmax = np.percentile(all_values, 99.5) if len(all_values) > 0 else 1.0
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+
+        scatter = None
+        for idx, (sample_name, coords, values) in enumerate(sample_data_list[:n_rows * n_cols]):
+            row = idx // n_cols
+            col = idx % n_cols
+
+            ax = fig.add_subplot(grid_specs[row, col])
+
+            if coords is not None and values is not None and len(coords) > 0:
+                # Estimate point size
+                tree = KDTree(coords)
+                distances, _ = tree.query(coords, k=min(2, len(coords)))
+                if len(coords) > 1:
+                    avg_dist = np.mean(distances[:, 1])
+                else:
+                    avg_dist = 1.0
+
+                # Calculate point size based on subplot dimensions
+                x_range = np.max(coords[:, 0]) - np.min(coords[:, 0])
+                y_range = np.max(coords[:, 1]) - np.min(coords[:, 1])
+                data_range = max(x_range, y_range)
+                if data_range > 0:
+                    point_size = ((avg_dist / data_range) * subplot_width * 72) ** 2 * 1.2
+                else:
+                    point_size = 10
+                point_size = min(max(point_size, 1), 200)
+
+                scatter = ax.scatter(
+                    coords[:, 0], coords[:, 1],
+                    c=values, cmap=custom_cmap,
+                    s=point_size, vmin=vmin, vmax=vmax,
+                    marker='o', edgecolors='none', rasterized=True
+                )
+
+            ax.axis('off')
+            ax.set_title(sample_name, fontsize=10, pad=2)
+
+        # Hide unused subplots
+        for idx in range(len(sample_data_list), n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = fig.add_subplot(grid_specs[row, col])
+            ax.axis('off')
+
+        # Add colorbar
+        if scatter is not None:
+            cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+            cbar = fig.colorbar(scatter, cax=cbar_ax)
+            cbar.set_label('Expression' if plot_type == 'exp' else 'GSS', fontsize=10)
+
+        # Save
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+        gc.collect()
+
+        return True
+    except Exception as e:
+        import traceback
+        return f"{str(e)}\n{traceback.format_exc()}"
+
+
 def prepare_report_data(config: QuickModeConfig):
     """
     Prepare and aggregate data for the interactive report.
@@ -387,8 +497,9 @@ def prepare_report_data(config: QuickModeConfig):
             import matplotlib.pyplot as plt
             plt.close(fig)
 
-        # 7.3 Pre-render Top Gene Diagnostic plots
-        # Based on user request: Choose one representative sample and parallelize over genes
+        # 7.3 Pre-render Top Gene Diagnostic plots (Multi-sample version)
+        # Uses AnnCollection to efficiently handle multi-sample expression data
+        # and caches top gene data in memory to speed up parallel rendering.
         trait_pcc_file = report_dir / "top_genes_pcc.csv"
 
         if config.sample_h5ad_dict is None:
@@ -396,79 +507,132 @@ def prepare_report_data(config: QuickModeConfig):
             config._process_h5ad_inputs()
 
         if trait_pcc_file.exists() and config.sample_h5ad_dict:
+            from anndata.experimental import AnnCollection
+            import scipy.sparse as sp
+
             top_genes_df = pd.read_csv(trait_pcc_file)
-
-            # Select first sample as representative
-            rep_sample_name = list(config.sample_h5ad_dict.keys())[0]
-            rep_h5ad_path = config.sample_h5ad_dict[rep_sample_name]
-
-            logger.info(f"Preparing representative sample {rep_sample_name} for diagnostic plots...")
-            adata_rep = ad.read_h5ad(rep_h5ad_path)
-            # Align naming convention and slice directly (known subset)
-            adata_rep.obs_names = adata_rep.obs_names.astype(str) + '|' + str(rep_sample_name)
-
-            is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
-            if is_count:
-                adata_rep = normalize_for_analysis(adata_rep, is_count, preserve_raw=False)
-
-            sample_metadata = metadata[metadata['sample_name'] == rep_sample_name]
-            sample_spots = sample_metadata['spot'].values
-
-            # Direct slicing using the prior that sample_spots is a subset
-            adata_rep_sub = adata_rep[sample_spots].copy()
-            coords_rep = adata_rep_sub.obsm[config.spatial_key or 'spatial'][:, :2]
-            adata_gss_sample = adata_gss[sample_spots]
-
-            # Pre-calculate point size and dimensions for the representative sample
-            (pixel_width, pixel_height), point_size = estimate_point_size_for_plot(coords_rep)
-
-            # Filter for top genes per trait for plotting
-            tasks = []
-
-            # Use configured top_corr_genes or default to 50
             top_n = getattr(config, 'top_corr_genes', 50)
+            
+            # Identify unique top genes across all traits to cache in memory
+            all_top_genes = top_genes_df.groupby('trait').head(top_n)['gene'].unique().tolist()
+            sample_names_sorted = sorted(config.sample_h5ad_dict.keys())
 
-            # Efficiently get top N genes for each trait
-            # top_genes_df contains ALL genes now.
-            # We iterate by trait to slice the top N.
+            logger.info(f"Loading {len(sample_names_sorted)} samples using AnnCollection and caching top {len(all_top_genes)} genes...")
+
+            # 1. Open all samples in backed mode
+            backed_adatas = {}
+            for sample_name in sample_names_sorted:
+                h5ad_path = config.sample_h5ad_dict[sample_name]
+                backed_adatas[sample_name] = ad.read_h5ad(h5ad_path, backed='r')
+
+            # 2. Create AnnCollection for expression data
+            collection = AnnCollection(backed_adatas, label='sample_name', join_vars='inner')
+            # Only process genes that are present in both Expression and GSS data
+            common_top_genes = [g for g in all_top_genes if g in collection.var_names and g in adata_gss.var_names]
+            
+            logger.info(f"Sub-selecting {len(common_top_genes)} common top genes into memory...")
+            
+            # Expression data aligned with common spots
+            adata_exp_trait = collection[:, common_top_genes].to_memory()
+            adata_exp_trait.obs_names = adata_exp_trait.obs_names.astype(str) + '|' + adata_exp_trait.obs['sample_name'].astype(str)
+            # Filter to analysis spots and ensure order matches
+            common_spots_in_exp = [s for s in common_spots if s in adata_exp_trait.obs_names]
+            adata_exp_trait = adata_exp_trait[common_spots_in_exp, :].copy()
+
+            # 3. Cache GSS data for the same top genes and spots
+            adata_gss_trait = adata_gss[common_spots_in_exp, common_top_genes].to_memory()
+
+            # 4. Fetch coordinates and spots once from metadata for all samples
+            # This metadata mapping should match common_spots_in_exp exactly
+            sample_data_cache = {}
+            for sample_name, group in metadata[metadata['spot'].isin(common_spots_in_exp)].groupby('sample_name'):
+                sample_data_cache[sample_name] = {
+                    'coords': group[['sx', 'sy']].values,
+                    'spots': group['spot'].values
+                }
+
+            # Calculate grid layout for report plots
+            n_samples = len(sample_names_sorted)
+            n_cols = min(4, n_samples)
+            n_rows = (n_samples + n_cols - 1) // n_cols
+
+            # 5. Collect tasks for multi-sample gene plots
+            tasks = []
             for trait, group in top_genes_df.groupby('trait'):
                 top_group = group.sort_values('PCC', ascending=False).head(top_n)
 
                 for _, row in top_group.iterrows():
                     gene = row['gene']
+                    if gene not in common_top_genes:
+                        continue
 
-                    # Expression task
-                    if gene in adata_rep_sub.var_names:
-                        exp_vals = adata_rep_sub[:, gene].X
-                        if hasattr(exp_vals, 'toarray'): exp_vals = exp_vals.toarray()
+                    exp_sample_data = []
+                    gss_sample_data = []
+
+                    for sample_name in sample_names_sorted:
+                        cache = sample_data_cache.get(sample_name)
+                        if cache is None:
+                            exp_sample_data.append((sample_name, None, None))
+                            gss_sample_data.append((sample_name, None, None))
+                            continue
+                        
+                        coords = cache['coords']
+                        spots = cache['spots']
+
+                        # Both are now perfectly aligned with spots in cache
+                        # We just need to slice them efficiently
+                        
+                        # Expression data
+                        exp_vals = adata_exp_trait[spots, gene].X
+                        if sp.issparse(exp_vals):
+                            exp_vals = exp_vals.toarray()
                         exp_vals = np.ravel(exp_vals)
+                        exp_sample_data.append((sample_name, coords, exp_vals))
 
-                    tasks.append({
-                        'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
-                        'coords': coords_rep, 'values': exp_vals,
-                        'output_path': gss_plot_dir / f"gene_{trait}_{gene}_exp_{rep_sample_name}.png",
-                        'title': f"{rep_sample_name} - {gene} Exp",
-                        'point_size': point_size, 'width': pixel_width, 'height': pixel_height
-                    })
-
-                    # GSS task
-                    if gene in adata_gss_sample.var_names:
-                        gss_vals = adata_gss_sample[:, gene].X
-                        if hasattr(gss_vals, 'toarray'): gss_vals = gss_vals.toarray()
+                        # GSS data
+                        gss_vals = adata_gss_trait[spots, gene].X
+                        if sp.issparse(gss_vals):
+                            gss_vals = gss_vals.toarray()
                         gss_vals = np.ravel(gss_vals)
+                        gss_sample_data.append((sample_name, coords, gss_vals))
 
+                    # Expression plot task
+                    if any(data[2] is not None for data in exp_sample_data):
                         tasks.append({
-                            'gene': gene, 'trait': trait, 'sample_name': rep_sample_name,
-                            'coords': coords_rep, 'values': gss_vals,
-                            'output_path': gss_plot_dir / f"gene_{trait}_{gene}_gss_{rep_sample_name}.png",
-                            'title': f"{rep_sample_name} - {gene} GSS",
-                            'point_size': point_size, 'width': pixel_width, 'height': pixel_height
+                            'gene': gene, 'trait': trait, 'plot_type': 'exp',
+                            'sample_data_list': exp_sample_data,
+                            'output_path': gss_plot_dir / f"gene_{trait}_{gene}_exp.png",
+                            'n_rows': n_rows, 'n_cols': n_cols,
+                            'subplot_width': 4.0, 'dpi': 150
                         })
 
+                    # GSS plot task
+                    if any(data[2] is not None for data in gss_sample_data):
+                        tasks.append({
+                            'gene': gene, 'trait': trait, 'plot_type': 'gss',
+                            'sample_data_list': gss_sample_data,
+                            'output_path': gss_plot_dir / f"gene_{trait}_{gene}_gss.png",
+                            'n_rows': n_rows, 'n_cols': n_cols,
+                            'subplot_width': 4.0, 'dpi': 150
+                        })
+
+            # 6. Cleanup and Execute
+            # Close backed adatas before starting parallel tasks
+            for ad_backed in backed_adatas.values():
+                if hasattr(ad_backed, 'file'):
+                    ad_backed.file.close()
+
             if tasks:
-                logger.info(f"Rendering {len(tasks)} diagnostic plots in parallel...")
+                logger.info(f"Rendering {len(tasks)} multi-sample diagnostic plots in parallel...")
                 with ProcessPoolExecutor(max_workers=min(len(tasks), 8)) as executor:
-                    executor.map(_render_gene_plot_task, tasks)
+                    results = list(executor.map(_render_multi_sample_gene_plot_task, tasks))
+
+                # Check for errors
+                errors = [r for r in results if r is not True]
+                if errors:
+                    logger.warning(f"{len(errors)} plots failed to render")
+                    for err in errors[:3]:
+                        logger.warning(f"  Error: {err}")
 
     except Exception as e:
         logger.warning(f"Failed to pre-render static plots: {e}")
