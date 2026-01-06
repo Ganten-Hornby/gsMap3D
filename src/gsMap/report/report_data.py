@@ -177,7 +177,6 @@ def prepare_report_data(config: QuickModeConfig):
 
     gene_stats_df.dropna(subset=['Median_GSS'], inplace=True)
 
-    del gss_df_temp
 
     for trait in traits:
         if trait not in ldsc_combined_df.columns:

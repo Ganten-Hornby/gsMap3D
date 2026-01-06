@@ -98,7 +98,7 @@
 
     <!-- Header -->
     <header class="gradient-header text-white shadow-lg sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex items-center justify-between h-14">
                 <div class="flex items-center gap-3">
                     <div class="bg-white/20 backdrop-blur-sm px-3 py-1 rounded-lg">
@@ -109,27 +109,36 @@
                         <p class="text-xs text-white/70">{{ generated_at }}</p>
                     </div>
                 </div>
-                <div class="text-sm text-white/80">v{{ gsmap_version }}</div>
+                <div class="flex items-center gap-4">
+                    <!-- Loading Indicator in header -->
+                    <span x-show="isLoading" class="inline-flex items-center text-sm text-white/80">
+                        <svg class="spinner -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none"
+                            viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        Loading...
+                    </span>
+                    <div class="text-sm text-white/80">v{{ gsmap_version }}</div>
+                </div>
             </div>
         </div>
     </header>
 
-    <!-- Main Content - Vertical Layout -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <!-- Layout: Sidebar + Main Content -->
+    <div class="flex min-h-[calc(100vh-3.5rem)]">
 
-        <!-- Debug info (hidden by default, shown if no data) -->
-        <div x-show="!dataLoaded" class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-            <p class="text-yellow-800 font-medium">Loading data...</p>
-            <p class="text-yellow-600 text-sm mt-1">If this message persists, please check that js_data/ folder exists
-                with the required .js files.</p>
-        </div>
+        <!-- ==================== SIDEBAR ==================== -->
+        <aside x-show="dataLoaded" class="w-64 bg-white border-r border-gray-200 flex-shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto">
+            <div class="p-4 space-y-6">
+                <!-- Sidebar Header -->
+                <div class="pb-3 border-b border-gray-200">
+                    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wider">Controls</h2>
+                </div>
 
-        <!-- ==================== GLOBAL CONTROLS ==================== -->
-        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-            <div class="flex flex-wrap items-end gap-4">
                 <!-- Trait Selector -->
-                <div class="flex-1 min-w-[180px]">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Trait</label>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Trait</label>
                     <select x-model="selectedTrait" @change="onTraitChange()"
                         class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
                         <template x-for="t in traits" :key="t">
@@ -139,8 +148,8 @@
                 </div>
 
                 <!-- Annotation Category Selector -->
-                <div class="flex-1 min-w-[180px]">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Annotation Category</label>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Annotation</label>
                     <select x-model="selectedAnnotationCategory"
                         class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
                         <template x-for="anno in annotations" :key="anno">
@@ -149,36 +158,83 @@
                     </select>
                 </div>
 
-                <!-- Gene Selector -->
-                <div class="flex-1 min-w-[200px]">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Top Gene (by PCC)</label>
+                <!-- Gene Selector (only top genes) -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Top Gene <span class="text-gray-400 font-normal">(<span x-text="topGenesDropdown.length"></span>)</span>
+                    </label>
                     <select x-model="selectedGene" @change="onGeneChange()"
                         class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
-                        <template x-for="g in topGenesList" :key="g.gene">
-                            <option :value="g.gene" x-text="g.gene + ' (' + (g.PCC ? g.PCC.toFixed(3) : 'N/A') + ')'">
-                            </option>
+                        <template x-for="g in topGenesDropdown" :key="g.gene">
+                            <option :value="g.gene" x-text="g.gene + ' (' + (g.PCC ? g.PCC.toFixed(3) : 'N/A') + ')'"></option>
                         </template>
                     </select>
                 </div>
 
-                <!-- Loading Indicator -->
-                <div class="flex-none">
-                    <span x-show="isLoading" class="inline-flex items-center text-sm text-primary-600">
-                        <svg class="spinner -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none"
-                            viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
-                            </circle>
-                            <path class="opacity-75" fill="currentColor"
-                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                        </svg>
-                        Loading...
-                    </span>
+                <!-- Summary Stats -->
+                <div class="pt-4 border-t border-gray-200">
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Summary</h3>
+                    <div class="space-y-2 text-sm">
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Traits</span>
+                            <span class="font-medium text-gray-900" x-text="traits.length"></span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Samples</span>
+                            <span class="font-medium text-gray-900" x-text="samples.length"></span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Annotations</span>
+                            <span class="font-medium text-gray-900" x-text="annotations.length"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section Navigation -->
+                <div class="pt-4 border-t border-gray-200">
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Sections</h3>
+                    <nav class="space-y-1">
+                        <button @click="sections.manhattan = true; $nextTick(() => document.getElementById('sec-manhattan')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            1. Manhattan Plot
+                        </button>
+                        <button @click="sections.gsmap = true; $nextTick(() => document.getElementById('sec-gsmap')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            2. LDSC Results
+                        </button>
+                        <button @click="sections.annotation = true; $nextTick(() => document.getElementById('sec-annotation')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            3. Annotations
+                        </button>
+                        <button @click="sections.genes = true; $nextTick(() => document.getElementById('sec-genes')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            4. Gene Analysis
+                        </button>
+                        <button @click="sections.cauchy = true; $nextTick(() => document.getElementById('sec-cauchy')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            5. Cauchy Results
+                        </button>
+                        <button @click="sections.info = true; $nextTick(() => document.getElementById('sec-info')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            6. Run Info
+                        </button>
+                    </nav>
                 </div>
             </div>
-        </div>
+        </aside>
+
+        <!-- ==================== MAIN CONTENT ==================== -->
+        <main class="flex-1 p-6 space-y-6 overflow-y-auto">
+
+            <!-- Debug info (hidden by default, shown if no data) -->
+            <div x-show="!dataLoaded" class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <p class="text-yellow-800 font-medium">Loading data...</p>
+                <p class="text-yellow-600 text-sm mt-1">If this message persists, please check that js_data/ folder exists
+                    with the required .js files.</p>
+            </div>
 
         <!-- ==================== SECTION 1: MANHATTAN PLOT ==================== -->
-        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div id="sec-manhattan" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                 @click="sections.manhattan = !sections.manhattan">
                 <div>
@@ -197,7 +253,7 @@
         </div>
 
         <!-- ==================== SECTION 2: gsMap LDSC Results ==================== -->
-        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div id="sec-gsmap" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                 @click="sections.gsmap = !sections.gsmap">
                 <div>
@@ -218,7 +274,7 @@
         </div>
 
         <!-- ==================== SECTION 3: Annotation Distribution ==================== -->
-        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div id="sec-annotation" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                 @click="sections.annotation = !sections.annotation">
                 <div>
@@ -241,7 +297,7 @@
         </div>
 
         <!-- ==================== SECTION 4: Gene Analysis ==================== -->
-        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div id="sec-genes" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                 @click="sections.genes = !sections.genes">
                 <div>
@@ -341,7 +397,7 @@
         </div>
 
         <!-- ==================== SECTION 5: CAUCHY COMBINATION ==================== -->
-        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div id="sec-cauchy" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                 @click="sections.cauchy = !sections.cauchy">
                 <div>
@@ -422,7 +478,7 @@
         </div>
 
         <!-- ==================== SECTION 6: RUN INFO ==================== -->
-        <div x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div id="sec-info" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                 @click="sections.info = !sections.info">
                 <div>
@@ -459,11 +515,12 @@
             </div>
         </div>
 
-    </main>
+        </main>
+    </div><!-- End of flex layout -->
 
     <!-- Footer -->
-    <footer class="bg-white border-t border-gray-200 mt-8">
-        <div class="max-w-7xl mx-auto px-4 py-3">
+    <footer class="bg-white border-t border-gray-200">
+        <div class="max-w-full mx-auto px-4 py-3">
             <p class="text-center text-sm text-gray-500">gsMap Report | Version {{ gsmap_version }}</p>
         </div>
     </footer>
@@ -581,6 +638,11 @@
                         offsetY: startIdx * this.geneTableRowHeight,
                         totalCount: allData.length
                     };
+                },
+
+                // Dropdown list: only top N genes (for sidebar selector)
+                get topGenesDropdown() {
+                    return (this.topGenesList || []).filter(g => g.isTop);
                 },
 
                 // Memoized: filtered cauchy table
