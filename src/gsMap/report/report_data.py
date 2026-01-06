@@ -428,6 +428,7 @@ def _prepare_3d_visualization(
     """
     try:
         import spatialvista as spv
+        from ipywidgets import embed
         from ipywidgets.embed import embed_minimal_html
     except ImportError:
         logger.warning("spatialvista or ipywidgets not installed. Skipping 3D visualization.")
@@ -456,30 +457,23 @@ def _prepare_3d_visualization(
     # X matrix can be empty since we're not showing genes
     n_spots = len(metadata_sub)
     adata_vis = ad.AnnData(
-        X=sp.csr_matrix((n_spots, 0), dtype=np.float32),
-        obs=pd.DataFrame(index=metadata_sub['spot'].values if 'spot' in metadata_sub.columns else metadata_sub.index)
+        X=sp.csr_matrix((n_spots, 1), dtype=np.float32),
+        obs=metadata_sub.set_index('spot')
     )
-
     # Set spatial coordinates
-    spatial_coords = metadata_sub[['3d_x', '3d_y', '3d_z']].values
-    adata_vis.obsm['spatial'] = spatial_coords
+    adata_vis.obsm['spatial_3d'] = metadata_sub[['3d_x', '3d_y', '3d_z']].values
+    adata_vis.obsm['spatial_2d'] = metadata_sub[['sx', 'sy']].values
 
-    # Add sample_name as section
-    adata_vis.obs['sample_name'] = metadata_sub['sample_name'].values
+    # let trait col float32
+    adata_vis.obs = adata_vis.obs.astype({trait: np.float32 for trait in traits if trait in adata_vis.obs.columns})
+    # Add traits as continuous values
+    continuous_cols = traits
 
     # Add annotations (categorical)
     annotation_cols = []
     for anno in config.annotation_list:
         if anno in metadata_sub.columns:
-            adata_vis.obs[anno] = metadata_sub[anno].values.astype(str)
             annotation_cols.append(anno)
-
-    # Add traits as continuous values
-    continuous_cols = []
-    for trait in traits:
-        if trait in metadata_sub.columns:
-            adata_vis.obs[trait] = metadata_sub[trait].values.astype(float)
-            continuous_cols.append(trait)
 
     # Use first annotation as color, rest as additional annotations
     color_col = annotation_cols[0] if annotation_cols else 'sample_name'
@@ -497,7 +491,7 @@ def _prepare_3d_visualization(
             continuous=continuous_cols if continuous_cols else None,
             genes=None,
             section='sample_name',
-            mode='3D'
+            mode='3D',
         )
 
         # Set widget size
@@ -506,11 +500,12 @@ def _prepare_3d_visualization(
         widget.layout.height = '800px'
 
         # Save to HTML
-        html_path = report_dir / "spatial_3d_widget.html"
+        embed.DEFAULT_EMBED_REQUIREJS_URL = 'https://unpkg.com/@jupyter-widgets/html-manager@*/dist/embed-amd.js'
+        html_path = report_dir / "spv_spatial_3d_widget.html"
         embed_minimal_html(
             str(html_path),
             views=[widget],
-            title="gsMap 3D Spatial Visualization",
+            title="gsMap 3D Visualization",
             drop_defaults=False
         )
 
@@ -1034,7 +1029,8 @@ def _render_gene_diagnostic_plots(
 
         is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
         if is_count:
-            adata_rep = normalize_for_analysis(adata_rep, is_count, preserve_raw=False)
+            sc.pp.normalize_total(adata_rep, target_sum=1e4)
+            sc.pp.log1p(adata_rep)
 
         sample_metadata = metadata[metadata['sample_name'] == sample_name]
         sample_spots = sample_metadata[sample_metadata['spot'].isin(common_spots)]['spot'].values
@@ -1266,6 +1262,21 @@ def _copy_js_assets(report_dir: Path):
     if plotly_js_src.exists() and not plotly_dest.exists():
         shutil.copy2(plotly_js_src, plotly_dest)
         logger.info("Copied plotly.min.js from plotly package")
+
+    # Copy anywidget resources
+    import anywidget
+    anywidget_src_dir = Path(anywidget.__file__).parent / "nbextension"
+    anywidget_src_dir_js = anywidget_src_dir.glob("*.js")
+
+    # should copy to report dir
+    anywidget_index_file = anywidget_src_dir / "index.js"
+    if anywidget_index_file.exists():
+        shutil.copy2(anywidget_index_file, report_dir / "anywidget.js")
+    # for js_file in anywidget_src_dir_js:
+    #     dest = js_lib_dir / js_file.name
+    #     if not dest.exists():
+    #         shutil.copy2(js_file, dest)
+    #         logger.info(f"Copied AnyWidget asset {js_file.name}")
 
 
 # =============================================================================
