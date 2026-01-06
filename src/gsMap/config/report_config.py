@@ -50,10 +50,6 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     def visualization_result_dir(self) -> Path:
         return self.project_dir / "report" / self.project_name / (self.trait_name or "multi_trait")
 
-    # Settings for the viewer
-    port: Annotated[int, typer.Option(help="Port to serve the interactive report on")] = 5006
-    browser: Annotated[bool, typer.Option(help="Whether to open the browser automatically")] = True
-
 
     def __post_init__(self):
         CauchyCombinationConfig.__post_init__(self)
