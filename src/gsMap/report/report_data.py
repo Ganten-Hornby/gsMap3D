@@ -507,45 +507,66 @@ def prepare_report_data(config: QuickModeConfig):
             config._process_h5ad_inputs()
 
         if trait_pcc_file.exists() and config.sample_h5ad_dict:
-            from anndata.experimental import AnnCollection
             import scipy.sparse as sp
+            import gc
 
             top_genes_df = pd.read_csv(trait_pcc_file)
             top_n = getattr(config, 'top_corr_genes', 50)
             
-            # Identify unique top genes across all traits to cache in memory
+            # Identify unique top genes across all traits to cache in memory (pcc_genes union)
             all_top_genes = top_genes_df.groupby('trait').head(top_n)['gene'].unique().tolist()
             sample_names_sorted = sorted(config.sample_h5ad_dict.keys())
 
-            logger.info(f"Loading {len(sample_names_sorted)} samples using AnnCollection and caching top {len(all_top_genes)} genes...")
+            logger.info(f"Identifying shared genes across {len(sample_names_sorted)} samples and GSS...")
+            common_top_genes = all_top_genes.copy()
 
-            # 1. Open all samples in backed mode
-            backed_adatas = {}
+            logger.info(f"Sub-selecting {len(common_top_genes)} common top genes into memory...")
+
+            # 2. Iterate and process each sample (Expression data)
+            # Using full load and normalization for better data quality in distribution plots
+            exp_chunks = []
             for sample_name in sample_names_sorted:
                 h5ad_path = config.sample_h5ad_dict[sample_name]
-                backed_adatas[sample_name] = ad.read_h5ad(h5ad_path, backed='r')
+                logger.info(f"Preparing sample {sample_name} for diagnostic plots...")
+                adata_rep = ad.read_h5ad(h5ad_path)
+                # Align naming convention and slice directly
+                suffix = f"|{sample_name}"
+                if not str(adata_rep.obs_names[0]).endswith(suffix):
+                    adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
 
-            # 2. Create AnnCollection for expression data
-            collection = AnnCollection(backed_adatas, label='sample_name', join_vars='inner')
-            # Only process genes that are present in both Expression and GSS data
-            common_top_genes = [g for g in all_top_genes if g in collection.var_names and g in adata_gss.var_names]
-            
-            logger.info(f"Sub-selecting {len(common_top_genes)} common top genes into memory...")
-            
-            # Expression data aligned with common spots
-            adata_exp_trait = collection[:, common_top_genes].to_memory()
-            adata_exp_trait.obs_names = adata_exp_trait.obs_names.astype(str) + '|' + adata_exp_trait.obs['sample_name'].astype(str)
-            # Filter to analysis spots and ensure order matches
-            common_spots_in_exp = [s for s in common_spots if s in adata_exp_trait.obs_names]
-            adata_exp_trait = adata_exp_trait[common_spots_in_exp, :].copy()
+                # Setup data layer and normalize if needed
+                is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
+                if is_count:
+                    adata_rep = normalize_for_analysis(adata_rep, is_count, preserve_raw=False)
+
+                # Get spots for this sample that are in common_spots
+                sample_metadata = metadata[metadata['sample_name'] == sample_name]
+                sample_spots = sample_metadata[sample_metadata['spot'].isin(common_spots)]['spot'].values
+                
+                # Direct slicing using the prior that sample_spots is a subset
+                adata_rep_sub = adata_rep[sample_spots, common_top_genes].copy()
+                adata_rep_sub.obs['sample_name'] = sample_name
+                exp_chunks.append(adata_rep_sub)
+                
+                # Manual memory cleanup
+                del adata_rep
+                gc.collect()
+
+            if not exp_chunks:
+                raise ValueError("No expression data found for the selected spots across samples.")
+
+            # Combine all chunks into one memory-resident AnnData
+            adata_exp_trait = ad.concat(exp_chunks, axis=0)
+            # Ensure alignment with analysis spots
+            adata_exp_trait = adata_exp_trait[common_spots, :].copy()
 
             # 3. Cache GSS data for the same top genes and spots
-            adata_gss_trait = adata_gss[common_spots_in_exp, common_top_genes].to_memory()
+            adata_gss_trait = adata_gss[common_spots, common_top_genes].to_memory()
 
             # 4. Fetch coordinates and spots once from metadata for all samples
-            # This metadata mapping should match common_spots_in_exp exactly
+            # This metadata mapping should match common_spots exactly
             sample_data_cache = {}
-            for sample_name, group in metadata[metadata['spot'].isin(common_spots_in_exp)].groupby('sample_name'):
+            for sample_name, group in metadata[metadata['spot'].isin(common_spots)].groupby('sample_name'):
                 sample_data_cache[sample_name] = {
                     'coords': group[['sx', 'sy']].values,
                     'spots': group['spot'].values
@@ -580,7 +601,7 @@ def prepare_report_data(config: QuickModeConfig):
                         spots = cache['spots']
 
                         # Both are now perfectly aligned with spots in cache
-                        # We just need to slice them efficiently
+                        # We directly slice them as they are in memory
                         
                         # Expression data
                         exp_vals = adata_exp_trait[spots, gene].X
@@ -615,13 +636,6 @@ def prepare_report_data(config: QuickModeConfig):
                             'n_rows': n_rows, 'n_cols': n_cols,
                             'subplot_width': 4.0, 'dpi': 150
                         })
-
-            # 6. Cleanup and Execute
-            # Close backed adatas before starting parallel tasks
-            for ad_backed in backed_adatas.values():
-                if hasattr(ad_backed, 'file'):
-                    ad_backed.file.close()
-
             if tasks:
                 logger.info(f"Rendering {len(tasks)} multi-sample diagnostic plots in parallel...")
                 with ProcessPoolExecutor(max_workers=min(len(tasks), 8)) as executor:
