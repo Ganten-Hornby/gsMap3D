@@ -1,7 +1,4 @@
 import logging
-import os
-import shutil
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -15,38 +12,37 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
     """
     Main entry point for report generation.
     Prepares data and saves the interactive report as a standalone Alpine+Tailwind HTML folder.
+
+    Output structure:
+        project_dir/gsMap_Report/
+        ├── index.html
+        ├── spot_metadata.csv
+        ├── cauchy_results.csv
+        ├── gene_list.csv
+        ├── gene_trait_correlation.csv
+        ├── {trait}_gene_diagnostic.csv
+        ├── manhattan_data/
+        ├── spatial_plots/
+        ├── gene_diagnostic_plots/
+        ├── annotation_plots/
+        ├── js_lib/
+        └── js_data/
     """
     logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")
-    
-    # 1. Prepare data (CSVs and PNGs)
-    data_dir = prepare_report_data(config)
 
-    # Save run_parameters to data_dir for future use
+    # 1. Prepare data (CSVs and PNGs) - writes directly to config.report_dir
+    report_dir = prepare_report_data(config)
+
+    # 2. Save run_parameters for future reference
     if run_parameters:
         import yaml
-        with open(data_dir / "execution_summary.yaml", "w") as f:
+        with open(report_dir / "execution_summary.yaml", "w") as f:
             yaml.dump(run_parameters, f)
-            
-    # 2. Export Data as JS Modules
-    export_data_as_js_modules(data_dir)
-    
-    # 3. Setup output directory
-    report_output_dir = config.get_report_dir("gsMap_Report")
-    report_output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 4. Copy all prepared data files to the report output dir
-    logger.info(f"Copying data to {report_output_dir}...")
-    # Copy everything including the new js_data folder
-    for item in data_dir.iterdir():
-        dest = report_output_dir / item.name
-        if item.is_file():
-            shutil.copy2(item, dest)
-        elif item.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(item, dest)
 
-    # 5. Render the Jinja2 template (Modern)
+    # 3. Export Data as JS Modules
+    export_data_as_js_modules(report_dir)
+
+    # 4. Render the Jinja2 template
     template_path = Path(__file__).parent / "static" / "template.html"
     if not template_path.exists():
         logger.error(f"Template file not found at {template_path}")
@@ -56,24 +52,24 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         from jinja2 import Template
         with open(template_path, "r", encoding="utf-8") as f:
             template = Template(f.read())
-        
-        # Prepare context (Metadata is now in JS, but we still need title etc.)
+
+        # Prepare context
         context = {
             "title": f"gsMap Report - {config.project_name}",
             "project_name": config.project_name,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "gsmap_version": getattr(gsMap, "__version__", "unknown"),
         }
-        
+
         rendered_html = template.render(**context)
-        
-        report_file = report_output_dir / "index.html"
+
+        report_file = report_dir / "index.html"
         with open(report_file, "w", encoding="utf-8") as f:
             f.write(rendered_html)
-            
+
         logger.info(f"Report generated successfully! Saved at {report_file}")
         logger.info(f"You can view it by opening {report_file} in a browser or by running 'gsmap report-view'.")
-        
+
     except ImportError:
         logger.error("Jinja2 not found. Please install it with 'pip install jinja2'.")
     except Exception as e:

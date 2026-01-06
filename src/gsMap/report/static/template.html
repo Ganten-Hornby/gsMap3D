@@ -114,8 +114,10 @@
                     <span x-show="isLoading" class="inline-flex items-center text-sm text-white/80">
                         <svg class="spinner -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none"
                             viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
+                            </circle>
+                            <path class="opacity-75" fill="currentColor"
+                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                         </svg>
                         Loading...
                     </span>
@@ -129,7 +131,8 @@
     <div class="flex min-h-[calc(100vh-3.5rem)]">
 
         <!-- ==================== SIDEBAR ==================== -->
-        <aside x-show="dataLoaded" class="w-64 bg-white border-r border-gray-200 flex-shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto">
+        <aside x-show="dataLoaded"
+            class="w-64 bg-white border-r border-gray-200 flex-shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto">
             <div class="p-4 space-y-6">
                 <!-- Sidebar Header -->
                 <div class="pb-3 border-b border-gray-200">
@@ -161,12 +164,14 @@
                 <!-- Gene Selector (only top genes) -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">
-                        Top Gene <span class="text-gray-400 font-normal">(<span x-text="topGenesDropdown.length"></span>)</span>
+                        Top Gene <span class="text-gray-400 font-normal">(<span
+                                x-text="topGenesDropdown.length"></span>)</span>
                     </label>
                     <select x-model="selectedGene" @change="onGeneChange()"
                         class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
                         <template x-for="g in topGenesDropdown" :key="g.gene">
-                            <option :value="g.gene" x-text="g.gene + ' (' + (g.PCC ? g.PCC.toFixed(3) : 'N/A') + ')'"></option>
+                            <option :value="g.gene" x-text="g.gene + ' (' + (g.PCC ? g.PCC.toFixed(3) : 'N/A') + ')'">
+                            </option>
                         </template>
                     </select>
                 </div>
@@ -194,27 +199,33 @@
                 <div class="pt-4 border-t border-gray-200">
                     <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Sections</h3>
                     <nav class="space-y-1">
-                        <button @click="sections.manhattan = true; $nextTick(() => document.getElementById('sec-manhattan')?.scrollIntoView({behavior: 'smooth'}))"
+                        <button
+                            @click="sections.manhattan = true; $nextTick(() => document.getElementById('sec-manhattan')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             1. Manhattan Plot
                         </button>
-                        <button @click="sections.gsmap = true; $nextTick(() => document.getElementById('sec-gsmap')?.scrollIntoView({behavior: 'smooth'}))"
+                        <button
+                            @click="sections.gsmap = true; $nextTick(() => document.getElementById('sec-gsmap')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             2. LDSC Results
                         </button>
-                        <button @click="sections.annotation = true; $nextTick(() => document.getElementById('sec-annotation')?.scrollIntoView({behavior: 'smooth'}))"
+                        <button
+                            @click="sections.annotation = true; $nextTick(() => document.getElementById('sec-annotation')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             3. Annotations
                         </button>
-                        <button @click="sections.genes = true; $nextTick(() => document.getElementById('sec-genes')?.scrollIntoView({behavior: 'smooth'}))"
+                        <button
+                            @click="sections.genes = true; $nextTick(() => document.getElementById('sec-genes')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             4. Gene Analysis
                         </button>
-                        <button @click="sections.cauchy = true; $nextTick(() => document.getElementById('sec-cauchy')?.scrollIntoView({behavior: 'smooth'}))"
+                        <button
+                            @click="sections.cauchy = true; $nextTick(() => document.getElementById('sec-cauchy')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             5. Cauchy Results
                         </button>
-                        <button @click="sections.info = true; $nextTick(() => document.getElementById('sec-info')?.scrollIntoView({behavior: 'smooth'}))"
+                        <button
+                            @click="sections.info = true; $nextTick(() => document.getElementById('sec-info')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             6. Run Info
                         </button>
@@ -229,295 +240,315 @@
             <!-- Debug info (hidden by default, shown if no data) -->
             <div x-show="!dataLoaded" class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                 <p class="text-yellow-800 font-medium">Loading data...</p>
-                <p class="text-yellow-600 text-sm mt-1">If this message persists, please check that js_data/ folder exists
+                <p class="text-yellow-600 text-sm mt-1">If this message persists, please check that js_data/ folder
+                    exists
                     with the required .js files.</p>
             </div>
 
-        <!-- ==================== SECTION 1: MANHATTAN PLOT ==================== -->
-        <div id="sec-manhattan" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                @click="sections.manhattan = !sections.manhattan">
-                <div>
-                    <h2 class="text-lg font-semibold text-gray-800">1. Manhattan Plot</h2>
-                    <p class="text-sm text-gray-500">GWAS results. Red = top PCC genes. Green diamond = selected gene.
+            <!-- ==================== SECTION 1: MANHATTAN PLOT ==================== -->
+            <div id="sec-manhattan" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.manhattan = !sections.manhattan">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">1. Manhattan Plot</h2>
+                        <p class="text-sm text-gray-500">GWAS results. Red = top PCC genes. Green diamond = selected
+                            gene.
+                        </p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform"
+                        :class="sections.manhattan ? 'rotate-180' : ''" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+                <div class="section-content" :class="sections.manhattan ? 'expanded' : 'collapsed'">
+                    <div id="manhattanPlot" class="plot-container w-full"></div>
+                </div>
+            </div>
+
+            <!-- ==================== SECTION 2: gsMap LDSC Results ==================== -->
+            <div id="sec-gsmap" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.gsmap = !sections.gsmap">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">2. gsMap LDSC Results - <span
+                                x-text="selectedTrait"></span></h2>
+                        <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values across samples.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.gsmap ? 'rotate-180' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+                <div class="section-content p-4" :class="sections.gsmap ? 'expanded' : 'collapsed'">
+                    <img x-show="selectedTrait" :src="'spatial_plots/ldsc_' + selectedTrait + '.png'"
+                        :alt="selectedTrait" class="w-full h-auto max-h-[700px] object-contain mx-auto" loading="lazy"
+                        onerror="this.style.display='none';">
+                    <p x-show="!selectedTrait" class="text-center text-gray-500 py-8">Select a trait to view the plot.
                     </p>
                 </div>
-                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.manhattan ? 'rotate-180' : ''"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
             </div>
-            <div class="section-content" :class="sections.manhattan ? 'expanded' : 'collapsed'">
-                <div id="manhattanPlot" class="plot-container w-full"></div>
-            </div>
-        </div>
 
-        <!-- ==================== SECTION 2: gsMap LDSC Results ==================== -->
-        <div id="sec-gsmap" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                @click="sections.gsmap = !sections.gsmap">
-                <div>
-                    <h2 class="text-lg font-semibold text-gray-800">2. gsMap LDSC Results - <span
-                            x-text="selectedTrait"></span></h2>
-                    <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values across samples.</p>
+            <!-- ==================== SECTION 3: Annotation Distribution ==================== -->
+            <div id="sec-annotation" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.annotation = !sections.annotation">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">3. Annotation Distribution - <span
+                                x-text="selectedAnnotationCategory"></span></h2>
+                        <p class="text-sm text-gray-500">Spatial distribution of annotations across samples.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform"
+                        :class="sections.annotation ? 'rotate-180' : ''" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
                 </div>
-                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.gsmap ? 'rotate-180' : ''"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
+                <div class="section-content p-4" :class="sections.annotation ? 'expanded' : 'collapsed'">
+                    <img x-show="selectedAnnotationCategory"
+                        :src="'annotation_plots/anno_' + selectedAnnotationCategory + '.png'"
+                        :alt="selectedAnnotationCategory" class="w-full h-auto max-h-[700px] object-contain mx-auto"
+                        loading="lazy" onerror="this.style.display='none';">
+                    <p x-show="!selectedAnnotationCategory" class="text-center text-gray-500 py-8">Select an annotation
+                        category to view the plot.</p>
+                </div>
             </div>
-            <div class="section-content p-4" :class="sections.gsmap ? 'expanded' : 'collapsed'">
-                <img x-show="selectedTrait" :src="'gsmap_plot/ldsc_' + selectedTrait + '.png'" :alt="selectedTrait"
-                    class="w-full h-auto max-h-[700px] object-contain mx-auto" loading="lazy" onerror="this.style.display='none';">
-                <p x-show="!selectedTrait" class="text-center text-gray-500 py-8">Select a trait to view the plot.</p>
-            </div>
-        </div>
 
-        <!-- ==================== SECTION 3: Annotation Distribution ==================== -->
-        <div id="sec-annotation" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                @click="sections.annotation = !sections.annotation">
-                <div>
-                    <h2 class="text-lg font-semibold text-gray-800">3. Annotation Distribution - <span
-                            x-text="selectedAnnotationCategory"></span></h2>
-                    <p class="text-sm text-gray-500">Spatial distribution of annotations across samples.</p>
+            <!-- ==================== SECTION 4: Gene Analysis ==================== -->
+            <div id="sec-genes" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.genes = !sections.genes">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">4. Gene Analysis - <span
+                                x-text="selectedGene"></span></h2>
+                        <p class="text-sm text-gray-500">Gene expression and GSS distribution plots across all samples.
+                        </p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.genes ? 'rotate-180' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
                 </div>
-                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.annotation ? 'rotate-180' : ''"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
-            </div>
-            <div class="section-content p-4" :class="sections.annotation ? 'expanded' : 'collapsed'">
-                <img x-show="selectedAnnotationCategory"
-                    :src="'annotations/anno_' + selectedAnnotationCategory + '.png'" :alt="selectedAnnotationCategory"
-                    class="w-full h-auto max-h-[700px] object-contain mx-auto" loading="lazy" onerror="this.style.display='none';">
-                <p x-show="!selectedAnnotationCategory" class="text-center text-gray-500 py-8">Select an annotation
-                    category to view the plot.</p>
-            </div>
-        </div>
+                <div class="section-content" :class="sections.genes ? 'expanded' : 'collapsed'">
+                    <!-- Gene Plot Controls -->
+                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex items-center gap-6">
+                        <span class="text-sm font-medium text-gray-700">View:</span>
+                        <label class="inline-flex items-center cursor-pointer">
+                            <input type="radio" name="genePlotType" value="exp" x-model="genePlotType"
+                                class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                            <span class="ml-2 text-sm text-gray-700">Expression</span>
+                        </label>
+                        <label class="inline-flex items-center cursor-pointer">
+                            <input type="radio" name="genePlotType" value="gss" x-model="genePlotType"
+                                class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                            <span class="ml-2 text-sm text-gray-700">GSS</span>
+                        </label>
+                    </div>
 
-        <!-- ==================== SECTION 4: Gene Analysis ==================== -->
-        <div id="sec-genes" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                @click="sections.genes = !sections.genes">
-                <div>
-                    <h2 class="text-lg font-semibold text-gray-800">4. Gene Analysis - <span
-                            x-text="selectedGene"></span></h2>
-                    <p class="text-sm text-gray-500">Gene expression and GSS distribution plots across all samples.</p>
-                </div>
-                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.genes ? 'rotate-180' : ''"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
-            </div>
-            <div class="section-content" :class="sections.genes ? 'expanded' : 'collapsed'">
-                <!-- Gene Plot Controls -->
-                <div class="p-4 bg-gray-50 border-b border-gray-200 flex items-center gap-6">
-                    <span class="text-sm font-medium text-gray-700">View:</span>
-                    <label class="inline-flex items-center cursor-pointer">
-                        <input type="radio" name="genePlotType" value="exp" x-model="genePlotType"
-                            class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                        <span class="ml-2 text-sm text-gray-700">Expression</span>
-                    </label>
-                    <label class="inline-flex items-center cursor-pointer">
-                        <input type="radio" name="genePlotType" value="gss" x-model="genePlotType"
-                            class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                        <span class="ml-2 text-sm text-gray-700">GSS</span>
-                    </label>
-                </div>
-
-                <!-- Gene Plot (Single view, switches between Expression and GSS) -->
-                <div class="p-4">
-                    <div class="border border-gray-200 rounded-lg overflow-hidden">
-                        <div class="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                            <h3 class="font-medium text-gray-700" x-text="genePlotType === 'exp' ? 'Gene Expression (All Samples)' : 'GSS Distribution (All Samples)'"></h3>
-                        </div>
-                        <div class="p-2">
-                            <img x-show="selectedGene && selectedTrait" :src="getGenePlotPath()"
-                                :alt="selectedGene + ' ' + (genePlotType === 'exp' ? 'expression' : 'GSS')"
-                                class="w-full h-auto object-contain max-h-[800px] mx-auto"
-                                loading="lazy" onerror="this.style.display='none';">
-                            <p x-show="!selectedGene || !selectedTrait" class="text-center text-gray-400 py-8 text-sm">
-                                Select a gene to view the plot</p>
+                    <!-- Gene Plot (Single view, switches between Expression and GSS) -->
+                    <div class="p-4">
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                                <h3 class="font-medium text-gray-700"
+                                    x-text="genePlotType === 'exp' ? 'Gene Expression (All Samples)' : 'GSS Distribution (All Samples)'">
+                                </h3>
+                            </div>
+                            <div class="p-2">
+                                <img x-show="selectedGene && selectedTrait" :src="getGenePlotPath()"
+                                    :alt="selectedGene + ' ' + (genePlotType === 'exp' ? 'expression' : 'GSS')"
+                                    class="w-full h-auto object-contain max-h-[800px] mx-auto" loading="lazy"
+                                    onerror="this.style.display='none';">
+                                <p x-show="!selectedGene || !selectedTrait"
+                                    class="text-center text-gray-400 py-8 text-sm">
+                                    Select a gene to view the plot</p>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Gene Diagnostic Table -->
-                <div class="border-t border-gray-200">
-                    <div class="p-4 bg-gray-50 flex justify-between items-center">
-                        <h3 class="font-medium text-gray-700">Gene Diagnostic Table</h3>
-                        <input type="text" x-model.debounce.300ms="geneSearchQuery" placeholder="Search genes..."
-                            class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border w-48">
-                    </div>
-                    <div class="overflow-x-auto overflow-y-auto custom-scrollbar max-h-[400px]"
-                         @scroll="geneTableScroll = $event.target.scrollTop">
-                        <div :style="{ minHeight: virtualGeneTable.totalHeight + 'px', position: 'relative' }">
-                            <table class="min-w-full divide-y divide-gray-200"
-                                   :style="{ position: 'absolute', top: virtualGeneTable.offsetY + 'px', left: 0, right: 0 }">
-                                <thead class="bg-gray-50">
-                                    <tr>
-                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                            @click="sortGenesBy('gene')">Gene</th>
-                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                            @click="sortGenesBy('PCC')">PCC</th>
-                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                            @click="sortGenesBy('Annotation')">Annotation</th>
-                                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                            @click="sortGenesBy('Median_GSS')">Median GSS</th>
-                                    </tr>
-                                </thead>
-                                <tbody class="bg-white divide-y divide-gray-200">
-                                    <template x-for="row in virtualGeneTable.items" :key="row.gene">
-                                        <tr class="transition-colors duration-150"
-                                            :style="{ height: geneTableRowHeight + 'px' }"
-                                            :class="{
+                    <!-- Gene Diagnostic Table -->
+                    <div class="border-t border-gray-200">
+                        <div class="p-4 bg-gray-50 flex justify-between items-center">
+                            <h3 class="font-medium text-gray-700">Gene Diagnostic Table</h3>
+                            <input type="text" x-model.debounce.300ms="geneSearchQuery" placeholder="Search genes..."
+                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border w-48">
+                        </div>
+                        <div class="overflow-x-auto overflow-y-auto custom-scrollbar max-h-[400px]"
+                            @scroll="geneTableScroll = $event.target.scrollTop">
+                            <div :style="{ minHeight: virtualGeneTable.totalHeight + 'px', position: 'relative' }">
+                                <table class="min-w-full divide-y divide-gray-200"
+                                    :style="{ position: 'absolute', top: virtualGeneTable.offsetY + 'px', left: 0, right: 0 }">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                                @click="sortGenesBy('gene')">Gene</th>
+                                            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                                @click="sortGenesBy('PCC')">PCC</th>
+                                            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                                @click="sortGenesBy('Annotation')">Annotation</th>
+                                            <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                                @click="sortGenesBy('Median_GSS')">Median GSS</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-200">
+                                        <template x-for="row in virtualGeneTable.items" :key="row.gene">
+                                            <tr class="transition-colors duration-150"
+                                                :style="{ height: geneTableRowHeight + 'px' }" :class="{
                                                 'bg-primary-50': selectedGene === row.gene,
                                                 'cursor-pointer hover:bg-gray-50': row.isTop,
                                                 'cursor-not-allowed opacity-60 bg-gray-50': !row.isTop
                                             }" @click="if(row.isTop) { selectedGene = row.gene; onGeneChange(); }">
-                                            <td class="px-4 py-2 text-sm text-gray-900"
-                                                :class="{'font-bold': row.isTop, 'font-medium': !row.isTop}"
-                                                x-text="row.gene"></td>
-                                            <td class="px-4 py-2 text-sm text-gray-600 font-mono"
-                                                :class="{'font-bold': row.isTop}"
-                                                x-text="row.PCC ? row.PCC.toFixed(4) : 'N/A'"></td>
-                                            <td class="px-4 py-2 text-sm"><span
-                                                    class="px-2 py-0.5 text-xs rounded-full bg-gray-100"
-                                                    x-text="row.Annotation || 'N/A'"></span></td>
-                                            <td class="px-4 py-2 text-sm text-gray-600 font-mono"
-                                                x-text="row.Median_GSS ? row.Median_GSS.toFixed(4) : 'N/A'"></td>
-                                        </tr>
-                                    </template>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div x-show="virtualGeneTable.totalCount > 0" class="sticky bottom-0 bg-gray-100 text-xs text-gray-500 p-2 text-center border-t">
-                            Showing <span x-text="virtualGeneTable.items.length"></span> of <span x-text="virtualGeneTable.totalCount"></span> genes
+                                                <td class="px-4 py-2 text-sm text-gray-900"
+                                                    :class="{'font-bold': row.isTop, 'font-medium': !row.isTop}"
+                                                    x-text="row.gene"></td>
+                                                <td class="px-4 py-2 text-sm text-gray-600 font-mono"
+                                                    :class="{'font-bold': row.isTop}"
+                                                    x-text="row.PCC ? row.PCC.toFixed(4) : 'N/A'"></td>
+                                                <td class="px-4 py-2 text-sm"><span
+                                                        class="px-2 py-0.5 text-xs rounded-full bg-gray-100"
+                                                        x-text="row.Annotation || 'N/A'"></span></td>
+                                                <td class="px-4 py-2 text-sm text-gray-600 font-mono"
+                                                    x-text="row.Median_GSS ? row.Median_GSS.toFixed(4) : 'N/A'"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div x-show="virtualGeneTable.totalCount > 0"
+                                class="sticky bottom-0 bg-gray-100 text-xs text-gray-500 p-2 text-center border-t">
+                                Showing <span x-text="virtualGeneTable.items.length"></span> of <span
+                                    x-text="virtualGeneTable.totalCount"></span> genes
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== SECTION 5: CAUCHY COMBINATION ==================== -->
-        <div id="sec-cauchy" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                @click="sections.cauchy = !sections.cauchy">
-                <div>
-                    <h2 class="text-lg font-semibold text-gray-800">5. Cauchy Combination Results</h2>
-                    <p class="text-sm text-gray-500">Statistical significance of annotations. Red = p &lt; 0.05</p>
-                </div>
-                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.cauchy ? 'rotate-180' : ''"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
-            </div>
-            <div class="section-content" :class="sections.cauchy ? 'expanded' : 'collapsed'">
-                <!-- Cauchy Controls -->
-                <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap gap-4">
-                    <div class="flex items-center gap-2">
-                        <label class="text-sm font-medium text-gray-700">View:</label>
-                        <select x-model="cauchyViewMode" @change="renderCauchyHeatmap()"
-                            class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
-                            <option value="all">All Samples (Aggregated)</option>
-                            <option value="sample">Per Sample</option>
-                        </select>
+            <!-- ==================== SECTION 5: CAUCHY COMBINATION ==================== -->
+            <div id="sec-cauchy" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.cauchy = !sections.cauchy">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">5. Cauchy Combination Results</h2>
+                        <p class="text-sm text-gray-500">Statistical significance of annotations. Red = p &lt; 0.05</p>
                     </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.cauchy ? 'rotate-180' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
                 </div>
+                <div class="section-content" :class="sections.cauchy ? 'expanded' : 'collapsed'">
+                    <!-- Cauchy Controls -->
+                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap gap-4">
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm font-medium text-gray-700">View:</label>
+                            <select x-model="cauchyViewMode" @change="renderCauchyHeatmap()"
+                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
+                                <option value="all">All Samples (Aggregated)</option>
+                                <option value="sample">Per Sample</option>
+                            </select>
+                        </div>
+                    </div>
 
-                <!-- Cauchy Table -->
-                <div class="overflow-x-auto custom-scrollbar max-h-[400px]">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50 sticky top-0">
-                            <tr>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                    @click="sortCauchyBy('trait')">Trait</th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                    @click="sortCauchyBy('annotation')">Annotation</th>
-                                <th x-show="cauchyViewMode === 'sample'"
-                                    class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                    @click="sortCauchyBy('sample_name')">Sample</th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                    @click="sortCauchyBy('p_cauchy')">P (Cauchy)</th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                    @click="sortCauchyBy('p_median')">P (Median)</th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sig Spots
-                                </th>
-                                <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Total Spots
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            <template x-for="(row, idx) in filteredCauchyTable" :key="idx">
-                                <tr class="table-row-hover">
-                                    <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
-                                    <td class="px-4 py-2 text-sm"><span
-                                            class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700"
-                                            x-text="row.annotation"></span></td>
-                                    <td x-show="cauchyViewMode === 'sample'" class="px-4 py-2 text-sm text-gray-600"
-                                        x-text="row.sample_name"></td>
-                                    <td class="px-4 py-2 text-sm font-mono"
-                                        :class="row.p_cauchy < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'"
-                                        x-text="row.p_cauchy != null ? row.p_cauchy.toExponential(2) : 'N/A'"></td>
-                                    <td class="px-4 py-2 text-sm font-mono"
-                                        :class="row.p_median < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'"
-                                        x-text="row.p_median != null ? row.p_median.toExponential(2) : 'N/A'"></td>
-                                    <td class="px-4 py-2 text-sm text-gray-600" x-text="row.sig_spots"></td>
-                                    <td class="px-4 py-2 text-sm text-gray-600" x-text="row.total_spots"></td>
+                    <!-- Cauchy Table -->
+                    <div class="overflow-x-auto custom-scrollbar max-h-[400px]">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                        @click="sortCauchyBy('trait')">Trait</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                        @click="sortCauchyBy('annotation')">Annotation</th>
+                                    <th x-show="cauchyViewMode === 'sample'"
+                                        class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                        @click="sortCauchyBy('sample_name')">Sample</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                        @click="sortCauchyBy('p_cauchy')">P (Cauchy)</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                        @click="sortCauchyBy('p_median')">P (Median)</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sig
+                                        Spots
+                                    </th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Total
+                                        Spots
+                                    </th>
                                 </tr>
-                            </template>
-                        </tbody>
-                    </table>
-                </div>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                <template x-for="(row, idx) in filteredCauchyTable" :key="idx">
+                                    <tr class="table-row-hover">
+                                        <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
+                                        <td class="px-4 py-2 text-sm"><span
+                                                class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700"
+                                                x-text="row.annotation"></span></td>
+                                        <td x-show="cauchyViewMode === 'sample'" class="px-4 py-2 text-sm text-gray-600"
+                                            x-text="row.sample_name"></td>
+                                        <td class="px-4 py-2 text-sm font-mono"
+                                            :class="row.p_cauchy < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'"
+                                            x-text="row.p_cauchy != null ? row.p_cauchy.toExponential(2) : 'N/A'"></td>
+                                        <td class="px-4 py-2 text-sm font-mono"
+                                            :class="row.p_median < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'"
+                                            x-text="row.p_median != null ? row.p_median.toExponential(2) : 'N/A'"></td>
+                                        <td class="px-4 py-2 text-sm text-gray-600" x-text="row.sig_spots"></td>
+                                        <td class="px-4 py-2 text-sm text-gray-600" x-text="row.total_spots"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
 
-                <!-- Cauchy Heatmap -->
-                <div class="border-t border-gray-200">
-                    <div class="p-4 bg-gray-50 border-b border-gray-200">
-                        <h3 class="font-medium text-gray-700">Cauchy P-Value Heatmap (Annotation vs Trait)</h3>
+                    <!-- Cauchy Heatmap -->
+                    <div class="border-t border-gray-200">
+                        <div class="p-4 bg-gray-50 border-b border-gray-200">
+                            <h3 class="font-medium text-gray-700">Cauchy P-Value Heatmap (Annotation vs Trait)</h3>
+                        </div>
+                        <div id="cauchyHeatmap" class="plot-container w-full"></div>
                     </div>
-                    <div id="cauchyHeatmap" class="plot-container w-full"></div>
                 </div>
             </div>
-        </div>
 
-        <!-- ==================== SECTION 6: RUN INFO ==================== -->
-        <div id="sec-info" x-show="dataLoaded" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                @click="sections.info = !sections.info">
-                <div>
-                    <h2 class="text-lg font-semibold text-gray-800">6. Run Information</h2>
-                    <p class="text-sm text-gray-500">Configuration and summary statistics.</p>
+            <!-- ==================== SECTION 6: RUN INFO ==================== -->
+            <div id="sec-info" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.info = !sections.info">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">6. Run Information</h2>
+                        <p class="text-sm text-gray-500">Configuration and summary statistics.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.info ? 'rotate-180' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
                 </div>
-                <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.info ? 'rotate-180' : ''"
-                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
+                <div class="section-content" :class="sections.info ? 'expanded' : 'collapsed'">
+                    <!-- Summary Cards -->
+                    <div class="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="text-center p-4 bg-primary-50 rounded-lg">
+                            <p class="text-2xl font-bold text-primary-600" x-text="traits.length"></p>
+                            <p class="text-sm text-gray-600">Traits</p>
+                        </div>
+                        <div class="text-center p-4 bg-green-50 rounded-lg">
+                            <p class="text-2xl font-bold text-green-600" x-text="samples.length"></p>
+                            <p class="text-sm text-gray-600">Samples</p>
+                        </div>
+                        <div class="text-center p-4 bg-purple-50 rounded-lg">
+                            <p class="text-2xl font-bold text-purple-600" x-text="annotations.length"></p>
+                            <p class="text-sm text-gray-600">Annotation Categories</p>
+                        </div>
+                    </div>
+                    <!-- Config JSON -->
+                    <div class="border-t border-gray-200 p-4 bg-gray-50">
+                        <h3 class="font-medium text-gray-700 mb-2">Configuration</h3>
+                        <pre class="text-xs text-gray-600 whitespace-pre-wrap font-mono bg-white p-3 rounded border max-h-64 overflow-auto"
+                            x-text="JSON.stringify(reportMeta, null, 2)"></pre>
+                    </div>
+                </div>
             </div>
-            <div class="section-content" :class="sections.info ? 'expanded' : 'collapsed'">
-                <!-- Summary Cards -->
-                <div class="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div class="text-center p-4 bg-primary-50 rounded-lg">
-                        <p class="text-2xl font-bold text-primary-600" x-text="traits.length"></p>
-                        <p class="text-sm text-gray-600">Traits</p>
-                    </div>
-                    <div class="text-center p-4 bg-green-50 rounded-lg">
-                        <p class="text-2xl font-bold text-green-600" x-text="samples.length"></p>
-                        <p class="text-sm text-gray-600">Samples</p>
-                    </div>
-                    <div class="text-center p-4 bg-purple-50 rounded-lg">
-                        <p class="text-2xl font-bold text-purple-600" x-text="annotations.length"></p>
-                        <p class="text-sm text-gray-600">Annotation Categories</p>
-                    </div>
-                </div>
-                <!-- Config JSON -->
-                <div class="border-t border-gray-200 p-4 bg-gray-50">
-                    <h3 class="font-medium text-gray-700 mb-2">Configuration</h3>
-                    <pre class="text-xs text-gray-600 whitespace-pre-wrap font-mono bg-white p-3 rounded border max-h-64 overflow-auto"
-                        x-text="JSON.stringify(reportMeta, null, 2)"></pre>
-                </div>
-            </div>
-        </div>
 
         </main>
     </div><!-- End of flex layout -->
@@ -531,10 +562,9 @@
 
     <!-- Data Scripts - MUST load before Alpine initializes -->
     <script src="js_data/report_meta.js"></script>
-    <script src="js_data/metadata.js"></script>
-    <script src="js_data/cauchy.js"></script>
-    <script src="js_data/genes.js"></script>
-    <script src="js_data/top_genes_pcc.js"></script>
+    <script src="js_data/spot_metadata.js"></script>
+    <script src="js_data/cauchy_results.js"></script>
+    <script src="js_data/gene_trait_correlation.js"></script>
 
     <script>
         function gsMapApp() {
@@ -714,8 +744,8 @@
                         console.log("Loaded", this.cauchyData.length, "Cauchy results");
                     }
 
-                    if (window.GSMAP_TOP_GENES_PCC) {
-                        this.topGenesPcc = window.GSMAP_TOP_GENES_PCC;
+                    if (window.GSMAP_GENE_TRAIT_CORRELATION) {
+                        this.topGenesPcc = window.GSMAP_GENE_TRAIT_CORRELATION;
                         console.log("Loaded", this.topGenesPcc.length, "gene PCC records");
                     }
 
@@ -783,7 +813,7 @@
 
                 // Gene plot path (multi-sample, switches between exp and gss based on genePlotType)
                 getGenePlotPath() {
-                    return `gss_plot/gene_${this.selectedTrait}_${this.selectedGene}_${this.genePlotType}.png`;
+                    return `gene_diagnostic_plots/gene_${this.selectedTrait}_${this.selectedGene}_${this.genePlotType}.png`;
                 },
 
                 // Sorting

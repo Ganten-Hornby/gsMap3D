@@ -246,25 +246,31 @@ class ConfigWithAutoPaths(BaseConfig):
     @ensure_path_exists
     def cauchy_save_dir(self) -> Path:
         return self.project_dir / "cauchy_combination"
-    
+
+    @property
+    @ensure_path_exists
+    def report_dir(self) -> Path:
+        """Directory for gsMap report outputs - flat structure at project level"""
+        return self.project_dir / "gsMap_Report"
+
     @ensure_path_exists
     def get_report_dir(self, trait_name: str) -> Path:
-        return Path(f'{self.project_dir}/report/{self.project_name}/{trait_name}')
+        """Deprecated: Use report_dir property instead"""
+        return self.report_dir
     
     def get_gsMap_report_file(self, trait_name: str) -> Path:
-        return (
-            self.get_report_dir(trait_name)
-            / f"{self.project_name}_{trait_name}_gsMap_Report.html"
-        )
-    
+        """Path to main HTML report file"""
+        return self.report_dir / "index.html"
+
     @ensure_path_exists
     def get_manhattan_html_plot_path(self, trait_name: str) -> Path:
-        return Path(
-            f'{self.project_dir}/report/{self.project_name}/{trait_name}/manhattan_plot/{self.project_name}_{trait_name}_Diagnostic_Manhattan_Plot.html')
-    
+        """Deprecated: Manhattan plots are now in manhattan_data/ subdirectory"""
+        return self.report_dir / "manhattan_data" / f"{trait_name}_manhattan.csv"
+
     @ensure_path_exists
     def get_GSS_plot_dir(self, trait_name: str) -> Path:
-        return Path(f'{self.project_dir}/report/{self.project_name}/{trait_name}/GSS_plot')
+        """Directory for gene diagnostic plots"""
+        return self.report_dir / "gene_diagnostic_plots"
     
     def get_GSS_plot_select_gene_file(self, trait_name: str) -> Path:
         return self.get_GSS_plot_dir(trait_name) / "plot_genes.csv"
@@ -283,15 +289,14 @@ class ConfigWithAutoPaths(BaseConfig):
     
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:
-        return Path(
-            f'{self.project_dir}/report/{self.project_name}/{trait_name}/{self.project_name}_{trait_name}_Gene_Diagnostic_Info.csv')
+        """Path for gene diagnostic info CSV - uses trait prefix in report_dir"""
+        return self.report_dir / f"{trait_name}_gene_diagnostic.csv"
     
     @ensure_path_exists
     def get_gsMap_plot_save_dir(self, trait_name: str) -> Path:
-        return Path(f'{self.project_dir}/report/{self.project_name}/{trait_name}/gsMap_plot')
-    
+        """Directory for spatial LDSC plots"""
+        return self.report_dir / "spatial_plots"
+
     def get_gsMap_html_plot_save_path(self, trait_name: str) -> Path:
-        return (
-            self.get_gsMap_plot_save_dir(trait_name)
-            / f"{self.project_name}_{trait_name}_gsMap_plot.html"
-        )
+        """Deprecated: Spatial plots are now PNG files in spatial_plots/"""
+        return self.get_gsMap_plot_save_dir(trait_name) / f"ldsc_{trait_name}.png"

@@ -249,7 +249,7 @@ def _load_gss_and_calculate_stats(
 
     # Save gene list
     gene_names = adata_gss_sub.var_names.tolist()
-    pd.DataFrame({'gene': gene_names}).to_csv(report_dir / "genes.csv", index=False)
+    pd.DataFrame({'gene': gene_names}).to_csv(report_dir / "gene_list.csv", index=False)
 
     # Pre-calculate GSS statistics
     logger.info("Pre-calculating GSS statistics...")
@@ -281,7 +281,7 @@ def _load_gss_and_calculate_stats(
     )
 
     if all_pcc:
-        pd.concat(all_pcc).to_csv(report_dir / "top_genes_pcc.csv", index=False)
+        pd.concat(all_pcc).to_csv(report_dir / "gene_trait_correlation.csv", index=False)
 
     return common_spots, adata_gss, gene_stats_df
 
@@ -306,8 +306,8 @@ def _calculate_pcc_for_traits(
         return numerator / (denominator + 1e-12)
 
     all_pcc = []
-    gss_plot_dir = report_dir / "gss_plot"
-    gss_plot_dir.mkdir(exist_ok=True)
+    gene_plot_dir = report_dir / "gene_diagnostic_plots"
+    gene_plot_dir.mkdir(exist_ok=True)
 
     for trait in traits:
         if trait not in ldsc_df.columns:
@@ -360,7 +360,7 @@ def _save_metadata(
     metadata.index.name = 'spot'
     metadata = metadata.reset_index()
     metadata = metadata.loc[:, ~metadata.columns.duplicated()]
-    metadata.to_csv(report_dir / "metadata.csv", index=False)
+    metadata.to_csv(report_dir / "spot_metadata.csv", index=False)
 
     return metadata
 
@@ -372,16 +372,16 @@ def _prepare_manhattan_data(
 ) -> Dict:
     """Prepare Manhattan plot data for all traits."""
     logger.info("Preparing Manhattan data with filtering and gene mapping...")
-    manhattan_dir = report_dir / "manhattan_plot"
+    manhattan_dir = report_dir / "manhattan_data"
     manhattan_dir.mkdir(exist_ok=True)
 
     logger.info(f"Loading weights from {config.snp_gene_weight_adata_path}")
     weight_adata = ad.read_h5ad(config.snp_gene_weight_adata_path)
 
-    pcc_file = report_dir / "top_genes_pcc.csv"
+    pcc_file = report_dir / "gene_trait_correlation.csv"
     all_top_pcc = pd.read_csv(pcc_file) if pcc_file.exists() else None
 
-    genes_file = report_dir / "genes.csv"
+    genes_file = report_dir / "gene_list.csv"
     gene_names_ref = pd.read_csv(genes_file)['gene'].tolist() if genes_file.exists() else []
 
     chrom_tick_positions = {}
@@ -525,12 +525,12 @@ def _render_ldsc_plots(
     report_dir: Path
 ):
     """Render LDSC spatial plots for all traits."""
-    gsmap_plot_dir = report_dir / "gsmap_plot"
-    gsmap_plot_dir.mkdir(exist_ok=True)
+    spatial_plot_dir = report_dir / "spatial_plots"
+    spatial_plot_dir.mkdir(exist_ok=True)
 
     for trait in traits:
         logger.info(f"Pre-rendering LDSC plot for {trait}...")
-        trait_plot_path = gsmap_plot_dir / f"ldsc_{trait}.png"
+        trait_plot_path = spatial_plot_dir / f"ldsc_{trait}.png"
         visualizer._create_single_trait_multi_sample_matplotlib_plot(
             obs_ldsc_merged=obs_data,
             trait_abbreviation=trait,
@@ -552,7 +552,7 @@ def _render_annotation_plots(
     """Render annotation spatial plots."""
     import matplotlib.pyplot as plt
 
-    anno_dir = report_dir / "annotations"
+    anno_dir = report_dir / "annotation_plots"
     anno_dir.mkdir(exist_ok=True)
 
     for anno in annotations:
@@ -580,9 +580,9 @@ def _render_gene_diagnostic_plots(
     report_dir: Path
 ):
     """Render gene expression and GSS diagnostic plots."""
-    trait_pcc_file = report_dir / "top_genes_pcc.csv"
-    gss_plot_dir = report_dir / "gss_plot"
-    gss_plot_dir.mkdir(exist_ok=True)
+    trait_pcc_file = report_dir / "gene_trait_correlation.csv"
+    gene_plot_dir = report_dir / "gene_diagnostic_plots"
+    gene_plot_dir.mkdir(exist_ok=True)
 
     if config.sample_h5ad_dict is None:
         config._process_h5ad_inputs()
@@ -643,7 +643,7 @@ def _render_gene_diagnostic_plots(
     tasks = _build_gene_plot_tasks(
         top_genes_df, top_n, all_top_genes, sample_names_sorted,
         sample_data_cache, adata_exp_trait, adata_gss_trait,
-        n_rows, n_cols, gss_plot_dir
+        n_rows, n_cols, gene_plot_dir
     )
 
     if tasks:
@@ -777,12 +777,12 @@ def _collect_cauchy_results(
         if 'sample' in combined_cauchy.columns and 'sample_name' not in combined_cauchy.columns:
             combined_cauchy = combined_cauchy.rename(columns={'sample': 'sample_name'})
 
-        cauchy_save_path = report_dir / "all_cauchy.csv"
+        cauchy_save_path = report_dir / "cauchy_results.csv"
         combined_cauchy.to_csv(cauchy_save_path, index=False)
         logger.info(f"Saved {len(combined_cauchy)} Cauchy results to {cauchy_save_path}")
     else:
         pd.DataFrame(columns=['trait', 'annotation_name', 'p_cauchy', 'type', 'sample_name']).to_csv(
-            report_dir / "all_cauchy.csv", index=False
+            report_dir / "cauchy_results.csv", index=False
         )
         logger.warning("No Cauchy results found to save.")
 
@@ -840,7 +840,7 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
     import matplotlib
     matplotlib.use('Agg')
 
-    report_dir = config.get_report_dir("interactive")
+    report_dir = config.report_dir
     report_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -906,7 +906,6 @@ def export_data_as_js_modules(data_dir: Path):
     _export_metadata_js(data_dir, js_data_dir)
     _export_cauchy_js(data_dir, js_data_dir)
     _export_manhattan_js(data_dir, js_data_dir)
-    _export_genes_js(data_dir, js_data_dir)
     _export_top_genes_pcc_js(data_dir, js_data_dir)
     _export_report_meta_js(data_dir, js_data_dir)
 
@@ -915,29 +914,29 @@ def export_data_as_js_modules(data_dir: Path):
 
 def _export_metadata_js(data_dir: Path, js_data_dir: Path):
     """Export metadata CSV as JS module."""
-    metadata_file = data_dir / "metadata.csv"
+    metadata_file = data_dir / "spot_metadata.csv"
     if metadata_file.exists():
         df = pd.read_csv(metadata_file)
         data_struct = {col: df[col].tolist() for col in df.columns}
         js_content = f"window.GSMAP_METADATA = {json.dumps(data_struct, separators=(',', ':'))};"
-        with open(js_data_dir / "metadata.js", "w", encoding='utf-8') as f:
+        with open(js_data_dir / "spot_metadata.js", "w", encoding='utf-8') as f:
             f.write(js_content)
 
 
 def _export_cauchy_js(data_dir: Path, js_data_dir: Path):
     """Export Cauchy results as JS module."""
-    cauchy_file = data_dir / "all_cauchy.csv"
+    cauchy_file = data_dir / "cauchy_results.csv"
     if cauchy_file.exists():
         df = pd.read_csv(cauchy_file)
         data_json = df.to_json(orient='records')
         js_content = f"window.GSMAP_CAUCHY = {data_json};"
-        with open(js_data_dir / "cauchy.js", "w", encoding='utf-8') as f:
+        with open(js_data_dir / "cauchy_results.js", "w", encoding='utf-8') as f:
             f.write(js_content)
 
 
 def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
     """Export Manhattan data as JS modules (one per trait)."""
-    manhattan_dir = data_dir / "manhattan_plot"
+    manhattan_dir = data_dir / "manhattan_data"
     if not manhattan_dir.exists():
         return
 
@@ -969,25 +968,14 @@ def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
             logger.warning(f"Failed to export Manhattan JS for {trait}: {e}")
 
 
-def _export_genes_js(data_dir: Path, js_data_dir: Path):
-    """Export gene list as JS module."""
-    genes_file = data_dir / "genes.csv"
-    if genes_file.exists():
-        df = pd.read_csv(genes_file)
-        genes = df['gene'].tolist()
-        js_content = f"window.GSMAP_GENES = {json.dumps(genes)};"
-        with open(js_data_dir / "genes.js", "w", encoding='utf-8') as f:
-            f.write(js_content)
-
-
 def _export_top_genes_pcc_js(data_dir: Path, js_data_dir: Path):
-    """Export top genes PCC data as JS module."""
-    pcc_file = data_dir / "top_genes_pcc.csv"
+    """Export gene-trait correlation data as JS module."""
+    pcc_file = data_dir / "gene_trait_correlation.csv"
     if pcc_file.exists():
         df = pd.read_csv(pcc_file)
         data_json = df.to_json(orient='records')
-        js_content = f"window.GSMAP_TOP_GENES_PCC = {data_json};"
-        with open(js_data_dir / "top_genes_pcc.js", "w", encoding='utf-8') as f:
+        js_content = f"window.GSMAP_GENE_TRAIT_CORRELATION = {data_json};"
+        with open(js_data_dir / "gene_trait_correlation.js", "w", encoding='utf-8') as f:
             f.write(js_content)
 
 
