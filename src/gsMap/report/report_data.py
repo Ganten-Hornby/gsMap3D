@@ -180,6 +180,61 @@ def _render_multi_sample_gene_plot_task(task_data: dict):
 # UMAP Calculation Functions
 # =============================================================================
 
+def _detect_z_axis(coords_3d: np.ndarray, sample_names: pd.Series) -> int:
+    """
+    Detect which dimension is the Z axis (stacking dimension) in 3D coordinates.
+
+    The Z axis is identified as the dimension with the least within-sample variance,
+    since samples are stacked along Z and should have minimal variation in that dimension.
+
+    Args:
+        coords_3d: 3D coordinates array (n_spots, 3)
+        sample_names: Series of sample names for each spot
+
+    Returns:
+        Index of the Z axis (0, 1, or 2)
+    """
+    # Calculate within-sample variance for each dimension
+    within_sample_vars = []
+
+    for dim in range(3):
+        dim_values = coords_3d[:, dim]
+
+        # Calculate variance within each sample
+        sample_vars = []
+        for sample in sample_names.unique():
+            mask = sample_names == sample
+            sample_values = dim_values[mask]
+            if len(sample_values) > 1:
+                sample_vars.append(np.var(sample_values))
+
+        # Average within-sample variance for this dimension
+        avg_within_var = np.mean(sample_vars) if sample_vars else 0
+        within_sample_vars.append(avg_within_var)
+
+    # Z axis has the least within-sample variance
+    z_axis = int(np.argmin(within_sample_vars))
+    logger.info(f"Detected Z axis: dimension {z_axis} (within-sample variances: {within_sample_vars})")
+
+    return z_axis
+
+
+def _reorder_coords_for_3d(coords_3d: np.ndarray, z_axis: int) -> Tuple[np.ndarray, List[str]]:
+    """
+    Reorder 3D coordinates so that Z axis is the last dimension.
+
+    Returns:
+        Tuple of (reordered coords, column names)
+    """
+    # Create axis order: put z_axis last
+    axis_order = [i for i in range(3) if i != z_axis] + [z_axis]
+    reordered = coords_3d[:, axis_order]
+
+    # Column names reflect the reordering
+    col_names = ['3d_x', '3d_y', '3d_z']
+
+    return reordered, col_names
+
 def _stratified_subsample(
     spot_names: np.ndarray,
     sample_names: pd.Series,
@@ -353,6 +408,122 @@ def _prepare_umap_data(
     }
 
 
+def _prepare_3d_visualization(
+    config: QuickModeConfig,
+    metadata: pd.DataFrame,
+    traits: List[str],
+    report_dir: Path
+) -> Optional[str]:
+    """
+    Create 3D visualization widget using spatialvista and save as HTML.
+
+    Args:
+        config: QuickModeConfig with annotation_list and other settings
+        metadata: DataFrame with 3d_x, 3d_y, 3d_z coordinates and annotations
+        traits: List of trait names (for continuous values)
+        report_dir: Output directory
+
+    Returns:
+        Path to saved HTML file, or None if failed
+    """
+    try:
+        import spatialvista as spv
+        from ipywidgets.embed import embed_minimal_html
+    except ImportError:
+        logger.warning("spatialvista or ipywidgets not installed. Skipping 3D visualization.")
+        return None
+
+    # Check if we have 3D coordinates
+    if '3d_x' not in metadata.columns or '3d_y' not in metadata.columns or '3d_z' not in metadata.columns:
+        logger.warning("3D coordinates not found in metadata. Skipping 3D visualization.")
+        return None
+
+    logger.info("Creating 3D visualization widget...")
+
+    # Stratified subsample for visualization (limit to reasonable size)
+    n_max_points = getattr(config, 'downsampling_n_spots', 10000)
+    if len(metadata) > n_max_points:
+        sample_names = metadata['sample_name']
+        selected_idx = _stratified_subsample(
+            metadata.index.values, sample_names, n_max_points
+        )
+        metadata_sub = metadata.loc[selected_idx].copy()
+        logger.info(f"Subsampled to {len(metadata_sub)} spots for 3D visualization")
+    else:
+        metadata_sub = metadata.copy()
+
+    # Create AnnData for spatialvista
+    # X matrix can be empty since we're not showing genes
+    n_spots = len(metadata_sub)
+    adata_vis = ad.AnnData(
+        X=sp.csr_matrix((n_spots, 0), dtype=np.float32),
+        obs=pd.DataFrame(index=metadata_sub['spot'].values if 'spot' in metadata_sub.columns else metadata_sub.index)
+    )
+
+    # Set spatial coordinates
+    spatial_coords = metadata_sub[['3d_x', '3d_y', '3d_z']].values
+    adata_vis.obsm['spatial'] = spatial_coords
+
+    # Add sample_name as section
+    adata_vis.obs['sample_name'] = metadata_sub['sample_name'].values
+
+    # Add annotations (categorical)
+    annotation_cols = []
+    for anno in config.annotation_list:
+        if anno in metadata_sub.columns:
+            adata_vis.obs[anno] = metadata_sub[anno].values.astype(str)
+            annotation_cols.append(anno)
+
+    # Add traits as continuous values
+    continuous_cols = []
+    for trait in traits:
+        if trait in metadata_sub.columns:
+            adata_vis.obs[trait] = metadata_sub[trait].values.astype(float)
+            continuous_cols.append(trait)
+
+    # Use first annotation as color, rest as additional annotations
+    color_col = annotation_cols[0] if annotation_cols else 'sample_name'
+    other_annotations = annotation_cols[1:] if len(annotation_cols) > 1 else []
+
+    logger.info(f"3D visualization: color={color_col}, annotations={other_annotations}, continuous={continuous_cols}")
+
+    # Create visualization widget
+    try:
+        widget = spv.vis(
+            adata_vis,
+            position='spatial',
+            color=color_col,
+            annotations=other_annotations if other_annotations else None,
+            continuous=continuous_cols if continuous_cols else None,
+            genes=None,
+            section='sample_name',
+            mode='3D'
+        )
+
+        # Set widget size
+        widget.sizing_mode = 'stretch_both'
+        widget.layout.width = '100%'
+        widget.layout.height = '800px'
+
+        # Save to HTML
+        html_path = report_dir / "spatial_3d_widget.html"
+        embed_minimal_html(
+            str(html_path),
+            views=[widget],
+            title="gsMap 3D Spatial Visualization",
+            drop_defaults=False
+        )
+
+        logger.info(f"3D visualization saved to {html_path}")
+        return str(html_path)
+
+    except Exception as e:
+        logger.warning(f"Failed to create 3D visualization widget: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 # =============================================================================
 # Data Loading Functions
 # =============================================================================
@@ -379,20 +550,91 @@ def _load_ldsc_results(config: QuickModeConfig) -> Tuple[pd.DataFrame, List[str]
     return ldsc_df, traits, sample_names
 
 
-def _load_coordinates(config: QuickModeConfig) -> pd.DataFrame:
-    """Load spatial coordinates from concatenated adata."""
+def _load_coordinates(config: QuickModeConfig) -> Tuple[pd.DataFrame, bool, Optional[int]]:
+    """
+    Load spatial coordinates from concatenated adata.
+
+    Returns:
+        Tuple of (coords DataFrame, is_3d flag, z_axis index if 3D)
+    """
+    from gsMap.config import DatasetType
+
     logger.info(f"Loading coordinates from {config.concatenated_latent_adata_path}")
 
     adata_concat = ad.read_h5ad(config.concatenated_latent_adata_path, backed='r')
 
     assert config.spatial_key in adata_concat.obsm
-    coords_data = adata_concat.obsm[config.spatial_key][:, :2]
-    coords = pd.DataFrame(coords_data, columns=['sx', 'sy'], index=adata_concat.obs_names)
-
+    coords_data = adata_concat.obsm[config.spatial_key]
     sample_info = adata_concat.obs[['sample_name']]
+
+    # Check if dataset type is 3D
+    is_3d_type = (
+        hasattr(config, 'dataset_type') and
+        config.dataset_type == DatasetType.SPATIAL_3D
+    )
+    has_3d_coords = coords_data.shape[1] >= 3
+
+    z_axis = None
+    if is_3d_type and has_3d_coords:
+        # True 3D coordinates
+        logger.info("Detected 3D spatial coordinates")
+        coords_3d = coords_data[:, :3]
+
+        # Detect Z axis
+        z_axis = _detect_z_axis(coords_3d, adata_concat.obs['sample_name'])
+
+        # Reorder coordinates so Z is last
+        reordered_coords, col_names = _reorder_coords_for_3d(coords_3d, z_axis)
+        coords = pd.DataFrame(reordered_coords, columns=col_names, index=adata_concat.obs_names)
+
+        # Also keep 2D coords for compatibility (use x and y from reordered)
+        coords['sx'] = coords['3d_x']
+        coords['sy'] = coords['3d_y']
+
+    elif is_3d_type and not has_3d_coords:
+        # 3D dataset type but only 2D coordinates - create pseudo Z axis
+        logger.info("3D dataset type with 2D coordinates - creating pseudo Z axis based on sample_name")
+        coords_2d = coords_data[:, :2]
+        coords = pd.DataFrame(coords_2d, columns=['sx', 'sy'], index=adata_concat.obs_names)
+
+        # Calculate the span for pseudo Z axis
+        sx_span = coords['sx'].max() - coords['sx'].min()
+        sy_span = coords['sy'].max() - coords['sy'].min()
+        z_span = max(sx_span, sy_span)
+
+        # Assign Z values based on sample order
+        sample_names = adata_concat.obs['sample_name']
+        unique_samples = sample_names.unique()
+        n_samples = len(unique_samples)
+
+        # Create evenly spaced Z values for each sample
+        if n_samples > 1:
+            z_values_per_sample = {
+                sample: z_span * i / (n_samples - 1)
+                for i, sample in enumerate(unique_samples)
+            }
+        else:
+            z_values_per_sample = {unique_samples[0]: 0.0}
+
+        # Assign Z values to each spot
+        pseudo_z = sample_names.map(z_values_per_sample).values
+
+        coords['3d_x'] = coords['sx']
+        coords['3d_y'] = coords['sy']
+        coords['3d_z'] = pseudo_z
+        z_axis = 2  # Pseudo Z is always the last dimension
+
+        logger.info(f"Created pseudo Z axis with span {z_span:.2f} for {n_samples} samples")
+
+    else:
+        # 2D coordinates (non-3D dataset type)
+        coords_2d = coords_data[:, :2]
+        coords = pd.DataFrame(coords_2d, columns=['sx', 'sy'], index=adata_concat.obs_names)
+
     coords = pd.concat([coords, sample_info], axis=1)
 
-    return coords
+    # Return is_3d as True if dataset type is 3D (regardless of coord dimensions)
+    return coords, is_3d_type, z_axis
 
 
 def _load_gss_and_calculate_stats(
@@ -974,7 +1216,9 @@ def _save_report_metadata(
     sample_names: List[str],
     report_dir: Path,
     chrom_tick_positions: Optional[Dict] = None,
-    umap_info: Optional[Dict] = None
+    umap_info: Optional[Dict] = None,
+    is_3d: bool = False,
+    spatial_3d_html: bool = False
 ):
     """Save report configuration metadata as JSON."""
     logger.info("Saving report configuration metadata...")
@@ -992,6 +1236,10 @@ def _save_report_metadata(
     # Add UMAP info
     if umap_info:
         report_meta['umap_info'] = umap_info
+
+    # Add 3D visualization info
+    report_meta['is_3d'] = is_3d
+    report_meta['has_3d_widget'] = spatial_3d_html
 
     with open(report_dir / "report_meta.json", "w") as f:
         json.dump(report_meta, f)
@@ -1035,12 +1283,13 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
     report_dir = config.report_dir
     report_dir.mkdir(parents=True, exist_ok=True)
 
+    is_3d = False
     try:
         # 1. Load LDSC results
         ldsc_df, traits, sample_names = _load_ldsc_results(config)
 
-        # 2. Load coordinates
-        coords = _load_coordinates(config)
+        # 2. Load coordinates (now returns is_3d flag and z_axis)
+        coords, is_3d, z_axis = _load_coordinates(config)
 
         # 3. Load GSS data and calculate statistics
         common_spots, adata_gss, gene_stats_df = _load_gss_and_calculate_stats(
@@ -1076,10 +1325,24 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
             import traceback
             traceback.print_exc()
 
-        # 9. Save report metadata (including chromosome tick positions and UMAP info)
-        _save_report_metadata(config, traits, sample_names, report_dir, chrom_tick_positions, umap_info)
+        # 9. Prepare 3D visualization if applicable
+        spatial_3d_html = None
+        if is_3d:
+            try:
+                spatial_3d_html = _prepare_3d_visualization(config, metadata, traits, report_dir)
+            except Exception as e:
+                logger.warning(f"Failed to prepare 3D visualization: {e}")
+                import traceback
+                traceback.print_exc()
 
-        # 10. Copy JS assets
+        # 10. Save report metadata (including chromosome tick positions, UMAP info, and 3D info)
+        _save_report_metadata(
+            config, traits, sample_names, report_dir,
+            chrom_tick_positions, umap_info,
+            is_3d=is_3d, spatial_3d_html=spatial_3d_html is not None
+        )
+
+        # 11. Copy JS assets
         _copy_js_assets(report_dir)
 
         logger.info(f"Interactive report data prepared in {report_dir}")

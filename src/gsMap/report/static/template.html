@@ -209,6 +209,11 @@
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             1.5. Embedding UMAP
                         </button>
+                        <button x-show="has3dWidget"
+                            @click="sections.spatial3d = true; $nextTick(() => document.getElementById('sec-spatial3d')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            1.6. 3D Spatial
+                        </button>
                         <button
                             @click="sections.gsmap = true; $nextTick(() => document.getElementById('sec-gsmap')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
@@ -317,6 +322,32 @@
                                 <div id="umapNichePlot" class="w-full" style="height: 450px;"></div>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== SECTION 1.6: 3D SPATIAL VISUALIZATION ==================== -->
+            <div id="sec-spatial3d" x-show="dataLoaded && has3dWidget"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.spatial3d = !sections.spatial3d">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">1.6. 3D Spatial Visualization</h2>
+                        <p class="text-sm text-gray-500">Interactive 3D view of spatial data with annotations and traits.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.spatial3d ? 'rotate-180' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+                <div class="section-content" :class="sections.spatial3d ? 'expanded' : 'collapsed'">
+                    <div class="p-2">
+                        <iframe src="spatial_3d_widget.html"
+                            class="w-full border-0 rounded-lg"
+                            style="height: 800px; min-height: 600px;"
+                            loading="lazy"
+                            title="3D Spatial Visualization">
+                        </iframe>
                     </div>
                 </div>
             </div>
@@ -646,6 +677,7 @@
                 sections: {
                     manhattan: true,
                     umap: true,
+                    spatial3d: true,
                     gsmap: true,
                     annotation: true,
                     genes: true,
@@ -666,6 +698,10 @@
                 selectedUmapAnnotation: '',
                 umapCellPlotInitialized: false,
                 umapNichePlotInitialized: false,
+
+                // 3D visualization state
+                is3d: false,
+                has3dWidget: false,
 
                 // Manhattan state
                 manhattanLoadedTraits: {},
@@ -822,6 +858,13 @@
                             this.selectedUmapAnnotation = this.umapAnnotationColumns[0];
                         }
                         console.log("Loaded UMAP data:", this.umapData.spot.length, "points, has_niche:", this.umapHasNiche);
+                    }
+
+                    // Load 3D visualization state
+                    this.is3d = this.reportMeta.is_3d || false;
+                    this.has3dWidget = this.reportMeta.has_3d_widget || false;
+                    if (this.has3dWidget) {
+                        console.log("3D visualization widget available");
                     }
 
                     // Check if data loaded successfully
