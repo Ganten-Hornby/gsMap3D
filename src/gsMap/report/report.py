@@ -47,7 +47,7 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
             shutil.copytree(item, dest)
 
     # 5. Render the Jinja2 template (Modern)
-    template_path = Path(__file__).parent / "template_modern.html"
+    template_path = Path(__file__).parent / "static" / "template.html"
     if not template_path.exists():
         logger.error(f"Template file not found at {template_path}")
         return
@@ -80,53 +80,3 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         logger.error(f"Failed to render report: {e}")
         import traceback
         traceback.print_exc()
-
-def run_interactive_report(config: QuickModeConfig):
-    """
-    Prepare data for the interactive report and optionally launch it.
-    """
-    run_report(config)
-    
-    if config.browser:
-        logger.info(f"Launching report viewer on port {config.port}...")
-        run_report_viewer(config)
-
-def run_report_viewer(config: QuickModeConfig):
-    """
-    Launch a simple HTTP server to view the generated report.
-    """
-    report_output_dir = config.get_report_dir("gsMap_Report")
-    if not report_output_dir.exists() or not (report_output_dir / "index.html").exists():
-        logger.error(f"Report not found in {report_output_dir}. Please run 'gsmap report' first.")
-        return
-    
-    import http.server
-    import socketserver
-    import webbrowser
-    import threading
-    import functools
-
-    PORT = config.port or 8000
-    # Create a handler that serves from the report directory without changing the process's CWD
-    Handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(report_output_dir))
-    
-    def serve():
-        # Allow reusing the address to avoid "Address already in use" errors if restarted quickly
-        socketserver.TCPServer.allow_reuse_address = True
-        with socketserver.TCPServer(("", PORT), Handler) as httpd:
-            logger.info(f"Serving report at http://localhost:{PORT}")
-            httpd.serve_forever()
-
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    
-    url = f"http://localhost:{PORT}"
-    webbrowser.open(url)
-    
-    logger.info("Press Ctrl+C to stop the server (in the terminal where you ran the command).")
-    try:
-        import time
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Stopping server...")

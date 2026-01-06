@@ -8,10 +8,12 @@ when opening index.html via file:// protocol.
 
 import logging
 import json
+import shutil
 import pandas as pd
 import numpy as np
 import anndata as ad
 import scanpy as sc
+import plotly
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from concurrent.futures import ProcessPoolExecutor
@@ -511,8 +513,8 @@ def prepare_report_data(config: QuickModeConfig):
             import gc
 
             top_genes_df = pd.read_csv(trait_pcc_file)
-            top_n = getattr(config, 'top_corr_genes', 50)
-            
+            top_n = config.top_corr_genes
+
             # Identify unique top genes across all traits to cache in memory (pcc_genes union)
             all_top_genes = top_genes_df.groupby('trait').head(top_n)['gene'].unique().tolist()
             sample_names_sorted = sorted(config.sample_h5ad_dict.keys())
@@ -708,25 +710,26 @@ def prepare_report_data(config: QuickModeConfig):
     with open(report_dir / "report_meta.json", "w") as f:
         json.dump(report_meta, f)
 
-    # 10. Download external JS assets for local usage (Fixes tracking/offline issues)
-    logger.info("Downloading JS assets for local usage...")
+    # 10. Copy bundled JS assets for local usage (no network required)
+    logger.info("Copying JS assets for local usage...")
     js_lib_dir = report_dir / "js_lib"
     js_lib_dir.mkdir(exist_ok=True)
 
-    def _download_asset(url, filename):
-        import urllib.request
-        try:
-            dest = js_lib_dir / filename
-            if not dest.exists(): # Only download if not present to save time
-                logger.info(f"Downloading {filename}...")
-                with urllib.request.urlopen(url) as response, open(dest, 'wb') as out_file:
-                    out_file.write(response.read())
-        except Exception as e:
-            logger.warning(f"Failed to download {url}: {e}")
+    # Copy bundled Alpine.js and Tailwind.js from static folder
+    static_js_dir = Path(__file__).parent / "static" / "js_lib"
+    if static_js_dir.exists():
+        for js_file in static_js_dir.glob("*.js"):
+            dest = js_lib_dir / js_file.name
+            if not dest.exists():
+                shutil.copy2(js_file, dest)
+                logger.info(f"Copied {js_file.name}")
 
-    _download_asset("https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js", "alpine.min.js")
-    _download_asset("https://cdn.tailwindcss.com", "tailwindcss.js")
-    _download_asset("https://cdn.plot.ly/plotly-2.27.0.min.js", "plotly.min.js")
+    # Copy plotly.min.js from installed plotly Python package
+    plotly_js_src = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
+    plotly_dest = js_lib_dir / "plotly.min.js"
+    if plotly_js_src.exists() and not plotly_dest.exists():
+        shutil.copy2(plotly_js_src, plotly_dest)
+        logger.info("Copied plotly.min.js from plotly package")
 
     logger.info(f"Interactive report data prepared in {report_dir}")
     return report_dir
