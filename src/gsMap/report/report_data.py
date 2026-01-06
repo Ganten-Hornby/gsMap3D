@@ -177,6 +177,183 @@ def _render_multi_sample_gene_plot_task(task_data: dict):
 
 
 # =============================================================================
+# UMAP Calculation Functions
+# =============================================================================
+
+def _stratified_subsample(
+    spot_names: np.ndarray,
+    sample_names: pd.Series,
+    n_samples: int,
+    random_state: int = 42
+) -> np.ndarray:
+    """
+    Stratified subsampling that ensures representation from all samples.
+
+    Args:
+        spot_names: Array of spot identifiers
+        sample_names: Series mapping spot names to sample names
+        n_samples: Target number of samples
+        random_state: Random seed for reproducibility
+
+    Returns:
+        Array of selected spot names
+    """
+    np.random.seed(random_state)
+
+    # Get sample counts
+    sample_counts = sample_names.value_counts()
+    n_samples_total = len(spot_names)
+
+    if n_samples >= n_samples_total:
+        return spot_names
+
+    # Calculate proportional samples per group
+    selected_spots = []
+    for sample_name, count in sample_counts.items():
+        sample_spots = spot_names[sample_names == sample_name]
+        # Proportional allocation
+        n_select = max(1, int(np.ceil(n_samples * count / n_samples_total)))
+        n_select = min(n_select, len(sample_spots))
+
+        selected = np.random.choice(sample_spots, n_select, replace=False)
+        selected_spots.extend(selected)
+
+    # If we have too many, randomly remove some
+    selected_spots = np.array(selected_spots)
+    if len(selected_spots) > n_samples:
+        selected_spots = np.random.choice(selected_spots, n_samples, replace=False)
+
+    return selected_spots
+
+
+def _calculate_umap_from_embeddings(
+    adata: ad.AnnData,
+    embedding_key: str,
+    n_neighbors: int = 15,
+    min_dist: float = 0.3,
+    random_state: int = 42
+) -> np.ndarray:
+    """
+    Calculate UMAP coordinates from embeddings.
+
+    Args:
+        adata: AnnData object with embeddings in obsm
+        embedding_key: Key for embeddings in obsm
+        n_neighbors: Number of neighbors for UMAP
+        min_dist: Minimum distance for UMAP
+        random_state: Random seed
+
+    Returns:
+        UMAP coordinates array (n_cells, 2)
+    """
+    import umap
+
+    embeddings = adata.obsm[embedding_key]
+    if hasattr(embeddings, 'toarray'):
+        embeddings = embeddings.toarray()
+
+    # L2 normalize embeddings
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings_norm = embeddings / (norms + 1e-8)
+
+    logger.info(f"Calculating UMAP for {embedding_key} with {embeddings_norm.shape[0]} spots...")
+
+    reducer = umap.UMAP(
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        n_components=2,
+        metric='cosine',
+        random_state=random_state,
+        n_jobs=-1
+    )
+
+    umap_coords = reducer.fit_transform(embeddings_norm)
+    return umap_coords
+
+
+def _prepare_umap_data(
+    config: QuickModeConfig,
+    metadata: pd.DataFrame,
+    report_dir: Path
+) -> Optional[Dict]:
+    """
+    Prepare UMAP data from cell and niche embeddings.
+
+    Returns dict with umap_cell, umap_niche (optional), and metadata for visualization.
+    """
+    logger.info("Preparing UMAP data from embeddings...")
+
+    # Load concatenated adata
+    adata_path = config.concatenated_latent_adata_path
+    if not adata_path.exists():
+        logger.warning(f"Concatenated adata not found at {adata_path}")
+        return None
+
+    adata = ad.read_h5ad(adata_path)
+
+    # Get embedding keys from config
+    cell_emb_key = getattr(config, 'latent_representation_cell', 'emb_cell')
+    niche_emb_key = getattr(config, 'latent_representation_niche', None)
+
+    # Check if embeddings exist
+    if cell_emb_key not in adata.obsm:
+        logger.warning(f"Cell embedding '{cell_emb_key}' not found in adata.obsm")
+        return None
+
+    has_niche = niche_emb_key is not None and niche_emb_key in adata.obsm
+
+    # Stratified subsampling
+    n_subsample = getattr(config, 'downsampling_n_spots', 10000)
+    spot_names = adata.obs_names.values
+    sample_names = adata.obs['sample_name']
+
+    if len(spot_names) > n_subsample:
+        logger.info(f"Stratified subsampling from {len(spot_names)} to {n_subsample} spots...")
+        selected_spots = _stratified_subsample(spot_names, sample_names, n_subsample)
+        adata_sub = adata[selected_spots].copy()
+    else:
+        adata_sub = adata.copy()
+        selected_spots = spot_names
+
+    logger.info(f"Using {len(selected_spots)} spots for UMAP calculation")
+
+    # Calculate UMAPs
+    umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key)
+
+    umap_niche = None
+    if has_niche:
+        umap_niche = _calculate_umap_from_embeddings(adata_sub, niche_emb_key)
+
+    # Prepare metadata for the subsampled spots
+    umap_metadata = pd.DataFrame({
+        'spot': adata_sub.obs_names,
+        'sample_name': adata_sub.obs['sample_name'].values,
+        'umap_cell_x': umap_cell[:, 0],
+        'umap_cell_y': umap_cell[:, 1],
+    })
+
+    if umap_niche is not None:
+        umap_metadata['umap_niche_x'] = umap_niche[:, 0]
+        umap_metadata['umap_niche_y'] = umap_niche[:, 1]
+
+    # Add all annotation columns
+    for anno in config.annotation_list:
+        if anno in adata_sub.obs.columns:
+            umap_metadata[anno] = adata_sub.obs[anno].values
+
+    # Save to CSV
+    umap_metadata.to_csv(report_dir / "umap_data.csv", index=False)
+    logger.info(f"UMAP data saved with {len(umap_metadata)} points")
+
+    return {
+        'has_niche': has_niche,
+        'cell_emb_key': cell_emb_key,
+        'niche_emb_key': niche_emb_key,
+        'n_points': len(umap_metadata)
+    }
+
+
+# =============================================================================
 # Data Loading Functions
 # =============================================================================
 
@@ -233,11 +410,15 @@ def _load_gss_and_calculate_stats(
     logger.info(f"Common spots (gss & ldsc): {len(common_spots)}")
     assert len(common_spots) > 0, "No common spots found between GSS and LDSC results."
 
-    # Subsample if requested
+    # Stratified subsample if requested
     analysis_spots = common_spots
     if config.downsampling_n_spots and len(common_spots) > config.downsampling_n_spots:
-        analysis_spots = np.random.choice(common_spots, config.downsampling_n_spots, replace=False)
-        logger.info(f"Downsampled to {len(analysis_spots)} spots for PCC calculation.")
+        # Get sample names for stratified sampling
+        sample_names = ldsc_df.loc[common_spots, 'sample_name']
+        analysis_spots = _stratified_subsample(
+            common_spots, sample_names, config.downsampling_n_spots
+        )
+        logger.info(f"Stratified subsampled to {len(analysis_spots)} spots for PCC calculation.")
 
     # Filter to high expression genes
     exp_frac = pd.read_parquet(config.mean_frac_path)
@@ -791,7 +972,9 @@ def _save_report_metadata(
     config: QuickModeConfig,
     traits: List[str],
     sample_names: List[str],
-    report_dir: Path
+    report_dir: Path,
+    chrom_tick_positions: Optional[Dict] = None,
+    umap_info: Optional[Dict] = None
 ):
     """Save report configuration metadata as JSON."""
     logger.info("Saving report configuration metadata...")
@@ -800,6 +983,15 @@ def _save_report_metadata(
     report_meta['traits'] = traits
     report_meta['samples'] = sample_names
     report_meta['annotations'] = config.annotation_list
+    report_meta['top_corr_genes'] = getattr(config, 'top_corr_genes', 50)
+
+    # Add chromosome tick positions for Manhattan plot
+    if chrom_tick_positions:
+        report_meta['chrom_tick_positions'] = chrom_tick_positions
+
+    # Add UMAP info
+    if umap_info:
+        report_meta['umap_info'] = umap_info
 
     with open(report_dir / "report_meta.json", "w") as f:
         json.dump(report_meta, f)
@@ -858,8 +1050,8 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
         # 4. Save metadata
         metadata = _save_metadata(ldsc_df, coords, report_dir)
 
-        # 5. Prepare Manhattan data
-        _prepare_manhattan_data(config, traits, report_dir)
+        # 5. Prepare Manhattan data (returns chromosome tick positions)
+        chrom_tick_positions = _prepare_manhattan_data(config, traits, report_dir)
 
         # 6. Pre-render static plots
         try:
@@ -875,10 +1067,19 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
         # 7. Collect Cauchy results
         _collect_cauchy_results(config, traits, report_dir)
 
-        # 8. Save report metadata
-        _save_report_metadata(config, traits, sample_names, report_dir)
+        # 8. Prepare UMAP data from embeddings
+        umap_info = None
+        try:
+            umap_info = _prepare_umap_data(config, metadata, report_dir)
+        except Exception as e:
+            logger.warning(f"Failed to prepare UMAP data: {e}")
+            import traceback
+            traceback.print_exc()
 
-        # 9. Copy JS assets
+        # 9. Save report metadata (including chromosome tick positions and UMAP info)
+        _save_report_metadata(config, traits, sample_names, report_dir, chrom_tick_positions, umap_info)
+
+        # 10. Copy JS assets
         _copy_js_assets(report_dir)
 
         logger.info(f"Interactive report data prepared in {report_dir}")
@@ -907,6 +1108,7 @@ def export_data_as_js_modules(data_dir: Path):
     _export_cauchy_js(data_dir, js_data_dir)
     _export_manhattan_js(data_dir, js_data_dir)
     _export_top_genes_pcc_js(data_dir, js_data_dir)
+    _export_umap_js(data_dir, js_data_dir)
     _export_report_meta_js(data_dir, js_data_dir)
 
     logger.info(f"JS modules exported to {js_data_dir}")
@@ -988,3 +1190,39 @@ def _export_report_meta_js(data_dir: Path, js_data_dir: Path):
         js_content = f"window.GSMAP_REPORT_META = {json.dumps(meta, separators=(',', ':'))};"
         with open(js_data_dir / "report_meta.js", "w", encoding='utf-8') as f:
             f.write(js_content)
+
+
+def _export_umap_js(data_dir: Path, js_data_dir: Path):
+    """Export UMAP data as JS module."""
+    umap_file = data_dir / "umap_data.csv"
+    if umap_file.exists():
+        df = pd.read_csv(umap_file)
+
+        # Build efficient columnar structure for ScatterGL
+        data_struct = {
+            'spot': df['spot'].tolist(),
+            'sample_name': df['sample_name'].tolist(),
+            'umap_cell_x': df['umap_cell_x'].tolist(),
+            'umap_cell_y': df['umap_cell_y'].tolist(),
+        }
+
+        # Add niche UMAP if available
+        if 'umap_niche_x' in df.columns:
+            data_struct['umap_niche_x'] = df['umap_niche_x'].tolist()
+            data_struct['umap_niche_y'] = df['umap_niche_y'].tolist()
+            data_struct['has_niche'] = True
+        else:
+            data_struct['has_niche'] = False
+
+        # Add all annotation columns (excluding known columns)
+        known_cols = {'spot', 'sample_name', 'umap_cell_x', 'umap_cell_y', 'umap_niche_x', 'umap_niche_y'}
+        annotation_cols = [c for c in df.columns if c not in known_cols]
+        data_struct['annotation_columns'] = annotation_cols
+
+        for col in annotation_cols:
+            data_struct[col] = df[col].tolist()
+
+        js_content = f"window.GSMAP_UMAP = {json.dumps(data_struct, separators=(',', ':'))};"
+        with open(js_data_dir / "umap_data.js", "w", encoding='utf-8') as f:
+            f.write(js_content)
+        logger.info(f"Exported UMAP data with {len(df)} points")

@@ -204,6 +204,11 @@
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
                             1. Manhattan Plot
                         </button>
+                        <button x-show="umapData"
+                            @click="sections.umap = true; $nextTick(() => document.getElementById('sec-umap')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            1.5. Embedding UMAP
+                        </button>
                         <button
                             @click="sections.gsmap = true; $nextTick(() => document.getElementById('sec-gsmap')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
@@ -264,6 +269,55 @@
                 </div>
                 <div class="section-content" :class="sections.manhattan ? 'expanded' : 'collapsed'">
                     <div id="manhattanPlot" class="plot-container w-full"></div>
+                </div>
+            </div>
+
+            <!-- ==================== SECTION 1.5: UMAP EMBEDDINGS ==================== -->
+            <div id="sec-umap" x-show="dataLoaded && umapData"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.umap = !sections.umap">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">1.5. Embedding UMAP</h2>
+                        <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.umap ? 'rotate-180' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+                <div class="section-content" :class="sections.umap ? 'expanded' : 'collapsed'">
+                    <!-- UMAP Controls -->
+                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-4">
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm font-medium text-gray-700">Color by:</label>
+                            <select x-model="selectedUmapAnnotation" @change="renderUmapPlots()"
+                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white min-w-[150px]">
+                                <template x-for="anno in umapAnnotationColumns" :key="anno">
+                                    <option :value="anno" x-text="anno"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="text-sm text-gray-500">
+                            <span x-text="umapData ? umapData.spot.length : 0"></span> spots
+                        </div>
+                    </div>
+
+                    <!-- UMAP Plots Container -->
+                    <div class="p-4">
+                        <div class="flex flex-wrap gap-4" :class="umapHasNiche ? 'justify-center' : 'justify-center'">
+                            <!-- Cell Embedding UMAP -->
+                            <div class="flex-1 min-w-[400px] max-w-[600px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">Cell Embedding</h3>
+                                <div id="umapCellPlot" class="w-full" style="height: 450px;"></div>
+                            </div>
+                            <!-- Niche Embedding UMAP (only if available) -->
+                            <div x-show="umapHasNiche" class="flex-1 min-w-[400px] max-w-[600px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">Niche Embedding</h3>
+                                <div id="umapNichePlot" class="w-full" style="height: 450px;"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -565,6 +619,7 @@
     <script src="js_data/spot_metadata.js"></script>
     <script src="js_data/cauchy_results.js"></script>
     <script src="js_data/gene_trait_correlation.js"></script>
+    <script src="js_data/umap_data.js"></script>
 
     <script>
         function gsMapApp() {
@@ -590,6 +645,7 @@
                 // Section collapse state
                 sections: {
                     manhattan: true,
+                    umap: true,
                     gsmap: true,
                     annotation: true,
                     genes: true,
@@ -602,6 +658,14 @@
                 cauchyData: [],
                 topGenesPcc: [],
                 topGenesList: [],
+
+                // UMAP state
+                umapData: null,
+                umapHasNiche: false,
+                umapAnnotationColumns: [],
+                selectedUmapAnnotation: '',
+                umapCellPlotInitialized: false,
+                umapNichePlotInitialized: false,
 
                 // Manhattan state
                 manhattanLoadedTraits: {},
@@ -749,6 +813,17 @@
                         console.log("Loaded", this.topGenesPcc.length, "gene PCC records");
                     }
 
+                    // Load UMAP data
+                    if (window.GSMAP_UMAP) {
+                        this.umapData = window.GSMAP_UMAP;
+                        this.umapHasNiche = this.umapData.has_niche || false;
+                        this.umapAnnotationColumns = this.umapData.annotation_columns || [];
+                        if (this.umapAnnotationColumns.length > 0) {
+                            this.selectedUmapAnnotation = this.umapAnnotationColumns[0];
+                        }
+                        console.log("Loaded UMAP data:", this.umapData.spot.length, "points, has_niche:", this.umapHasNiche);
+                    }
+
                     // Check if data loaded successfully
                     if (this.traits.length > 0) {
                         this.dataLoaded = true;
@@ -766,6 +841,7 @@
                         await this.waitForPlotly();
                         this.loadManhattanData();
                         this.renderCauchyHeatmap();
+                        this.renderUmapPlots();
                     } else {
                         console.error("No traits found - data may not have loaded correctly");
                     }
@@ -1030,6 +1106,114 @@
                         yaxis: { title: 'Annotation' },
                         margin: { l: 120, r: 50, t: 60, b: 100 }
                     }, { responsive: true });
+                },
+
+                // UMAP Plots
+                renderUmapPlots() {
+                    if (!this.umapData || !this.plotlyReady) return;
+
+                    const anno = this.selectedUmapAnnotation;
+                    if (!anno) return;
+
+                    // Get annotation values for coloring
+                    const annoValues = this.umapData[anno] || [];
+                    const uniqueValues = [...new Set(annoValues)].sort();
+
+                    // Create color mapping
+                    const colorScale = this.getUmapColorScale(uniqueValues.length);
+                    const colorMap = {};
+                    uniqueValues.forEach((val, i) => {
+                        colorMap[val] = colorScale[i % colorScale.length];
+                    });
+
+                    // Build hover text with all annotations
+                    const hoverText = this.umapData.spot.map((spot, i) => {
+                        let text = `<b>Spot:</b> ${spot}<br><b>Sample:</b> ${this.umapData.sample_name[i]}`;
+                        this.umapAnnotationColumns.forEach(col => {
+                            text += `<br><b>${col}:</b> ${this.umapData[col][i]}`;
+                        });
+                        return text;
+                    });
+
+                    // Render Cell Embedding UMAP
+                    this.renderSingleUmap(
+                        'umapCellPlot',
+                        this.umapData.umap_cell_x,
+                        this.umapData.umap_cell_y,
+                        annoValues,
+                        colorMap,
+                        hoverText,
+                        'Cell Embedding UMAP'
+                    );
+
+                    // Render Niche Embedding UMAP (if available)
+                    if (this.umapHasNiche && this.umapData.umap_niche_x) {
+                        this.renderSingleUmap(
+                            'umapNichePlot',
+                            this.umapData.umap_niche_x,
+                            this.umapData.umap_niche_y,
+                            annoValues,
+                            colorMap,
+                            hoverText,
+                            'Niche Embedding UMAP'
+                        );
+                    }
+                },
+
+                renderSingleUmap(divId, x, y, annoValues, colorMap, hoverText, title) {
+                    const plotDiv = document.getElementById(divId);
+                    if (!plotDiv) return;
+
+                    // Group data by annotation value for legend
+                    const uniqueValues = [...new Set(annoValues)].sort();
+                    const traces = uniqueValues.map(val => {
+                        const indices = annoValues.map((v, i) => v === val ? i : -1).filter(i => i >= 0);
+                        return {
+                            x: indices.map(i => x[i]),
+                            y: indices.map(i => y[i]),
+                            mode: 'markers',
+                            type: 'scattergl',
+                            name: val,
+                            text: indices.map(i => hoverText[i]),
+                            hoverinfo: 'text',
+                            marker: {
+                                size: 4,
+                                color: colorMap[val],
+                                opacity: 0.7
+                            }
+                        };
+                    });
+
+                    const layout = {
+                        title: { text: title, font: { size: 14 } },
+                        xaxis: { title: 'UMAP 1', showgrid: false, zeroline: false },
+                        yaxis: { title: 'UMAP 2', showgrid: false, zeroline: false },
+                        hovermode: 'closest',
+                        margin: { l: 50, r: 20, t: 40, b: 50 },
+                        legend: {
+                            orientation: 'v',
+                            x: 1.02,
+                            y: 1,
+                            font: { size: 10 }
+                        },
+                        showlegend: uniqueValues.length <= 20
+                    };
+
+                    const config = { responsive: true, displayModeBar: true };
+                    Plotly.react(plotDiv, traces, layout, config);
+                },
+
+                getUmapColorScale(n) {
+                    // Categorical color palette
+                    const palette = [
+                        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+                        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+                        '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
+                        '#c49c94', '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5',
+                        '#393b79', '#5254a3', '#6b6ecf', '#9c9ede', '#637939',
+                        '#8ca252', '#b5cf6b', '#cedb9c', '#8c6d31', '#bd9e39'
+                    ];
+                    return palette.slice(0, Math.max(n, palette.length));
                 }
             };
         }
