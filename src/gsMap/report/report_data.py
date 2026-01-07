@@ -424,8 +424,12 @@ def _prepare_3d_visualization(
         trait: np.float32 for trait in traits if trait in adata_vis_full.obs.columns
     })
 
+    # Create 3D visualization directory
+    three_d_dir = report_dir / "spatial_3d"
+    three_d_dir.mkdir(exist_ok=True)
+
     # 2. Save the full adata_vis
-    h5ad_path = report_dir / "spv_spatial_3d.h5ad"
+    h5ad_path = three_d_dir / "spatial_3d.h5ad"
     adata_vis_full.write_h5ad(h5ad_path)
     logger.info(f"Full 3D visualization data saved to {h5ad_path}")
 
@@ -450,10 +454,7 @@ def _prepare_3d_visualization(
         if anno in adata_vis.obs.columns:
             annotation_cols.append(anno)
 
-    # Use first annotation as color
-    color_col = annotation_cols[0] if annotation_cols else 'sample_name'
-
-    logger.info(f"3D visualization: color={color_col}, traits={continuous_cols}")
+    logger.info(f"3D visualization: annotations={annotation_cols}, traits={continuous_cols}")
 
     # Create 3D plots
     try:
@@ -477,7 +478,7 @@ def _prepare_3d_visualization(
                 color_map = _create_color_map(unique_vals, hex=True, rng=42)
             
             safe_anno = "".join(c if c.isalnum() else "_" for c in anno)
-            anno_plot_name = report_dir / f"spv_spatial_3d_anno_{safe_anno}"
+            anno_plot_name = three_d_dir / f"spatial_3d_anno_{safe_anno}"
             
             plotter_anno = three_d_plot(
                 adata=adata_vis,
@@ -492,10 +493,30 @@ def _prepare_3d_visualization(
             three_d_plot_save(plotter_anno, filename=str(anno_plot_name))
         
         # 2. Save each Trait 3D plot
+        legend_kwargs = dict(scalar_bar_title_size=30, scalar_bar_label_size=30, fmt="%.1e")
+        text_kwargs = dict(text_font_size=15, text_loc="upper_edge")
+
         for trait in continuous_cols:
             logger.info(f"Generating 3D plot for trait: {trait}")
+            
+            # Calculate opacity based on LogP (exponential scaling)
+            trait_values = adata_vis.obs[trait].fillna(0).values
+            bins = np.linspace(trait_values.min(), trait_values.max(), 5)
+            # Handle case where min == max to avoid bins error
+            if bins[0] == bins[-1]:
+                opacity_show = 1.0
+            else:
+                alpha = np.exp(np.linspace(0.1, 1.0, num=(len(bins)-1))) - 1
+                alpha = alpha / max(alpha)
+                opacity_show = pd.cut(trait_values, bins=bins, labels=alpha, include_lowest=True).values.tolist()
+
+            # Set the clim (median of top 20 spots)
+            sorted_vals = np.sort(trait_values)[::-1]
+            max_v = np.round(np.median(sorted_vals[0:20])) if len(sorted_vals) >= 20 else sorted_vals[0]
+            if max_v <= 0: max_v = 1.0
+
             safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-            trait_plot_name = report_dir / f"spv_spatial_3d_trait_{safe_trait}"
+            trait_plot_name = three_d_dir / f"spatial_3d_trait_{safe_trait}"
             
             plotter_trait = three_d_plot(
                 adata=adata_vis,
@@ -503,19 +524,26 @@ def _prepare_3d_visualization(
                 keys=[trait],
                 cmaps=[P_COLOR],
                 point_size=point_size,
+                opacity=opacity_show,
+                clim=[0, max_v],
+                scalar_bar_titles=["-log10(p)"],
+                texts=[trait],
                 off_screen=True,
                 jupyter=False,
-                background='white'
+                background='white',
+                legend_kwargs=legend_kwargs,
+                text_kwargs=text_kwargs,
+                window_size=(1200, 1008)
             )
             three_d_plot_save(plotter_trait, filename=str(trait_plot_name))
 
-        # Return the first annotation plot path (if any) or trait plot path as the primary one
+        # Return the relative path of the first available plot
         if annotation_cols:
             safe_first = "".join(c if c.isalnum() else "_" for c in annotation_cols[0])
-            return str((report_dir / f"spv_spatial_3d_anno_{safe_first}").with_suffix('.html'))
+            return f"spatial_3d/spatial_3d_anno_{safe_first}.html"
         elif continuous_cols:
             safe_first_trait = "".join(c if c.isalnum() else "_" for c in continuous_cols[0])
-            return str((report_dir / f"spv_spatial_3d_trait_{safe_first_trait}").with_suffix('.html'))
+            return f"spatial_3d/spatial_3d_trait_{safe_first_trait}.html"
         
         return None
 
@@ -1221,7 +1249,7 @@ def _save_report_metadata(
     chrom_tick_positions: Optional[Dict] = None,
     umap_info: Optional[Dict] = None,
     is_3d: bool = False,
-    spatial_3d_html: bool = False
+    spatial_3d_path: Optional[str] = None
 ):
     """Save report configuration metadata as JSON."""
     logger.info("Saving report configuration metadata...")
@@ -1242,7 +1270,8 @@ def _save_report_metadata(
 
     # Add 3D visualization info
     report_meta['is_3d'] = is_3d
-    report_meta['has_3d_widget'] = spatial_3d_html
+    report_meta['has_3d_widget'] = spatial_3d_path is not None
+    report_meta['spatial_3d_widget_path'] = spatial_3d_path
 
     with open(report_dir / "report_meta.json", "w") as f:
         json.dump(report_meta, f)
@@ -1357,7 +1386,7 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
         _save_report_metadata(
             config, traits, sample_names, report_dir,
             chrom_tick_positions, umap_info,
-            is_3d=is_3d, spatial_3d_html=spatial_3d_html is not None
+            is_3d=is_3d, spatial_3d_path=spatial_3d_html
         )
 
         # 11. Copy JS assets
