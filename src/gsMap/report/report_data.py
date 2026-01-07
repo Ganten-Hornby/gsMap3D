@@ -441,38 +441,47 @@ def _prepare_3d_visualization(
 
     logger.info("Creating 3D visualization widget...")
 
-    # Stratified subsample for visualization (limit to reasonable size)
+    # 1. Create adata_vis using ALL spots
+    n_spots_all = len(metadata)
+    adata_vis_full = ad.AnnData(
+        X=sp.csr_matrix((n_spots_all, 1), dtype=np.float32),
+        obs=metadata.set_index('spot')
+    )
+    # Set coordinates
+    adata_vis_full.obsm['spatial_3d'] = metadata[['3d_x', '3d_y', '3d_z']].values
+    adata_vis_full.obsm['spatial'] = adata_vis_full.obsm['spatial_3d']
+    if 'sx' in metadata.columns and 'sy' in metadata.columns:
+        adata_vis_full.obsm['spatial_2d'] = metadata[['sx', 'sy']].values
+
+    # Ensure trait columns are float32
+    adata_vis_full.obs = adata_vis_full.obs.astype({
+        trait: np.float32 for trait in traits if trait in adata_vis_full.obs.columns
+    })
+
+    # 2. Save the full adata_vis
+    h5ad_path = report_dir / "spv_spatial_3d.h5ad"
+    adata_vis_full.write_h5ad(h5ad_path)
+    logger.info(f"Full 3D visualization data saved to {h5ad_path}")
+
+    # 3. Stratified subsampling for HTML visualization (limit to reasonable size)
     n_max_points = getattr(config, 'downsampling_n_spots', 10000)
     if len(metadata) > n_max_points:
         sample_names = metadata['sample_name']
         selected_idx = _stratified_subsample(
             metadata.index.values, sample_names, n_max_points
         )
-        metadata_sub = metadata.loc[selected_idx].copy()
-        logger.info(f"Subsampled to {len(metadata_sub)} spots for 3D visualization")
+        adata_vis = adata_vis_full[selected_idx].copy()
+        logger.info(f"Subsampled to {len(adata_vis)} spots for HTML 3D visualization")
     else:
-        metadata_sub = metadata.copy()
+        adata_vis = adata_vis_full.copy()
 
-    # Create AnnData for spatialvista
-    # X matrix can be empty since we're not showing genes
-    n_spots = len(metadata_sub)
-    adata_vis = ad.AnnData(
-        X=sp.csr_matrix((n_spots, 1), dtype=np.float32),
-        obs=metadata_sub.set_index('spot')
-    )
-    # Set spatial coordinates
-    adata_vis.obsm['spatial_3d'] = metadata_sub[['3d_x', '3d_y', '3d_z']].values
-    adata_vis.obsm['spatial_2d'] = metadata_sub[['sx', 'sy']].values
-
-    # let trait col float32
-    adata_vis.obs = adata_vis.obs.astype({trait: np.float32 for trait in traits if trait in adata_vis.obs.columns})
     # Add traits as continuous values
     continuous_cols = traits
 
     # Add annotations (categorical)
     annotation_cols = []
     for anno in config.annotation_list:
-        if anno in metadata_sub.columns:
+        if anno in adata_vis.obs.columns:
             annotation_cols.append(anno)
 
     # Use first annotation as color, rest as additional annotations
