@@ -600,6 +600,22 @@
                                 <option value="sample">Per Sample</option>
                             </select>
                         </div>
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm font-medium text-gray-700">Heatmap Metric:</label>
+                            <select x-model="cauchyHeatmapMetric" @change="renderCauchyHeatmap()"
+                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
+                                <option value="mlog10_p_cauchy">Cauchy P-Value (-log10)</option>
+                                <option value="mlog10_p_median">Median P-Value (-log10)</option>
+                                <option value="top_95_quantile">Q95 (-log10P)</option>
+                            </select>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label class="inline-flex items-center cursor-pointer">
+                                <input type="checkbox" x-model="cauchyHeatmapCluster" @change="renderCauchyHeatmap()"
+                                    class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 h-4 w-4">
+                                <span class="ml-2 text-sm text-gray-700">Cluster Heatmap</span>
+                            </label>
+                        </div>
                     </div>
 
                     <!-- Cauchy Table -->
@@ -817,6 +833,8 @@
                 cauchyViewMode: 'all',
                 cauchySortKey: 'mlog10_p_median',
                 cauchySortAsc: false,
+                cauchyHeatmapMetric: 'mlog10_p_cauchy',
+                cauchyHeatmapCluster: true,
 
                 // Memoized: filtered gene table
                 get filteredGeneTable() {
@@ -1238,29 +1256,107 @@
                         return;
                     }
 
-                    // Use 'annotation' column (e.g., "WM", "Layer1") not 'annotation_name'
+                    const metric = this.cauchyHeatmapMetric;
                     const annotationValues = [...new Set(data.map(r => r.annotation))].sort();
                     const traitValues = [...new Set(data.map(r => r.trait))].sort();
 
-                    const zData = annotationValues.map(anno => traitValues.map(trait => {
+                    let zData = annotationValues.map(anno => traitValues.map(trait => {
                         const match = data.find(r => r.annotation === anno && r.trait === trait);
-                        return match && match.mlog10_p_median != null ? match.mlog10_p_median : 0;
+                        return match && match[metric] != null ? match[metric] : 0;
                     }));
 
-                    Plotly.newPlot(plotDiv, [{
+                    let finalAnnotations = annotationValues;
+                    let finalTraits = traitValues;
+
+                    if (this.cauchyHeatmapCluster && traitValues.length > 1) {
+                        try {
+                            // Cluster rows (Annotations)
+                            const rowOrder = this.clusterData(zData);
+                            zData = rowOrder.map(i => zData[i]);
+                            finalAnnotations = rowOrder.map(i => annotationValues[i]);
+
+                            // Cluster columns (Traits)
+                            // Transpose for col clustering
+                            const transposed = traitValues.map((_, i) => zData.map(row => row[i]));
+                            const colOrder = this.clusterData(transposed);
+                            zData = zData.map(row => colOrder.map(i => row[i]));
+                            finalTraits = colOrder.map(i => traitValues[i]);
+                        } catch (e) {
+                            console.error("Clustering failed, using default order:", e);
+                        }
+                    }
+
+                    const metricLabel = {
+                        'mlog10_p_cauchy': '-log10(p_cauchy)',
+                        'mlog10_p_median': '-log10(p_median)',
+                        'top_95_quantile': 'Q95 (-log10P)'
+                    }[metric] || metric;
+
+                    Plotly.react(plotDiv, [{
                         z: zData,
-                        x: traitValues,
-                        y: annotationValues,
+                        x: finalTraits,
+                        y: finalAnnotations,
                         type: 'heatmap',
                         colorscale: 'RdBu',
                         reversescale: true,
-                        hovertemplate: 'Annotation: %{y}<br>Trait: %{x}<br>-log10(p_median): %{z:.2f}<extra></extra>'
+                        hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{z:.2f}<extra></extra>`
                     }], {
-                        title: 'Cauchy P-Value Heatmap (-log10 scale)',
+                        title: `Cauchy Enrichment Heatmap (${metricLabel})`,
                         xaxis: { title: 'Trait', tickangle: 45 },
                         yaxis: { title: 'Annotation' },
-                        margin: { l: 120, r: 50, t: 60, b: 100 }
+                        margin: { l: 150, r: 50, t: 80, b: 120 }
                     }, { responsive: true });
+                },
+
+                // Simple Hierarchical Clustering (UPGMA / Average Linkage)
+                clusterData(matrix) {
+                    if (matrix.length <= 1) return [0];
+
+                    const n = matrix.length;
+                    const dist = (a, b) => Math.sqrt(a.reduce((acc, v, i) => acc + Math.pow(v - b[i], 2), 0));
+
+                    // Initial clusters
+                    let clusters = matrix.map((v, i) => ({
+                        indices: [i],
+                        vec: v,
+                        size: 1
+                    }));
+
+                    // Distance matrix between clusters
+                    const getClusterDist = (c1, c2) => dist(c1.vec, c2.vec);
+
+                    while (clusters.length > 1) {
+                        let minDist = Infinity;
+                        let pair = [0, 1];
+
+                        for (let i = 0; i < clusters.length; i++) {
+                            for (let j = i + 1; j < clusters.length; j++) {
+                                const d = getClusterDist(clusters[i], clusters[j]);
+                                if (d < minDist) {
+                                    minDist = d;
+                                    pair = [i, j];
+                                }
+                            }
+                        }
+
+                        // Merge pair
+                        const [i, j] = pair;
+                        const c1 = clusters[i];
+                        const c2 = clusters[j];
+
+                        const mergedVec = c1.vec.map((v, idx) => (v * c1.size + c2.vec[idx] * c2.size) / (c1.size + c2.size));
+                        const mergedCluster = {
+                            indices: [...c1.indices, ...c2.indices],
+                            vec: mergedVec,
+                            size: c1.size + c2.size
+                        };
+
+                        // Update clusters array
+                        clusters.splice(j, 1);
+                        clusters.splice(i, 1, mergedCluster);
+                    }
+
+                    return clusters[0].indices;
                 },
 
                 // UMAP Plots
@@ -1325,7 +1421,8 @@
                         isContinuous,
                         hoverText,
                         'Cell Embedding UMAP',
-                        colorLabel
+                        colorLabel,
+                        this.umapData.point_size_cell || 4
                     );
 
                     // Render Niche Embedding UMAP (if available)
@@ -1339,14 +1436,17 @@
                             isContinuous,
                             hoverText,
                             'Niche Embedding UMAP',
-                            colorLabel
+                            colorLabel,
+                            this.umapData.point_size_niche || 4
                         );
                     }
                 },
 
-                renderSingleUmap(divId, x, y, annoValues, colorMap, isContinuous, hoverText, title, annoName) {
+                renderSingleUmap(divId, x, y, annoValues, colorMap, isContinuous, hoverText, title, annoName, pointSize) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
+
+                    const opacity = this.umapData.default_opacity || 0.7;
 
                     let traces = [];
                     let layoutExtras = {};
@@ -1361,10 +1461,10 @@
                             text: hoverText,
                             hoverinfo: 'text',
                             marker: {
-                                size: 4,
+                                size: pointSize,
                                 color: annoValues,
                                 colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
-                                opacity: 0.7,
+                                opacity: opacity,
                                 showscale: true,
                                 colorbar: {
                                     title: annoName,
@@ -1393,9 +1493,9 @@
                                 text: indices.map(idx => hoverText[idx]),
                                 hoverinfo: 'text',
                                 marker: {
-                                    size: 4,
+                                    size: pointSize,
                                     color: (colorMap && colorMap[val]) || defaultColors[i % defaultColors.length],
-                                    opacity: 0.7
+                                    opacity: opacity
                                 }
                             };
                         });

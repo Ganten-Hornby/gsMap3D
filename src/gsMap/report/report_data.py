@@ -25,6 +25,7 @@ from gsMap.config import QuickModeConfig
 from gsMap.find_latent.st_process import normalize_for_analysis, setup_data_layer
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
+from gsMap.report.visualize import estimate_point_size_for_plot
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ def _render_gene_plot_task(task_data: dict):
     try:
         from pathlib import Path
         import pandas as pd
-        from gsMap.report.visualize import draw_scatter
+        from gsMap.report.visualize import draw_scatter, estimate_point_size_for_plot
 
         gene = task_data['gene']
         coords = task_data['coords']
@@ -343,9 +344,14 @@ def _prepare_umap_data(
     # Calculate UMAPs
     umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key)
 
+    # Estimate point size for UMAP cell
+    _, point_size_cell = estimate_point_size_for_plot(umap_cell)
+
     umap_niche = None
+    point_size_niche = None
     if has_niche:
         umap_niche = _calculate_umap_from_embeddings(adata_sub, niche_emb_key)
+        _, point_size_niche = estimate_point_size_for_plot(umap_niche)
 
     # Prepare metadata for the subsampled spots
     umap_metadata = pd.DataFrame({
@@ -387,7 +393,10 @@ def _prepare_umap_data(
         'has_niche': has_niche,
         'cell_emb_key': cell_emb_key,
         'niche_emb_key': niche_emb_key,
-        'n_points': len(umap_metadata)
+        'n_points': len(umap_metadata),
+        'point_size_cell': float(point_size_cell),
+        'point_size_niche': float(point_size_niche) if point_size_niche is not None else None,
+        'default_opacity': 0.7
     }
 
 
@@ -1472,12 +1481,21 @@ def export_data_as_js_modules(data_dir: Path):
     js_data_dir = data_dir / "js_data"
     js_data_dir.mkdir(exist_ok=True)
 
+    meta = {}
+    meta_file = data_dir / "report_meta.json"
+    if meta_file.exists():
+        try:
+            with open(meta_file, "r") as f:
+                meta = json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load report_meta.json: {e}")
+
     _export_metadata_js(data_dir, js_data_dir)
     _export_cauchy_js(data_dir, js_data_dir)
     _export_manhattan_js(data_dir, js_data_dir)
     _export_top_genes_pcc_js(data_dir, js_data_dir)
-    _export_umap_js(data_dir, js_data_dir)
-    _export_report_meta_js(data_dir, js_data_dir)
+    _export_umap_js(data_dir, js_data_dir, meta)
+    _export_report_meta_js(data_dir, js_data_dir, meta)
 
     logger.info(f"JS modules exported to {js_data_dir}")
 
@@ -1549,18 +1567,15 @@ def _export_top_genes_pcc_js(data_dir: Path, js_data_dir: Path):
             f.write(js_content)
 
 
-def _export_report_meta_js(data_dir: Path, js_data_dir: Path):
+def _export_report_meta_js(data_dir: Path, js_data_dir: Path, meta: Dict):
     """Export report metadata as JS module."""
-    meta_file = data_dir / "report_meta.json"
-    if meta_file.exists():
-        with open(meta_file, "r") as f:
-            meta = json.load(f)
+    if meta:
         js_content = f"window.GSMAP_REPORT_META = {json.dumps(meta, separators=(',', ':'))};"
         with open(js_data_dir / "report_meta.js", "w", encoding='utf-8') as f:
             f.write(js_content)
 
 
-def _export_umap_js(data_dir: Path, js_data_dir: Path):
+def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: Dict):
     """Export UMAP data as JS module."""
     umap_file = data_dir / "umap_data.csv"
     if umap_file.exists():
@@ -1572,12 +1587,15 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path):
             'sample_name': df['sample_name'].tolist(),
             'umap_cell_x': df['umap_cell_x'].tolist(),
             'umap_cell_y': df['umap_cell_y'].tolist(),
+            'point_size_cell': meta.get('umap_info', {}).get('point_size_cell', 4),
+            'default_opacity': meta.get('umap_info', {}).get('default_opacity', 0.7)
         }
 
         # Add niche UMAP if available
         if 'umap_niche_x' in df.columns:
             data_struct['umap_niche_x'] = df['umap_niche_x'].tolist()
             data_struct['umap_niche_y'] = df['umap_niche_y'].tolist()
+            data_struct['point_size_niche'] = meta.get('umap_info', {}).get('point_size_niche', 4)
             data_struct['has_niche'] = True
         else:
             data_struct['has_niche'] = False
