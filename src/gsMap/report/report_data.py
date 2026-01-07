@@ -24,6 +24,7 @@ import scipy.sparse as sp
 from gsMap.config import QuickModeConfig
 from gsMap.find_latent.st_process import normalize_for_analysis, setup_data_layer
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
+from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 
 logger = logging.getLogger(__name__)
@@ -394,11 +395,9 @@ def _prepare_3d_visualization(
         Path to saved HTML file, or None if failed
     """
     try:
-        import spatialvista as spv
-        from ipywidgets import embed
-        from ipywidgets.embed import embed_minimal_html
+        import pyvista
     except ImportError:
-        logger.warning("spatialvista or ipywidgets not installed. Skipping 3D visualization.")
+        logger.warning("pyvista not installed. Skipping 3D visualization.")
         return None
 
     # Check if we have 3D coordinates
@@ -406,7 +405,7 @@ def _prepare_3d_visualization(
         logger.warning("3D coordinates not found in metadata. Skipping 3D visualization.")
         return None
 
-    logger.info("Creating 3D visualization widget...")
+    logger.info("Creating 3D visualization...")
 
     # 1. Create adata_vis using ALL spots
     n_spots_all = len(metadata)
@@ -451,45 +450,77 @@ def _prepare_3d_visualization(
         if anno in adata_vis.obs.columns:
             annotation_cols.append(anno)
 
-    # Use first annotation as color, rest as additional annotations
+    # Use first annotation as color
     color_col = annotation_cols[0] if annotation_cols else 'sample_name'
-    other_annotations = annotation_cols[1:] if len(annotation_cols) > 1 else []
 
-    logger.info(f"3D visualization: color={color_col}, annotations={other_annotations}, continuous={continuous_cols}")
+    logger.info(f"3D visualization: color={color_col}, traits={continuous_cols}")
 
-    # Create visualization widget
+    # Create 3D plots
     try:
-        widget = spv.vis(
-            adata_vis,
-            position='spatial',
-            color=color_col,
-            annotations=other_annotations if other_annotations else None,
-            continuous=continuous_cols if continuous_cols else None,
-            genes=None,
-            section='sample_name',
-            mode='3D',
-        )
+        from gsMap.report.visualize import _create_color_map
+        
+        # P-value color scale (Red-Blue)
+        P_COLOR = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
+        
+        # Calculate appropriate point size
+        point_size = 2.0 if len(adata_vis) < 5000 else 1.0
+        
+        # 1. Save all Annotation 3D plots
+        for anno in annotation_cols:
+            logger.info(f"Generating 3D plot for annotation: {anno}")
+            
+            # Use same colormap logic as distribution plots
+            if pd.api.types.is_numeric_dtype(adata_vis.obs[anno]):
+                color_map = P_COLOR
+            else:
+                unique_vals = adata_vis.obs[anno].unique()
+                color_map = _create_color_map(unique_vals, hex=True, rng=42)
+            
+            safe_anno = "".join(c if c.isalnum() else "_" for c in anno)
+            anno_plot_name = report_dir / f"spv_spatial_3d_anno_{safe_anno}"
+            
+            plotter_anno = three_d_plot(
+                adata=adata_vis,
+                spatial_key='spatial',
+                keys=[anno],
+                cmaps=[color_map],
+                point_size=point_size,
+                off_screen=True,
+                jupyter=False,
+                background='white'
+            )
+            three_d_plot_save(plotter_anno, filename=str(anno_plot_name))
+        
+        # 2. Save each Trait 3D plot
+        for trait in continuous_cols:
+            logger.info(f"Generating 3D plot for trait: {trait}")
+            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+            trait_plot_name = report_dir / f"spv_spatial_3d_trait_{safe_trait}"
+            
+            plotter_trait = three_d_plot(
+                adata=adata_vis,
+                spatial_key='spatial',
+                keys=[trait],
+                cmaps=[P_COLOR],
+                point_size=point_size,
+                off_screen=True,
+                jupyter=False,
+                background='white'
+            )
+            three_d_plot_save(plotter_trait, filename=str(trait_plot_name))
 
-        # Set widget size
-        widget.sizing_mode = 'stretch_both'
-        widget.layout.width = '100%'
-        widget.layout.height = '800px'
-
-        # Save to HTML
-        embed.DEFAULT_EMBED_REQUIREJS_URL = 'https://unpkg.com/@jupyter-widgets/html-manager@*/dist/embed-amd.js'
-        html_path = report_dir / "spv_spatial_3d_widget.html"
-        embed_minimal_html(
-            str(html_path),
-            views=[widget],
-            title="gsMap 3D Visualization",
-            drop_defaults=False
-        )
-
-        logger.info(f"3D visualization saved to {html_path}")
-        return str(html_path)
+        # Return the first annotation plot path (if any) or trait plot path as the primary one
+        if annotation_cols:
+            safe_first = "".join(c if c.isalnum() else "_" for c in annotation_cols[0])
+            return str((report_dir / f"spv_spatial_3d_anno_{safe_first}").with_suffix('.html'))
+        elif continuous_cols:
+            safe_first_trait = "".join(c if c.isalnum() else "_" for c in continuous_cols[0])
+            return str((report_dir / f"spv_spatial_3d_trait_{safe_first_trait}").with_suffix('.html'))
+        
+        return None
 
     except Exception as e:
-        logger.warning(f"Failed to create 3D visualization widget: {e}")
+        logger.warning(f"Failed to create 3D visualization: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -1469,8 +1500,20 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path):
         annotation_cols = [c for c in df.columns if c not in known_cols]
         data_struct['annotation_columns'] = annotation_cols
 
+        from gsMap.report.visualize import _create_color_map
+        P_COLOR = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
+        color_maps = {}
+
         for col in annotation_cols:
             data_struct[col] = df[col].tolist()
+            # Generate color map for each column
+            if pd.api.types.is_numeric_dtype(df[col]):
+                color_maps[col] = P_COLOR
+            else:
+                unique_vals = sorted(df[col].unique().tolist())
+                color_maps[col] = _create_color_map(unique_vals, hex=True, rng=42)
+        
+        data_struct['color_maps'] = color_maps
 
         js_content = f"window.GSMAP_UMAP = {json.dumps(data_struct, separators=(',', ':'))};"
         with open(js_data_dir / "umap_data.js", "w", encoding='utf-8') as f:

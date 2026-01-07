@@ -177,10 +177,30 @@ class VisualizeConfig(ConfigWithAutoPaths):
 
 
 @dataclass
-class ThreeDCombineConfig(ConfigWithAutoPaths):
-    """Configuration for 3D combine command."""
-    # Placeholder for 3D combine config fields
-    pass
+class ThreeDCombineConfig():
+    workdir: str
+    trait_name: str = None
+    adata_3d: str = None
+    project_name: str = None
+    st_id: str = None
+    annotation: str = None
+    spatial_key: str = 'spatial'
+    cmap: str = None
+    point_size: float = 0.01
+    background_color: str = 'white'
+    n_snapshot: int = 200
+    show_outline: bool = False
+    save_mp4: bool = False
+    save_gif: bool = False
+
+    def __post_init__(self):
+        if self.workdir is None:
+            raise ValueError('workdir must be provided.')
+        work_dir = Path(self.workdir)
+        if self.project_name is not None:
+            self.project_dir = work_dir / self.project_name
+        else:
+            self.project_dir = work_dir
 
 
 @dataclass

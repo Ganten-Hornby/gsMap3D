@@ -333,20 +333,19 @@
                     @click="sections.spatial3d = !sections.spatial3d">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-800">1.6. 3D Spatial Visualization</h2>
-                        <p class="text-sm text-gray-500">Interactive 3D view of spatial data with annotations and traits.</p>
+                        <p class="text-sm text-gray-500">Interactive 3D view of spatial data with annotations and
+                            traits.</p>
                     </div>
-                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.spatial3d ? 'rotate-180' : ''"
-                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg class="w-5 h-5 text-gray-500 transition-transform"
+                        :class="sections.spatial3d ? 'rotate-180' : ''" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                     </svg>
                 </div>
                 <div class="section-content" :class="sections.spatial3d ? 'expanded' : 'collapsed'">
                     <div class="p-2">
-                        <iframe src="spv_spatial_3d_widget.html"
-                            class="w-full border-0 rounded-lg"
-                            style="height: 800px; min-height: 600px;"
-                            loading="lazy"
-                            title="3D Spatial Visualization">
+                        <iframe src="spv_spatial_3d_widget.html" class="w-full border-0 rounded-lg"
+                            style="height: 800px; min-height: 600px;" loading="lazy" title="3D Spatial Visualization">
                         </iframe>
                     </div>
                 </div>
@@ -1160,14 +1159,10 @@
 
                     // Get annotation values for coloring
                     const annoValues = this.umapData[anno] || [];
-                    const uniqueValues = [...new Set(annoValues)].sort();
 
-                    // Create color mapping
-                    const colorScale = this.getUmapColorScale(uniqueValues.length);
-                    const colorMap = {};
-                    uniqueValues.forEach((val, i) => {
-                        colorMap[val] = colorScale[i % colorScale.length];
-                    });
+                    // Retrieve color map from data
+                    const colorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
+                    const isContinuous = Array.isArray(colorMap);
 
                     // Build hover text with all annotations
                     const hoverText = this.umapData.spot.map((spot, i) => {
@@ -1185,8 +1180,10 @@
                         this.umapData.umap_cell_y,
                         annoValues,
                         colorMap,
+                        isContinuous,
                         hoverText,
-                        'Cell Embedding UMAP'
+                        'Cell Embedding UMAP',
+                        anno
                     );
 
                     // Render Niche Embedding UMAP (if available)
@@ -1197,35 +1194,71 @@
                             this.umapData.umap_niche_y,
                             annoValues,
                             colorMap,
+                            isContinuous,
                             hoverText,
-                            'Niche Embedding UMAP'
+                            'Niche Embedding UMAP',
+                            anno
                         );
                     }
                 },
 
-                renderSingleUmap(divId, x, y, annoValues, colorMap, hoverText, title) {
+                renderSingleUmap(divId, x, y, annoValues, colorMap, isContinuous, hoverText, title, annoName) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
 
-                    // Group data by annotation value for legend
-                    const uniqueValues = [...new Set(annoValues)].sort();
-                    const traces = uniqueValues.map(val => {
-                        const indices = annoValues.map((v, i) => v === val ? i : -1).filter(i => i >= 0);
-                        return {
-                            x: indices.map(i => x[i]),
-                            y: indices.map(i => y[i]),
+                    let traces = [];
+                    let layoutExtras = {};
+
+                    if (isContinuous) {
+                        // Single trace with colorbar for numeric data
+                        traces.push({
+                            x: x,
+                            y: y,
                             mode: 'markers',
                             type: 'scattergl',
-                            name: val,
-                            text: indices.map(i => hoverText[i]),
+                            text: hoverText,
                             hoverinfo: 'text',
                             marker: {
                                 size: 4,
-                                color: colorMap[val],
-                                opacity: 0.7
+                                color: annoValues,
+                                colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
+                                opacity: 0.7,
+                                showscale: true,
+                                colorbar: {
+                                    title: annoName,
+                                    thickness: 15,
+                                    len: 0.5,
+                                    y: 0.5
+                                }
                             }
-                        };
-                    });
+                        });
+                        layoutExtras.showlegend = false;
+                    } else {
+                        // Discrete mapping - grouped by value for legend
+                        const uniqueValues = [...new Set(annoValues)].sort();
+
+                        // Default color scale if map not found
+                        const defaultColors = this.getUmapColorScale(uniqueValues.length);
+
+                        traces = uniqueValues.map((val, i) => {
+                            const indices = annoValues.map((v, idx) => v === val ? idx : -1).filter(idx => idx >= 0);
+                            return {
+                                x: indices.map(idx => x[idx]),
+                                y: indices.map(idx => y[idx]),
+                                mode: 'markers',
+                                type: 'scattergl',
+                                name: val,
+                                text: indices.map(idx => hoverText[idx]),
+                                hoverinfo: 'text',
+                                marker: {
+                                    size: 4,
+                                    color: (colorMap && colorMap[val]) || defaultColors[i % defaultColors.length],
+                                    opacity: 0.7
+                                }
+                            };
+                        });
+                        layoutExtras.showlegend = uniqueValues.length <= 50;
+                    }
 
                     const layout = {
                         title: { text: title, font: { size: 14 } },
@@ -1239,7 +1272,7 @@
                             y: 1,
                             font: { size: 10 }
                         },
-                        showlegend: uniqueValues.length <= 20
+                        ...layoutExtras
                     };
 
                     const config = { responsive: true, displayModeBar: true };
