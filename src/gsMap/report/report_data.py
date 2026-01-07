@@ -364,6 +364,21 @@ def _prepare_umap_data(
         if anno in adata_sub.obs.columns:
             umap_metadata[anno] = adata_sub.obs[anno].values
 
+    # Add trait -log10(p) values from metadata if available
+    traits = config.trait_name_list
+    for trait in traits:
+        if trait in metadata.columns:
+            # Create a mapping from spot to trait value
+            metadata_indexed = metadata.set_index('spot')
+            trait_values = []
+            for spot in umap_metadata['spot']:
+                if spot in metadata_indexed.index:
+                    trait_values.append(metadata_indexed.loc[spot, trait])
+                else:
+                    trait_values.append(np.nan)
+            umap_metadata[trait] = trait_values
+            logger.info(f"Added trait {trait} to UMAP data")
+
     # Save to CSV
     umap_metadata.to_csv(report_dir / "umap_data.csv", index=False)
     logger.info(f"UMAP data saved with {len(umap_metadata)} points")
@@ -463,10 +478,20 @@ def _prepare_3d_visualization(
         # P-value color scale (Red-Blue)
         P_COLOR = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
         
-        # Calculate appropriate point size
-        point_size = 2.0 if len(adata_vis) < 5000 else 1.0
+        # Calculate appropriate point size based on coverage ratio (20-30%)
+        # Formula: S = sqrt(W * H * k / N)
+        win_w, win_h = 1200, 1008
+        k_coverage = 0.25
+        n_points = len(adata_vis)
+        point_size = np.sqrt((win_w * win_h * k_coverage) / n_points)
+        point_size = max(0.5, min(5.0, point_size)) # Clamp between 0.5 and 5.0
+        logger.info(f"Estimated 3D point size: {point_size:.2f} for {n_points} spots")
+        
+        # Shared plotting settings
+        text_kwargs = dict(text_font_size=15, text_loc="upper_edge")
         
         # 1. Save all Annotation 3D plots
+        categorical_legend_kwargs = dict(categorical_legend_loc="center right")
         for anno in annotation_cols:
             logger.info(f"Generating 3D plot for annotation: {anno}")
             
@@ -486,15 +511,18 @@ def _prepare_3d_visualization(
                 keys=[anno],
                 cmaps=[color_map],
                 point_size=point_size,
+                texts=[anno],
                 off_screen=True,
                 jupyter=False,
-                background='white'
+                background='white',
+                legend_kwargs=categorical_legend_kwargs,
+                text_kwargs=text_kwargs,
+                window_size=(win_w, win_h)
             )
             three_d_plot_save(plotter_anno, filename=str(anno_plot_name))
         
         # 2. Save each Trait 3D plot
         legend_kwargs = dict(scalar_bar_title_size=30, scalar_bar_label_size=30, fmt="%.1e")
-        text_kwargs = dict(text_font_size=15, text_loc="upper_edge")
 
         for trait in continuous_cols:
             logger.info(f"Generating 3D plot for trait: {trait}")
@@ -533,7 +561,7 @@ def _prepare_3d_visualization(
                 background='white',
                 legend_kwargs=legend_kwargs,
                 text_kwargs=text_kwargs,
-                window_size=(1200, 1008)
+                window_size=(win_w,win_h)
             )
             three_d_plot_save(plotter_trait, filename=str(trait_plot_name))
 
@@ -568,6 +596,7 @@ def _load_ldsc_results(config: QuickModeConfig) -> Tuple[pd.DataFrame, List[str]
             "Please run Cauchy combination first."
         )
 
+
     ldsc_df = pd.read_parquet(config.ldsc_combined_parquet_path)
     if 'spot' in ldsc_df.columns:
         ldsc_df.set_index('spot', inplace=True)
@@ -575,7 +604,14 @@ def _load_ldsc_results(config: QuickModeConfig) -> Tuple[pd.DataFrame, List[str]
     assert 'sample_name' in ldsc_df.columns, "LDSC combined results must have 'sample_name' column."
 
     traits = config.trait_name_list
-    sample_names = sorted(ldsc_df['sample_name'].unique().tolist())
+    
+    # Explicitly use sample order from config.sample_h5ad_dict
+    sample_names = list(config.sample_h5ad_dict.keys())
+    actual_samples_in_data = set(ldsc_df['sample_name'].unique())
+    
+    # Assert all samples in config are actually in the data
+    missing = [s for s in sample_names if s not in actual_samples_in_data]
+    assert not missing, f"Samples {missing} in config are not present in LDSC results."
 
     return ldsc_df, traits, sample_names
 
@@ -632,22 +668,28 @@ def _load_coordinates(config: QuickModeConfig) -> Tuple[pd.DataFrame, bool, Opti
         sy_span = coords['sy'].max() - coords['sy'].min()
         z_span = max(sx_span, sy_span)
 
-        # Assign Z values based on sample order
-        sample_names = adata_concat.obs['sample_name']
-        unique_samples = sample_names.unique()
-        n_samples = len(unique_samples)
+        # Assign Z values based on sample order from config
+        sample_names_all = adata_concat.obs['sample_name']
+        actual_samples_in_data = set(sample_names_all.unique())
+        
+        # Explicitly use config order
+        ordered_samples = list(config.sample_h5ad_dict.keys())
+        missing = [s for s in ordered_samples if s not in actual_samples_in_data]
+        assert not missing, f"Samples {missing} in config are not present in coordinates data."
+            
+        n_samples = len(ordered_samples)
 
-        # Create evenly spaced Z values for each sample
+        # Create evenly spaced Z values for each sample in the specific order
         if n_samples > 1:
             z_values_per_sample = {
                 sample: z_span * i / (n_samples - 1)
-                for i, sample in enumerate(unique_samples)
+                for i, sample in enumerate(ordered_samples)
             }
         else:
-            z_values_per_sample = {unique_samples[0]: 0.0}
+            z_values_per_sample = {ordered_samples[0]: 0.0}
 
         # Assign Z values to each spot
-        pseudo_z = sample_names.map(z_values_per_sample).values
+        pseudo_z = sample_names_all.map(z_values_per_sample).values
 
         coords['3d_x'] = coords['sx']
         coords['3d_y'] = coords['sy']
@@ -960,7 +1002,7 @@ def _render_static_plots(
         obs_data['sample'] = obs_data['sample_name']
 
     # Render LDSC plots
-    _render_ldsc_plots(visualizer, obs_data, traits, n_rows, n_cols, report_dir)
+    _render_ldsc_plots(visualizer, obs_data, traits, sample_names, n_rows, n_cols, report_dir)
 
     # Render annotation plots
     _render_annotation_plots(visualizer, obs_data, config.annotation_list, sample_names, n_rows, n_cols, report_dir)
@@ -973,6 +1015,7 @@ def _render_ldsc_plots(
     visualizer,
     obs_data: pd.DataFrame,
     traits: List[str],
+    sample_names: List[str],
     n_rows: int,
     n_cols: int,
     report_dir: Path
@@ -987,6 +1030,7 @@ def _render_ldsc_plots(
         visualizer._create_single_trait_multi_sample_matplotlib_plot(
             obs_ldsc_merged=obs_data,
             trait_abbreviation=trait,
+            sample_name_list=sample_names,
             output_png_path=trait_plot_path,
             n_rows=n_rows, n_cols=n_cols,
             subplot_width_inches=5.0
@@ -1037,8 +1081,6 @@ def _render_gene_diagnostic_plots(
     gene_plot_dir = report_dir / "gene_diagnostic_plots"
     gene_plot_dir.mkdir(exist_ok=True)
 
-    if config.sample_h5ad_dict is None:
-        config._process_h5ad_inputs()
 
     if not trait_pcc_file.exists() or not config.sample_h5ad_dict:
         logger.warning("Skipping gene diagnostic plots: missing PCC file or h5ad dict")
@@ -1047,7 +1089,11 @@ def _render_gene_diagnostic_plots(
     top_genes_df = pd.read_csv(trait_pcc_file)
     top_n = config.top_corr_genes
     all_top_genes = top_genes_df.groupby('trait').head(top_n)['gene'].unique().tolist()
-    sample_names_sorted = sorted(config.sample_h5ad_dict.keys())
+    # Explicitly use config order
+    sample_names_sorted = list(config.sample_h5ad_dict.keys())
+    actual_samples_in_metadata = set(metadata['sample_name'].unique())
+    missing = [s for s in sample_names_sorted if s not in actual_samples_in_metadata]
+    assert not missing, f"Samples {missing} in config are not present in metadata."
 
     logger.info(f"Preparing expression data for {len(sample_names_sorted)} samples...")
 
@@ -1210,6 +1256,11 @@ def _collect_cauchy_results(
                     df['type'] = 'aggregated'
                     if 'sample_name' not in df.columns:
                         df['sample_name'] = 'All Samples'
+                    
+                    # Convert to -log10 scale for report
+                    df['mlog10_p_cauchy'] = -np.log10(df['p_cauchy'].clip(lower=1e-300))
+                    df['mlog10_p_median'] = -np.log10(df['p_median'].clip(lower=1e-300))
+                    
                     all_cauchy.append(df)
                 except Exception as e:
                     logger.warning(f"Failed to load aggregated Cauchy result {cauchy_file_all}: {e}")
@@ -1222,6 +1273,11 @@ def _collect_cauchy_results(
                     df['trait'] = trait
                     df['annotation_name'] = annotation
                     df['type'] = 'sample'
+                    
+                    # Convert to -log10 scale for report
+                    df['mlog10_p_cauchy'] = -np.log10(df['p_cauchy'].clip(lower=1e-300))
+                    df['mlog10_p_median'] = -np.log10(df['p_median'].clip(lower=1e-300))
+                    
                     all_cauchy.append(df)
                 except Exception as e:
                     logger.warning(f"Failed to load sample Cauchy result {cauchy_file}: {e}")
@@ -1235,7 +1291,7 @@ def _collect_cauchy_results(
         combined_cauchy.to_csv(cauchy_save_path, index=False)
         logger.info(f"Saved {len(combined_cauchy)} Cauchy results to {cauchy_save_path}")
     else:
-        pd.DataFrame(columns=['trait', 'annotation_name', 'p_cauchy', 'type', 'sample_name']).to_csv(
+        pd.DataFrame(columns=['trait', 'annotation_name', 'mlog10_p_cauchy', 'mlog10_p_median', 'top_95_quantile', 'type', 'sample_name']).to_csv(
             report_dir / "cauchy_results.csv", index=False
         )
         logger.warning("No Cauchy results found to save.")
@@ -1330,7 +1386,9 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
     report_dir = config.report_dir
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    is_3d = False
+    if config.sample_h5ad_dict is None:
+        config._process_h5ad_inputs()
+
     try:
         # 1. Load LDSC results
         ldsc_df, traits, sample_names = _load_ldsc_results(config)

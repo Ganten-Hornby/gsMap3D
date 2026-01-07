@@ -153,7 +153,7 @@
                 <!-- Annotation Category Selector -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">Annotation</label>
-                    <select x-model="selectedAnnotationCategory"
+                    <select x-model="selectedAnnotationCategory" @change="onAnnotationChange()"
                         class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
                         <template x-for="anno in annotations" :key="anno">
                             <option :value="anno" x-text="anno"></option>
@@ -197,47 +197,47 @@
 
                 <!-- Section Navigation -->
                 <div class="pt-4 border-t border-gray-200">
-                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Sections</h3>
+                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Contents</h3>
                     <nav class="space-y-1">
-                        <button
-                            @click="sections.manhattan = true; $nextTick(() => document.getElementById('sec-manhattan')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            1. Manhattan Plot
-                        </button>
-                        <button x-show="umapData"
-                            @click="sections.umap = true; $nextTick(() => document.getElementById('sec-umap')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            1.5. Embedding UMAP
-                        </button>
                         <button x-show="has3dWidget"
                             @click="sections.spatial3d = true; $nextTick(() => document.getElementById('sec-spatial3d')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            1.6. 3D Spatial
+                            1. gsMap 3D Exploration
                         </button>
                         <button
                             @click="sections.gsmap = true; $nextTick(() => document.getElementById('sec-gsmap')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            2. LDSC Results
-                        </button>
-                        <button
-                            @click="sections.annotation = true; $nextTick(() => document.getElementById('sec-annotation')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            3. Annotations
+                            2. gsMap 2D Distribution
                         </button>
                         <button
                             @click="sections.genes = true; $nextTick(() => document.getElementById('sec-genes')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            4. Gene Analysis
+                            3. GSS Distribution
+                        </button>
+                        <button
+                            @click="sections.annotation = true; $nextTick(() => document.getElementById('sec-annotation')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            4. Annotations 2D Distribution
+                        </button>
+                        <button x-show="umapData"
+                            @click="sections.umap = true; $nextTick(() => document.getElementById('sec-umap')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            5. Embedding UMAP
+                        </button>
+                        <button
+                            @click="sections.manhattan = true; $nextTick(() => document.getElementById('sec-manhattan')?.scrollIntoView({behavior: 'smooth'}))"
+                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
+                            6. Manhattan Plot
                         </button>
                         <button
                             @click="sections.cauchy = true; $nextTick(() => document.getElementById('sec-cauchy')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            5. Cauchy Results
+                            7. Enrichment Analysis
                         </button>
                         <button
                             @click="sections.info = true; $nextTick(() => document.getElementById('sec-info')?.scrollIntoView({behavior: 'smooth'}))"
                             class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            6. Run Info
+                            8. Report Information
                         </button>
                     </nav>
                 </div>
@@ -255,84 +255,13 @@
                     with the required .js files.</p>
             </div>
 
-            <!-- ==================== SECTION 1: MANHATTAN PLOT ==================== -->
-            <div id="sec-manhattan" x-show="dataLoaded"
-                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                    @click="sections.manhattan = !sections.manhattan">
-                    <div>
-                        <h2 class="text-lg font-semibold text-gray-800">1. Manhattan Plot</h2>
-                        <p class="text-sm text-gray-500">GWAS results. Red = top PCC genes. Green diamond = selected
-                            gene.
-                        </p>
-                    </div>
-                    <svg class="w-5 h-5 text-gray-500 transition-transform"
-                        :class="sections.manhattan ? 'rotate-180' : ''" fill="none" stroke="currentColor"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                    </svg>
-                </div>
-                <div class="section-content" :class="sections.manhattan ? 'expanded' : 'collapsed'">
-                    <div id="manhattanPlot" class="plot-container w-full"></div>
-                </div>
-            </div>
-
-            <!-- ==================== SECTION 1.5: UMAP EMBEDDINGS ==================== -->
-            <div id="sec-umap" x-show="dataLoaded && umapData"
-                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                    @click="sections.umap = !sections.umap">
-                    <div>
-                        <h2 class="text-lg font-semibold text-gray-800">1.5. Embedding UMAP</h2>
-                        <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings.</p>
-                    </div>
-                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.umap ? 'rotate-180' : ''"
-                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                    </svg>
-                </div>
-                <div class="section-content" :class="sections.umap ? 'expanded' : 'collapsed'">
-                    <!-- UMAP Controls -->
-                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-4">
-                        <div class="flex items-center gap-2">
-                            <label class="text-sm font-medium text-gray-700">Color by:</label>
-                            <select x-model="selectedUmapAnnotation" @change="renderUmapPlots()"
-                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white min-w-[150px]">
-                                <template x-for="anno in umapAnnotationColumns" :key="anno">
-                                    <option :value="anno" x-text="anno"></option>
-                                </template>
-                            </select>
-                        </div>
-                        <div class="text-sm text-gray-500">
-                            <span x-text="umapData ? umapData.spot.length : 0"></span> spots
-                        </div>
-                    </div>
-
-                    <!-- UMAP Plots Container -->
-                    <div class="p-4">
-                        <div class="flex flex-wrap gap-4" :class="umapHasNiche ? 'justify-center' : 'justify-center'">
-                            <!-- Cell Embedding UMAP -->
-                            <div class="flex-1 min-w-[400px] max-w-[600px]">
-                                <h3 class="text-center font-medium text-gray-700 mb-2">Cell Embedding</h3>
-                                <div id="umapCellPlot" class="w-full" style="height: 450px;"></div>
-                            </div>
-                            <!-- Niche Embedding UMAP (only if available) -->
-                            <div x-show="umapHasNiche" class="flex-1 min-w-[400px] max-w-[600px]">
-                                <h3 class="text-center font-medium text-gray-700 mb-2">Niche Embedding</h3>
-                                <div id="umapNichePlot" class="w-full" style="height: 450px;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ==================== SECTION 1.6: 3D SPATIAL VISUALIZATION ==================== -->
+            <!-- ==================== SECTION 1: 3D SPATIAL VISUALIZATION ==================== -->
             <div id="sec-spatial3d" x-show="dataLoaded && has3dWidget"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.spatial3d = !sections.spatial3d">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">1.6. 3D Spatial Visualization</h2>
+                        <h2 class="text-lg font-semibold text-gray-800">1. gsMap 3D Exploration</h2>
                         <p class="text-sm text-gray-500">Interactive 3D view of spatial data with annotations and
                             traits.</p>
                     </div>
@@ -359,24 +288,15 @@
                             </label>
                         </div>
 
-                        <div class="flex items-center gap-2">
-                            <label class="text-sm font-medium text-gray-700">Select:</label>
-                            <!-- Dropdown for Annotations -->
-                            <select x-show="spatial3dType === 'annotation'" x-model="selectedSpatial3dAnno"
-                                @change="spatial3dLoading = true"
-                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white min-w-[200px]">
-                                <template x-for="anno in annotations" :key="anno">
-                                    <option :value="anno" x-text="anno"></option>
-                                </template>
-                            </select>
-                            <!-- Dropdown for Traits -->
-                            <select x-show="spatial3dType === 'trait'" x-model="selectedSpatial3dTrait"
-                                @change="spatial3dLoading = true"
-                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white min-w-[200px]">
-                                <template x-for="t in traits" :key="t">
-                                    <option :value="t" x-text="t"></option>
-                                </template>
-                            </select>
+                        <div class="flex items-center gap-2" x-show="spatial3dType === 'annotation'">
+                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedAnnotationCategory"></span>
+                        </div>
+                        <div class="flex items-center gap-2" x-show="spatial3dType === 'trait'">
+                            <label class="text-sm font-medium text-gray-700">Trait:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedTrait"></span>
                         </div>
                     </div>
 
@@ -409,13 +329,13 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 2: gsMap LDSC Results ==================== -->
+            <!-- ==================== SECTION 2: gsMap 2D Distribution ==================== -->
             <div id="sec-gsmap" x-show="dataLoaded"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.gsmap = !sections.gsmap">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">2. gsMap LDSC Results - <span
+                        <h2 class="text-lg font-semibold text-gray-800">2. gsMap 2D Distribution - <span
                                 x-text="selectedTrait"></span></h2>
                         <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values across samples.</p>
                     </div>
@@ -433,39 +353,13 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 3: Annotation Distribution ==================== -->
-            <div id="sec-annotation" x-show="dataLoaded"
-                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
-                    @click="sections.annotation = !sections.annotation">
-                    <div>
-                        <h2 class="text-lg font-semibold text-gray-800">3. Annotation Distribution - <span
-                                x-text="selectedAnnotationCategory"></span></h2>
-                        <p class="text-sm text-gray-500">Spatial distribution of annotations across samples.</p>
-                    </div>
-                    <svg class="w-5 h-5 text-gray-500 transition-transform"
-                        :class="sections.annotation ? 'rotate-180' : ''" fill="none" stroke="currentColor"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                    </svg>
-                </div>
-                <div class="section-content p-4" :class="sections.annotation ? 'expanded' : 'collapsed'">
-                    <img x-show="selectedAnnotationCategory"
-                        :src="'annotation_plots/anno_' + selectedAnnotationCategory + '.png'"
-                        :alt="selectedAnnotationCategory" class="w-full h-auto max-h-[700px] object-contain mx-auto"
-                        loading="lazy" onerror="this.style.display='none';">
-                    <p x-show="!selectedAnnotationCategory" class="text-center text-gray-500 py-8">Select an annotation
-                        category to view the plot.</p>
-                </div>
-            </div>
-
-            <!-- ==================== SECTION 4: Gene Analysis ==================== -->
+            <!-- ==================== SECTION 3: GSS Distribution ==================== -->
             <div id="sec-genes" x-show="dataLoaded"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.genes = !sections.genes">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">4. Gene Analysis - <span
+                        <h2 class="text-lg font-semibold text-gray-800">3. GSS Distribution - <span
                                 x-text="selectedGene"></span></h2>
                         <p class="text-sm text-gray-500">Gene expression and GSS distribution plots across all samples.
                         </p>
@@ -569,13 +463,125 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 5: CAUCHY COMBINATION ==================== -->
+            <!-- ==================== SECTION 4: Annotations 2D Distribution ==================== -->
+            <div id="sec-annotation" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.annotation = !sections.annotation">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">4. Annotations 2D Distribution - <span
+                                x-text="selectedAnnotationCategory"></span></h2>
+                        <p class="text-sm text-gray-500">Spatial distribution of annotations across samples.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform"
+                        :class="sections.annotation ? 'rotate-180' : ''" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+                <div class="section-content p-4" :class="sections.annotation ? 'expanded' : 'collapsed'">
+                    <img x-show="selectedAnnotationCategory"
+                        :src="'annotation_plots/anno_' + selectedAnnotationCategory + '.png'"
+                        :alt="selectedAnnotationCategory" class="w-full h-auto max-h-[700px] object-contain mx-auto"
+                        loading="lazy" onerror="this.style.display='none';">
+                    <p x-show="!selectedAnnotationCategory" class="text-center text-gray-500 py-8">Select an annotation
+                        category to view the plot.</p>
+                </div>
+            </div>
+
+            <!-- ==================== SECTION 5: UMAP EMBEDDINGS ==================== -->
+            <div id="sec-umap" x-show="dataLoaded && umapData"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.umap = !sections.umap">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">5. Embedding UMAP</h2>
+                        <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.umap ? 'rotate-180' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+                <div class="section-content" :class="sections.umap ? 'expanded' : 'collapsed'">
+                    <!-- UMAP Controls -->
+                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
+                        <div class="flex items-center gap-4">
+                            <span class="text-sm font-medium text-gray-700">Color by:</span>
+                            <label class="inline-flex items-center cursor-pointer">
+                                <input type="radio" name="umapColorMode" value="annotation" x-model="umapColorMode"
+                                    @change="renderUmapPlots()"
+                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                                <span class="ml-2 text-sm text-gray-700">Annotation</span>
+                            </label>
+                            <label class="inline-flex items-center cursor-pointer">
+                                <input type="radio" name="umapColorMode" value="trait" x-model="umapColorMode"
+                                    @change="renderUmapPlots()"
+                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                                <span class="ml-2 text-sm text-gray-700">Trait -log10(p)</span>
+                            </label>
+                        </div>
+                        <div class="flex items-center gap-2" x-show="umapColorMode === 'annotation'">
+                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedAnnotationCategory"></span>
+                        </div>
+                        <div class="flex items-center gap-2" x-show="umapColorMode === 'trait'">
+                            <label class="text-sm font-medium text-gray-700">Trait:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedTrait"></span>
+                        </div>
+                        <div class="text-sm text-gray-500">
+                            <span x-text="umapData ? umapData.spot.length : 0"></span> spots
+                        </div>
+                    </div>
+
+                    <!-- UMAP Plots Container -->
+                    <div class="p-4">
+                        <div class="flex flex-wrap gap-4" :class="umapHasNiche ? 'justify-center' : 'justify-center'">
+                            <!-- Cell Embedding UMAP -->
+                            <div class="flex-1 min-w-[400px] max-w-[600px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">Cell Embedding</h3>
+                                <div id="umapCellPlot" class="w-full" style="height: 450px;"></div>
+                            </div>
+                            <!-- Niche Embedding UMAP (only if available) -->
+                            <div x-show="umapHasNiche" class="flex-1 min-w-[400px] max-w-[600px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">Niche Embedding</h3>
+                                <div id="umapNichePlot" class="w-full" style="height: 450px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== SECTION 6: MANHATTAN PLOT ==================== -->
+            <div id="sec-manhattan" x-show="dataLoaded"
+                class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
+                    @click="sections.manhattan = !sections.manhattan">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-800">6. Manhattan Plot</h2>
+                        <p class="text-sm text-gray-500">GWAS results. Red = top PCC genes. Green diamond = selected
+                            gene.</p>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-500 transition-transform"
+                        :class="sections.manhattan ? 'rotate-180' : ''" fill="none" stroke="currentColor"
+                        viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+                <div class="section-content" :class="sections.manhattan ? 'expanded' : 'collapsed'">
+                    <div id="manhattanPlot" class="plot-container w-full"></div>
+                </div>
+            </div>
+
+            <!-- ==================== SECTION 7: ENRICHMENT ANALYSIS ==================== -->
             <div id="sec-cauchy" x-show="dataLoaded"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.cauchy = !sections.cauchy">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">5. Cauchy Combination Results</h2>
+                        <h2 class="text-lg font-semibold text-gray-800">7. Enrichment Analysis</h2>
                         <p class="text-sm text-gray-500">Statistical significance of annotations. Red = p &lt; 0.05</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.cauchy ? 'rotate-180' : ''"
@@ -609,15 +615,15 @@
                                         class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
                                         @click="sortCauchyBy('sample_name')">Sample</th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('p_cauchy')">P (Cauchy)</th>
+                                        @click="sortCauchyBy('mlog10_p_cauchy')">-log10P (Cauchy)</th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('p_median')">P (Median)</th>
+                                        @click="sortCauchyBy('mlog10_p_median')">-log10P (Median)</th>
+                                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                                        @click="sortCauchyBy('top_95_quantile')">95% Quantile (-log10P)</th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sig
-                                        Spots
-                                    </th>
+                                        Spots</th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Total
-                                        Spots
-                                    </th>
+                                        Spots</th>
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200">
@@ -630,11 +636,16 @@
                                         <td x-show="cauchyViewMode === 'sample'" class="px-4 py-2 text-sm text-gray-600"
                                             x-text="row.sample_name"></td>
                                         <td class="px-4 py-2 text-sm font-mono"
-                                            :class="row.p_cauchy < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'"
-                                            x-text="row.p_cauchy != null ? row.p_cauchy.toExponential(2) : 'N/A'"></td>
+                                            :class="row.mlog10_p_cauchy > 1.301 ? 'text-red-600 font-semibold' : 'text-gray-600'"
+                                            x-text="row.mlog10_p_cauchy != null ? row.mlog10_p_cauchy.toFixed(2) : 'N/A'">
+                                        </td>
                                         <td class="px-4 py-2 text-sm font-mono"
-                                            :class="row.p_median < 0.05 ? 'text-red-600 font-semibold' : 'text-gray-600'"
-                                            x-text="row.p_median != null ? row.p_median.toExponential(2) : 'N/A'"></td>
+                                            :class="row.mlog10_p_median > 1.301 ? 'text-red-600 font-semibold' : 'text-gray-600'"
+                                            x-text="row.mlog10_p_median != null ? row.mlog10_p_median.toFixed(2) : 'N/A'">
+                                        </td>
+                                        <td class="px-4 py-2 text-sm font-mono text-gray-600"
+                                            x-text="row.top_95_quantile != null ? row.top_95_quantile.toFixed(2) : 'N/A'">
+                                        </td>
                                         <td class="px-4 py-2 text-sm text-gray-600" x-text="row.sig_spots"></td>
                                         <td class="px-4 py-2 text-sm text-gray-600" x-text="row.total_spots"></td>
                                     </tr>
@@ -653,13 +664,13 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 6: RUN INFO ==================== -->
+            <!-- ==================== SECTION 8: REPORT INFORMATION ==================== -->
             <div id="sec-info" x-show="dataLoaded"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.info = !sections.info">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">6. Run Information</h2>
+                        <h2 class="text-lg font-semibold text-gray-800">8. Report Information</h2>
                         <p class="text-sm text-gray-500">Configuration and summary statistics.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.info ? 'rotate-180' : ''"
@@ -753,6 +764,7 @@
                 umapHasNiche: false,
                 umapAnnotationColumns: [],
                 selectedUmapAnnotation: '',
+                umapColorMode: 'annotation', // 'annotation' or 'trait'
                 umapCellPlotInitialized: false,
                 umapNichePlotInitialized: false,
 
@@ -760,8 +772,6 @@
                 is3d: false,
                 has3dWidget: false,
                 spatial3dType: 'annotation', // 'annotation' or 'trait'
-                selectedSpatial3dAnno: '',
-                selectedSpatial3dTrait: '',
                 spatial3dLoading: true,
 
                 get spatial3dWidgetPath() {
@@ -769,10 +779,10 @@
                     let name = '';
                     let prefix = '';
                     if (this.spatial3dType === 'annotation') {
-                        name = this.selectedSpatial3dAnno;
+                        name = this.selectedAnnotationCategory;
                         prefix = 'spatial_3d_anno';
                     } else {
-                        name = this.selectedSpatial3dTrait;
+                        name = this.selectedTrait;
                         prefix = 'spatial_3d_trait';
                     }
                     if (!name) return '';
@@ -805,8 +815,8 @@
 
                 // Cauchy state
                 cauchyViewMode: 'all',
-                cauchySortKey: 'p_median',
-                cauchySortAsc: true,
+                cauchySortKey: 'mlog10_p_median',
+                cauchySortAsc: false,
 
                 // Memoized: filtered gene table
                 get filteredGeneTable() {
@@ -942,13 +952,6 @@
                     this.has3dWidget = this.reportMeta.has_3d_widget || false;
                     if (this.has3dWidget) {
                         console.log("3D visualization widget available");
-                        if (this.annotations.length > 0) {
-                            this.spatial3dType = 'annotation';
-                            this.selectedSpatial3dAnno = this.annotations[0];
-                        } else if (this.traits.length > 0) {
-                            this.spatial3dType = 'trait';
-                            this.selectedSpatial3dTrait = this.traits[0];
-                        }
                     }
 
                     // Check if data loaded successfully
@@ -981,6 +984,28 @@
                     this.manhattanTraceCache = null; // Invalidate Manhattan cache
                     this.updateGeneList();
                     this.loadManhattanData();
+
+                    // Update 3D visualization if in trait mode
+                    if (this.spatial3dType === 'trait') {
+                        this.spatial3dLoading = true;
+                    }
+
+                    // Update UMAP if in trait mode
+                    if (this.umapColorMode === 'trait') {
+                        this.renderUmapPlots();
+                    }
+                },
+
+                onAnnotationChange() {
+                    // Update 3D visualization if in annotation mode
+                    if (this.spatial3dType === 'annotation') {
+                        this.spatial3dLoading = true;
+                    }
+
+                    // Update UMAP if in annotation mode
+                    if (this.umapColorMode === 'annotation') {
+                        this.renderUmapPlots();
+                    }
                 },
 
                 onGeneChange() {
@@ -1026,7 +1051,10 @@
                 },
                 sortCauchyBy(key) {
                     if (this.cauchySortKey === key) this.cauchySortAsc = !this.cauchySortAsc;
-                    else { this.cauchySortKey = key; this.cauchySortAsc = ['trait', 'annotation', 'sample_name'].includes(key); }
+                    else {
+                        this.cauchySortKey = key;
+                        this.cauchySortAsc = ['trait', 'annotation', 'sample_name'].includes(key);
+                    }
                 },
 
                 // Manhattan Plot
@@ -1216,7 +1244,7 @@
 
                     const zData = annotationValues.map(anno => traitValues.map(trait => {
                         const match = data.find(r => r.annotation === anno && r.trait === trait);
-                        return match && match.p_median ? -Math.log10(match.p_median + 1e-300) : 0;
+                        return match && match.mlog10_p_median != null ? match.mlog10_p_median : 0;
                     }));
 
                     Plotly.newPlot(plotDiv, [{
@@ -1239,15 +1267,40 @@
                 renderUmapPlots() {
                     if (!this.umapData || !this.plotlyReady) return;
 
-                    const anno = this.selectedUmapAnnotation;
-                    if (!anno) return;
+                    // Determine what to color by based on umapColorMode
+                    let colorValues = [];
+                    let colorMap = null;
+                    let isContinuous = false;
+                    let colorLabel = '';
 
-                    // Get annotation values for coloring
-                    const annoValues = this.umapData[anno] || [];
+                    if (this.umapColorMode === 'annotation') {
+                        // Color by annotation category (from global sidebar selection)
+                        const anno = this.selectedAnnotationCategory;
+                        if (!anno || !this.umapData[anno]) return;
 
-                    // Retrieve color map from data
-                    const colorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
-                    const isContinuous = Array.isArray(colorMap);
+                        colorValues = this.umapData[anno] || [];
+                        colorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
+                        isContinuous = Array.isArray(colorMap);
+                        colorLabel = anno;
+                    } else {
+                        // Color by trait -log10(p) values
+                        const trait = this.selectedTrait;
+                        if (!trait) return;
+
+                        // Check if trait data exists in UMAP data
+                        if (this.umapData[trait]) {
+                            colorValues = this.umapData[trait];
+                        } else {
+                            // If trait not in UMAP data, show message
+                            console.warn(`Trait ${trait} not available in UMAP data`);
+                            colorValues = new Array(this.umapData.spot.length).fill(0);
+                        }
+
+                        // Use continuous colormap for trait values
+                        colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
+                        isContinuous = true;
+                        colorLabel = `-log10(p) ${trait}`;
+                    }
 
                     // Build hover text with all annotations
                     const hoverText = this.umapData.spot.map((spot, i) => {
@@ -1255,6 +1308,10 @@
                         this.umapAnnotationColumns.forEach(col => {
                             text += `<br><b>${col}:</b> ${this.umapData[col][i]}`;
                         });
+                        if (this.umapColorMode === 'trait' && this.selectedTrait) {
+                            const traitVal = this.umapData[this.selectedTrait] ? this.umapData[this.selectedTrait][i] : 'N/A';
+                            text += `<br><b>${this.selectedTrait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(3) : traitVal}`;
+                        }
                         return text;
                     });
 
@@ -1263,12 +1320,12 @@
                         'umapCellPlot',
                         this.umapData.umap_cell_x,
                         this.umapData.umap_cell_y,
-                        annoValues,
+                        colorValues,
                         colorMap,
                         isContinuous,
                         hoverText,
                         'Cell Embedding UMAP',
-                        anno
+                        colorLabel
                     );
 
                     // Render Niche Embedding UMAP (if available)
@@ -1277,12 +1334,12 @@
                             'umapNichePlot',
                             this.umapData.umap_niche_x,
                             this.umapData.umap_niche_y,
-                            annoValues,
+                            colorValues,
                             colorMap,
                             isContinuous,
                             hoverText,
                             'Niche Embedding UMAP',
-                            anno
+                            colorLabel
                         );
                     }
                 },

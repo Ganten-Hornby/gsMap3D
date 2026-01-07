@@ -150,18 +150,16 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
     if len(p_values) == 0:
         p_cauchy_val = 1.0
         p_median_val = 1.0
-        top_95_mean = 0.0
+        top_95_quantile = 0.0
     else:
         p_cauchy_val = _acat_test(p_values)
         p_median_val = np.median(p_values)
         
-        # Calculate top 5% mean of -log10pvalue (referred to as top_95_mean)
-        sorted_log10p = np.sort(log10p)
-        n_top_05 = int(np.ceil(len(sorted_log10p) * 0.05))
-        if n_top_05 > 0:
-            top_95_mean = np.mean(sorted_log10p[-n_top_05:])
+        # Calculate 95% quantile of -log10pvalue (referred to as top_95_quantile)
+        if len(log10p) > 0:
+            top_95_quantile = np.quantile(log10p, 0.95)
         else:
-            top_95_mean = 0.0
+            top_95_quantile = 0.0
 
     # Calculate significance statistics
     sig_spots_in_anno = np.sum(p_values < sig_threshold)
@@ -173,7 +171,7 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
         'annotation': annotation,
         'p_cauchy': p_cauchy_val,
         'p_median': p_median_val,
-        'top_95_mean': top_95_mean,
+        'top_95_quantile': top_95_quantile,
         'sig_spots': sig_spots_in_anno,
         'total_spots': total_spots_in_anno,
     }
@@ -246,11 +244,11 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
         return pd.DataFrame()
         
     combined_results = pd.DataFrame(all_results)
-    sort_cols = ['trait', 'p_cauchy']
+    sort_cols = ['trait', 'p_median']
     if extra_group_col:
         sort_cols = [extra_group_col] + sort_cols
         
-    combined_results.sort_values(by=sort_cols, inplace=True)
+    combined_results.sort_values(by=sort_cols, ascending=True, inplace=True)
     
     return combined_results
 

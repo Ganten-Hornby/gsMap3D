@@ -424,6 +424,7 @@ class VisualizeRunner:
 
     @classmethod
     def _create_single_trait_multi_sample_matplotlib_plot(cls, obs_ldsc_merged: pd.DataFrame, trait_abbreviation: str,
+                                                          sample_name_list: Optional[List[str]] = None,
                                                           output_png_path: Optional[Path] = None,
                                                           output_pdf_path: Optional[Path] = None,
                                                           n_rows: int = 6, n_cols: int = 8,
@@ -472,8 +473,9 @@ class VisualizeRunner:
         pd_max = obs_ldsc_merged_filtered[trait_abbreviation].quantile(0.999)
 
         print(f"Color scale min: {pd_min}, max: {pd_max}")
-        # Get sorted list of sample names
-        sample_name_list = sorted(obs_ldsc_merged_filtered['sample_name'].unique())
+        # Get list of sample names - use provided list or fallback to sorted unique
+        if sample_name_list is None:
+            sample_name_list = sorted(obs_ldsc_merged_filtered['sample_name'].unique())
 
         # get the x and y limit if share coordinates
         if share_coords:
