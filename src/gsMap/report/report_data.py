@@ -284,46 +284,13 @@ def _stratified_subsample(
 def _calculate_umap_from_embeddings(
     adata: ad.AnnData,
     embedding_key: str,
-    n_neighbors: int = 15,
-    min_dist: float = 0.3,
-    random_state: int = 42
 ) -> np.ndarray:
-    """
-    Calculate UMAP coordinates from embeddings.
+    logger.info(f"Calculating UMAP for {embedding_key} with {adata.n_obs} spots using scanpy...")
 
-    Args:
-        adata: AnnData object with embeddings in obsm
-        embedding_key: Key for embeddings in obsm
-        n_neighbors: Number of neighbors for UMAP
-        min_dist: Minimum distance for UMAP
-        random_state: Random seed
+    sc.pp.neighbors(adata, use_rep=embedding_key)
+    sc.tl.umap(adata)
 
-    Returns:
-        UMAP coordinates array (n_cells, 2)
-    """
-    import umap
-
-    embeddings = adata.obsm[embedding_key]
-    if hasattr(embeddings, 'toarray'):
-        embeddings = embeddings.toarray()
-
-    # L2 normalize embeddings
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    embeddings_norm = embeddings / (norms + 1e-8)
-
-    logger.info(f"Calculating UMAP for {embedding_key} with {embeddings_norm.shape[0]} spots...")
-
-    reducer = umap.UMAP(
-        n_neighbors=n_neighbors,
-        min_dist=min_dist,
-        n_components=2,
-        metric='cosine',
-        random_state=random_state,
-        n_jobs=-1
-    )
-
-    umap_coords = reducer.fit_transform(embeddings_norm)
-    return umap_coords
+    return adata.obsm['X_umap']
 
 
 def _prepare_umap_data(
