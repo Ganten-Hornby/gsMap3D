@@ -600,22 +600,6 @@
                                 <option value="sample">Per Sample</option>
                             </select>
                         </div>
-                        <div class="flex items-center gap-2">
-                            <label class="text-sm font-medium text-gray-700">Heatmap Metric:</label>
-                            <select x-model="cauchyHeatmapMetric" @change="renderCauchyHeatmap()"
-                                class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
-                                <option value="mlog10_p_cauchy">Cauchy P-Value (-log10)</option>
-                                <option value="mlog10_p_median">Median P-Value (-log10)</option>
-                                <option value="top_95_quantile">Q95 (-log10P)</option>
-                            </select>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <label class="inline-flex items-center cursor-pointer">
-                                <input type="checkbox" x-model="cauchyHeatmapCluster" @change="renderCauchyHeatmap()"
-                                    class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                <span class="ml-2 text-sm text-gray-700">Cluster Heatmap</span>
-                            </label>
-                        </div>
                     </div>
 
                     <!-- Cauchy Table -->
@@ -672,8 +656,38 @@
 
                     <!-- Cauchy Heatmap -->
                     <div class="border-t border-gray-200">
-                        <div class="p-4 bg-gray-50 border-b border-gray-200">
-                            <h3 class="font-medium text-gray-700">Cauchy P-Value Heatmap (Annotation vs Trait)</h3>
+                        <div
+                            class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap justify-between items-center gap-4">
+                            <div>
+                                <h3 class="font-medium text-gray-700" x-text="'7.2 Cauchy Enrichment Heatmap (' + (
+                                    cauchyHeatmapMetric === 'mlog10_p_cauchy' ? 'Cauchy P-Value' : 
+                                    cauchyHeatmapMetric === 'mlog10_p_median' ? 'Median P-Value' : 'Q95'
+                                ) + ')'"></h3>
+                                <p class="text-xs text-gray-500 mt-1" x-text="
+                                    cauchyHeatmapMetric === 'mlog10_p_cauchy' ? 'Aggregated significance across all spots.' :
+                                    cauchyHeatmapMetric === 'mlog10_p_median' ? 'Median spot significance in the annotation.' :
+                                    'The 95th percentile of significance (-log10p) across spots.'
+                                "></p>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-4">
+                                <div class="flex items-center gap-2">
+                                    <label class="text-sm font-medium text-gray-700">Metric:</label>
+                                    <select x-model="cauchyHeatmapMetric" @change="renderCauchyHeatmap()"
+                                        class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
+                                        <option value="mlog10_p_cauchy">Cauchy P-Value</option>
+                                        <option value="mlog10_p_median">Median P-Value</option>
+                                        <option value="top_95_quantile">Q95 (-log10P)</option>
+                                    </select>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <label class="inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" x-model="cauchyHeatmapCluster"
+                                            @change="renderCauchyHeatmap()"
+                                            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 h-4 w-4">
+                                        <span class="ml-2 text-sm text-gray-700">Cluster</span>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                         <div id="cauchyHeatmap" class="plot-container w-full"></div>
                     </div>
@@ -1292,19 +1306,21 @@
                         'top_95_quantile': 'Q95 (-log10P)'
                     }[metric] || metric;
 
+                    const colorscale = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
+
                     Plotly.react(plotDiv, [{
                         z: zData,
                         x: finalTraits,
                         y: finalAnnotations,
                         type: 'heatmap',
-                        colorscale: 'RdBu',
-                        reversescale: true,
+                        colorscale: colorscale.map((c, i) => [i / (colorscale.length - 1), c]),
+                        reversescale: false,
                         hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{z:.2f}<extra></extra>`
                     }], {
-                        title: `Cauchy Enrichment Heatmap (${metricLabel})`,
-                        xaxis: { title: 'Trait', tickangle: 45 },
-                        yaxis: { title: 'Annotation' },
-                        margin: { l: 150, r: 50, t: 80, b: 120 }
+                        title: { text: `Cauchy Enrichment Heatmap: ${metricLabel}`, font: { size: 16 } },
+                        xaxis: { title: 'Trait', tickangle: 45, automargin: true },
+                        yaxis: { title: 'Annotation', automargin: true },
+                        margin: { l: 150, r: 50, t: 80, b: 150 }
                     }, { responsive: true });
                 },
 
