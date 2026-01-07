@@ -508,7 +508,7 @@ def _prepare_3d_visualization(
             else:
                 alpha = np.exp(np.linspace(0.1, 1.0, num=(len(bins)-1))) - 1
                 alpha = alpha / max(alpha)
-                opacity_show = pd.cut(trait_values, bins=bins, labels=alpha, include_lowest=True).values.tolist()
+                opacity_show = pd.cut(trait_values, bins=bins, labels=alpha, include_lowest=True).tolist()
 
             # Set the clim (median of top 20 spots)
             sorted_vals = np.sort(trait_values)[::-1]
