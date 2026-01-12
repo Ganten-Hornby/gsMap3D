@@ -167,12 +167,10 @@ def generate_manhattan_plot(config: DiagnosisConfig, adata: Optional[ad.AnnData]
 
     # Verify data integrity
     if gwas_data_with_gene_annotation_sort.empty:
-        logger.error("Filtered GWAS data is empty, cannot create Manhattan plot")
-        return
+        raise ValueError("Filtered GWAS data is empty, cannot create Manhattan plot")
 
     if len(gwas_data_to_plot) == 0:
-        logger.error("No SNPs passed filtering criteria for Manhattan plot")
-        return
+        raise ValueError("No SNPs passed filtering criteria for Manhattan plot")
 
     # Log some diagnostic information
     logger.info(f"Creating Manhattan plot with {len(gwas_data_to_plot)} SNPs")

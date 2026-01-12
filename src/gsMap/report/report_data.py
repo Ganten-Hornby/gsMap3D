@@ -1483,6 +1483,7 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
 
     except FileNotFoundError as e:
         logger.error(str(e))
+        raise
 
     return report_dir
 
