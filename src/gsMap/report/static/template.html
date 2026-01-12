@@ -108,6 +108,15 @@
                         <h1 class="font-semibold">{{ project_name }}</h1>
                         <p class="text-xs text-white/70">{{ generated_at }}</p>
                     </div>
+                    <!-- Dataset Type Badge -->
+                    <span x-show="reportMeta?.dataset_type" class="ml-2 px-3 py-1 rounded-full text-sm font-medium"
+                          :class="{
+                            'bg-purple-100 text-purple-800': reportMeta?.dataset_type === 'spatial3D',
+                            'bg-blue-100 text-blue-800': reportMeta?.dataset_type === 'spatial2D',
+                            'bg-green-100 text-green-800': reportMeta?.dataset_type === 'scRNA'
+                          }"
+                          x-text="reportMeta?.dataset_type_label || reportMeta?.dataset_type">
+                    </span>
                 </div>
                 <div class="flex items-center gap-4">
                     <!-- Loading Indicator in header -->
@@ -199,46 +208,14 @@
                 <div class="pt-4 border-t border-gray-200">
                     <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Contents</h3>
                     <nav class="space-y-1">
-                        <button x-show="has3dWidget"
-                            @click="sections.spatial3d = true; $nextTick(() => document.getElementById('sec-spatial3d')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            1. gsMap 3D Exploration
-                        </button>
-                        <button
-                            @click="sections.gsmap = true; $nextTick(() => document.getElementById('sec-gsmap')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            2. gsMap 2D Distribution
-                        </button>
-                        <button
-                            @click="sections.genes = true; $nextTick(() => document.getElementById('sec-genes')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            3. GSS Distribution
-                        </button>
-                        <button
-                            @click="sections.annotation = true; $nextTick(() => document.getElementById('sec-annotation')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            4. Annotations 2D Distribution
-                        </button>
-                        <button x-show="umapData"
-                            @click="sections.umap = true; $nextTick(() => document.getElementById('sec-umap')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            5. Embedding UMAP
-                        </button>
-                        <button
-                            @click="sections.manhattan = true; $nextTick(() => document.getElementById('sec-manhattan')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            6. Manhattan Plot
-                        </button>
-                        <button
-                            @click="sections.cauchy = true; $nextTick(() => document.getElementById('sec-cauchy')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            7. Enrichment Analysis
-                        </button>
-                        <button
-                            @click="sections.info = true; $nextTick(() => document.getElementById('sec-info')?.scrollIntoView({behavior: 'smooth'}))"
-                            class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700">
-                            8. Report Information
-                        </button>
+                        <template x-for="section in visibleSections" :key="section.id">
+                            <button
+                                x-show="(section.id !== 'sec-spatial3d' || has3dWidget) && (section.id !== 'sec-umap' || umapData)"
+                                @click="sections[section.id.replace('sec-', '')] = true; $nextTick(() => document.getElementById(section.id)?.scrollIntoView({behavior: 'smooth'}))"
+                                class="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-gray-100 text-gray-700"
+                                x-text="`${section.number}. ${section.title}`">
+                            </button>
+                        </template>
                     </nav>
                 </div>
             </div>
@@ -256,12 +233,12 @@
             </div>
 
             <!-- ==================== SECTION 1: 3D SPATIAL VISUALIZATION ==================== -->
-            <div id="sec-spatial3d" x-show="dataLoaded && has3dWidget"
+            <div id="sec-spatial3d" x-show="dataLoaded && currentSections.show3d && has3dWidget"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.spatial3d = !sections.spatial3d">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">1. gsMap 3D Exploration</h2>
+                        <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-spatial3d')"></h2>
                         <p class="text-sm text-gray-500">Interactive 3D view of spatial data with annotations and
                             traits.</p>
                     </div>
@@ -330,12 +307,12 @@
             </div>
 
             <!-- ==================== SECTION 2: gsMap 2D Distribution ==================== -->
-            <div id="sec-gsmap" x-show="dataLoaded"
+            <div id="sec-gsmap" x-show="dataLoaded && currentSections.show2dDistribution"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.gsmap = !sections.gsmap">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">2. gsMap 2D Distribution - <span
+                        <h2 class="text-lg font-semibold text-gray-800"><span x-text="getSectionTitle('sec-gsmap')"></span> - <span
                                 x-text="selectedTrait"></span></h2>
                         <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values across samples.</p>
                     </div>
@@ -354,12 +331,12 @@
             </div>
 
             <!-- ==================== SECTION 3: GSS Distribution ==================== -->
-            <div id="sec-genes" x-show="dataLoaded"
+            <div id="sec-genes" x-show="dataLoaded && currentSections.showGSS"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.genes = !sections.genes">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">3. GSS Distribution - <span
+                        <h2 class="text-lg font-semibold text-gray-800"><span x-text="getSectionTitle('sec-genes')"></span> - <span
                                 x-text="selectedGene"></span></h2>
                         <p class="text-sm text-gray-500">Gene expression and GSS distribution plots across all samples.
                         </p>
@@ -464,12 +441,12 @@
             </div>
 
             <!-- ==================== SECTION 4: Annotations 2D Distribution ==================== -->
-            <div id="sec-annotation" x-show="dataLoaded"
+            <div id="sec-annotation" x-show="dataLoaded && currentSections.showAnnotations"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.annotation = !sections.annotation">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">4. Annotations 2D Distribution - <span
+                        <h2 class="text-lg font-semibold text-gray-800"><span x-text="getSectionTitle('sec-annotation')"></span> - <span
                                 x-text="selectedAnnotationCategory"></span></h2>
                         <p class="text-sm text-gray-500">Spatial distribution of annotations across samples.</p>
                     </div>
@@ -490,12 +467,12 @@
             </div>
 
             <!-- ==================== SECTION 5: UMAP EMBEDDINGS ==================== -->
-            <div id="sec-umap" x-show="dataLoaded && umapData"
+            <div id="sec-umap" x-show="dataLoaded && currentSections.showUMAP && umapData"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.umap = !sections.umap">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">5. Embedding UMAP</h2>
+                        <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-umap')"></h2>
                         <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.umap ? 'rotate-180' : ''"
@@ -555,12 +532,12 @@
             </div>
 
             <!-- ==================== SECTION 6: MANHATTAN PLOT ==================== -->
-            <div id="sec-manhattan" x-show="dataLoaded"
+            <div id="sec-manhattan" x-show="dataLoaded && currentSections.showManhattan"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.manhattan = !sections.manhattan">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">6. Manhattan Plot</h2>
+                        <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-manhattan')"></h2>
                         <p class="text-sm text-gray-500">GWAS results. Red = top PCC genes. Green diamond = selected
                             gene.</p>
                     </div>
@@ -576,12 +553,12 @@
             </div>
 
             <!-- ==================== SECTION 7: ENRICHMENT ANALYSIS ==================== -->
-            <div id="sec-cauchy" x-show="dataLoaded"
+            <div id="sec-cauchy" x-show="dataLoaded && currentSections.showEnrichment"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.cauchy = !sections.cauchy">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">7. Enrichment Analysis</h2>
+                        <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-cauchy')"></h2>
                         <p class="text-sm text-gray-500">Statistical significance of annotations. Red = p &lt; 0.05</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.cauchy ? 'rotate-180' : ''"
@@ -695,12 +672,12 @@
             </div>
 
             <!-- ==================== SECTION 8: REPORT INFORMATION ==================== -->
-            <div id="sec-info" x-show="dataLoaded"
+            <div id="sec-info" x-show="dataLoaded && currentSections.showInfo"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.info = !sections.info">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800">8. Report Information</h2>
+                        <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-info')"></h2>
                         <p class="text-sm text-gray-500">Configuration and summary statistics.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.info ? 'rotate-180' : ''"
@@ -803,6 +780,82 @@
                 has3dWidget: false,
                 spatial3dType: 'annotation', // 'annotation' or 'trait'
                 spatial3dLoading: true,
+
+                // Section visibility configuration by dataset type
+                sectionConfig: {
+                    'spatial3D': {
+                        show3d: true,
+                        show2dDistribution: true,
+                        showGSS: true,
+                        showAnnotations: true,
+                        showUMAP: true,
+                        showManhattan: true,
+                        showEnrichment: true,
+                        showInfo: true
+                    },
+                    'spatial2D': {
+                        show3d: false,
+                        show2dDistribution: true,
+                        showGSS: true,
+                        showAnnotations: true,
+                        showUMAP: true,
+                        showManhattan: true,
+                        showEnrichment: true,
+                        showInfo: true
+                    },
+                    'scRNA': {
+                        show3d: false,
+                        show2dDistribution: false,
+                        showGSS: false,
+                        showAnnotations: false,
+                        showUMAP: true,
+                        showManhattan: true,
+                        showEnrichment: true,
+                        showInfo: true
+                    }
+                },
+
+                // Section definitions for dynamic numbering
+                sectionDefs: [
+                    { key: 'show3d', id: 'sec-spatial3d', title: 'gsMap 3D Exploration' },
+                    { key: 'show2dDistribution', id: 'sec-gsmap', title: 'gsMap 2D Distribution' },
+                    { key: 'showGSS', id: 'sec-genes', title: 'GSS Distribution' },
+                    { key: 'showAnnotations', id: 'sec-annotation', title: 'Annotations 2D Distribution' },
+                    { key: 'showUMAP', id: 'sec-umap', title: 'Embedding UMAP' },
+                    { key: 'showManhattan', id: 'sec-manhattan', title: 'Manhattan Plot' },
+                    { key: 'showEnrichment', id: 'sec-cauchy', title: 'Enrichment Analysis' },
+                    { key: 'showInfo', id: 'sec-info', title: 'Report Information' }
+                ],
+
+                // Computed: current section visibility based on dataset type
+                get currentSections() {
+                    const datasetType = this.reportMeta?.dataset_type || 'spatial3D';
+                    return this.sectionConfig[datasetType] || this.sectionConfig['spatial3D'];
+                },
+
+                // Computed: visible sections with dynamic numbering
+                get visibleSections() {
+                    const config = this.currentSections;
+                    const visible = [];
+                    let num = 1;
+                    for (const s of this.sectionDefs) {
+                        if (config[s.key]) {
+                            visible.push({ ...s, number: num++ });
+                        }
+                    }
+                    return visible;
+                },
+
+                // Helper method to get section title with number
+                getSectionTitle(sectionId) {
+                    const section = this.visibleSections.find(s => s.id === sectionId);
+                    return section ? `${section.number}. ${section.title}` : '';
+                },
+
+                // Helper to check if a section should be shown
+                isSectionVisible(sectionKey) {
+                    return this.currentSections[sectionKey] || false;
+                },
 
                 get spatial3dWidgetPath() {
                     if (!this.has3dWidget) return '';

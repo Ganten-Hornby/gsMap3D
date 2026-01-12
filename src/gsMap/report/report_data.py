@@ -22,6 +22,7 @@ import scanpy as sc
 import scipy.sparse as sp
 
 from gsMap.config import QuickModeConfig
+from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import normalize_for_analysis, setup_data_layer
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
@@ -1338,6 +1339,17 @@ def _save_report_metadata(
     report_meta['has_3d_widget'] = spatial_3d_path is not None
     report_meta['spatial_3d_widget_path'] = spatial_3d_path
 
+    # Add dataset type info for conditional section rendering
+    dataset_type_value = getattr(config, 'dataset_type', DatasetType.SPATIAL_2D)
+    if hasattr(dataset_type_value, 'value'):
+        dataset_type_value = dataset_type_value.value
+    report_meta['dataset_type'] = dataset_type_value
+    report_meta['dataset_type_label'] = {
+        'spatial3D': 'Spatial 3D',
+        'spatial2D': 'Spatial 2D',
+        'scRNA': 'Single Cell RNA-seq'
+    }.get(dataset_type_value, dataset_type_value)
+
     with open(report_dir / "report_meta.json", "w") as f:
         json.dump(report_meta, f)
 
@@ -1398,6 +1410,11 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
     if config.sample_h5ad_dict is None:
         config._process_h5ad_inputs()
 
+    # Determine dataset type for conditional processing
+    dataset_type = getattr(config, 'dataset_type', DatasetType.SPATIAL_2D)
+    is_scrna = dataset_type == DatasetType.SCRNA_SEQ
+    is_spatial = dataset_type in (DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D)
+
     try:
         # 1. Load LDSC results
         ldsc_df, traits, sample_names = _load_ldsc_results(config)
@@ -1416,16 +1433,19 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
         # 5. Prepare Manhattan data (returns chromosome tick positions)
         chrom_tick_positions = _prepare_manhattan_data(config, traits, report_dir)
 
-        # 6. Pre-render static plots
-        try:
-            _render_static_plots(
-                config, metadata, common_spots, adata_gss,
-                traits, sample_names, report_dir
-            )
-        except Exception as e:
-            logger.warning(f"Failed to pre-render static plots: {e}")
-            import traceback
-            traceback.print_exc()
+        # 6. Pre-render static plots (skip for scRNA as they are spatial-specific)
+        if is_spatial:
+            try:
+                _render_static_plots(
+                    config, metadata, common_spots, adata_gss,
+                    traits, sample_names, report_dir
+                )
+            except Exception as e:
+                logger.warning(f"Failed to pre-render static plots: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            logger.info("Skipping static plot rendering for scRNA dataset type")
 
         # 7. Collect Cauchy results
         _collect_cauchy_results(config, traits, report_dir)
@@ -1439,7 +1459,7 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
             import traceback
             traceback.print_exc()
 
-        # 9. Prepare 3D visualization if applicable
+        # 9. Prepare 3D visualization if applicable (only for spatial3D)
         spatial_3d_html = None
         if is_3d:
             try:
