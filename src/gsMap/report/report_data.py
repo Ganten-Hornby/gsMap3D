@@ -179,6 +179,93 @@ def _render_multi_sample_gene_plot_task(task_data: dict):
         return f"{str(e)}\n{traceback.format_exc()}"
 
 
+def _render_single_sample_gene_plot_task(task_data: dict):
+    """
+    Parallel task to render single-sample Expression or GSS plot.
+    Creates a single plot for one gene in one sample.
+    """
+    try:
+        import gc
+        from pathlib import Path
+
+        import matplotlib
+        import matplotlib.colors as mcolors
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from scipy.spatial import KDTree
+
+        matplotlib.use('Agg')
+
+        gene = task_data['gene']
+        sample_name = task_data['sample_name']
+        plot_type = task_data['plot_type']
+        coords = task_data['coords']
+        values = task_data['values']
+        output_path = Path(task_data['output_path'])
+        fig_width = task_data.get('fig_width', 6.0)
+        dpi = task_data.get('dpi', 150)
+
+        if coords is None or values is None or len(coords) == 0:
+            return f"No data for {gene} in {sample_name}"
+
+        # Custom colormap
+        custom_colors = [
+            '#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8',
+            '#fee090', '#fdae61', '#f46d43', '#d73027'
+        ]
+        custom_cmap = mcolors.LinearSegmentedColormap.from_list('custom_cmap', custom_colors)
+
+        fig, ax = plt.subplots(figsize=(fig_width, fig_width))
+
+        # Calculate point size based on data density
+        tree = KDTree(coords)
+        distances, _ = tree.query(coords, k=min(2, len(coords)))
+        avg_dist = np.mean(distances[:, 1]) if len(coords) > 1 else 1.0
+
+        x_range = np.max(coords[:, 0]) - np.min(coords[:, 0])
+        y_range = np.max(coords[:, 1]) - np.min(coords[:, 1])
+        data_range = max(x_range, y_range)
+        if data_range > 0:
+            point_size = ((avg_dist / data_range) * fig_width * 72) ** 2 * 1.2
+        else:
+            point_size = 10
+        point_size = min(max(point_size, 1), 200)
+
+        # Color scale
+        vmin = 0
+        vmax = np.percentile(values, 99.5) if len(values) > 0 else 1.0
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+
+        scatter = ax.scatter(
+            coords[:, 0], coords[:, 1],
+            c=values, cmap=custom_cmap,
+            s=point_size, vmin=vmin, vmax=vmax,
+            marker='o', edgecolors='none', rasterized=True
+        )
+
+        ax.axis('off')
+        ax.set_aspect('equal')
+
+        # Add colorbar
+        cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label('Expression' if plot_type == 'exp' else 'GSS', fontsize=10)
+
+        # Title
+        title_text = f"{gene} - {'Expression' if plot_type == 'exp' else 'GSS'}"
+        ax.set_title(title_text, fontsize=12, fontweight='bold')
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+        plt.close(fig)
+        gc.collect()
+
+        return True
+    except Exception as e:
+        import traceback
+        return f"{str(e)}\n{traceback.format_exc()}"
+
+
 # =============================================================================
 # UMAP Calculation Functions
 # =============================================================================
@@ -1149,24 +1236,23 @@ def _render_gene_diagnostic_plots(
             'spots': group['spot'].values
         }
 
-    # Build and execute render tasks
-    tasks = _build_gene_plot_tasks(
+    # Build and execute single-sample render tasks (gene x sample combinations)
+    single_sample_tasks = _build_single_sample_gene_plot_tasks(
         top_genes_df, top_n, all_top_genes, sample_names_sorted,
         sample_data_cache, adata_exp_trait, adata_gss_trait,
-        n_rows, n_cols, gene_plot_dir
+        gene_plot_dir
     )
 
-    if tasks:
-        logger.info(f"Rendering {len(tasks)} multi-sample diagnostic plots in parallel...")
-        with ProcessPoolExecutor(max_workers=min(len(tasks), 8)) as executor:
-            results = list(executor.map(_render_multi_sample_gene_plot_task, tasks))
+    if single_sample_tasks:
+        logger.info(f"Rendering {len(single_sample_tasks)} single-sample diagnostic plots in parallel...")
+        with ProcessPoolExecutor(max_workers=min(len(single_sample_tasks), 20)) as executor:
+            results = list(executor.map(_render_single_sample_gene_plot_task, single_sample_tasks))
 
         errors = [r for r in results if r is not True]
         if errors:
-            logger.warning(f"{len(errors)} plots failed to render")
+            logger.warning(f"{len(errors)} single-sample plots failed to render")
             for err in errors[:3]:
                 logger.warning(f"  Error: {err}")
-
 
 def _build_gene_plot_tasks(
     top_genes_df: pd.DataFrame,
@@ -1237,6 +1323,86 @@ def _build_gene_plot_tasks(
                     'n_rows': n_rows, 'n_cols': n_cols,
                     'subplot_width': 4.0, 'dpi': 150
                 })
+
+    return tasks
+
+
+def _build_single_sample_gene_plot_tasks(
+    top_genes_df: pd.DataFrame,
+    top_n: int,
+    all_top_genes: List[str],
+    sample_names_sorted: List[str],
+    sample_data_cache: Dict,
+    adata_exp_trait: ad.AnnData,
+    adata_gss_trait: ad.AnnData,
+    gene_plot_dir: Path
+) -> List[dict]:
+    """
+    Build list of single-sample gene plot rendering tasks.
+
+    Creates tasks for gene x sample combinations, generating individual
+    PNG files for each gene in each sample (both Expression and GSS).
+    """
+    tasks = []
+
+    for trait, group in top_genes_df.groupby('trait'):
+        top_group = group.sort_values('PCC', ascending=False).head(top_n)
+
+        for _, row in top_group.iterrows():
+            gene = row['gene']
+            if gene not in all_top_genes:
+                continue
+
+            for sample_name in sample_names_sorted:
+                cache = sample_data_cache.get(sample_name)
+                if cache is None:
+                    continue
+
+                coords = cache['coords']
+                spots = cache['spots']
+
+                # Expression data
+                exp_vals = adata_exp_trait[spots, gene].X
+                if sp.issparse(exp_vals):
+                    exp_vals = exp_vals.toarray()
+                exp_vals = np.ravel(exp_vals)
+
+                # GSS data
+                gss_vals = adata_gss_trait[spots, gene].X
+                if sp.issparse(gss_vals):
+                    gss_vals = gss_vals.toarray()
+                gss_vals = np.ravel(gss_vals)
+
+                # Safe sample name for filename
+                safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
+
+                # Expression plot task
+                if exp_vals is not None and len(exp_vals) > 0:
+                    tasks.append({
+                        'gene': gene,
+                        'sample_name': sample_name,
+                        'trait': trait,
+                        'plot_type': 'exp',
+                        'coords': coords.copy(),
+                        'values': exp_vals.copy(),
+                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
+                        'fig_width': 6.0,
+                        'dpi': 150
+                    })
+
+                # GSS plot task
+                if gss_vals is not None and len(gss_vals) > 0:
+                    tasks.append({
+                        'gene': gene,
+                        'sample_name': sample_name,
+                        'trait': trait,
+                        'plot_type': 'gss',
+                        'coords': coords.copy(),
+                        'values': gss_vals.copy(),
+                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
+                        'fig_width': 6.0,
+                        'dpi': 150
+                    })
 
     return tasks
 
@@ -1511,7 +1677,8 @@ def export_data_as_js_modules(data_dir: Path):
         except Exception as e:
             logger.warning(f"Failed to load report_meta.json: {e}")
 
-    _export_metadata_js(data_dir, js_data_dir)
+    # Use per-sample export for efficient on-demand loading (instead of monolithic _export_metadata_js)
+    _export_per_sample_spatial_js(data_dir, js_data_dir, meta)
     _export_cauchy_js(data_dir, js_data_dir)
     _export_manhattan_js(data_dir, js_data_dir)
     _export_top_genes_pcc_js(data_dir, js_data_dir)
@@ -1522,7 +1689,7 @@ def export_data_as_js_modules(data_dir: Path):
 
 
 def _export_metadata_js(data_dir: Path, js_data_dir: Path):
-    """Export metadata CSV as JS module."""
+    """Export metadata CSV as JS module (deprecated - use _export_per_sample_spatial_js instead)."""
     metadata_file = data_dir / "spot_metadata.csv"
     if metadata_file.exists():
         df = pd.read_csv(metadata_file)
@@ -1530,6 +1697,94 @@ def _export_metadata_js(data_dir: Path, js_data_dir: Path):
         js_content = f"window.GSMAP_METADATA = {json.dumps(data_struct, separators=(',', ':'))};"
         with open(js_data_dir / "spot_metadata.js", "w", encoding='utf-8') as f:
             f.write(js_content)
+
+
+def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: Dict):
+    """
+    Export spatial metadata as per-sample JS files for efficient on-demand loading.
+
+    This creates:
+    - sample_index.js: Lightweight index mapping sample names to file info
+    - sample_{name}_spatial.js: Per-sample data with coordinates, traits, annotations
+
+    This approach is much more efficient than loading all samples at once,
+    especially for datasets with millions of spots.
+    """
+    metadata_file = data_dir / "spot_metadata.csv"
+    if not metadata_file.exists():
+        logger.warning("spot_metadata.csv not found, skipping per-sample spatial export")
+        return
+
+    logger.info("Exporting per-sample spatial data as JS modules...")
+    df = pd.read_csv(metadata_file)
+
+    samples = meta.get('samples', [])
+    traits = meta.get('traits', [])
+    annotations = meta.get('annotations', [])
+
+    if not samples:
+        # Fallback to unique sample names from data
+        samples = df['sample_name'].unique().tolist() if 'sample_name' in df.columns else []
+
+    sample_index = {}
+
+    for sample_name in samples:
+        sample_df = df[df['sample_name'] == sample_name]
+
+        if len(sample_df) == 0:
+            logger.warning(f"No data found for sample: {sample_name}")
+            continue
+
+        # Build columnar data structure for efficient ScatterGL rendering
+        data_struct = {
+            'spot': sample_df['spot'].tolist(),
+            'sx': sample_df['sx'].tolist(),
+            'sy': sample_df['sy'].tolist(),
+        }
+
+        # Add 3D coordinates if present
+        for coord in ['3d_x', '3d_y', '3d_z']:
+            if coord in sample_df.columns:
+                data_struct[coord] = sample_df[coord].tolist()
+
+        # Add all annotation columns
+        for anno in annotations:
+            if anno in sample_df.columns:
+                data_struct[anno] = sample_df[anno].tolist()
+
+        # Add all trait columns (round to 1 decimal to reduce file size)
+        for trait in traits:
+            if trait in sample_df.columns:
+                data_struct[trait] = [
+                    round(v, 1) if pd.notna(v) else None
+                    for v in sample_df[trait]
+                ]
+
+        # Create safe filename (replace non-alphanumeric chars)
+        safe_name = "".join(c if c.isalnum() else "_" for c in sample_name)
+        var_name = f"GSMAP_SAMPLE_{safe_name}"
+        file_name = f"sample_{safe_name}_spatial.js"
+
+        # Write per-sample JS file
+        js_content = f"window.{var_name} = {json.dumps(data_struct, separators=(',', ':'))};"
+        with open(js_data_dir / file_name, "w", encoding='utf-8') as f:
+            f.write(js_content)
+
+        # Track in sample index
+        sample_index[sample_name] = {
+            'var_name': var_name,
+            'file': file_name,
+            'n_spots': len(sample_df)
+        }
+
+        logger.info(f"  Exported {sample_name}: {len(sample_df)} spots -> {file_name}")
+
+    # Export lightweight sample index (loaded upfront)
+    js_content = f"window.GSMAP_SAMPLE_INDEX = {json.dumps(sample_index, separators=(',', ':'))};"
+    with open(js_data_dir / "sample_index.js", "w", encoding='utf-8') as f:
+        f.write(js_content)
+
+    logger.info(f"Exported {len(sample_index)} per-sample spatial JS files + sample_index.js")
 
 
 def _export_cauchy_js(data_dir: Path, js_data_dir: Path):

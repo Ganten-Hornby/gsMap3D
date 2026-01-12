@@ -159,6 +159,17 @@
                     </select>
                 </div>
 
+                <!-- Sample Selector -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Sample</label>
+                    <select x-model="selectedSample" @change="onSampleChange()"
+                        class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
+                        <template x-for="s in samples" :key="s">
+                            <option :value="s" x-text="s"></option>
+                        </template>
+                    </select>
+                </div>
+
                 <!-- Annotation Category Selector -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">Annotation</label>
@@ -312,21 +323,60 @@
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.gsmap = !sections.gsmap">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800"><span x-text="getSectionTitle('sec-gsmap')"></span> - <span
-                                x-text="selectedTrait"></span></h2>
-                        <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values across samples.</p>
+                        <h2 class="text-lg font-semibold text-gray-800">
+                            <span x-text="getSectionTitle('sec-gsmap')"></span> -
+                            <span x-text="selectedSample"></span>
+                        </h2>
+                        <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values or annotations.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.gsmap ? 'rotate-180' : ''"
                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                     </svg>
                 </div>
-                <div class="section-content p-4" :class="sections.gsmap ? 'expanded' : 'collapsed'">
-                    <img x-show="selectedTrait" :src="'spatial_plots/ldsc_' + selectedTrait + '.png'"
-                        :alt="selectedTrait" class="w-full h-auto max-h-[700px] object-contain mx-auto" loading="lazy"
-                        onerror="this.style.display='none';">
-                    <p x-show="!selectedTrait" class="text-center text-gray-500 py-8">Select a trait to view the plot.
-                    </p>
+                <div class="section-content" :class="sections.gsmap ? 'expanded' : 'collapsed'">
+                    <!-- Spatial 2D Controls -->
+                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
+                        <div class="flex items-center gap-4">
+                            <span class="text-sm font-medium text-gray-700">View:</span>
+                            <label class="inline-flex items-center cursor-pointer">
+                                <input type="radio" name="spatial2dType" value="trait" x-model="spatial2dType"
+                                    @change="renderSpatial2DPlot()"
+                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                                <span class="ml-2 text-sm text-gray-700">gsMap -log10(p)</span>
+                            </label>
+                            <label class="inline-flex items-center cursor-pointer">
+                                <input type="radio" name="spatial2dType" value="annotation" x-model="spatial2dType"
+                                    @change="renderSpatial2DPlot()"
+                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
+                                <span class="ml-2 text-sm text-gray-700">Annotation</span>
+                            </label>
+                        </div>
+                        <div class="flex items-center gap-2" x-show="spatial2dType === 'trait'">
+                            <label class="text-sm font-medium text-gray-700">Trait:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedTrait"></span>
+                        </div>
+                        <div class="flex items-center gap-2" x-show="spatial2dType === 'annotation'">
+                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedAnnotationCategory"></span>
+                        </div>
+                    </div>
+
+                    <!-- Plotly Container with Loading Indicator -->
+                    <div class="p-4">
+                        <!-- Loading indicator -->
+                        <div x-show="loadingSampleData" class="flex items-center justify-center py-12">
+                            <svg class="animate-spin h-8 w-8 text-primary-600 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span class="text-gray-500 text-lg">Loading sample data...</span>
+                        </div>
+                        <!-- Plot container -->
+                        <div id="spatial2dPlot" x-show="!loadingSampleData" class="w-full" style="height: 600px;"></div>
+                    </div>
                 </div>
             </div>
 
@@ -336,10 +386,12 @@
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.genes = !sections.genes">
                     <div>
-                        <h2 class="text-lg font-semibold text-gray-800"><span x-text="getSectionTitle('sec-genes')"></span> - <span
-                                x-text="selectedGene"></span></h2>
-                        <p class="text-sm text-gray-500">Gene expression and GSS distribution plots across all samples.
-                        </p>
+                        <h2 class="text-lg font-semibold text-gray-800">
+                            <span x-text="getSectionTitle('sec-genes')"></span> -
+                            <span x-text="selectedGene"></span> -
+                            <span x-text="selectedSample"></span>
+                        </h2>
+                        <p class="text-sm text-gray-500">Gene expression and GSS distribution for selected sample.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.genes ? 'rotate-180' : ''"
                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -347,37 +399,43 @@
                     </svg>
                 </div>
                 <div class="section-content" :class="sections.genes ? 'expanded' : 'collapsed'">
-                    <!-- Gene Plot Controls -->
-                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex items-center gap-6">
-                        <span class="text-sm font-medium text-gray-700">View:</span>
-                        <label class="inline-flex items-center cursor-pointer">
-                            <input type="radio" name="genePlotType" value="exp" x-model="genePlotType"
-                                class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                            <span class="ml-2 text-sm text-gray-700">Expression</span>
-                        </label>
-                        <label class="inline-flex items-center cursor-pointer">
-                            <input type="radio" name="genePlotType" value="gss" x-model="genePlotType"
-                                class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                            <span class="ml-2 text-sm text-gray-700">GSS</span>
-                        </label>
+                    <!-- Gene Plot Info Bar -->
+                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm font-medium text-gray-700">Gene:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedGene"></span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm font-medium text-gray-700">Sample:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedSample"></span>
+                        </div>
                     </div>
 
-                    <!-- Gene Plot (Single view, switches between Expression and GSS) -->
+                    <!-- Gene Plots (Side by Side: Expression and GSS) -->
                     <div class="p-4">
-                        <div class="border border-gray-200 rounded-lg overflow-hidden">
-                            <div class="bg-gray-50 px-4 py-2 border-b border-gray-200">
-                                <h3 class="font-medium text-gray-700"
-                                    x-text="genePlotType === 'exp' ? 'Gene Expression (All Samples)' : 'GSS Distribution (All Samples)'">
-                                </h3>
+                        <!-- Side-by-side static image containers -->
+                        <div class="flex flex-wrap gap-4 justify-center">
+                            <div class="flex-1 min-w-[400px] max-w-[600px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">Expression</h3>
+                                <img :src="getGenePlotPath('exp')"
+                                    :alt="selectedGene + ' Expression'"
+                                    class="w-full h-auto max-h-[500px] object-contain mx-auto"
+                                    loading="lazy"
+                                    onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                                <p class="text-center text-gray-400 py-8 text-sm" style="display: none;">
+                                    Expression plot not available for this selection.</p>
                             </div>
-                            <div class="p-2">
-                                <img x-show="selectedGene && selectedTrait" :src="getGenePlotPath()"
-                                    :alt="selectedGene + ' ' + (genePlotType === 'exp' ? 'expression' : 'GSS')"
-                                    class="w-full h-auto object-contain max-h-[800px] mx-auto" loading="lazy"
-                                    onerror="this.style.display='none';">
-                                <p x-show="!selectedGene || !selectedTrait"
-                                    class="text-center text-gray-400 py-8 text-sm">
-                                    Select a gene to view the plot</p>
+                            <div class="flex-1 min-w-[400px] max-w-[600px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">GSS</h3>
+                                <img :src="getGenePlotPath('gss')"
+                                    :alt="selectedGene + ' GSS'"
+                                    class="w-full h-auto max-h-[500px] object-contain mx-auto"
+                                    loading="lazy"
+                                    onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                                <p class="text-center text-gray-400 py-8 text-sm" style="display: none;">
+                                    GSS plot not available for this selection.</p>
                             </div>
                         </div>
                     </div>
@@ -440,8 +498,8 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 4: Annotations 2D Distribution ==================== -->
-            <div id="sec-annotation" x-show="dataLoaded && currentSections.showAnnotations"
+            <!-- ==================== SECTION 4: Annotations 2D Distribution (Hidden - merged into sec-gsmap) ==================== -->
+            <div id="sec-annotation" x-show="false"
                 class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div class="p-4 border-b border-gray-100 flex justify-between items-center cursor-pointer"
                     @click="sections.annotation = !sections.annotation">
@@ -722,7 +780,7 @@
 
     <!-- Data Scripts - MUST load before Alpine initializes -->
     <script src="js_data/report_meta.js"></script>
-    <script src="js_data/spot_metadata.js"></script>
+    <script src="js_data/sample_index.js"></script>
     <script src="js_data/cauchy_results.js"></script>
     <script src="js_data/gene_trait_correlation.js"></script>
     <script src="js_data/umap_data.js"></script>
@@ -739,7 +797,6 @@
                 selectedAnnotationCategory: '',
                 selectedGene: '',
                 isLoading: false,
-                genePlotType: 'exp',  // 'exp' for Expression, 'gss' for GSS
 
                 // Data arrays (populated from window globals)
                 traits: [],
@@ -781,6 +838,16 @@
                 spatial3dType: 'annotation', // 'annotation' or 'trait'
                 spatial3dLoading: true,
 
+                // Spatial 2D visualization state
+                selectedSample: '',
+                spatial2dType: 'trait', // 'trait' or 'annotation'
+                spatial2dPlotInitialized: false,
+
+                // Per-sample data loading (for efficient on-demand loading)
+                sampleDataCache: {},        // { sampleName: data } - cache loaded samples
+                loadingSampleData: false,   // Loading indicator
+                currentSampleData: null,    // Currently loaded sample data
+
                 // Section visibility configuration by dataset type
                 sectionConfig: {
                     'spatial3D': {
@@ -820,7 +887,8 @@
                     { key: 'show3d', id: 'sec-spatial3d', title: 'gsMap 3D Exploration' },
                     { key: 'show2dDistribution', id: 'sec-gsmap', title: 'gsMap 2D Distribution' },
                     { key: 'showGSS', id: 'sec-genes', title: 'GSS Distribution' },
-                    { key: 'showAnnotations', id: 'sec-annotation', title: 'Annotations 2D Distribution' },
+                    // Annotation section merged into sec-gsmap, removed from navigation
+                    // { key: 'showAnnotations', id: 'sec-annotation', title: 'Annotations 2D Distribution' },
                     { key: 'showUMAP', id: 'sec-umap', title: 'Embedding UMAP' },
                     { key: 'showManhattan', id: 'sec-manhattan', title: 'Manhattan Plot' },
                     { key: 'showEnrichment', id: 'sec-cauchy', title: 'Enrichment Analysis' },
@@ -1048,6 +1116,9 @@
                         if (this.annotations.length > 0) {
                             this.selectedAnnotationCategory = this.annotations[0];
                         }
+                        if (this.samples.length > 0) {
+                            this.selectedSample = this.samples[0];
+                        }
 
                         // Update gene list
                         this.updateGeneList();
@@ -1057,6 +1128,13 @@
                         this.loadManhattanData();
                         this.renderCauchyHeatmap();
                         this.renderUmapPlots();
+
+                        // Load first sample data then render spatial 2D plot
+                        if (this.selectedSample) {
+                            await this.loadSampleData(this.selectedSample);
+                            this.renderSpatial2DPlot();
+                            // Static gene plots load automatically via img src binding
+                        }
                     } else {
                         console.error("No traits found - data may not have loaded correctly");
                     }
@@ -1079,6 +1157,11 @@
                     if (this.umapColorMode === 'trait') {
                         this.renderUmapPlots();
                     }
+
+                    // Update spatial 2D plot if in trait mode
+                    if (this.spatial2dType === 'trait') {
+                        this.renderSpatial2DPlot();
+                    }
                 },
 
                 onAnnotationChange() {
@@ -1091,12 +1174,72 @@
                     if (this.umapColorMode === 'annotation') {
                         this.renderUmapPlots();
                     }
+
+                    // Update spatial 2D plot if in annotation mode
+                    if (this.spatial2dType === 'annotation') {
+                        this.renderSpatial2DPlot();
+                    }
+                },
+
+                onSampleChange() {
+                    // Load sample data on-demand then render
+                    this.loadSampleData(this.selectedSample).then(() => {
+                        this.renderSpatial2DPlot();
+                    }).catch(err => {
+                        console.error('Failed to load sample data:', err);
+                    });
+                    // Static gene plots update automatically via img src binding
+                },
+
+                // Load sample data on-demand via dynamic script injection
+                async loadSampleData(sampleName) {
+                    // Return cached data if available
+                    if (this.sampleDataCache[sampleName]) {
+                        this.currentSampleData = this.sampleDataCache[sampleName];
+                        return this.currentSampleData;
+                    }
+
+                    // Get sample info from index
+                    const sampleInfo = window.GSMAP_SAMPLE_INDEX?.[sampleName];
+                    if (!sampleInfo) {
+                        console.warn(`Sample ${sampleName} not found in index`);
+                        return null;
+                    }
+
+                    this.loadingSampleData = true;
+
+                    return new Promise((resolve, reject) => {
+                        const script = document.createElement('script');
+                        script.src = `js_data/${sampleInfo.file}`;
+
+                        script.onload = () => {
+                            const data = window[sampleInfo.var_name];
+                            if (data) {
+                                this.sampleDataCache[sampleName] = data;
+                                this.currentSampleData = data;
+                                console.log(`Loaded sample ${sampleName}: ${data.spot?.length || 0} spots`);
+                                resolve(data);
+                            } else {
+                                reject(new Error(`Data not found for ${sampleName}`));
+                            }
+                            this.loadingSampleData = false;
+                        };
+
+                        script.onerror = () => {
+                            console.error(`Failed to load sample data: ${sampleName}`);
+                            this.loadingSampleData = false;
+                            reject(new Error(`Failed to load ${sampleName}`));
+                        };
+
+                        document.body.appendChild(script);
+                    });
                 },
 
                 onGeneChange() {
                     if (this.manhattanData && this.plotlyReady) {
                         this.renderManhattanPlot();
                     }
+                    // Static gene plots update automatically via img src binding
                 },
 
                 // Update gene list when trait changes
@@ -1124,9 +1267,10 @@
                     }
                 },
 
-                // Gene plot path (multi-sample, switches between exp and gss based on genePlotType)
-                getGenePlotPath() {
-                    return `gene_diagnostic_plots/gene_${this.selectedTrait}_${this.selectedGene}_${this.genePlotType}.png`;
+                // Gene plot path (single-sample, takes plot type as parameter)
+                getGenePlotPath(plotType) {
+                    const safeSample = this.selectedSample.replace(/[^a-zA-Z0-9]/g, '_');
+                    return `gene_diagnostic_plots/gene_${this.selectedTrait}_${this.selectedGene}_${safeSample}_${plotType}.png`;
                 },
 
                 // Sorting
@@ -1588,6 +1732,189 @@
 
                     const config = { responsive: true, displayModeBar: true };
                     Plotly.react(plotDiv, traces, layout, config);
+                },
+
+                // Spatial 2D Plot rendering (uses per-sample data loaded on-demand)
+                renderSpatial2DPlot() {
+                    if (!this.plotlyReady || !this.currentSampleData) return;
+
+                    const plotDiv = document.getElementById('spatial2dPlot');
+                    if (!plotDiv) return;
+
+                    const data = this.currentSampleData;
+                    const sample = this.selectedSample;
+
+                    // Data is already filtered per sample, no need to filter
+                    const x = data.sx;
+                    const y = data.sy;
+
+                    if (!x || x.length === 0) {
+                        console.warn(`No coordinates found for sample: ${sample}`);
+                        return;
+                    }
+
+                    // Estimate point size dynamically
+                    const pointSize = this.estimateSpatialPointSize(x, y);
+
+                    // Determine what to color by
+                    let colorValues, colorLabel, isContinuous, colorMap;
+
+                    if (this.spatial2dType === 'trait') {
+                        const trait = this.selectedTrait;
+                        // Values already rounded to 1 decimal during export
+                        colorValues = data[trait] || x.map(() => 0);
+                        colorLabel = `-log10(p) ${trait}`;
+                        isContinuous = true;
+                        colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
+                    } else {
+                        const anno = this.selectedAnnotationCategory;
+                        colorValues = data[anno] || x.map(() => 'Unknown');
+                        colorLabel = anno;
+                        isContinuous = false;
+                    }
+
+                    // Build hover text with ALL annotations (not sample name since it's selected)
+                    const hoverText = data.spot.map((spot, i) => {
+                        let text = `<b>Spot:</b> ${spot}`;
+                        // Add all annotation columns
+                        this.annotations.forEach(anno => {
+                            if (data[anno]) {
+                                text += `<br><b>${anno}:</b> ${data[anno][i]}`;
+                            }
+                        });
+                        // Add trait value if viewing trait
+                        if (this.spatial2dType === 'trait' && this.selectedTrait) {
+                            const val = data[this.selectedTrait] ? data[this.selectedTrait][i] : 'N/A';
+                            const rounded = (val !== null && val !== undefined) ? val.toFixed(1) : 'N/A';
+                            text += `<br><b>-log10(p):</b> ${rounded}`;
+                        }
+                        return text;
+                    });
+
+                    let traces = [];
+                    let layoutExtras = {};
+
+                    if (isContinuous) {
+                        // Single trace with colorbar
+                        traces.push({
+                            x: x,
+                            y: y,
+                            mode: 'markers',
+                            type: 'scattergl',
+                            text: hoverText,
+                            hoverinfo: 'text',
+                            marker: {
+                                size: pointSize,
+                                color: colorValues,
+                                colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
+                                opacity: 0.8,
+                                showscale: true,
+                                colorbar: {
+                                    title: '-log10(p)',
+                                    thickness: 15,
+                                    len: 0.5,
+                                    y: 0.5
+                                }
+                            }
+                        });
+                        layoutExtras.showlegend = false;
+                    } else {
+                        // Discrete - group by category for legend
+                        const uniqueValues = [...new Set(colorValues)].sort();
+
+                        // Use UMAP color maps for consistency with UMAP and 3D plots
+                        const anno = this.selectedAnnotationCategory;
+                        const umapColorMap = this.umapData?.color_maps?.[anno];
+                        const defaultColors = this.getUmapColorScale(uniqueValues.length);
+
+                        traces = uniqueValues.map((val, i) => {
+                            const indices = colorValues.map((v, idx) => v === val ? idx : -1).filter(idx => idx >= 0);
+                            // Use UMAP color map if available, otherwise fall back to default
+                            const color = (umapColorMap && umapColorMap[val]) || defaultColors[i % defaultColors.length];
+                            return {
+                                x: indices.map(idx => x[idx]),
+                                y: indices.map(idx => y[idx]),
+                                mode: 'markers',
+                                type: 'scattergl',
+                                name: val,
+                                text: indices.map(idx => hoverText[idx]),
+                                hoverinfo: 'text',
+                                marker: {
+                                    size: pointSize,
+                                    color: color,
+                                    opacity: 0.8
+                                }
+                            };
+                        });
+                        layoutExtras.showlegend = uniqueValues.length <= 50;
+                    }
+
+                    const layout = {
+                        title: {
+                            text: `${sample} - ${this.spatial2dType === 'trait' ? this.selectedTrait : this.selectedAnnotationCategory}`,
+                            font: { size: 16 }
+                        },
+                        xaxis: {
+                            showgrid: false,
+                            zeroline: false,
+                            showticklabels: false,
+                            scaleanchor: 'y'  // Maintain aspect ratio
+                        },
+                        yaxis: {
+                            showgrid: false,
+                            zeroline: false,
+                            showticklabels: false
+                        },
+                        hovermode: 'closest',
+                        margin: { l: 20, r: 20, t: 50, b: 20 },
+                        legend: {
+                            orientation: 'v',
+                            x: 1.02,
+                            y: 1,
+                            font: { size: 10 }
+                        },
+                        ...layoutExtras
+                    };
+
+                    const config = { responsive: true, displayModeBar: true };
+
+                    if (this.spatial2dPlotInitialized) {
+                        Plotly.react(plotDiv, traces, layout, config);
+                    } else {
+                        Plotly.newPlot(plotDiv, traces, layout, config);
+                        this.spatial2dPlotInitialized = true;
+                    }
+                },
+
+                // Helper function to estimate point size for spatial plot
+                estimateSpatialPointSize(x, y) {
+                    if (x.length === 0) return 5;
+
+                    // Calculate data range
+                    const xMin = Math.min(...x);
+                    const xMax = Math.max(...x);
+                    const yMin = Math.min(...y);
+                    const yMax = Math.max(...y);
+
+                    const xRange = xMax - xMin;
+                    const yRange = yMax - yMin;
+                    const dataRange = Math.max(xRange, yRange);
+
+                    if (dataRange === 0) return 5;
+
+                    // Estimate average point spacing using simple heuristic
+                    // For a uniform distribution, avg spacing ~= sqrt(area / n_points)
+                    const area = xRange * yRange;
+                    const avgSpacing = Math.sqrt(area / x.length);
+
+                    // Target: fill ~25-30% of area with points
+                    // Point size in pixels, assuming ~600px viewport width
+                    const viewportWidth = 600;
+                    const pixelsPerDataUnit = viewportWidth / dataRange;
+                    const pointSizePixels = avgSpacing * pixelsPerDataUnit * 0.8;
+
+                    // Clamp between reasonable bounds
+                    return Math.max(2, Math.min(15, pointSizePixels));
                 },
 
                 getUmapColorScale(n) {
