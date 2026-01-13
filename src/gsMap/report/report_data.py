@@ -26,7 +26,7 @@ from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import normalize_for_analysis, setup_data_layer
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
-from gsMap.report.visualize import estimate_point_size_for_plot
+from gsMap.report.visualize import estimate_point_size_for_plot, estimate_matplotlib_scatter_marker_size
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 
 logger = logging.getLogger(__name__)
@@ -132,17 +132,8 @@ def _render_multi_sample_gene_plot_task(task_data: dict):
             ax = fig.add_subplot(grid_specs[row, col])
 
             if coords is not None and values is not None and len(coords) > 0:
-                tree = KDTree(coords)
-                distances, _ = tree.query(coords, k=min(2, len(coords)))
-                avg_dist = np.mean(distances[:, 1]) if len(coords) > 1 else 1.0
-
-                x_range = np.max(coords[:, 0]) - np.min(coords[:, 0])
-                y_range = np.max(coords[:, 1]) - np.min(coords[:, 1])
-                data_range = max(x_range, y_range)
-                if data_range > 0:
-                    point_size = ((avg_dist / data_range) * subplot_width * 72) ** 2 * 1.2
-                else:
-                    point_size = 10
+                from gsMap.report.visualize import estimate_matplotlib_scatter_marker_size
+                point_size = estimate_matplotlib_scatter_marker_size(ax, coords)
                 point_size = min(max(point_size, 1), 200)
 
                 scatter = ax.scatter(
@@ -218,17 +209,8 @@ def _render_single_sample_gene_plot_task(task_data: dict):
         fig, ax = plt.subplots(figsize=(fig_width, fig_width))
 
         # Calculate point size based on data density
-        tree = KDTree(coords)
-        distances, _ = tree.query(coords, k=min(2, len(coords)))
-        avg_dist = np.mean(distances[:, 1]) if len(coords) > 1 else 1.0
-
-        x_range = np.max(coords[:, 0]) - np.min(coords[:, 0])
-        y_range = np.max(coords[:, 1]) - np.min(coords[:, 1])
-        data_range = max(x_range, y_range)
-        if data_range > 0:
-            point_size = ((avg_dist / data_range) * fig_width * 72) ** 2 * 1.2
-        else:
-            point_size = 10
+        from gsMap.report.visualize import estimate_matplotlib_scatter_marker_size
+        point_size = estimate_matplotlib_scatter_marker_size(ax, coords)
         point_size = min(max(point_size, 1), 200)
 
         # Color scale
@@ -415,7 +397,7 @@ def _prepare_umap_data(
     has_niche = niche_emb_key is not None and niche_emb_key in adata.obsm
 
     # Stratified subsampling
-    n_subsample = getattr(config, 'downsampling_n_spots', 10000)
+    n_subsample = getattr(config, 'downsampling_n_spots', 20000)
     spot_names = adata.obs_names.values
     sample_names = adata.obs['sample_name']
 
@@ -546,7 +528,7 @@ def _prepare_3d_visualization(
     logger.info(f"Full 3D visualization data saved to {h5ad_path}")
 
     # 3. Stratified subsampling for HTML visualization (limit to reasonable size)
-    n_max_points = getattr(config, 'downsampling_n_spots', 10000)
+    n_max_points = getattr(config, 'downsampling_n_spots_3d', 1000000)
     if len(metadata) > n_max_points:
         sample_names = metadata['sample_name']
         selected_idx = _stratified_subsample(

@@ -23,7 +23,13 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
         help="Number of spots to downsample for PCC calculation if n_spots > this value",
         min=1000,
         max=100000
-    )] = 10000
+    )] = 20000
+
+    downsampling_n_spots_3d: Annotated[int, typer.Option(
+        help="Number of spots to downsample for 3D visualization if n_spots > this value",
+        min=1000,
+        max=2000000
+    )] = 1000000
 
     top_corr_genes: Annotated[int, typer.Option(
         help="Number of top correlated genes to display",

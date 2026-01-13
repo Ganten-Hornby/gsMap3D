@@ -119,6 +119,90 @@ def estimate_point_size_for_plot(coordinates, DEFAULT_PIXEL_WIDTH=1000):
     return (pixel_width, pixel_height), point_size
 
 
+def estimate_matplotlib_scatter_marker_size(ax: matplotlib.axes.Axes, coordinates: np.ndarray,
+                                            x_limits: Optional[tuple] = None,
+                                            y_limits: Optional[tuple] = None) -> float:
+    """
+    Estimates the appropriate marker size to make adjacent markers touch.
+
+    This function calculates the size 's' for a square marker (in points^2)
+    such that its diameter in the plot corresponds to the average distance
+    to the nearest neighbor for each point in the dataset. It accounts for
+    the plot's aspect ratio and final rendered dimensions.
+
+    Args:
+        ax (matplotlib.axes.Axes): The subplot object. The function will
+            temporarily set its limits and aspect ratio to ensure the
+            transformation from data units to display units is accurate.
+        coordinates (np.ndarray): A NumPy array of shape (n, 2)
+            containing the (x, y) coordinates of the points.
+        x_limits (Optional[tuple]): Optional (min, max) tuple to override automatic x-axis limits.
+        y_limits (Optional[tuple]): Optional (min, max) tuple to override automatic y-axis limits.
+
+    Returns:
+        float: The estimated marker size 's' (in points^2) for use with
+               ax.scatter().
+    """
+    # 1. Set up the axes' properties to ensure accurate transformations.
+    # The aspect ratio and data limits must be set to correctly
+    # calculate the relationship between data units and display units (inches/points).
+    ax.set_aspect('equal')
+
+    # Use provided limits if available, otherwise calculate from data
+    if x_limits is not None:
+        x_data_min, x_data_max = x_limits
+    else:
+        x_data_min, x_data_max = np.min(coordinates[:, 0]), np.max(coordinates[:, 0])
+
+    if y_limits is not None:
+        y_data_min, y_data_max = np.min(coordinates[:, 1]), np.max(coordinates[:, 1])
+    else:
+        y_data_min, y_data_max = np.min(coordinates[:, 1]), np.max(coordinates[:, 1])
+
+    ax.set_xlim(x_data_min, x_data_max)
+    ax.set_ylim(y_data_min, y_data_max)
+
+    # Force a draw of the canvas to finalize the transformations.
+    ax.figure.canvas.draw()
+
+    # 2. Calculate the required marker radius in data units.
+    # We find the average distance to the nearest neighbor for all points.
+    # The desired radius is half of this distance.
+    tree = KDTree(coordinates)
+    distances, _ = tree.query(coordinates, k=2)
+    radius_data = np.mean(distances[:, 1]) / 2
+
+    # 3. Convert the data radius to display units (points).
+    # This requires transforming the axes' bounding box from data coordinates
+    # to display coordinates (pixels), then to physical units (inches).
+
+    # Get the bounding box in display (pixel) coordinates
+    x_display_min, _ = ax.transData.transform((x_data_min, y_data_min))
+    x_display_max, _ = ax.transData.transform((x_data_max, y_data_max))
+
+    # Convert the display coordinates to inches
+    x_inch_min, _ = ax.figure.dpi_scale_trans.inverted().transform((x_display_min, 0))
+    x_inch_max, _ = ax.figure.dpi_scale_trans.inverted().transform((x_display_max, 0))
+
+    width_inch = x_inch_max - x_inch_min
+    width_data = x_data_max - x_data_min
+
+    # Calculate the radius in inches. This scales the data radius by the
+    # ratio of the plot's physical width to its data width.
+    # This works because the aspect ratio is 'equal'.
+    radius_inch = (radius_data / width_data) * width_inch
+
+    # Convert inches to points (1 inch = 72 points).
+    radius_points = radius_inch * 72
+
+    # 4. Calculate the marker size 's'.
+    # For ax.scatter, 's' is the marker area in points^2.
+    # For a square marker, the area is (side)^2, where side = 2 * radius.
+    square_marker_size = (2 * radius_points) ** 2
+
+    return square_marker_size * 1.2
+
+
 def draw_scatter(
     space_coord_concat,
     title=None,
@@ -602,7 +686,7 @@ class VisualizeRunner:
             ax = axes_flat[i]
 
             # Estimate marker size to fill space without overlap
-            point_size = self.estimate_matplitlib_scatter_marker_size(ax, sample_plot_data[['sx', 'sy']].values)
+            point_size = estimate_matplotlib_scatter_marker_size(ax, sample_plot_data[['sx', 'sy']].values)
 
             # Determine color scale, capping at the 99.9th percentile to handle outliers
             sample_trait_data = sample_plot_data[['sx', 'sy', trait]].dropna()
@@ -795,85 +879,15 @@ class VisualizeRunner:
     def estimate_matplitlib_scatter_marker_size(cls, ax: matplotlib.axes.Axes, coordinates: np.ndarray,
                                                 x_limits: Optional[tuple] = None,
                                                 y_limits: Optional[tuple] = None) -> float:
-        """
-        Estimates the appropriate marker size to make adjacent markers touch.
+        """Alias for estimate_matplotlib_scatter_marker_size (with typo) for backward compatibility."""
+        return estimate_matplotlib_scatter_marker_size(ax, coordinates, x_limits, y_limits)
 
-        This function calculates the size 's' for a square marker (in points^2)
-        such that its diameter in the plot corresponds to the average distance
-        to the nearest neighbor for each point in the dataset. It accounts for
-        the plot's aspect ratio and final rendered dimensions.
-
-        Args:
-            ax (matplotlib.axes.Axes): The subplot object. The function will
-                temporarily set its limits and aspect ratio to ensure the
-                transformation from data units to display units is accurate.
-            coordinates (np.ndarray): A NumPy array of shape (n, 2)
-                containing the (x, y) coordinates of the points.
-            x_limits (Optional[tuple]): Optional (min, max) tuple to override automatic x-axis limits.
-            y_limits (Optional[tuple]): Optional (min, max) tuple to override automatic y-axis limits.
-
-        Returns:
-            float: The estimated marker size 's' (in points^2) for use with
-                   ax.scatter().
-        """
-        # 1. Set up the axes' properties to ensure accurate transformations.
-        # The aspect ratio and data limits must be set to correctly
-        # calculate the relationship between data units and display units (inches/points).
-        ax.set_aspect('equal')
-
-        # Use provided limits if available, otherwise calculate from data
-        if x_limits is not None:
-            x_data_min, x_data_max = x_limits
-        else:
-            x_data_min, x_data_max = np.min(coordinates[:, 0]), np.max(coordinates[:, 0])
-
-        if y_limits is not None:
-            y_data_min, y_data_max = np.min(coordinates[:, 1]), np.max(coordinates[:, 1])
-        else:
-            y_data_min, y_data_max = np.min(coordinates[:, 1]), np.max(coordinates[:, 1])
-
-        ax.set_xlim(x_data_min, x_data_max)
-        ax.set_ylim(y_data_min, y_data_max)
-
-        # Force a draw of the canvas to finalize the transformations.
-        ax.figure.canvas.draw()
-
-        # 2. Calculate the required marker radius in data units.
-        # We find the average distance to the nearest neighbor for all points.
-        # The desired radius is half of this distance.
-        tree = KDTree(coordinates)
-        distances, _ = tree.query(coordinates, k=2)
-        radius_data = np.mean(distances[:, 1]) / 2
-
-        # 3. Convert the data radius to display units (points).
-        # This requires transforming the axes' bounding box from data coordinates
-        # to display coordinates (pixels), then to physical units (inches).
-
-        # Get the bounding box in display (pixel) coordinates
-        x_display_min, _ = ax.transData.transform((x_data_min, y_data_min))
-        x_display_max, _ = ax.transData.transform((x_data_max, y_data_max))
-
-        # Convert the display coordinates to inches
-        x_inch_min, _ = ax.figure.dpi_scale_trans.inverted().transform((x_display_min, 0))
-        x_inch_max, _ = ax.figure.dpi_scale_trans.inverted().transform((x_display_max, 0))
-
-        width_inch = x_inch_max - x_inch_min
-        width_data = x_data_max - x_data_min
-
-        # Calculate the radius in inches. This scales the data radius by the
-        # ratio of the plot's physical width to its data width.
-        # This works because the aspect ratio is 'equal'.
-        radius_inch = (radius_data / width_data) * width_inch
-
-        # Convert inches to points (1 inch = 72 points).
-        radius_points = radius_inch * 72
-
-        # 4. Calculate the marker size 's'.
-        # For ax.scatter, 's' is the marker area in points^2.
-        # For a square marker, the area is (side)^2, where side = 2 * radius.
-        square_marker_size = (2 * radius_points) ** 2
-
-        return square_marker_size * 1.2
+    @classmethod
+    def estimate_matplotlib_scatter_marker_size(cls, ax: matplotlib.axes.Axes, coordinates: np.ndarray,
+                                                x_limits: Optional[tuple] = None,
+                                                y_limits: Optional[tuple] = None) -> float:
+        """Alias for estimate_matplotlib_scatter_marker_size for backward compatibility."""
+        return estimate_matplotlib_scatter_marker_size(ax, coordinates, x_limits, y_limits)
 
     def _create_multi_sample_annotation_plot(self, obs_ldsc_merged: pd.DataFrame, annotation: str,
                                              sample_names_list: list, output_dir: Path,
@@ -916,7 +930,7 @@ class VisualizeRunner:
             sample_data = obs_ldsc_merged[obs_ldsc_merged['sample_name'] == sample_name]
 
             # Estimate point size based on data density
-            point_size = self.estimate_matplitlib_scatter_marker_size(ax, sample_data[['sx', 'sy']].values)
+            point_size = estimate_matplotlib_scatter_marker_size(ax, sample_data[['sx', 'sy']].values)
             point_size *= scaling_factor  # Apply scaling factor
 
             # Create scatter plot
