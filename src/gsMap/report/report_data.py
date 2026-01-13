@@ -1484,7 +1484,9 @@ def _save_report_metadata(
     report_meta['traits'] = traits
     report_meta['samples'] = sample_names
     report_meta['annotations'] = config.annotation_list
-    report_meta['top_corr_genes'] = getattr(config, 'top_corr_genes', 50)
+    report_meta['top_corr_genes'] = config.top_corr_genes
+    report_meta['plot_origin'] = config.plot_origin
+    report_meta['legend_marker_size'] = config.legend_marker_size
 
     # Add chromosome tick positions for Manhattan plot
     if chrom_tick_positions:
@@ -1500,7 +1502,7 @@ def _save_report_metadata(
     report_meta['spatial_3d_widget_path'] = spatial_3d_path
 
     # Add dataset type info for conditional section rendering
-    dataset_type_value = getattr(config, 'dataset_type', DatasetType.SPATIAL_2D)
+    dataset_type_value = config.dataset_type
     if hasattr(dataset_type_value, 'value'):
         dataset_type_value = dataset_type_value.value
     report_meta['dataset_type'] = dataset_type_value

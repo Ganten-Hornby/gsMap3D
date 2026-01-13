@@ -58,6 +58,9 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
         help="Plot origin for spatial plots ('upper' or 'lower'). 'upper' will flip the y-axis (standard for images)."
     )] = "upper"
 
+    # Legend marker size for categorical plots
+    legend_marker_size: float = 10.0
+
     # Compatibility properties for visualization paths
     @property
     @ensure_path_exists

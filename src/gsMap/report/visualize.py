@@ -976,7 +976,7 @@ class VisualizeRunner:
         else:
             # Create a legend on the right side of the figure
             handles = [plt.Line2D([0], [0], marker='o', color='w', label=label,
-                                  markerfacecolor=color, markersize=10)
+                                  markerfacecolor=color, markersize=getattr(self.config, 'legend_marker_size', 10))
                        for label, color in color_map.items()]
             fig.subplots_adjust(right=0.8)
             fig.legend(handles=handles, title=annotation, loc='center left', bbox_to_anchor=(0.85, 0.5))

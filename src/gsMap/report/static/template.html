@@ -1434,7 +1434,7 @@
                         yaxis: { title: '-log10(p)', showgrid: true, gridcolor: '#eee', zeroline: false },
                         hovermode: 'closest',
                         margin: { l: 60, r: 30, t: 50, b: 50 },
-                        legend: { orientation: 'h', y: -0.15 },
+                        legend: { orientation: 'h', y: -0.15, itemsizing: 'constant' },
                         shapes: [{
                             type: 'line',
                             x0: 0,
@@ -1725,7 +1725,8 @@
                             orientation: 'v',
                             x: 1.02,
                             y: 1,
-                            font: { size: 10 }
+                            font: { size: 10 },
+                            itemsizing: 'constant'
                         },
                         ...layoutExtras
                     };
@@ -1872,7 +1873,8 @@
                             orientation: 'v',
                             x: 1.02,
                             y: 1,
-                            font: { size: 10 }
+                            font: { size: 10 },
+                            itemsizing: 'constant'
                         },
                         ...layoutExtras
                     };

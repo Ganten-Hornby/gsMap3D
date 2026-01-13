@@ -313,7 +313,7 @@ def three_d_plot(
         )
 
     plotter.link_views()
-    plotter.camera_position = 'yz'
+    # plotter.camera_position = 'yz'
     
     return plotter
 
