@@ -122,7 +122,8 @@ def _render_multi_sample_gene_plot_task(task_data: dict):
             if data[2] is not None and len(data[2]) > 0
         ])
         vmin = 0
-        vmax = np.percentile(all_values, 99.5) if len(all_values) > 0 else 1.0
+        non_nan_values = all_values[np.isfinite(all_values)] if len(all_values) > 0 else np.array([])
+        vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
         if vmax <= vmin:
             vmax = vmin + 1.0
 
@@ -219,7 +220,8 @@ def _render_single_sample_gene_plot_task(task_data: dict):
 
         # Color scale
         vmin = 0
-        vmax = np.percentile(values, 99.5) if len(values) > 0 else 1.0
+        non_nan_values = values[np.isfinite(values)] if len(values) > 0 else np.array([])
+        vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
         if vmax <= vmin:
             vmax = vmin + 1.0
 
