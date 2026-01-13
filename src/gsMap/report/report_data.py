@@ -10,7 +10,7 @@ import gc
 import json
 import logging
 import shutil
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -1175,240 +1175,140 @@ def _render_gene_diagnostic_plots(
     gene_plot_dir = report_dir / "gene_diagnostic_plots"
     gene_plot_dir.mkdir(exist_ok=True)
 
-
     if not trait_pcc_file.exists() or not config.sample_h5ad_dict:
         logger.warning("Skipping gene diagnostic plots: missing PCC file or h5ad dict")
         return
 
     top_genes_df = pd.read_csv(trait_pcc_file)
     top_n = config.top_corr_genes
-    all_top_genes = top_genes_df.groupby('trait').head(top_n)['gene'].unique().tolist()
-    # Explicitly use config order
+    
+    # 1. Identify all genes that need to be plotted
+    trait_top_genes = {}
+    all_top_genes_set = set()
+    for trait, group in top_genes_df.groupby('trait'):
+        genes = group.sort_values('PCC', ascending=False).head(top_n)['gene'].tolist()
+        trait_top_genes[trait] = genes
+        all_top_genes_set.update(genes)
+    
+    all_top_genes = sorted(list(all_top_genes_set))
     sample_names_sorted = list(config.sample_h5ad_dict.keys())
-    actual_samples_in_metadata = set(metadata['sample_name'].unique())
-    missing = [s for s in sample_names_sorted if s not in actual_samples_in_metadata]
-    assert not missing, f"Samples {missing} in config are not present in metadata."
+    
+    # Pre-filter metadata for common spots once
+    metadata_common = metadata[metadata['spot'].isin(common_spots)]
 
-    logger.info(f"Preparing expression data for {len(sample_names_sorted)} samples...")
+    logger.info(f"Rendering diagnostic plots for {len(sample_names_sorted)} samples...")
 
-    # Load expression data for each sample
-    exp_chunks = []
-    for sample_name in sample_names_sorted:
-        h5ad_path = config.sample_h5ad_dict[sample_name]
-        logger.info(f"Preparing sample {sample_name} for diagnostic plots...")
+    # Process sample by sample to save memory
+    all_futures = []
+    max_workers = 20
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for sample_name in sample_names_sorted:
+            h5ad_path = config.sample_h5ad_dict[sample_name]
+            logger.info(f"Processing sample {sample_name} for diagnostic plots...")
 
-        adata_rep = ad.read_h5ad(h5ad_path)
-        suffix = f"|{sample_name}"
-        if not str(adata_rep.obs_names[0]).endswith(suffix):
-            adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
+            # A. Get spots and coordinates for this sample
+            sample_metadata = metadata_common[metadata_common['sample_name'] == sample_name]
+            if sample_metadata.empty:
+                logger.warning(f"No common spots found for sample {sample_name}")
+                continue
+            
+            sample_spots = sample_metadata['spot'].values
+            coords = sample_metadata[['sx', 'sy']].values
+            
+            # B. Load expression data
+            try:
+                adata_rep = ad.read_h5ad(h5ad_path,)
+                suffix = f"|{sample_name}"
+                if not str(adata_rep.obs_names[0]).endswith(suffix):
+                    adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
 
-        if 'log1p' in adata_rep.uns and adata_rep.X is not None:
-            is_count = False
-        else:
-            is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
+                if 'log1p' in adata_rep.uns and adata_rep.X is not None:
+                    is_count = False
+                else:
+                    is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
+
+                if is_count:
+                    sc.pp.normalize_total(adata_rep, target_sum=1e4)
+                    sc.pp.log1p(adata_rep)
+                # Check for available genes
+                available_genes = [g for g in all_top_genes if g in adata_rep.var_names]
+                if not available_genes:
+                    logger.warning(f"No top genes found in sample {sample_name}")
+                    continue
+                
+                # Slice and load into memory ONLY the required data
+                adata_sample_exp = adata_rep[sample_spots, available_genes]
+
+                del adata_rep
+            except Exception as e:
+                logger.error(f"Failed to process expression for {sample_name}: {e}")
+                continue
+
+            # C. Load GSS data (adata_gss is already backed)
+            try:
+                adata_sample_gss = adata_gss[sample_spots, available_genes].to_memory()
+            except Exception as e:
+                logger.error(f"Failed to process GSS for {sample_name}: {e}")
+                continue
+
+            # D. Build tasks for THIS sample
+            safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
+            
+            for trait, top_genes in trait_top_genes.items():
+                for gene in top_genes:
+                    if gene not in available_genes:
+                        continue
+                    
+                    # Expression
+                    exp_vals = adata_sample_exp[:, gene].X
+                    if sp.issparse(exp_vals): exp_vals = exp_vals.toarray()
+                    exp_vals = np.ravel(exp_vals)
+                    
+                    all_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
+                        'gene': gene, 'sample_name': sample_name, 'trait': trait,
+                        'plot_type': 'exp', 'coords': coords.copy(), 'values': exp_vals,
+                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
+                        'plot_origin': config.plot_origin,
+                        'fig_width': 6.0,
+                        'dpi': 150,
+                    }))
+                    
+                    # GSS
+                    gss_vals = adata_sample_gss[:, gene].X
+                    if sp.issparse(gss_vals): gss_vals = gss_vals.toarray()
+                    gss_vals = np.ravel(gss_vals)
+                    
+                    all_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
+                        'gene': gene, 'sample_name': sample_name, 'trait': trait,
+                        'plot_type': 'gss', 'coords': coords.copy(), 'values': gss_vals,
+                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
+                        'plot_origin': config.plot_origin,
+                        'fig_width': 6.0,
+                        'dpi': 150,
+                    }))
+
+            # F. Cleanup before reading next sample
+            del adata_sample_exp, adata_sample_gss
+            gc.collect()
+
+        # E. Wait for all submitted tasks to complete
+        total_tasks = len(all_futures)
+        logger.info(f"Waiting for {total_tasks} diagnostic plots to finish...")
         
-        if is_count:
-            sc.pp.normalize_total(adata_rep, target_sum=1e4)
-            sc.pp.log1p(adata_rep)
+        errors = []
+        for future in as_completed(all_futures):
+            result = future.result()
+            if result is not True:
+                errors.append(result)
 
-        sample_metadata = metadata[metadata['sample_name'] == sample_name]
-        sample_spots = sample_metadata[sample_metadata['spot'].isin(common_spots)]['spot'].values
-
-        adata_rep_sub = adata_rep[sample_spots, all_top_genes].copy()
-        adata_rep_sub.obs['sample_name'] = sample_name
-        exp_chunks.append(adata_rep_sub)
-
-        del adata_rep
-        gc.collect()
-
-    if not exp_chunks:
-        logger.warning("No expression data found for gene diagnostic plots")
-        return
-
-    adata_exp_trait = ad.concat(exp_chunks, axis=0)
-    adata_exp_trait = adata_exp_trait[common_spots, :].copy()
-    adata_gss_trait = adata_gss[common_spots, all_top_genes].to_memory()
-
-    # Build sample data cache
-    sample_data_cache = {}
-    for sample_name, group in metadata[metadata['spot'].isin(common_spots)].groupby('sample_name'):
-        sample_data_cache[sample_name] = {
-            'coords': group[['sx', 'sy']].values,
-            'spots': group['spot'].values
-        }
-
-    # Build and execute single-sample render tasks (gene x sample combinations)
-    single_sample_tasks = _build_single_sample_gene_plot_tasks(
-        top_genes_df, top_n, all_top_genes, sample_names_sorted,
-        sample_data_cache, adata_exp_trait, adata_gss_trait,
-        gene_plot_dir, plot_origin=config.plot_origin
-    )
-
-    if single_sample_tasks:
-        logger.info(f"Rendering {len(single_sample_tasks)} single-sample diagnostic plots in parallel...")
-        with ProcessPoolExecutor(max_workers=min(len(single_sample_tasks), 20)) as executor:
-            results = list(executor.map(_render_single_sample_gene_plot_task, single_sample_tasks))
-
-        errors = [r for r in results if r is not True]
         if errors:
-            logger.warning(f"{len(errors)} single-sample plots failed to render")
-            for err in errors[:3]:
+            logger.warning(f"{len(errors)} diagnostic plots failed to render")
+            for err in errors[:5]:
                 logger.warning(f"  Error: {err}")
 
-def _build_gene_plot_tasks(
-    top_genes_df: pd.DataFrame,
-    top_n: int,
-    all_top_genes: List[str],
-    sample_names_sorted: List[str],
-    sample_data_cache: Dict,
-    adata_exp_trait: ad.AnnData,
-    adata_gss_trait: ad.AnnData,
-    n_rows: int,
-    n_cols: int,
-    gss_plot_dir: Path
-) -> List[dict]:
-    """Build list of gene plot rendering tasks."""
-    tasks = []
+    logger.info(f"Successfully finished rendering diagnostic plots.")
 
-    for trait, group in top_genes_df.groupby('trait'):
-        top_group = group.sort_values('PCC', ascending=False).head(top_n)
-
-        for _, row in top_group.iterrows():
-            gene = row['gene']
-            if gene not in all_top_genes:
-                continue
-
-            exp_sample_data = []
-            gss_sample_data = []
-
-            for sample_name in sample_names_sorted:
-                cache = sample_data_cache.get(sample_name)
-                if cache is None:
-                    exp_sample_data.append((sample_name, None, None))
-                    gss_sample_data.append((sample_name, None, None))
-                    continue
-
-                coords = cache['coords']
-                spots = cache['spots']
-
-                # Expression data
-                exp_vals = adata_exp_trait[spots, gene].X
-                if sp.issparse(exp_vals):
-                    exp_vals = exp_vals.toarray()
-                exp_vals = np.ravel(exp_vals)
-                exp_sample_data.append((sample_name, coords, exp_vals))
-
-                # GSS data
-                gss_vals = adata_gss_trait[spots, gene].X
-                if sp.issparse(gss_vals):
-                    gss_vals = gss_vals.toarray()
-                gss_vals = np.ravel(gss_vals)
-                gss_sample_data.append((sample_name, coords, gss_vals))
-
-            # Expression plot task
-            if any(data[2] is not None for data in exp_sample_data):
-                tasks.append({
-                    'gene': gene, 'trait': trait, 'plot_type': 'exp',
-                    'sample_data_list': exp_sample_data,
-                    'output_path': gss_plot_dir / f"gene_{trait}_{gene}_exp.png",
-                    'n_rows': n_rows, 'n_cols': n_cols,
-                    'subplot_width': 4.0, 'dpi': 150
-                })
-
-            # GSS plot task
-            if any(data[2] is not None for data in gss_sample_data):
-                tasks.append({
-                    'gene': gene, 'trait': trait, 'plot_type': 'gss',
-                    'sample_data_list': gss_sample_data,
-                    'output_path': gss_plot_dir / f"gene_{trait}_{gene}_gss.png",
-                    'n_rows': n_rows, 'n_cols': n_cols,
-                    'subplot_width': 4.0, 'dpi': 150
-                })
-
-    return tasks
-
-
-def _build_single_sample_gene_plot_tasks(
-    top_genes_df: pd.DataFrame,
-    top_n: int,
-    all_top_genes: List[str],
-    sample_names_sorted: List[str],
-    sample_data_cache: Dict,
-    adata_exp_trait: ad.AnnData,
-    adata_gss_trait: ad.AnnData,
-    gene_plot_dir: Path,
-    plot_origin: str = 'upper'
-) -> List[dict]:
-    """
-    Build list of single-sample gene plot rendering tasks.
-
-    Creates tasks for gene x sample combinations, generating individual
-    PNG files for each gene in each sample (both Expression and GSS).
-    """
-    tasks = []
-
-    for trait, group in top_genes_df.groupby('trait'):
-        top_group = group.sort_values('PCC', ascending=False).head(top_n)
-
-        for _, row in top_group.iterrows():
-            gene = row['gene']
-            if gene not in all_top_genes:
-                continue
-
-            for sample_name in sample_names_sorted:
-                cache = sample_data_cache.get(sample_name)
-                if cache is None:
-                    continue
-
-                coords = cache['coords']
-                spots = cache['spots']
-
-                # Expression data
-                exp_vals = adata_exp_trait[spots, gene].X
-                if sp.issparse(exp_vals):
-                    exp_vals = exp_vals.toarray()
-                exp_vals = np.ravel(exp_vals)
-
-                # GSS data
-                gss_vals = adata_gss_trait[spots, gene].X
-                if sp.issparse(gss_vals):
-                    gss_vals = gss_vals.toarray()
-                gss_vals = np.ravel(gss_vals)
-
-                # Safe sample name for filename
-                safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
-
-                # Expression plot task
-                if exp_vals is not None and len(exp_vals) > 0:
-                    tasks.append({
-                        'gene': gene,
-                        'sample_name': sample_name,
-                        'trait': trait,
-                        'plot_type': 'exp',
-                        'coords': coords.copy(),
-                        'values': exp_vals.copy(),
-                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
-                        'fig_width': 6.0,
-                        'dpi': 150,
-                        'plot_origin': plot_origin
-                    })
-
-                # GSS plot task
-                if gss_vals is not None and len(gss_vals) > 0:
-                    tasks.append({
-                        'gene': gene,
-                        'sample_name': sample_name,
-                        'trait': trait,
-                        'plot_type': 'gss',
-                        'coords': coords.copy(),
-                        'values': gss_vals.copy(),
-                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
-                        'fig_width': 6.0,
-                        'dpi': 150,
-                        'plot_origin': plot_origin
-                    })
-
-    return tasks
 
 
 # =============================================================================
