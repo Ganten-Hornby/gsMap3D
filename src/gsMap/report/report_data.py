@@ -10,7 +10,7 @@ import gc
 import json
 import logging
 import shutil
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -23,7 +23,11 @@ import scipy.sparse as sp
 
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
-from gsMap.find_latent.st_process import normalize_for_analysis, setup_data_layer
+from gsMap.find_latent.st_process import (
+    normalize_for_analysis,
+    setup_data_layer,
+    _looks_like_count_matrix
+)
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
 from gsMap.report.visualize import estimate_point_size_for_plot, estimate_matplotlib_scatter_marker_size
@@ -1198,7 +1202,11 @@ def _render_gene_diagnostic_plots(
         if not str(adata_rep.obs_names[0]).endswith(suffix):
             adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
 
-        is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
+        if 'log1p' in adata_rep.uns and adata_rep.X is not None:
+            is_count = False
+        else:
+            is_count, _ = setup_data_layer(adata_rep, config.data_layer, verbose=False)
+        
         if is_count:
             sc.pp.normalize_total(adata_rep, target_sum=1e4)
             sc.pp.log1p(adata_rep)
