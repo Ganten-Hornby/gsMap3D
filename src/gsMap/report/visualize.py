@@ -213,6 +213,7 @@ def draw_scatter(
     annotation=None,
     color_by="logp",
     color_continuous_scale=None,
+    plot_origin="upper",
 ):
     # Set theme based on fig_style
     if fig_style == "dark":
@@ -300,6 +301,7 @@ def draw_scatter(
         zeroline=False,  # Hide y-axis zero line
         showticklabels=False,  # Hide y-axis tick labels
         title=None,  # Remove y-axis title
+        autorange="reversed" if plot_origin == "upper" else True,
     )
 
     # Adjust margins to ensure no clipping and equal axis ratio
@@ -598,6 +600,9 @@ class VisualizeRunner:
                 rasterized=True if output_pdf_path is not None and enable_pdf_output else False
             )
 
+            if self.config.plot_origin == 'upper':
+                ax.invert_yaxis()
+
             ax.axis('off')
             # Add sample label as title
             ax.set_title(select_sample_name, fontsize=12, pad=None)
@@ -714,6 +719,10 @@ class VisualizeRunner:
 
             ax.set_title(trait, fontsize=16, pad=10, fontweight='bold')
             ax.set_aspect('equal', adjustable='box')
+            
+            if self.config.plot_origin == 'upper':
+                ax.invert_yaxis()
+
             ax.axis('off')
 
             # Add a colorbar to each subplot
@@ -852,7 +861,8 @@ class VisualizeRunner:
             showgrid=False,
             zeroline=False,
             showticklabels=False,
-            title=None
+            title=None,
+            autorange='reversed' if self.config.plot_origin == 'upper' else True
         )
 
         # Adjust margins to ensure no clipping and equal axis ratio
@@ -950,6 +960,8 @@ class VisualizeRunner:
             # Set subplot title
             ax.set_title(sample_name, fontsize=10)
             ax.set_aspect('equal')
+            if self.config.plot_origin == 'upper':
+                ax.invert_yaxis()
             ax.axis('off')
 
         # Add colorbar for numeric annotations or legend for categorical

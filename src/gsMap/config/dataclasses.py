@@ -138,6 +138,7 @@ class DiagnosisConfig(ConfigWithAutoPaths):
     point_size: Annotated[Optional[int], typer.Option(help="Point size")] = None
     
     plot_type: Annotated[str, typer.Option(help="Plot type (gsMap, manhattan, GSS, all)")] = "all"
+    plot_origin: Annotated[str, typer.Option(help="Plot origin for spatial plots (upper or lower)")] = "upper"
 
     @property
     def customize_fig(self) -> bool:
@@ -167,6 +168,7 @@ class VisualizeConfig(ConfigWithAutoPaths):
     
     output_dir: Annotated[Optional[Path], typer.Option(help="Directory to save output files")] = None
     hdf5_with_latent_path: Annotated[Optional[Path], typer.Option(help="Path to HDF5 with latent")] = None
+    plot_origin: Annotated[str, typer.Option(help="Plot origin for spatial plots (upper or lower)")] = "upper"
 
     def __post_init__(self):
         super().__post_init__()

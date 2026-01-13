@@ -246,6 +246,7 @@ def generate_GSS_distribution(config: DiagnosisConfig, adata: ad.AnnData):
                 sub_fig_save_dir,
                 config.project_name,
                 config.annotation,
+                config.plot_origin,
             )
         )
 
@@ -266,6 +267,7 @@ def generate_and_save_plots(
     sub_fig_save_dir,
     sample_name,
     annotation,
+    plot_origin: str = "upper",
 ):
     """Generate and save the plots."""
     select_gene_expression_with_space_coord = load_st_coord(adata, expression_series, annotation)
@@ -277,6 +279,7 @@ def generate_and_save_plots(
         point_size=point_size,
         width=pixel_width,
         height=pixel_height,
+        plot_origin=plot_origin,
     )
     save_plot(sub_fig_1, sub_fig_save_dir, sample_name, selected_gene, "Expression")
 
@@ -291,6 +294,7 @@ def generate_and_save_plots(
         point_size=point_size,
         width=pixel_width,
         height=pixel_height,
+        plot_origin=plot_origin,
     )
     save_plot(sub_fig_2, sub_fig_save_dir, sample_name, selected_gene, "GSS")
 
@@ -330,6 +334,7 @@ def generate_gsMap_plot(config: DiagnosisConfig, adata: ad.AnnData):
         width=pixel_width,
         height=pixel_height,
         annotation=config.annotation,
+        plot_origin=config.plot_origin,
     )
 
     output_dir = config.get_gsMap_plot_save_dir(config.trait_name)

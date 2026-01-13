@@ -53,6 +53,11 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     # Weather to generate single-feature multi-sample plots (LDSC, annotation, and gene diagnostic plots)
     generate_multi_sample_plots: bool = False 
 
+    # Plot origin for spatial plots ('upper' or 'lower')
+    plot_origin: Annotated[str, typer.Option(
+        help="Plot origin for spatial plots ('upper' or 'lower'). 'upper' will flip the y-axis (standard for images)."
+    )] = "upper"
+
     # Compatibility properties for visualization paths
     @property
     @ensure_path_exists

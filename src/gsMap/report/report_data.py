@@ -65,6 +65,7 @@ def _render_gene_plot_task(task_data: dict):
             width=width,
             height=height,
             color_by='val',
+            plot_origin=task_data.get('plot_origin', 'upper')
         )
 
         fig.write_image(str(output_path))
@@ -142,6 +143,9 @@ def _render_multi_sample_gene_plot_task(task_data: dict):
                     s=point_size, vmin=vmin, vmax=vmax,
                     marker='o', edgecolors='none', rasterized=True
                 )
+
+                if task_data.get('plot_origin', 'upper') == 'upper':
+                    ax.invert_yaxis()
 
             ax.axis('off')
             ax.set_title(sample_name, fontsize=10, pad=2)
@@ -225,6 +229,9 @@ def _render_single_sample_gene_plot_task(task_data: dict):
             s=point_size, vmin=vmin, vmax=vmax,
             marker='o', edgecolors='none', rasterized=True
         )
+
+        if task_data.get('plot_origin', 'upper') == 'upper':
+            ax.invert_yaxis()
 
         ax.axis('off')
         ax.set_aspect('equal')
@@ -1224,7 +1231,7 @@ def _render_gene_diagnostic_plots(
     single_sample_tasks = _build_single_sample_gene_plot_tasks(
         top_genes_df, top_n, all_top_genes, sample_names_sorted,
         sample_data_cache, adata_exp_trait, adata_gss_trait,
-        gene_plot_dir
+        gene_plot_dir, plot_origin=config.plot_origin
     )
 
     if single_sample_tasks:
@@ -1319,7 +1326,8 @@ def _build_single_sample_gene_plot_tasks(
     sample_data_cache: Dict,
     adata_exp_trait: ad.AnnData,
     adata_gss_trait: ad.AnnData,
-    gene_plot_dir: Path
+    gene_plot_dir: Path,
+    plot_origin: str = 'upper'
 ) -> List[dict]:
     """
     Build list of single-sample gene plot rendering tasks.
@@ -1371,7 +1379,8 @@ def _build_single_sample_gene_plot_tasks(
                         'values': exp_vals.copy(),
                         'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
                         'fig_width': 6.0,
-                        'dpi': 150
+                        'dpi': 150,
+                        'plot_origin': plot_origin
                     })
 
                 # GSS plot task
@@ -1385,7 +1394,8 @@ def _build_single_sample_gene_plot_tasks(
                         'values': gss_vals.copy(),
                         'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
                         'fig_width': 6.0,
-                        'dpi': 150
+                        'dpi': 150,
+                        'plot_origin': plot_origin
                     })
 
     return tasks
