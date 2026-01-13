@@ -221,7 +221,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         configure_jax_platform(self.use_gpu)
 
         # Step 2: Process and validate h5ad inputs
-        self._process_h5ad_inputs()
+        self._resolve_h5ad_inputs()
 
         # Step 3: Configure dataset-specific parameters first
         self._configure_dataset_parameters()
@@ -231,26 +231,28 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
 
         self.show_config(LatentToGeneConfig)
 
-    def _process_h5ad_inputs(self):
-        """Process h5ad inputs from various sources"""
+    def _resolve_h5ad_inputs(self):
+        """Resolve h5ad inputs from various sources, prioritizing auto-detection."""
 
-        # Define input options
-        input_options = {
-            'h5ad_yaml': ('h5ad_yaml', 'yaml'),
-            'h5ad_path': ('h5ad_path', 'list'),
-            'h5ad_list_file': ('h5ad_list_file', 'file'),
-        }
+        # Step 1: Try auto-detection first
+        self._auto_detect_h5ad_files()
 
-        # Process h5ad inputs
-        self.sample_h5ad_dict = process_h5ad_inputs(self, input_options)
-
-        # Auto-detect from latent directory if no inputs provided
+        # Step 2: If auto-detection didn't find anything, try explicit inputs
         if not self.sample_h5ad_dict:
-            self._auto_detect_h5ad_files()
+            # Define input options
+            input_options = {
+                'h5ad_yaml': ('h5ad_yaml', 'yaml'),
+                'h5ad_path': ('h5ad_path', 'list'),
+                'h5ad_list_file': ('h5ad_list_file', 'file'),
+            }
+            self.sample_h5ad_dict = process_h5ad_inputs(self, input_options)
 
-        # Validate at least one sample exists
-        if len(self.sample_h5ad_dict) == 0:
-            raise ValueError("No valid samples found in the provided input")
+        # Step 3: Validate at least one sample exists
+        if not self.sample_h5ad_dict or len(self.sample_h5ad_dict) == 0:
+            raise ValueError(
+                "No valid h5ad files found. Please provide one of: h5ad_yaml, h5ad_path, or h5ad_list_file, "
+                "or ensure find_latent representation has been run to allow auto-detection."
+            )
 
         logger.info(f"Loaded and validated {len(self.sample_h5ad_dict)} samples")
 
@@ -274,7 +276,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         else:
             self.sample_h5ad_dict = OrderedDict()
             latent_dir = self.latent_dir
-            logger.info(f"No input options provided. Auto-detecting h5ad files from latent directory: {latent_dir}")
+            logger.info(f"Auto-detecting h5ad files from latent directory: {latent_dir}")
 
             # Look for latent files with different naming patterns
             latent_files = list(latent_dir.glob("*_latent_adata.h5ad"))
@@ -282,11 +284,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
                 latent_files = list(latent_dir.glob("*_add_latent.h5ad"))
 
             if not latent_files:
-                raise ValueError(
-                    f"No h5ad files found in latent directory {latent_dir}. "
-                    f"Please run the find latent representation first. "
-                    f"Or provide one of: h5ad_yaml, h5ad_path, or h5ad_list_file, which points to h5ad files which contain the latent embedding."
-                )
+                return
 
             # Extract sample names from file names
             for latent_file in latent_files:
@@ -426,7 +424,7 @@ def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
     """
     from gsMap.latent2gene.memmap_io import MemMapDense
 
-    config._process_h5ad_inputs()
+    config._resolve_h5ad_inputs()
 
     expected_outputs = {
         "concatenated_latent_adata": Path(config.concatenated_latent_adata_path),

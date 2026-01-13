@@ -69,13 +69,6 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
     @property
     def latent2gene_config(self) -> LatentToGeneConfig:
         params = {f.name: getattr(self, f.name) for f in fields(LatentToGeneConfig) if f.init}
-
-        # If both steps run, clear explicit h5ad inputs to trigger auto-detection in LatentToGeneConfig
-        if self.is_both_latent_and_gene_running:
-            params['h5ad_path'] = None
-            params['h5ad_yaml'] = None
-            params['h5ad_list_file'] = None
-            params['sample_h5ad_dict'] = None
         return LatentToGeneConfig(**params)
 
     @property

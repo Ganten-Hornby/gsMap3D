@@ -1556,7 +1556,7 @@ def prepare_report_data(config: QuickModeConfig) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
 
     if config.sample_h5ad_dict is None:
-        config._process_h5ad_inputs()
+        config._resolve_h5ad_inputs()
 
     # Determine dataset type for conditional processing
     dataset_type = getattr(config, 'dataset_type', DatasetType.SPATIAL_2D)
