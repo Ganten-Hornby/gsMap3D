@@ -50,6 +50,9 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     single_trait_multi_sample_dpi: int = 300
     share_coords: bool = False
 
+    # Weather to generate single-feature multi-sample plots (LDSC, annotation, and gene diagnostic plots)
+    generate_multi_sample_plots: bool = False 
+
     # Compatibility properties for visualization paths
     @property
     @ensure_path_exists

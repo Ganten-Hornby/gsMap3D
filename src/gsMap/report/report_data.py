@@ -1080,13 +1080,15 @@ def _render_static_plots(
     if 'sample' not in obs_data.columns:
         obs_data['sample'] = obs_data['sample_name']
 
-    # Render LDSC plots
-    _render_ldsc_plots(visualizer, obs_data, traits, sample_names, n_rows, n_cols, report_dir)
+    if config.generate_multi_sample_plots:
+        # Render LDSC plots
+        _render_ldsc_plots(visualizer, obs_data, traits, sample_names, n_rows, n_cols, report_dir)
 
-    # Render annotation plots
-    _render_annotation_plots(visualizer, obs_data, config.annotation_list, sample_names, n_rows, n_cols, report_dir)
+        # Render annotation plots
+        _render_annotation_plots(visualizer, obs_data, config.annotation_list, sample_names, n_rows, n_cols, report_dir)
+    else:
+        logger.info("Skipping single-feature multi-sample plots (LDSC and Annotation) as generate_multi_sample_plots is set to False.")
 
-    # Render gene diagnostic plots
     _render_gene_diagnostic_plots(config, metadata, common_spots, adata_gss, n_rows, n_cols, report_dir)
 
 
