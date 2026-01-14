@@ -1794,7 +1794,7 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: Dict):
             'umap_cell_x': df['umap_cell_x'].tolist(),
             'umap_cell_y': df['umap_cell_y'].tolist(),
             'point_size_cell': meta.get('umap_info', {}).get('point_size_cell', 4),
-            'default_opacity': meta.get('umap_info', {}).get('default_opacity', 0.7)
+            'default_opacity': meta.get('umap_info', {}).get('default_opacity', 0.8)
         }
 
         # Add niche UMAP if available

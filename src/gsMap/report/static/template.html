@@ -1608,13 +1608,15 @@
 
                     // Build hover text with all annotations
                     const hoverText = this.umapData.spot.map((spot, i) => {
-                        let text = `<b>Spot:</b> ${spot}<br><b>Sample:</b> ${this.umapData.sample_name[i]}`;
+                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
                         this.umapAnnotationColumns.forEach(col => {
-                            text += `<br><b>${col}:</b> ${this.umapData[col][i]}`;
+                            const val = this.umapData[col][i];
+                            // Round numeric annotations to 1 decimal
+                            text += `<br><b>${col}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
                         });
                         if (this.umapColorMode === 'trait' && this.selectedTrait) {
                             const traitVal = this.umapData[this.selectedTrait] ? this.umapData[this.selectedTrait][i] : 'N/A';
-                            text += `<br><b>${this.selectedTrait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(3) : traitVal}`;
+                            text += `<br><b>${this.selectedTrait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
                         }
                         return text;
                     });
@@ -1654,7 +1656,7 @@
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
 
-                    const opacity = this.umapData.default_opacity || 0.7;
+                    const opacity = this.umapData.default_opacity || 0.8;
 
                     let traces = [];
                     let layoutExtras = {};
@@ -1667,7 +1669,7 @@
                             mode: 'markers',
                             type: 'scattergl',
                             text: hoverText,
-                            hoverinfo: 'text',
+                            hovertemplate: '%{text}<extra></extra>',
                             marker: {
                                 size: pointSize,
                                 color: annoValues,
@@ -1699,7 +1701,7 @@
                                 type: 'scattergl',
                                 name: val,
                                 text: indices.map(idx => hoverText[idx]),
-                                hoverinfo: 'text',
+                                hovertemplate: '%{text}<extra></extra>',
                                 marker: {
                                     size: pointSize,
                                     color: (colorMap && colorMap[val]) || defaultColors[i % defaultColors.length],
@@ -1775,7 +1777,8 @@
                         // Add all annotation columns
                         this.annotations.forEach(anno => {
                             if (data[anno]) {
-                                text += `<br><b>${anno}:</b> ${data[anno][i]}`;
+                                const val = data[anno][i];
+                                text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
                             }
                         });
                         // Add trait value if viewing trait
