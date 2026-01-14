@@ -10,6 +10,7 @@ import gc
 import json
 import logging
 import shutil
+import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -432,13 +433,13 @@ def _prepare_umap_data(
     umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key)
 
     # Estimate point size for UMAP cell
-    _, point_size_cell = estimate_point_size_for_plot(umap_cell)
+    _, point_size_cell = estimate_point_size_for_plot(umap_cell, DEFAULT_PIXEL_WIDTH=600)
 
     umap_niche = None
     point_size_niche = None
     if has_niche:
         umap_niche = _calculate_umap_from_embeddings(adata_sub, niche_emb_key)
-        _, point_size_niche = estimate_point_size_for_plot(umap_niche)
+        _, point_size_niche = estimate_point_size_for_plot(umap_niche, DEFAULT_PIXEL_WIDTH=600)
 
     # Prepare metadata for the subsampled spots
     umap_metadata = pd.DataFrame({
@@ -1203,11 +1204,15 @@ def _render_gene_diagnostic_plots(
     logger.info(f"Rendering diagnostic plots for {len(sample_names_sorted)} samples...")
 
     # Process sample by sample to save memory
+    import threading
     all_futures = []
+    futures_lock = threading.Lock()
     max_workers = 20
-    
+    # Limit sample loading threads to avoid memory overhead
+    max_loading_threads = min(4, len(sample_names_sorted))
+
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for sample_name in sample_names_sorted:
+        def process_sample(sample_name):
             h5ad_path = config.sample_h5ad_dict[sample_name]
             logger.info(f"Processing sample {sample_name} for diagnostic plots...")
 
@@ -1215,15 +1220,16 @@ def _render_gene_diagnostic_plots(
             sample_metadata = metadata_common[metadata_common['sample_name'] == sample_name]
             if sample_metadata.empty:
                 logger.warning(f"No common spots found for sample {sample_name}")
-                continue
+                return
             
             sample_spots = sample_metadata['spot'].values
             coords = sample_metadata[['sx', 'sy']].values
             
             # B. Load expression data
             try:
-                adata_rep = ad.read_h5ad(h5ad_path,)
+                adata_rep = ad.read_h5ad(h5ad_path)
                 suffix = f"|{sample_name}"
+
                 if not str(adata_rep.obs_names[0]).endswith(suffix):
                     adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
 
@@ -1235,30 +1241,35 @@ def _render_gene_diagnostic_plots(
                 if is_count:
                     sc.pp.normalize_total(adata_rep, target_sum=1e4)
                     sc.pp.log1p(adata_rep)
+
                 # Check for available genes
                 available_genes = [g for g in all_top_genes if g in adata_rep.var_names]
                 if not available_genes:
                     logger.warning(f"No top genes found in sample {sample_name}")
-                    continue
+                    return
                 
-                # Slice and load into memory ONLY the required data
                 adata_sample_exp = adata_rep[sample_spots, available_genes]
 
-                del adata_rep
+                
+                # Ensure obs_names have the correct suffix for identifying spots
+                if not str(adata_sample_exp.obs_names[0]).endswith(suffix):
+                    adata_sample_exp.obs_names = adata_sample_exp.obs_names.astype(str) + suffix
+
             except Exception as e:
                 logger.error(f"Failed to process expression for {sample_name}: {e}")
-                continue
+                return
 
             # C. Load GSS data (adata_gss is already backed)
             try:
                 adata_sample_gss = adata_gss[sample_spots, available_genes].to_memory()
             except Exception as e:
                 logger.error(f"Failed to process GSS for {sample_name}: {e}")
-                continue
+                return
 
             # D. Build tasks for THIS sample
             safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
             
+            local_futures = []
             for trait, top_genes in trait_top_genes.items():
                 for gene in top_genes:
                     if gene not in available_genes:
@@ -1269,32 +1280,41 @@ def _render_gene_diagnostic_plots(
                     if sp.issparse(exp_vals): exp_vals = exp_vals.toarray()
                     exp_vals = np.ravel(exp_vals).astype(np.float32)
                     
-                    all_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
+                    f_exp = executor.submit(_render_single_sample_gene_plot_task, {
                         'gene': gene, 'sample_name': sample_name, 'trait': trait,
                         'plot_type': 'exp', 'coords': coords.copy(), 'values': exp_vals,
                         'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
                         'plot_origin': config.plot_origin,
                         'fig_width': 6.0,
                         'dpi': 150,
-                    }))
+                    })
+                    local_futures.append(f_exp)
                     
                     # GSS
                     gss_vals = adata_sample_gss[:, gene].X
                     if sp.issparse(gss_vals): gss_vals = gss_vals.toarray()
                     gss_vals = np.ravel(gss_vals).astype(np.float32)
                     
-                    all_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
+                    f_gss = executor.submit(_render_single_sample_gene_plot_task, {
                         'gene': gene, 'sample_name': sample_name, 'trait': trait,
                         'plot_type': 'gss', 'coords': coords.copy(), 'values': gss_vals,
                         'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
                         'plot_origin': config.plot_origin,
                         'fig_width': 6.0,
                         'dpi': 150,
-                    }))
+                    })
+                    local_futures.append(f_gss)
 
-            # F. Cleanup before reading next sample
+            with futures_lock:
+                all_futures.extend(local_futures)
+            
+            # F. Cleanup
             del adata_sample_exp, adata_sample_gss
             gc.collect()
+
+        # Run sample loading in parallel using ThreadPool
+        with ThreadPoolExecutor(max_workers=max_loading_threads) as loader:
+            loader.map(process_sample, sample_names_sorted)
 
         # E. Wait for all submitted tasks to complete
         total_tasks = len(all_futures)
