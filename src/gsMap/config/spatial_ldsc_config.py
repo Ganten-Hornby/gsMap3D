@@ -206,7 +206,7 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
 
         # Configure JAX platform if use_gpu is enabled
         if self.use_gpu:
-            configure_jax_platform(use_gpu=True)
+            configure_jax_platform(self.use_gpu)
 
         # Auto-detect marker_score_format if not specified
         if self.marker_score_format is None:

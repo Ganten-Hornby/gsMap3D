@@ -118,7 +118,7 @@ def optimize_row_order_jax(
         neighbor_indices: np.ndarray,
         cell_indices: np.ndarray,
         neighbor_weights: Optional[np.ndarray],
-        device: Optional[str] = None
+        device: Optional[jax.Device] = None
 ) -> np.ndarray:
     """
     High-performance JAX-based row ordering for cache efficiency.
@@ -127,34 +127,30 @@ def optimize_row_order_jax(
         neighbor_indices: (n_cells, k) neighbor indices (global)
         cell_indices: (n_cells,) global cell indices
         neighbor_weights: (n_cells, k) neighbor weights
-        device: 'gpu', 'cpu', or None (auto-detect)
+        device: JAX device or None (uses default JAX device)
     
     Returns:
         Reordered row indices (local 0..n-1) as NumPy array
     """
-    n_cells, k = neighbor_indices.shape
-    
-    # Convert to JAX arrays on CPU to avoid CUDA memory issues
-    # test gpu if available
+    # Use default device if not provided (should be already configured by configure_jax_platform)
     if device is None:
-        try:
-            # Check if GPU devices are available
-            gpu_devices = jax.devices('gpu')
-            if len(gpu_devices) > 0:
-                device = jax.devices()[0]  # Use default device
-            else:
-                device = jax.devices('cpu')[0]
-        except RuntimeError:
-            # No GPU available, use CPU
-            device = jax.devices('cpu')[0]
+        device = jax.devices()[0]
 
+    # Skip if on CPU - scanning is extremely slow on CPU
+    if device.platform == 'cpu':
+        n_cells = len(neighbor_indices)
+        logger.info(f"Skipping JAX-based row ordering optimization on CPU for {n_cells} cells (too slow).")
+        return np.arange(n_cells)
+
+    n_cells, k = neighbor_indices.shape
+    logger.debug(f"Running JAX scan-based weighted ordering for {n_cells} cells on {device.platform}")
+    
     with jax.default_device(device):
         neighbor_indices_jax = jnp.asarray(neighbor_indices)
         neighbor_weights_jax = jnp.asarray(neighbor_weights)
         cell_indices_jax = jnp.asarray(cell_indices)
     
-        # Run optimized weighted ordering (already on CPU)
-        logger.debug(f"Running JAX scan-based weighted ordering for {n_cells} cells on CPU")
+        # Run optimized weighted ordering
         ordered_jax = _optimize_weighted_scan(
             neighbor_indices_jax,
             neighbor_weights_jax,

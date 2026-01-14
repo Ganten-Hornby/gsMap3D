@@ -11,12 +11,12 @@ import yaml
 
 logger = logging.getLogger("gsMap.config")
 
-def configure_jax_platform(use_gpu: bool = True):
-    """Configure JAX platform based on use_gpu flag.
+def configure_jax_platform(use_accelerator: bool = True):
+    """Configure JAX platform based on availability of accelerators.
 
     Args:
-        use_gpu: If True, try to use GPU if available, otherwise fall back to CPU.
-                If False, force CPU usage.
+        use_accelerator: If True, try to use GPU then TPU if available, 
+                        otherwise fall back to CPU. If False, force CPU usage.
 
     Raises:
         ImportError: If JAX is not installed.
@@ -25,27 +25,34 @@ def configure_jax_platform(use_gpu: bool = True):
         import jax
         from jax import config as jax_config
 
-        if use_gpu:
-            # Try to use GPU if available, but gracefully fall back to CPU
+        if not use_accelerator:
+            jax_config.update('jax_platform_name', 'cpu')
+            logger.info("JAX configured to use CPU for computations (accelerators disabled)")
+            return
+
+        # Priority list for accelerators
+        platforms = ['gpu', 'tpu']
+        configured = False
+
+        for platform in platforms:
             try:
-                gpu_devices = jax.devices('gpu')
-                if len(gpu_devices) > 0:
-                    jax_config.update('jax_platform_name', 'gpu')
-                    logger.info(f"JAX configured to use GPU for computations ({len(gpu_devices)} GPU(s) detected)")
-                else:
-                    jax_config.update('jax_platform_name', 'cpu')
-                    logger.info("No GPU detected, JAX configured to use CPU for computations")
-            except (RuntimeError, Exception) as e:
-                # GPU not available or other error, fall back to CPU
-                jax_config.update('jax_platform_name', 'cpu')
-                logger.info(f"GPU not available ({str(e)}), JAX configured to use CPU for computations")
-        else:
-            jax_config.update('jax_platform_name', 'cpu')  # Force CPU usage
-            logger.info("JAX configured to use CPU for computations")
+                devices = jax.devices(platform)
+                if len(devices) > 0:
+                    jax_config.update('jax_platform_name', platform)
+                    logger.info(f"JAX configured to use {platform.upper()} for computations ({len(devices)} device(s) detected)")
+                    configured = True
+                    break
+            except (RuntimeError, ValueError, Exception):
+                continue
+
+        if not configured:
+            jax_config.update('jax_platform_name', 'cpu')
+            logger.info("No GPU or TPU detected, JAX configured to use CPU for computations")
+
     except ImportError:
         raise ImportError(
             "JAX is required but not installed. Please install JAX by running: "
-            "pip install jax jaxlib (for CPU) or see JAX documentation for GPU installation."
+            "pip install jax jaxlib (for CPU) or see JAX documentation for GPU/TPU installation."
         )
 
 def get_anndata_shape(h5ad_path: str):
