@@ -124,11 +124,13 @@ def _render_multi_sample_gene_plot_task(task_data: dict):
         all_values = np.concatenate([
             data[2] for data in sample_data_list
             if data[2] is not None and len(data[2]) > 0
-        ])
+        ]).astype(np.float32)
         vmin = 0
-        non_nan_values = all_values[np.isfinite(all_values)] if len(all_values) > 0 else np.array([])
-        vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
-        if vmax <= vmin:
+        with np.errstate(all='ignore'):
+            non_nan_values = all_values[np.isfinite(all_values)] if len(all_values) > 0 else np.array([])
+            vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
+        
+        if not np.isfinite(vmax) or vmax <= vmin:
             vmax = vmin + 1.0
 
         scatter = None
@@ -224,9 +226,11 @@ def _render_single_sample_gene_plot_task(task_data: dict):
 
         # Color scale
         vmin = 0
-        non_nan_values = values[np.isfinite(values)] if len(values) > 0 else np.array([])
-        vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
-        if vmax <= vmin:
+        with np.errstate(all='ignore'):
+            non_nan_values = values[np.isfinite(values)] if len(values) > 0 else np.array([])
+            vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
+
+        if not np.isfinite(vmax) or vmax <= vmin:
             vmax = vmin + 1.0
 
         scatter = ax.scatter(
@@ -1263,7 +1267,7 @@ def _render_gene_diagnostic_plots(
                     # Expression
                     exp_vals = adata_sample_exp[:, gene].X
                     if sp.issparse(exp_vals): exp_vals = exp_vals.toarray()
-                    exp_vals = np.ravel(exp_vals)
+                    exp_vals = np.ravel(exp_vals).astype(np.float32)
                     
                     all_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
                         'gene': gene, 'sample_name': sample_name, 'trait': trait,
@@ -1277,7 +1281,7 @@ def _render_gene_diagnostic_plots(
                     # GSS
                     gss_vals = adata_sample_gss[:, gene].X
                     if sp.issparse(gss_vals): gss_vals = gss_vals.toarray()
-                    gss_vals = np.ravel(gss_vals)
+                    gss_vals = np.ravel(gss_vals).astype(np.float32)
                     
                     all_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
                         'gene': gene, 'sample_name': sample_name, 'trait': trait,
