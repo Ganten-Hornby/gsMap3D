@@ -21,7 +21,7 @@ def load_ldsc(path):
     df = pd.read_csv(path)
     df['log10_p'] = -np.log10(df['p'])
     # Clean up spot index
-    df['spot'] = df['spot'].astype(str).str.replace(r'\.0$', '', regex=True)
+    df['spot'] = df['spot'].astype(str)
     df.set_index('spot', inplace=True)
     # drop nan
     df = df.dropna()
