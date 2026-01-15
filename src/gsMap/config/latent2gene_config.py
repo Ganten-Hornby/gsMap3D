@@ -175,7 +175,7 @@ class LatentToGeneCoreConfig:
         help="Number of spatial neighbors to find on each adjacent slice for 3D data",
         min=10,
         max=2000
-    )] = 500
+    )] = 200
 
     n_adjacent_slices: Annotated[int, typer.Option(
         help="Number of adjacent slices to search above and below (± n_adjacent_slices) in 3D space for each focal spot. Padding will be applied automatically.",
@@ -352,6 +352,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         # spatial2D can have multiple slices but doesn't search across them
         if self.n_adjacent_slices != 0:
             self.n_adjacent_slices = 0
+            self.adjacent_slice_spatial_neighbors = 0
             logger.info(
                 "Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting adjacent_slices=0.")
 
