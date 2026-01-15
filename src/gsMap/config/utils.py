@@ -193,7 +193,8 @@ def process_h5ad_inputs(config, input_options):
         OrderedDict of {sample_name: h5ad_path}
     """
 
-    if config.sample_h5ad_dict  is not None:
+    if config.sample_h5ad_dict  is not None and len(config.sample_h5ad_dict) > 0:
+        logger.info("Using pre-defined sample_h5ad_dict from configuration")
         return OrderedDict(config.sample_h5ad_dict)
 
     sample_h5ad_dict = OrderedDict()
