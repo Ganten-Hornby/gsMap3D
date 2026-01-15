@@ -458,20 +458,22 @@ def _prepare_umap_data(
         if anno in adata_sub.obs.columns:
             umap_metadata[anno] = adata_sub.obs[anno].values
 
-    # Add trait -log10(p) values from metadata if available
+    # Add trait -log10(p) values from metadata if available (vectorized join)
     traits = config.trait_name_list
-    for trait in traits:
-        if trait in metadata.columns:
-            # Create a mapping from spot to trait value
-            metadata_indexed = metadata.set_index('spot')
-            trait_values = []
-            for spot in umap_metadata['spot']:
-                if spot in metadata_indexed.index:
-                    trait_values.append(metadata_indexed.loc[spot, trait])
-                else:
-                    trait_values.append(np.nan)
-            umap_metadata[trait] = trait_values
-            logger.info(f"Added trait {trait} to UMAP data")
+    available_traits = [t for t in traits if t in metadata.columns]
+    if available_traits:
+
+        # Prepare trait data: ensure 'spot' is a column and is string type
+        trait_data = metadata[available_traits].copy()
+        trait_data['spot'] = metadata['spot'].astype(str)
+        umap_metadata = umap_metadata.merge(trait_data, on='spot', how='left')
+        
+        # Keep 1 decimal precision for trait values and handle non-numeric data
+        for trait in available_traits:
+            if trait in umap_metadata.columns:
+                # Convert to numeric in case values were strings, then round
+                umap_metadata[trait] = pd.to_numeric(umap_metadata[trait], errors='coerce').round(1)
+            logger.info(f"Added trait {trait} to UMAP data with 1 decimal precision")
 
     # Save to CSV
     umap_metadata.to_csv(report_dir / "umap_data.csv", index=False)

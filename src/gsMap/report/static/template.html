@@ -717,6 +717,14 @@
                                         <span class="ml-2 text-sm text-gray-700">Cluster</span>
                                     </label>
                                 </div>
+                                <div class="flex items-center gap-2">
+                                    <label class="inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" x-model="cauchyHeatmapNormalize"
+                                            @change="renderCauchyHeatmap()"
+                                            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 h-4 w-4">
+                                        <span class="ml-2 text-sm text-gray-700">0-1 Normalize</span>
+                                    </label>
+                                </div>
                             </div>
                         </div>
                         <div id="cauchyHeatmap" class="plot-container w-full"></div>
@@ -965,6 +973,7 @@
                 cauchySortAsc: false,
                 cauchyHeatmapMetric: 'mlog10_p_cauchy',
                 cauchyHeatmapCluster: true,
+                cauchyHeatmapNormalize: false,
 
                 // Memoized: filtered gene table
                 get filteredGeneTable() {
@@ -1017,13 +1026,17 @@
 
                 // Memoized: filtered cauchy table
                 get filteredCauchyTable() {
-                    const key = `${this.selectedTrait}|${this.cauchyViewMode}|${this.cauchySortKey}|${this.cauchySortAsc}`;
+                    const key = `${this.selectedTrait}|${this.selectedAnnotationCategory}|${this.cauchyViewMode}|${this.cauchySortKey}|${this.cauchySortAsc}`;
                     if (this._cauchyFilterKey === key && this._cauchyFilterCache) {
                         return this._cauchyFilterCache;
                     }
 
                     let data = this.cauchyData || [];
-                    data = data.filter(r => (this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample') && r.trait === this.selectedTrait);
+                    data = data.filter(r =>
+                        (this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample') &&
+                        r.trait === this.selectedTrait &&
+                        r.annotation_name === this.selectedAnnotationCategory
+                    );
                     const sortKey = this.cauchySortKey, asc = this.cauchySortAsc;
                     const result = [...data].sort((a, b) => {
                         let va = a[sortKey], vb = b[sortKey];
@@ -1160,6 +1173,8 @@
                 },
 
                 onAnnotationChange() {
+                    this._cauchyFilterCache = null;
+
                     // Update 3D visualization if in annotation mode
                     if (this.spatial3dType === 'annotation') {
                         this.spatial3dLoading = true;
@@ -1174,6 +1189,9 @@
                     if (this.spatial2dType === 'annotation') {
                         this.renderSpatial2DPlot();
                     }
+
+                    // Update Cauchy Heatmap
+                    this.renderCauchyHeatmap();
                 },
 
                 onSampleChange() {
@@ -1456,7 +1474,10 @@
                     const plotDiv = document.getElementById('cauchyHeatmap');
                     if (!plotDiv || !this.cauchyData || this.cauchyData.length === 0) return;
 
-                    let data = this.cauchyData.filter(r => this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample');
+                    let data = this.cauchyData.filter(r =>
+                        (this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample') &&
+                        r.annotation_name === this.selectedAnnotationCategory
+                    );
                     if (data.length === 0) {
                         Plotly.purge(plotDiv);
                         return;
@@ -1471,6 +1492,26 @@
                         return match && match[metric] != null ? match[metric] : 0;
                     }));
 
+                    // Deep copy for hover labels
+                    let hoverZData = zData.map(row => [...row]);
+
+                    // Normalize column-wise (trait-wise)
+                    if (this.cauchyHeatmapNormalize) {
+                        for (let j = 0; j < traitValues.length; j++) {
+                            const colValues = zData.map(row => row[j]);
+                            const minVal = Math.min(...colValues);
+                            const maxVal = Math.max(...colValues);
+                            const range = maxVal - minVal;
+                            for (let i = 0; i < annotationValues.length; i++) {
+                                if (range > 0) {
+                                    zData[i][j] = (zData[i][j] - minVal) / range;
+                                } else {
+                                    zData[i][j] = 0;
+                                }
+                            }
+                        }
+                    }
+
                     let finalAnnotations = annotationValues;
                     let finalTraits = traitValues;
 
@@ -1479,14 +1520,15 @@
                             // Cluster rows (Annotations)
                             const rowOrder = this.clusterData(zData);
                             zData = rowOrder.map(i => zData[i]);
+                            hoverZData = rowOrder.map(i => hoverZData[i]);
                             finalAnnotations = rowOrder.map(i => annotationValues[i]);
 
                             // Cluster columns (Traits)
-                            // Transpose for col clustering
-                            const transposed = traitValues.map((_, i) => zData.map(row => row[i]));
+                            const transposed = traitValues.map((_, j) => zData.map(row => row[j]));
                             const colOrder = this.clusterData(transposed);
-                            zData = zData.map(row => colOrder.map(i => row[i]));
-                            finalTraits = colOrder.map(i => traitValues[i]);
+                            zData = zData.map(row => colOrder.map(j => row[j]));
+                            hoverZData = hoverZData.map(row => colOrder.map(j => row[j]));
+                            finalTraits = colOrder.map(j => traitValues[j]);
                         } catch (e) {
                             console.error("Clustering failed, using default order:", e);
                         }
@@ -1507,7 +1549,8 @@
                         type: 'heatmap',
                         colorscale: colorscale.map((c, i) => [i / (colorscale.length - 1), c]),
                         reversescale: false,
-                        hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{z:.2f}<extra></extra>`
+                        customdata: hoverZData,
+                        hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{customdata:.2f}<extra></extra>`
                     }], {
                         title: { text: `Cauchy Enrichment Heatmap: ${metricLabel}`, font: { size: 16 } },
                         xaxis: { title: 'Trait', tickangle: 45, automargin: true },
@@ -1607,16 +1650,22 @@
                     }
 
                     // Build hover text with all annotations
+                    // Build hover text
                     const hoverText = this.umapData.spot.map((spot, i) => {
                         let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
-                        this.umapAnnotationColumns.forEach(col => {
-                            const val = this.umapData[col][i];
-                            // Round numeric annotations to 1 decimal
-                            text += `<br><b>${col}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
-                        });
-                        if (this.umapColorMode === 'trait' && this.selectedTrait) {
-                            const traitVal = this.umapData[this.selectedTrait] ? this.umapData[this.selectedTrait][i] : 'N/A';
-                            text += `<br><b>${this.selectedTrait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
+
+                        if (this.umapColorMode === 'annotation') {
+                            const anno = this.selectedAnnotationCategory;
+                            if (anno && this.umapData[anno]) {
+                                const val = this.umapData[anno][i];
+                                text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
+                            }
+                        } else {
+                            const trait = this.selectedTrait;
+                            if (trait && this.umapData[trait]) {
+                                const traitVal = this.umapData[trait][i];
+                                text += `<br><b>${trait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
+                            }
                         }
                         return text;
                     });
