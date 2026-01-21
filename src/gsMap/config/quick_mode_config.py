@@ -47,6 +47,11 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
         if self.is_both_latent_and_gene_running:
             self.high_quality_neighbor_filter = self.high_quality_cell_qc
 
+            # Use dual embeddings if both steps are running
+            if self.latent_representation_niche is None:
+                self.latent_representation_niche = "emb_niche"
+            if self.latent_representation_cell is None:
+                self.latent_representation_cell = "emb_cell"
         self.show_config(QuickModeConfig)
 
     @property
