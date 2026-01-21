@@ -552,7 +552,7 @@ class SpatialLDSCProcessor:
             raise ValueError("snp_positions not found in data_truncated")
 
         # Extract SNP-gene weight matrix for this trait's SNPs
-        self.snp_gene_weight_sparse = self.snp_gene_weight_adata[snp_positions, self.weight_gene_indices].X
+        self.snp_gene_weight_sparse = self.snp_gene_weight_adata.X[snp_positions, :][:, self.weight_gene_indices]
 
         if hasattr(self.snp_gene_weight_sparse, 'tocsr'):
             self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
