@@ -26,9 +26,9 @@ class DatasetType(str, Enum):
     SPATIAL_3D = 'spatial3D'
 
 class MarkerScoreCrossSliceStrategy(str, Enum):
-    SIMILARITY_ONLY = 'similarity_only'
-    WEIGHTED_MEAN_POOLING = 'weighted_mean_pooling'
-    MAX_POOLING = 'max_pooling'
+    GLOBAL_POOL = 'global_pool'
+    PER_SLICE_POOL = 'per_slice_pool'
+    HIERARCHICAL_POOL = 'hierarchical_pool'
 
 @dataclass
 class LatentToGeneComputeConfig:
@@ -185,11 +185,11 @@ class LatentToGeneCoreConfig:
 
     cross_slice_marker_score_strategy: Annotated[MarkerScoreCrossSliceStrategy, typer.Option(
         help="Strategy for computing marker scores across slices in spatial3D datasets. "
-             "'similarity_only': Select top homogeneous neighbors from all slices combined based on similarity scores. "
-             "'weighted_mean_pooling': Select fixed number of homogeneous neighbors per slice, compute weighted average using similarity as weights. "
-             "'max_pooling': Select fixed number of homogeneous neighbors per slice, take maximum marker score across slices.",
+             "'global_pool': Select the top K most similar neighbors globally across all slices combined. "
+             "'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. "
+             "'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.",
         case_sensitive=False
-    )] = MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING
+    )] = MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
 
     high_quality_neighbor_filter: Annotated[bool, typer.Option(
         "--high-quality-neighbor-filter/--no-high-quality-filter",
@@ -389,16 +389,12 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         logger.info(f"The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
         logger.info(f"{' -> '.join(list(self.sample_h5ad_dict.keys()))}")
 
-        # Adjust num_homogeneous based on adjacent slices and strategy
-        # Only multiply for 'similarity_only' strategy (original behavior)
-        # For 'mean_pooling' and 'max_pooling', num_homogeneous represents per-slice count
-
         homogeneous_neighbors = self.homogeneous_neighbors
         n_adjacent_slices = self.n_adjacent_slices
         # Check if we should use fix number of homogeneous neighbors per slice
         if self.cross_slice_marker_score_strategy in [
-            MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING,
-            MarkerScoreCrossSliceStrategy.MAX_POOLING
+            MarkerScoreCrossSliceStrategy.PER_SLICE_POOL,
+            MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
         ]:
 
             self.fix_cross_slice_homogenous_neighbors = True
@@ -406,9 +402,9 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
                 f"Using {self.cross_slice_marker_score_strategy.value} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.homogeneous_neighbors} per slice.")
 
 
-        elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.SIMILARITY_ONLY:
+        elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.GLOBAL_POOL:
             logger.info(
-                f"Using similarity_only strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
+                f"Using global_pool strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
 
         logger.info(
             f"Each focal cell will select {homogeneous_neighbors * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")

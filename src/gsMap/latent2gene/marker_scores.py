@@ -70,7 +70,7 @@ class ParallelMarkerScoreComputer:
             num_workers: Number of compute workers
             input_queue: Optional input queue (from reader)
             output_queue: Optional output queue (to writer)
-            cross_slice_strategy: Strategy for 3D ('weighted_mean_pooling' or 'max_pooling')
+            cross_slice_strategy: Strategy for 3D ('per_slice_pool' or 'hierarchical_pool')
             n_slices: Number of slices for 3D data
             num_homogeneous_per_slice: Neighbors per slice for 3D strategies
             no_expression_fraction: Skip expression fraction filtering if True
@@ -165,9 +165,9 @@ class ParallelMarkerScoreComputer:
                 batch_ranks = rank_data_jax[rank_indices_jax]
                 
                 # Compute marker scores using appropriate strategy
-                if self.cross_slice_strategy == 'max_pooling':
-                    # Use max pooling for 3D data
-                    marker_scores = compute_marker_scores_3d_max_pooling_jax(
+                if self.cross_slice_strategy == 'hierarchical_pool':
+                    # Use hierarchical pooling (per-slice marker score average) for 3D data
+                    marker_scores = compute_marker_scores_3d_hierarchical_pool_jax(
                         batch_ranks,
                         batch_weights,
                         actual_batch_size,
@@ -621,7 +621,7 @@ def compute_marker_scores_jax(
 
 
 @partial(jit, static_argnums=(2, 3, 4, 7))
-def compute_marker_scores_3d_max_pooling_jax(
+def compute_marker_scores_3d_hierarchical_pool_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix where N = n_slices * num_homogeneous_per_slice
     weights: jnp.ndarray,  # B × N weight matrix
     batch_size: int,
@@ -632,8 +632,8 @@ def compute_marker_scores_3d_max_pooling_jax(
     no_expression_fraction: bool = False  # Skip expression fraction filtering if True
 ) -> jnp.ndarray:
     """
-    JAX-accelerated marker score computation with max pooling for 3D spatial data.
-    Computes marker scores independently for each slice and takes the maximum.
+    JAX-accelerated marker score computation with hierarchical pooling for 3D spatial data.
+    Computes marker scores independently for each slice and takes the average.
     
     Args:
         log_ranks: Flattened log ranks (batch_size * total_neighbors, n_genes)
@@ -645,7 +645,7 @@ def compute_marker_scores_3d_max_pooling_jax(
         global_expr_frac: Global expression fraction
     
     Returns:
-        (batch_size, n_genes) marker scores using max pooling across slices
+        (batch_size, n_genes) marker scores using average cross slices
     """
     n_genes = log_ranks.shape[1]
     total_neighbors = n_slices * num_homogeneous_per_slice
@@ -948,8 +948,8 @@ class MarkerScoreCalculator:
         
         if (self.config.dataset_type == DatasetType.SPATIAL_3D and 
             self.config.cross_slice_marker_score_strategy in [
-                MarkerScoreCrossSliceStrategy.WEIGHTED_MEAN_POOLING,
-                MarkerScoreCrossSliceStrategy.MAX_POOLING
+                MarkerScoreCrossSliceStrategy.PER_SLICE_POOL,
+                MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
             ]):
             
             cross_slice_strategy = self.config.cross_slice_marker_score_strategy
