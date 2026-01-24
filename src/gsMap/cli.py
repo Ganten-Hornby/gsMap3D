@@ -53,16 +53,8 @@ def quick_mode(config: QuickModeConfig):
     Requires pre-generated SNP-gene weight matrix and LD weights.
     """
     logger.info(f"Starting Quick Mode Pipeline")
-    logger.info(f"Sample: {config.project_name}")
-    logger.info(f"Trait: {config.trait_name}")
     logger.info(f"Working directory: {config.workdir}")
-    
-    # Show some auto-generated paths
-    logger.info(f"Latent dir: {config.latent_dir}")
-    logger.info(f"Report will be saved to: {config.get_report_dir(config.trait_name)}")
-
-    if config.use_gpu:
-        logger.info("GPU acceleration enabled")
+    logger.info(f"Project directory: {config.project_dir}")
 
     try:
         from gsMap.pipeline.quick_mode import run_quick_mode
@@ -205,65 +197,6 @@ def cauchy_combination(config: CauchyCombinationConfig):
         raise
 
 
-@app.command(name="report")
-@dataclass_typer
-def generate_report(config: ReportConfig):
-    """
-    Generate diagnostic plots and HTML report for gsMap results.
-    
-    Creates:
-    - Manhattan plots
-    - Gene set score (GSS) plots
-    - Spatial enrichment visualizations
-    - Interactive HTML report
-    """
-    logger.info(f"Trait: {config.trait_name}")
-    logger.info(f"Annotation: {config.annotation}")
-    logger.info(f"Working directory: {config.workdir}")
-    logger.info(f"Project directory: {config.project_dir}")
-    
-    # Show auto-generated paths
-    logger.info(f"Report directory: {config.get_report_dir(config.trait_name)}")
-    logger.info(f"Report file: {config.get_gsMap_report_file(config.trait_name)}")
-    logger.info(f"Manhattan plot: {config.get_manhattan_html_plot_path(config.trait_name)}")
-    logger.info(f"GSS plot directory: {config.get_GSS_plot_dir(config.trait_name)}")
-    logger.info(f"gsMap plot directory: {config.get_gsMap_plot_save_dir(config.trait_name)}")
-    
-    # Parse selected genes if provided
-    if config.selected_genes:
-        config.selected_genes = [g.strip() for g in config.selected_genes.split(",")]
-        logger.info(f"Selected genes: {len(config.selected_genes)}")
-    
-    try:
-        from gsMap.report import run_interactive_report
-        run_interactive_report(config)
-        logger.info("✓ Interactive report data prepared successfully!")
-    except (ImportError, AttributeError) as e:
-        logger.error(f"Error executing report: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Execution Error: {e}")
-        raise
-
-
-@app.command(name="report-view")
-@dataclass_typer
-def report_view(config: ReportConfig):
-    """
-    Launch the interactive report viewer.
-    """
-    logger.info(f"Launching interactive report viewer from {config.project_dir}")
-    try:
-        from gsMap.report import run_report_viewer
-        run_report_viewer(config)
-    except (ImportError, AttributeError) as e:
-        logger.error(f"Error launching viewer: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Execution Error: {e}")
-        raise
-
-
 @app.command(name="ldscore-weight-matrix")
 @dataclass_typer
 def ldscore_weight_matrix(config: LDScoreConfig):
@@ -298,7 +231,7 @@ def ldscore_weight_matrix(config: LDScoreConfig):
 def format_sumstats(config: FormatSumstatsConfig):
     """
     Format GWAS summary statistics for gsMap or COJO.
-    
+
     This command:
     - Filters SNPs based on INFO, MAF, and P-value
     - Converts SNP positions to RSID (if dbsnp is provided)
@@ -311,6 +244,71 @@ def format_sumstats(config: FormatSumstatsConfig):
     except Exception as e:
         logger.error(f"Execution Error: {e}")
         raise
+
+
+@app.command(name="report-view")
+def report_view(
+    report_path: Annotated[str, typer.Argument(
+        help="Path to gsmap_web_report directory containing index.html"
+    )],
+    port: Annotated[int, typer.Option(
+        help="Port to serve the report on"
+    )] = 8080,
+    no_browser: Annotated[bool, typer.Option(
+        "--no-browser",
+        help="Don't automatically open browser"
+    )] = False,
+):
+    """
+    Launch a local web server to view the gsMap report.
+
+    This command starts a simple HTTP server to serve the report files,
+    which is necessary for proper loading of JavaScript modules.
+
+    Example:
+        gsmap report-view /path/to/project/gsmap_web_report
+        gsmap report-view /path/to/project/gsmap_web_report --port 9000
+    """
+    import http.server
+    import os
+    import socketserver
+    import webbrowser
+    from pathlib import Path
+
+    report_dir = Path(report_path).resolve()
+
+    if not report_dir.exists():
+        logger.error(f"Directory not found: {report_dir}")
+        raise typer.Exit(1)
+
+    index_file = report_dir / "index.html"
+    if not index_file.exists():
+        logger.error(f"index.html not found in {report_dir}")
+        logger.error("Please provide path to the gsmap_web_report directory.")
+        raise typer.Exit(1)
+
+    os.chdir(report_dir)
+
+    handler = http.server.SimpleHTTPRequestHandler
+
+    try:
+        with socketserver.TCPServer(("", port), handler) as httpd:
+            url = f"http://localhost:{port}"
+            logger.info(f"Serving report at {url}")
+            logger.info(f"Press Ctrl+C to stop the server")
+
+            if not no_browser:
+                webbrowser.open(url)
+
+            httpd.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Server stopped.")
+    except OSError as e:
+        if "Address already in use" in str(e):
+            logger.error(f"Port {port} is already in use. Try a different port with --port <number>")
+        else:
+            logger.error(f"Failed to start server: {e}")
+        raise typer.Exit(1)
 
 
 def version_callback(value: bool):

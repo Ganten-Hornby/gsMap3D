@@ -14,40 +14,46 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
     Prepares data and saves the interactive report as a standalone Alpine+Tailwind HTML folder.
 
     Output structure:
-        project_dir/gsMap_Report/
-        ├── index.html
-        ├── spot_metadata.csv
-        ├── cauchy_results.csv
-        ├── umap_data.csv
-        ├── gene_list.csv
-        ├── execution_summary.yaml
-        ├── report_meta.json
-        ├── gss_stats/
-        │   └── gene_trait_correlation_{trait}.csv
-        ├── manhattan_data/
-        │   └── {trait}_manhattan.csv
-        ├── spatial_plots/
-        │   └── ldsc_{trait}.png
-        ├── gene_diagnostic_plots/
-        ├── annotation_plots/
-        ├── spatial_3d/ (optional)
-        ├── js_lib/
-        └── js_data/
-            ├── gss_stats/
-            ├── sample_index.js
-            ├── sample_{name}_spatial.js
-            └── ... (other JS modules)
+        project_dir/
+        ├── report_data/                    # Data files (CSV, h5ad)
+        │   ├── spot_metadata.csv
+        │   ├── cauchy_results.csv
+        │   ├── umap_data.csv
+        │   ├── gene_list.csv
+        │   ├── gss_stats/
+        │   │   └── gene_trait_correlation_{trait}.csv
+        │   ├── manhattan_data/
+        │   │   └── {trait}_manhattan.csv
+        │   └── spatial_3d/
+        │       └── spatial_3d.h5ad
+        │
+        └── gsmap_web_report/               # Web report (self-contained)
+            ├── index.html
+            ├── report_meta.json
+            ├── execution_summary.yaml
+            ├── spatial_plots/
+            │   └── ldsc_{trait}.png
+            ├── gene_diagnostic_plots/
+            ├── annotation_plots/
+            ├── spatial_3d/
+            │   └── *.html
+            ├── js_lib/
+            └── js_data/
+                ├── gss_stats/
+                ├── sample_index.js
+                ├── sample_{name}_spatial.js
+                └── ... (other JS modules)
     """
     logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")
 
     # 1. Use ReportDataManager to prepare all data and JS assets
     manager = ReportDataManager(config)
-    report_dir = manager.run()
+    web_report_dir = manager.run()
 
     # 2. Save run_parameters for future reference
     if run_parameters:
         import yaml
-        with open(report_dir / "execution_summary.yaml", "w") as f:
+        with open(web_report_dir / "execution_summary.yaml", "w") as f:
             yaml.dump(run_parameters, f)
 
     # 3. Render the Jinja2 template
@@ -71,12 +77,19 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
 
         rendered_html = template.render(**context)
 
-        report_file = report_dir / "index.html"
+        report_file = web_report_dir / "index.html"
         with open(report_file, "w", encoding="utf-8") as f:
             f.write(rendered_html)
 
-        logger.info(f"Report generated successfully! Saved at {report_file}")
-        logger.info(f"You can view it by opening {report_file} in a browser or by running 'gsmap report-view'.")
+        from rich import print as rprint
+        rprint(f"\n[bold green]Report generated successfully![/bold green]")
+        rprint(f"Web report directory: [cyan]{web_report_dir}[/cyan]")
+        rprint(f"Data files directory: [cyan]{config.report_data_dir}[/cyan]\n")
+
+        rprint("[bold]Ways to view the interactive report:[/bold]")
+        rprint(f"1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:")
+        rprint(f"   [bold cyan]gsmap report-view {web_report_dir}[/bold cyan]")
+        rprint(f"2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n")
 
     except ImportError:
         logger.error("Jinja2 not found. Please install it with 'pip install jinja2'.")

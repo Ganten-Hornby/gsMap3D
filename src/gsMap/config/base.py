@@ -205,8 +205,6 @@ class ConfigWithAutoPaths(BaseConfig):
         """Path to latent2gene metadata YAML"""
         return self.latent2gene_dir / "metadata.yaml"
 
-    ## ---- LD score paths
-
 
     ## ---- Spatial LDSC paths
 
@@ -224,23 +222,6 @@ class ConfigWithAutoPaths(BaseConfig):
     def ldscore_save_dir(self) -> Path:
         """Directory for LD score generation results"""
         return self.project_dir / "generate_ldscore"
-    #
-    # @property
-    # @ensure_path_exists
-    # def cauchy_save_dir(self) -> Path:
-    #     return Path(f"{self.workdir}/{self.project_name}/cauchy_combination")
-    #
-    # @ensure_path_exists
-    # def get_report_dir(self, trait_name: str) -> Path:
-    #     return Path(f"{self.workdir}/{self.project_name}/report/{trait_name}")
-    #
-    # def get_gsMap_report_file(self, trait_name: str) -> Path:
-    #     return (
-    #         self.get_report_dir(trait_name) / f"{self.project_name}_{trait_name}_gsMap_Report.html"
-    #     )
-
-
-
     
     @property
     @ensure_path_exists
@@ -249,9 +230,21 @@ class ConfigWithAutoPaths(BaseConfig):
 
     @property
     @ensure_path_exists
+    def report_data_dir(self) -> Path:
+        """Directory for report data files (CSV, h5ad) - not needed for HTML viewing"""
+        return self.project_dir / "report_data"
+
+    @property
+    @ensure_path_exists
+    def web_report_dir(self) -> Path:
+        """Directory for self-contained web report (HTML, JS, images)"""
+        return self.project_dir / "gsmap_web_report"
+
+    @property
+    @ensure_path_exists
     def report_dir(self) -> Path:
-        """Directory for gsMap report outputs - flat structure at project level"""
-        return self.project_dir / "gsMap_Report"
+        """Directory for gsMap report outputs - returns web_report_dir for backward compatibility"""
+        return self.web_report_dir
 
     @ensure_path_exists
     def get_report_dir(self, trait_name: str) -> Path:
@@ -264,8 +257,8 @@ class ConfigWithAutoPaths(BaseConfig):
 
     @ensure_path_exists
     def get_manhattan_html_plot_path(self, trait_name: str) -> Path:
-        """Deprecated: Manhattan plots are now in manhattan_data/ subdirectory"""
-        return self.report_dir / "manhattan_data" / f"{trait_name}_manhattan.csv"
+        """Path for Manhattan plot CSV data"""
+        return self.report_data_dir / "manhattan_data" / f"{trait_name}_manhattan.csv"
 
     @ensure_path_exists
     def get_GSS_plot_dir(self, trait_name: str) -> Path:
@@ -290,7 +283,7 @@ class ConfigWithAutoPaths(BaseConfig):
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:
         """Path for gene diagnostic info CSV - uses trait prefix in gss_stats subfolder"""
-        return self.report_dir / "gss_stats" / f"gene_trait_correlation_{trait_name}.csv"
+        return self.report_data_dir / "gss_stats" / f"gene_trait_correlation_{trait_name}.csv"
     
     @ensure_path_exists
     def get_gsMap_plot_save_dir(self, trait_name: str) -> Path:

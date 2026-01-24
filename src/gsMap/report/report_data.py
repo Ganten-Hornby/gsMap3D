@@ -1,5 +1,5 @@
 """
-Report Data Preparation Module - Modern Version
+Report Data Preparation Module
 
 This module prepares data for the Alpine.js + Tailwind CSS + Plotly.js report.
 All data is exported as JS files with window global variables to bypass CORS restrictions
@@ -24,11 +24,7 @@ import scipy.sparse as sp
 
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
-from gsMap.find_latent.st_process import (
-    normalize_for_analysis,
-    setup_data_layer,
-    _looks_like_count_matrix
-)
+from gsMap.find_latent.st_process import setup_data_layer
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
 from gsMap.report.visualize import estimate_point_size_for_plot, estimate_matplotlib_scatter_marker_size
@@ -37,23 +33,25 @@ from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Parallel Task Functions (must be at module level for ProcessPoolExecutor)
-# =============================================================================
-
 class ReportDataManager:
     def __init__(self, report_config: QuickModeConfig):
         self.report_config = report_config
-        self.report_dir = report_config.report_dir
-        self.js_data_dir = self.report_dir / "js_data"
-        self.report_dir.mkdir(parents=True, exist_ok=True)
+
+        # Two separate directories: data files vs web report
+        self.report_data_dir = report_config.report_data_dir
+        self.web_report_dir = report_config.web_report_dir
+        self.js_data_dir = self.web_report_dir / "js_data"
+
+        # Create directories
+        self.report_data_dir.mkdir(parents=True, exist_ok=True)
+        self.web_report_dir.mkdir(parents=True, exist_ok=True)
         self.js_data_dir.mkdir(exist_ok=True)
-        
+
         if self.report_config.sample_h5ad_dict is None:
             self.report_config._resolve_h5ad_inputs()
-            
+
         self.force_re_run = getattr(report_config, 'force_report_re_run', False)
-        
+
         # Internal state
         self.ldsc_results = None
         self.traits = []
@@ -102,8 +100,10 @@ class ReportDataManager:
         # 9. Finalize Metadata and JS Assets
         self.finalize_report()
         
-        logger.info(f"Report data preparation complete. Results in {self.report_dir}")
-        return self.report_dir
+        logger.info(f"Report data preparation complete.")
+        logger.info(f"  Data files: {self.report_data_dir}")
+        logger.info(f"  Web report: {self.web_report_dir}")
+        return self.web_report_dir
 
 
     def prepare_base_metadata(self):
@@ -121,10 +121,10 @@ class ReportDataManager:
         
     def prepare_gss_stats(self):
         """Load GSS data, calculate PCC per trait, and split results."""
-        gss_dir = self.report_dir / "gss_stats"
+        gss_dir = self.report_data_dir / "gss_stats"
         gss_dir.mkdir(exist_ok=True)
-        
-        gene_list_file = self.report_dir / "gene_list.csv"
+
+        gene_list_file = self.report_data_dir / "gene_list.csv"
         
         # Determine which traits need PCC calculation
         traits_to_run = []
@@ -143,7 +143,7 @@ class ReportDataManager:
         # Load GSS and common spots
         if self.gss_adata is None:
             self.common_spots, self.gss_adata, self.gene_stats = _load_gss_and_calculate_stats_base(
-                self.report_config, self.ldsc_results, self.coords, self.report_dir
+                self.report_config, self.ldsc_results, self.coords, self.report_data_dir
             )
             
         # Pre-filter to high expression genes and pre-calculate centered matrix
@@ -170,7 +170,7 @@ class ReportDataManager:
                 continue
 
             trait_pcc = _calculate_pcc_for_single_trait_fast(
-                trait, self.ldsc_results, self.common_spots, gss_centered, gss_ssq, gene_names, self.gene_stats, self.report_config, self.report_dir, gss_dir
+                trait, self.ldsc_results, self.common_spots, gss_centered, gss_ssq, gene_names, self.gene_stats, self.report_config, self.report_data_dir, gss_dir
             )
             if trait_pcc is not None:
                 all_pcc.append(trait_pcc)
@@ -179,7 +179,7 @@ class ReportDataManager:
 
     def prepare_spot_metadata(self):
         """Save spot metadata and coordinates."""
-        metadata_file = self.report_dir / "spot_metadata.csv"
+        metadata_file = self.report_data_dir / "spot_metadata.csv"
         if self._is_step_complete([metadata_file]):
             logger.info("Spot metadata already exists. Skipping.")
             self.metadata = pd.read_csv(metadata_file)
@@ -187,7 +187,7 @@ class ReportDataManager:
                 self.common_spots = self.metadata['spot'].values
             return
 
-        self.metadata = _save_metadata(self.ldsc_results, self.coords, self.report_dir)
+        self.metadata = _save_metadata(self.ldsc_results, self.coords, self.report_data_dir)
         if self.common_spots is None:
             self.common_spots = self.metadata['spot'].values
 
@@ -203,7 +203,7 @@ class ReportDataManager:
             f.write(js_content)
     def prepare_manhattan_data(self):
         """Prepare Manhattan data for all traits."""
-        manhattan_dir = self.report_dir / "manhattan_data"
+        manhattan_dir = self.report_data_dir / "manhattan_data"
         manhattan_dir.mkdir(exist_ok=True)
         
         # Determine which traits need Manhattan data
@@ -225,7 +225,7 @@ class ReportDataManager:
         weight_adata = ad.read_h5ad(self.report_config.snp_gene_weight_adata_path)
         
         # Load gene ref
-        genes_file = self.report_dir / "gene_list.csv"
+        genes_file = self.report_data_dir / "gene_list.csv"
         gene_names_ref = pd.read_csv(genes_file)['gene'].tolist() if genes_file.exists() else []
 
         chrom_tick_positions = {}
@@ -268,7 +268,7 @@ class ReportDataManager:
 
         if self.report_config.generate_multi_sample_plots:
             # Render LDSC plots
-            spatial_plot_dir = self.report_dir / "spatial_plots"
+            spatial_plot_dir = self.web_report_dir / "spatial_plots"
             spatial_plot_dir.mkdir(exist_ok=True)
             for trait in self.traits:
                 trait_plot_path = spatial_plot_dir / f"ldsc_{trait}.png"
@@ -284,7 +284,7 @@ class ReportDataManager:
                     )
 
             # Render annotation plots
-            anno_dir = self.report_dir / "annotation_plots"
+            anno_dir = self.web_report_dir / "annotation_plots"
             anno_dir.mkdir(exist_ok=True)
             for anno in self.report_config.annotation_list:
                 anno_plot_path = anno_dir / f"anno_{anno}.png"
@@ -317,33 +317,33 @@ class ReportDataManager:
             # but we need some basic info to call it or decide to load.
             # For simplicity, we load the base GSS info here.
             self.common_spots, self.gss_adata, self.gene_stats = _load_gss_and_calculate_stats_base(
-                self.report_config, self.ldsc_results, self.coords, self.report_dir
+                self.report_config, self.ldsc_results, self.coords, self.report_data_dir
             )
 
-        _render_gene_diagnostic_plots_refactored(self.report_config, self.metadata, self.common_spots, self.gss_adata, n_rows, n_cols, self.report_dir, self._is_step_complete)
+        _render_gene_diagnostic_plots_refactored(self.report_config, self.metadata, self.common_spots, self.gss_adata, n_rows, n_cols, self.web_report_dir, self.report_data_dir, self._is_step_complete)
 
     def collect_cauchy_results(self):
         """Collect and save Cauchy combination results."""
-        cauchy_file = self.report_dir / "cauchy_results.csv"
+        cauchy_file = self.report_data_dir / "cauchy_results.csv"
         # Since this combines all traits/annotations, we check for the final csv
         if self._is_step_complete([cauchy_file]):
             logger.info("Cauchy results already collected. Skipping.")
             return
 
-        _collect_cauchy_results(self.report_config, self.traits, self.report_dir)
-        _export_cauchy_js(self.report_dir, self.js_data_dir)
+        _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
+        _export_cauchy_js(self.report_data_dir, self.js_data_dir)
 
     def prepare_umap_data(self):
         """Prepare UMAP data from embeddings."""
-        umap_file = self.report_dir / "umap_data.csv"
+        umap_file = self.report_data_dir / "umap_data.csv"
         if self._is_step_complete([umap_file]):
             logger.info("UMAP data already exists. Skipping.")
             # Still need to populate self.umap_info for metadata
             # For simplicity, we can load it if needed or just skip if the goal is completed
             return
 
-        self.umap_info = _prepare_umap_data(self.report_config, self.metadata, self.report_dir)
-        _export_umap_js(self.report_dir, self.js_data_dir, {'umap_info': self.umap_info})
+        self.umap_info = _prepare_umap_data(self.report_config, self.metadata, self.report_data_dir)
+        _export_umap_js(self.report_data_dir, self.js_data_dir, {'umap_info': self.umap_info})
 
     def prepare_3d_visualization(self):
         """Prepare 3D visualization if applicable."""
@@ -351,27 +351,27 @@ class ReportDataManager:
             self.spatial_3d_html = None
             return
 
-        self.spatial_3d_html = _prepare_3d_visualization(self.report_config, self.metadata, self.traits, self.report_dir)
+        self.spatial_3d_html = _prepare_3d_visualization(self.report_config, self.metadata, self.traits, self.report_data_dir, self.web_report_dir)
 
     def finalize_report(self):
         """Save report metadata and final JS assets."""
         # 1. Save standard report metadata
         _save_report_metadata(
-            self.report_config, self.traits, self.sample_names, self.report_dir,
+            self.report_config, self.traits, self.sample_names, self.web_report_dir,
             getattr(self, 'chrom_tick_positions', None),
             getattr(self, 'umap_info', None),
-            is_3d=self.is_3d, 
+            is_3d=self.is_3d,
             spatial_3d_path=getattr(self, 'spatial_3d_html', None)
         )
-        
+
         # 2. Copy JS libraries
-        _copy_js_assets(self.report_dir)
-        
+        _copy_js_assets(self.web_report_dir)
+
         # 3. Export per-sample spatial JS (highly important for performance)
-        with open(self.report_dir / "report_meta.json", "r") as f:
+        with open(self.web_report_dir / "report_meta.json", "r") as f:
             meta = json.load(f)
-        _export_per_sample_spatial_js(self.report_dir, self.js_data_dir, meta)
-        _export_report_meta_js(self.report_dir, self.js_data_dir, meta)
+        _export_per_sample_spatial_js(self.report_data_dir, self.js_data_dir, meta)
+        _export_report_meta_js(self.web_report_dir, self.js_data_dir, meta)
 
 
 
@@ -689,7 +689,8 @@ def _prepare_3d_visualization(
     report_config: QuickModeConfig,
     metadata: pd.DataFrame,
     traits: List[str],
-    report_dir: Path
+    report_data_dir: Path,
+    web_report_dir: Path
 ) -> Optional[str]:
     """
     Create 3D visualization widget using spatialvista and save as HTML.
@@ -698,7 +699,8 @@ def _prepare_3d_visualization(
         report_config: QuickModeConfig with annotation_list and other settings
         metadata: DataFrame with 3d_x, 3d_y, 3d_z coordinates and annotations
         traits: List of trait names (for continuous values)
-        report_dir: Output directory
+        report_data_dir: Directory for data files (h5ad)
+        web_report_dir: Directory for web report files (HTML)
 
     Returns:
         Path to saved HTML file, or None if failed
@@ -733,12 +735,14 @@ def _prepare_3d_visualization(
         trait: np.float32 for trait in traits if trait in adata_vis_full.obs.columns
     })
 
-    # Create 3D visualization directory
-    three_d_dir = report_dir / "spatial_3d"
-    three_d_dir.mkdir(exist_ok=True)
+    # Create 3D visualization directories
+    three_d_data_dir = report_data_dir / "spatial_3d"
+    three_d_data_dir.mkdir(exist_ok=True)
+    three_d_web_dir = web_report_dir / "spatial_3d"
+    three_d_web_dir.mkdir(exist_ok=True)
 
-    # 2. Save the full adata_vis
-    h5ad_path = three_d_dir / "spatial_3d.h5ad"
+    # 2. Save the full adata_vis to data directory
+    h5ad_path = three_d_data_dir / "spatial_3d.h5ad"
     adata_vis_full.write_h5ad(h5ad_path)
     logger.info(f"Full 3D visualization data saved to {h5ad_path}")
 
@@ -797,7 +801,7 @@ def _prepare_3d_visualization(
                 color_map = _create_color_map(unique_vals, hex=True, rng=42)
             
             safe_anno = "".join(c if c.isalnum() else "_" for c in anno)
-            anno_plot_name = three_d_dir / f"spatial_3d_anno_{safe_anno}"
+            anno_plot_name = three_d_web_dir / f"spatial_3d_anno_{safe_anno}"
             
             plotter_anno = three_d_plot(
                 adata=adata_vis,
@@ -838,7 +842,7 @@ def _prepare_3d_visualization(
             if max_v <= 0: max_v = 1.0
 
             safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-            trait_plot_name = three_d_dir / f"spatial_3d_trait_{safe_trait}"
+            trait_plot_name = three_d_web_dir / f"spatial_3d_trait_{safe_trait}"
             
             plotter_trait = three_d_plot(
                 adata=adata_vis,
@@ -1249,11 +1253,12 @@ def _render_gene_diagnostic_plots_refactored(
     gss_adata: ad.AnnData,
     n_rows: int,
     n_cols: int,
-    report_dir: Path,
+    web_report_dir: Path,
+    report_data_dir: Path,
     is_step_complete_func
 ):
     """Render gene expression and GSS diagnostic plots with completeness check."""
-    gene_plot_dir = report_dir / "gene_diagnostic_plots"
+    gene_plot_dir = web_report_dir / "gene_diagnostic_plots"
     gene_plot_dir.mkdir(exist_ok=True)
 
     if not report_config.sample_h5ad_dict:
@@ -1262,7 +1267,7 @@ def _render_gene_diagnostic_plots_refactored(
 
     top_n = report_config.top_corr_genes
     # 1. Identify all genes that need to be plotted from per-trait PCC files
-    gss_stats_dir = report_dir / "gss_stats"
+    gss_stats_dir = report_data_dir / "gss_stats"
     trait_top_genes = {}
     all_top_genes_set = set()
     
@@ -1698,8 +1703,6 @@ def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
 
         except Exception as e:
             logger.warning(f"Failed to export Manhattan JS for {trait}: {e}")
-
-
 
 
 def _export_report_meta_js(data_dir: Path, js_data_dir: Path, meta: Dict):
