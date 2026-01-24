@@ -297,6 +297,9 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
     
     for col in metadata_cols:
         df_combined[col] = adata.obs.loc[common_cells, col].values
+    
+    # Fill NaN values in metadata columns to avoid issues during sorting and report generation
+    df_combined[metadata_cols] = df_combined[metadata_cols].fillna('NaN').astype(str)
 
     # 3. Save combined data to parquet
     logger.info(f"Saving combined data to {config.ldsc_combined_parquet_path}")

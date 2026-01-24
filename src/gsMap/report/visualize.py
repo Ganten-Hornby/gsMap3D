@@ -327,13 +327,24 @@ def draw_scatter(
 
 def _create_color_map(category_list: List, hex=False, rng=42) -> Dict[str, tuple]:
     unique_categories = sorted(list(set(category_list)))
-    n_colors = len(unique_categories)
+    
+    # Check for 'NaN' or nan and handle separately
+    nan_values = [v for v in unique_categories if str(v).lower() in ['nan', 'none', 'null']]
+    other_categories = [v for v in unique_categories if v not in nan_values]
+    
+    n_colors = len(other_categories)
 
-    # Generate N visually distinct colors
-    colors = distinctipy.get_colors(n_colors, rng=rng)
+    # Generate N visually distinct colors for non-NaN categories
+    if n_colors > 0:
+        colors = distinctipy.get_colors(n_colors, rng=rng)
+        color_map = {category: color for category, color in zip(other_categories, colors)}
+    else:
+        color_map = {}
 
-    # Create a mapping from category to color
-    color_map = {category: color for category, color in zip(unique_categories, colors)}
+    # Assign grey color to NaN values
+    grey_rgb = (0.827, 0.827, 0.827) # lightgrey
+    for v in nan_values:
+        color_map[v] = grey_rgb
 
     if hex:
         # Convert RGB tuples to hex format

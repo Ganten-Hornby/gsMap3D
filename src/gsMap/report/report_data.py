@@ -456,7 +456,8 @@ def _prepare_umap_data(
     # Add all annotation columns
     for anno in config.annotation_list:
         if anno in adata_sub.obs.columns:
-            umap_metadata[anno] = adata_sub.obs[anno].values
+            # Fill NaN with 'NaN' and convert to string to avoid sorting errors
+            umap_metadata[anno] = adata_sub.obs[anno].astype(str).fillna('NaN').values
 
     # Add trait -log10(p) values from metadata if available (vectorized join)
     traits = config.trait_name_list
@@ -1823,7 +1824,8 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: Dict):
             if pd.api.types.is_numeric_dtype(df[col]):
                 color_maps[col] = P_COLOR
             else:
-                unique_vals = sorted(df[col].unique().tolist())
+                # Convert to string before sorting to avoid TypeError with mixed float/str (e.g. NaN)
+                unique_vals = sorted(df[col].astype(str).unique().tolist())
                 color_maps[col] = _create_color_map(unique_vals, hex=True, rng=42)
         
         data_struct['color_maps'] = color_maps
