@@ -4,7 +4,7 @@ from pathlib import Path
 
 import gsMap
 from gsMap.config import QuickModeConfig
-from .report_data import prepare_report_data, export_data_as_js_modules
+from .report_data import ReportDataManager
 
 logger = logging.getLogger(__name__)
 
@@ -18,20 +18,31 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         ├── index.html
         ├── spot_metadata.csv
         ├── cauchy_results.csv
+        ├── umap_data.csv
         ├── gene_list.csv
-        ├── gene_trait_correlation.csv
-        ├── {trait}_gene_diagnostic.csv
+        ├── execution_summary.yaml
+        ├── report_meta.json
+        ├── gss_stats/
+        │   └── gene_trait_correlation_{trait}.csv
         ├── manhattan_data/
+        │   └── {trait}_manhattan.csv
         ├── spatial_plots/
+        │   └── ldsc_{trait}.png
         ├── gene_diagnostic_plots/
         ├── annotation_plots/
+        ├── spatial_3d/ (optional)
         ├── js_lib/
         └── js_data/
+            ├── gss_stats/
+            ├── sample_index.js
+            ├── sample_{name}_spatial.js
+            └── ... (other JS modules)
     """
     logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")
 
-    # 1. Prepare data (CSVs and PNGs) - writes directly to config.report_dir
-    report_dir = prepare_report_data(config)
+    # 1. Use ReportDataManager to prepare all data and JS assets
+    manager = ReportDataManager(config)
+    report_dir = manager.run()
 
     # 2. Save run_parameters for future reference
     if run_parameters:
@@ -39,10 +50,7 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         with open(report_dir / "execution_summary.yaml", "w") as f:
             yaml.dump(run_parameters, f)
 
-    # 3. Export Data as JS Modules
-    export_data_as_js_modules(report_dir)
-
-    # 4. Render the Jinja2 template
+    # 3. Render the Jinja2 template
     template_path = Path(__file__).parent / "static" / "template.html"
     if not template_path.exists():
         logger.error(f"Template file not found at {template_path}")

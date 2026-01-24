@@ -289,8 +289,8 @@ class ConfigWithAutoPaths(BaseConfig):
     
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:
-        """Path for gene diagnostic info CSV - uses trait prefix in report_dir"""
-        return self.report_dir / f"{trait_name}_gene_diagnostic.csv"
+        """Path for gene diagnostic info CSV - uses trait prefix in gss_stats subfolder"""
+        return self.report_dir / "gss_stats" / f"gene_trait_correlation_{trait_name}.csv"
     
     @ensure_path_exists
     def get_gsMap_plot_save_dir(self, trait_name: str) -> Path:

@@ -61,6 +61,9 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     # Legend marker size for categorical plots
     legend_marker_size: float = 10.0
 
+    # Force re-run of report generation even if results exist
+    force_report_re_run: bool = False
+
     # Compatibility properties for visualization paths
     @property
     @ensure_path_exists

@@ -129,8 +129,8 @@ class ReportDataManager:
         # Determine which traits need PCC calculation
         traits_to_run = []
         for trait in self.traits:
-            csv_path = gss_dir / f"gene_trait_correlation_{trait}.csv"
-            js_path = self.js_data_dir / f"gene_trait_correlation_{trait}.js"
+            csv_path = self.report_config.get_gene_diagnostic_info_save_path(trait)
+            js_path = self.js_data_dir / "gss_stats" / f"gene_trait_correlation_{trait}.js"
             if not self._is_step_complete([csv_path, js_path]):
                 traits_to_run.append(trait)
         
@@ -163,7 +163,7 @@ class ReportDataManager:
         all_pcc = []
         for trait in self.traits:
             # We check both the CSV in gss_stats and the JS in js_data/gss_stats
-            csv_path = gss_dir / f"gene_trait_correlation_{trait}.csv"
+            csv_path = self.report_config.get_gene_diagnostic_info_save_path(trait)
             js_path = self.js_data_dir / "gss_stats" / f"gene_trait_correlation_{trait}.js"
             
             if self._is_step_complete([csv_path, js_path]):
@@ -232,7 +232,7 @@ class ReportDataManager:
         for trait in traits_to_run:
             try:
                 # Load trait-specific PCC data
-                trait_pcc_file = self.report_dir / "gss_stats" / f"gene_trait_correlation_{trait}.csv"
+                trait_pcc_file = self.report_config.get_gene_diagnostic_info_save_path(trait)
                 trait_pcc_df = pd.read_csv(trait_pcc_file) if trait_pcc_file.exists() else None
                 
                 chrom_ticks = _prepare_manhattan_for_trait(
@@ -1098,11 +1098,8 @@ def _calculate_pcc_for_single_trait_fast(
     trait_pcc_sorted = trait_pcc.sort_values('PCC', ascending=False)
 
     # Save to gss_stats subfolder
-    trait_pcc_sorted.to_csv(gss_dir / f"gene_trait_correlation_{trait}.csv", index=False)
-    
-    # Also save to diagnostic info path for compatibility
+    # Save result CSV
     diag_info_path = report_config.get_gene_diagnostic_info_save_path(trait)
-    diag_info_path.parent.mkdir(parents=True, exist_ok=True)
     trait_pcc_sorted.to_csv(diag_info_path, index=False)
 
     return trait_pcc_sorted
@@ -1274,7 +1271,7 @@ def _render_gene_diagnostic_plots_refactored(
               for p in gss_stats_dir.glob("gene_trait_correlation_*.csv")]
     
     for trait in traits:
-        pcc_path = gss_stats_dir / f"gene_trait_correlation_{trait}.csv"
+        pcc_path = report_config.get_gene_diagnostic_info_save_path(trait)
         if pcc_path.exists():
             group = pd.read_csv(pcc_path)
             genes = group.sort_values('PCC', ascending=False).head(top_n)['gene'].tolist()
@@ -1533,34 +1530,6 @@ def _copy_js_assets(report_dir: Path):
     if plotly_js_src.exists() and not plotly_dest.exists():
         shutil.copy2(plotly_js_src, plotly_dest)
         logger.info("Copied plotly.min.js from plotly package")
-
-    # Copy anywidget resources
-    import anywidget
-    anywidget_src_dir = Path(anywidget.__file__).parent / "nbextension"
-    anywidget_src_dir_js = anywidget_src_dir.glob("*.js")
-
-    # should copy to report dir
-    anywidget_index_file = anywidget_src_dir / "index.js"
-    if anywidget_index_file.exists():
-        shutil.copy2(anywidget_index_file, report_dir / "anywidget.js")
-    # for js_file in anywidget_src_dir_js:
-    #     dest = js_lib_dir / js_file.name
-    #     if not dest.exists():
-    #         shutil.copy2(js_file, dest)
-    #         logger.info(f"Copied AnyWidget asset {js_file.name}")
-
-
-# =============================================================================
-# Main Entry Point
-# =============================================================================
-
-def prepare_report_data(report_config: QuickModeConfig) -> Path:
-    """
-    Prepare and aggregate data for the interactive report.
-    Returns a directory containing the processed data.
-    """
-    manager = ReportDataManager(report_config)
-    return manager.run()
 
 
 # =============================================================================

@@ -150,7 +150,7 @@
                 <!-- Trait Selector -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">Trait</label>
-                    <select x-model="selectedTrait" @change="onTraitChange()"
+                    <select :value="selectedTrait" @change="handleTraitSelect($event.target.value)"
                         class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
                         <template x-for="t in traits" :key="t">
                             <option :value="t" x-text="t"></option>
@@ -418,25 +418,43 @@
 
                     <!-- Gene Plots (Side by Side: Expression and GSS) -->
                     <div class="p-4">
-                        <!-- Side-by-side static image containers -->
-                        <div class="flex flex-wrap gap-4 justify-center">
-                            <div class="flex-1 min-w-[400px] max-w-[600px]">
-                                <h3 class="text-center font-medium text-gray-700 mb-2">Expression</h3>
-                                <img :src="getGenePlotPath('exp')" :alt="selectedGene + ' Expression'"
-                                    class="w-full h-auto max-h-[500px] object-contain mx-auto" loading="lazy"
-                                    onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                                <p class="text-center text-gray-400 py-8 text-sm" style="display: none;">
-                                    Expression plot not available for this selection.</p>
-                            </div>
-                            <div class="flex-1 min-w-[400px] max-w-[600px]">
-                                <h3 class="text-center font-medium text-gray-700 mb-2">GSS</h3>
-                                <img :src="getGenePlotPath('gss')" :alt="selectedGene + ' GSS'"
-                                    class="w-full h-auto max-h-[500px] object-contain mx-auto" loading="lazy"
-                                    onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                                <p class="text-center text-gray-400 py-8 text-sm" style="display: none;">
-                                    GSS plot not available for this selection.</p>
-                            </div>
+                        <!-- Loading indicator for gene plots -->
+                        <div x-show="loadingGeneData" class="flex items-center justify-center py-12">
+                            <svg class="animate-spin h-8 w-8 text-primary-600 mr-3" xmlns="http://www.w3.org/2000/svg"
+                                fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                    stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                                </path>
+                            </svg>
+                            <span class="text-gray-500 text-lg">Loading gene data...</span>
                         </div>
+                        <!-- Side-by-side static image containers - only render when ready -->
+                        <template x-if="!loadingGeneData && selectedGene && selectedTrait && selectedSample">
+                            <div class="flex flex-wrap gap-4 justify-center">
+                                <div class="flex-1 min-w-[400px] max-w-[600px]">
+                                    <h3 class="text-center font-medium text-gray-700 mb-2">Expression</h3>
+                                    <img :src="'gene_diagnostic_plots/gene_' + selectedTrait + '_' + selectedGene + '_' + selectedSample.replace(/[^a-zA-Z0-9]/g, '_') + '_exp.png'"
+                                        :alt="selectedGene + ' Expression'"
+                                        class="w-full h-auto max-h-[500px] object-contain mx-auto"
+                                        @error="$el.style.display='none'; $el.nextElementSibling.style.display='block';"
+                                        @load="$el.style.display=''; $el.nextElementSibling.style.display='none';">
+                                    <p class="text-center text-gray-400 py-8 text-sm" style="display: none;">
+                                        Expression plot not available for this selection.</p>
+                                </div>
+                                <div class="flex-1 min-w-[400px] max-w-[600px]">
+                                    <h3 class="text-center font-medium text-gray-700 mb-2">GSS</h3>
+                                    <img :src="'gene_diagnostic_plots/gene_' + selectedTrait + '_' + selectedGene + '_' + selectedSample.replace(/[^a-zA-Z0-9]/g, '_') + '_gss.png'"
+                                        :alt="selectedGene + ' GSS'"
+                                        class="w-full h-auto max-h-[500px] object-contain mx-auto"
+                                        @error="$el.style.display='none'; $el.nextElementSibling.style.display='block';"
+                                        @load="$el.style.display=''; $el.nextElementSibling.style.display='none';">
+                                    <p class="text-center text-gray-400 py-8 text-sm" style="display: none;">
+                                        GSS plot not available for this selection.</p>
+                                </div>
+                            </div>
+                        </template>
                     </div>
 
                     <!-- Gene Diagnostic Table -->
@@ -785,6 +803,7 @@
     <script src="js_data/report_meta.js"></script>
     <script src="js_data/sample_index.js"></script>
     <script src="js_data/cauchy_results.js"></script>
+    <!-- Gene trait correlation data is now loaded per-trait on demand from js_data/gss_stats/ -->
     <script src="js_data/umap_data.js"></script>
 
     <script>
@@ -822,7 +841,8 @@
                 // Raw data
                 reportMeta: {},
                 cauchyData: [],
-                pccLoadedTraits: {}, // { trait: true }
+                topGenesPccCache: {},  // Per-trait cache: { traitName: [geneData] }
+                topGenesPccLoadedTraits: {},  // Track loaded traits
                 topGenesList: [],
 
                 // UMAP state
@@ -849,6 +869,7 @@
                 sampleDataCache: {},        // { sampleName: data } - cache loaded samples
                 loadingSampleData: false,   // Loading indicator
                 currentSampleData: null,    // Currently loaded sample data
+                loadingGeneData: false,     // Loading indicator for gene PCC data
 
                 // Section visibility configuration by dataset type
                 sectionConfig: {
@@ -1091,10 +1112,8 @@
                         console.log("Loaded", this.cauchyData.length, "Cauchy results");
                     }
 
-                    if (window.GSMAP_GENE_TRAIT_CORRELATION) {
-                        this.topGenesPcc = window.GSMAP_GENE_TRAIT_CORRELATION;
-                        console.log("Loaded", this.topGenesPcc.length, "gene PCC records");
-                    }
+                    // Gene trait correlation data is now loaded per-trait on demand
+                    // (see loadGenePccData method)
 
                     // Load UMAP data
                     if (window.GSMAP_UMAP) {
@@ -1116,8 +1135,6 @@
 
                     // Check if data loaded successfully
                     if (this.traits.length > 0) {
-                        this.dataLoaded = true;
-
                         // Initialize selections
                         this.selectedTrait = this.traits[0];
                         if (this.annotations.length > 0) {
@@ -1127,16 +1144,15 @@
                             this.selectedSample = this.samples[0];
                         }
 
-                        // Update gene list
-                        this.updateGeneList();
+                        // Update gene list (async - loads per-trait data)
+                        // Must complete before dataLoaded=true to ensure selectedGene is set
+                        await this.updateGeneList();
+
+                        // Now safe to show the UI - all selections are initialized
+                        this.dataLoaded = true;
 
                         // Wait for Plotly to load, then render plots
                         await this.waitForPlotly();
-                        
-                        // Load PCC data for first trait
-                        await this.loadPccData(this.selectedTrait);
-                        this.updateGeneList();
-
                         this.loadManhattanData();
                         this.renderCauchyHeatmap();
                         this.renderUmapPlots();
@@ -1153,13 +1169,25 @@
                 },
 
                 // Event handlers
+                // Handle trait selection - set loading flag BEFORE changing trait to prevent bad image requests
+                handleTraitSelect(newTrait) {
+                    if (newTrait === this.selectedTrait) return;
+                    this.loadingGeneData = true; // Set BEFORE trait changes
+                    this.selectedGene = '';      // Clear BEFORE trait changes
+                    this.topGenesList = [];      // Clear gene list to prevent stale data in table
+                    this._geneFilterCache = null; // Invalidate cache BEFORE trait changes
+                    this._geneFilterKey = '';
+                    this.selectedTrait = newTrait;
+                    this.onTraitChange();
+                },
+
                 async onTraitChange() {
+                    // loadingGeneData and selectedGene are already set by handleTraitSelect()
                     this._geneFilterCache = null; // Invalidate cache
                     this._cauchyFilterCache = null;
                     this.manhattanTraceCache = null; // Invalidate Manhattan cache
-                    
-                    await this.loadPccData(this.selectedTrait);
-                    this.updateGeneList();
+                    await this.updateGeneList(); // This will set the new selectedGene
+                    this.loadingGeneData = false; // Gene data ready
                     this.loadManhattanData();
 
                     // Update 3D visualization if in trait mode
@@ -1261,47 +1289,66 @@
                     // Static gene plots update automatically via img src binding
                 },
 
-                // Load PCC data on-demand
-                async loadPccData(trait) {
-                    if (!trait) return;
-                    if (this.pccLoadedTraits[trait]) return;
+                // Load gene PCC data for a specific trait on demand
+                async loadGenePccData(trait) {
+                    // Return cached data if available
+                    if (this.topGenesPccCache[trait]) {
+                        return this.topGenesPccCache[trait];
+                    }
 
-                    this.isLoading = true;
-                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, "_");
+                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, '_');
                     const varName = `GSMAP_GENE_TRAIT_CORRELATION_${safeTrait}`;
 
+                    // Check if already loaded in window
+                    if (this.topGenesPccLoadedTraits[trait] && window[varName]) {
+                        this.topGenesPccCache[trait] = window[varName];
+                        return this.topGenesPccCache[trait];
+                    }
+
+                    // Load script dynamically from gss_stats subfolder
                     return new Promise((resolve, reject) => {
                         const script = document.createElement('script');
                         script.src = `js_data/gss_stats/gene_trait_correlation_${trait}.js`;
+
                         script.onload = () => {
-                            this.pccLoadedTraits[trait] = true;
-                            console.log(`Loaded PCC data for ${trait}`);
-                            this.isLoading = false;
-                            resolve();
+                            this.topGenesPccLoadedTraits[trait] = true;
+                            if (window[varName]) {
+                                this.topGenesPccCache[trait] = window[varName];
+                                console.log(`Loaded gene PCC data for ${trait}:`, window[varName].length, 'genes');
+                                resolve(this.topGenesPccCache[trait]);
+                            } else {
+                                console.warn(`Gene PCC variable ${varName} not found after loading script`);
+                                resolve([]);
+                            }
                         };
+
                         script.onerror = () => {
-                            console.error(`Failed to load PCC data for ${trait}`);
-                            this.isLoading = false;
-                            reject(new Error(`Failed to load PCC for ${trait}`));
+                            console.warn(`Failed to load gene PCC data for ${trait}`);
+                            resolve([]);
                         };
+
                         document.body.appendChild(script);
                     });
                 },
 
                 // Update gene list when trait changes
-                updateGeneList() {
+                async updateGeneList() {
                     const trait = this.selectedTrait;
-                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, "_");
-                    const varName = `GSMAP_GENE_TRAIT_CORRELATION_${safeTrait}`;
-                    const pccData = window[varName];
-
-                    if (!trait || !pccData || pccData.length === 0) {
+                    if (!trait) {
                         this.topGenesList = [];
                         return;
                     }
 
-                    let traitGenes = pccData
-                        .sort((a, b) => (b.PCC || 0) - (a.PCC || 0));
+                    // Load trait-specific gene PCC data
+                    const traitGeneData = await this.loadGenePccData(trait);
+
+                    if (!traitGeneData || traitGeneData.length === 0) {
+                        this.topGenesList = [];
+                        return;
+                    }
+
+                    // Data is already for this specific trait, sort by PCC
+                    let traitGenes = [...traitGeneData].sort((a, b) => (b.PCC || 0) - (a.PCC || 0));
 
                     // Mark top genes
                     traitGenes.forEach((g, i) => {
@@ -1311,14 +1358,26 @@
                     // Load ALL genes, not just top slice
                     this.topGenesList = traitGenes;
 
-                    // Select first gene if available
-                    if (this.topGenesList.length > 0) {
+                    // Invalidate gene table cache since data changed
+                    this._geneFilterCache = null;
+                    this._geneFilterKey = '';
+
+                    // Select first top gene (matches what's shown in dropdown, has diagnostic plots)
+                    const firstTopGene = this.topGenesList.find(g => g.isTop);
+                    if (firstTopGene) {
+                        this.selectedGene = firstTopGene.gene;
+                    } else if (this.topGenesList.length > 0) {
+                        // Fallback to first gene if no top genes marked
                         this.selectedGene = this.topGenesList[0].gene;
                     }
                 },
 
                 // Gene plot path (single-sample, takes plot type as parameter)
                 getGenePlotPath(plotType) {
+                    // Don't return a path during trait transitions to prevent bad requests
+                    if (this.loadingGeneData || !this.selectedGene || !this.selectedTrait || !this.selectedSample) {
+                        return '';
+                    }
                     const safeSample = this.selectedSample.replace(/[^a-zA-Z0-9]/g, '_');
                     return `gene_diagnostic_plots/gene_${this.selectedTrait}_${this.selectedGene}_${safeSample}_${plotType}.png`;
                 },
