@@ -785,7 +785,6 @@
     <script src="js_data/report_meta.js"></script>
     <script src="js_data/sample_index.js"></script>
     <script src="js_data/cauchy_results.js"></script>
-    <script src="js_data/gene_trait_correlation.js"></script>
     <script src="js_data/umap_data.js"></script>
 
     <script>
@@ -823,7 +822,7 @@
                 // Raw data
                 reportMeta: {},
                 cauchyData: [],
-                topGenesPcc: [],
+                pccLoadedTraits: {}, // { trait: true }
                 topGenesList: [],
 
                 // UMAP state
@@ -1133,6 +1132,11 @@
 
                         // Wait for Plotly to load, then render plots
                         await this.waitForPlotly();
+                        
+                        // Load PCC data for first trait
+                        await this.loadPccData(this.selectedTrait);
+                        this.updateGeneList();
+
                         this.loadManhattanData();
                         this.renderCauchyHeatmap();
                         this.renderUmapPlots();
@@ -1149,10 +1153,12 @@
                 },
 
                 // Event handlers
-                onTraitChange() {
+                async onTraitChange() {
                     this._geneFilterCache = null; // Invalidate cache
                     this._cauchyFilterCache = null;
                     this.manhattanTraceCache = null; // Invalidate Manhattan cache
+                    
+                    await this.loadPccData(this.selectedTrait);
                     this.updateGeneList();
                     this.loadManhattanData();
 
@@ -1255,15 +1261,46 @@
                     // Static gene plots update automatically via img src binding
                 },
 
+                // Load PCC data on-demand
+                async loadPccData(trait) {
+                    if (!trait) return;
+                    if (this.pccLoadedTraits[trait]) return;
+
+                    this.isLoading = true;
+                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, "_");
+                    const varName = `GSMAP_GENE_TRAIT_CORRELATION_${safeTrait}`;
+
+                    return new Promise((resolve, reject) => {
+                        const script = document.createElement('script');
+                        script.src = `js_data/gss_stats/gene_trait_correlation_${trait}.js`;
+                        script.onload = () => {
+                            this.pccLoadedTraits[trait] = true;
+                            console.log(`Loaded PCC data for ${trait}`);
+                            this.isLoading = false;
+                            resolve();
+                        };
+                        script.onerror = () => {
+                            console.error(`Failed to load PCC data for ${trait}`);
+                            this.isLoading = false;
+                            reject(new Error(`Failed to load PCC for ${trait}`));
+                        };
+                        document.body.appendChild(script);
+                    });
+                },
+
                 // Update gene list when trait changes
                 updateGeneList() {
                     const trait = this.selectedTrait;
-                    if (!trait || !this.topGenesPcc || this.topGenesPcc.length === 0) {
+                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, "_");
+                    const varName = `GSMAP_GENE_TRAIT_CORRELATION_${safeTrait}`;
+                    const pccData = window[varName];
+
+                    if (!trait || !pccData || pccData.length === 0) {
                         this.topGenesList = [];
                         return;
                     }
-                    let traitGenes = this.topGenesPcc
-                        .filter(g => g.trait === trait)
+
+                    let traitGenes = pccData
                         .sort((a, b) => (b.PCC || 0) - (a.PCC || 0));
 
                     // Mark top genes
