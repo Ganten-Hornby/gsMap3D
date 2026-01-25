@@ -16,7 +16,7 @@ from collections import OrderedDict
 
 from .gnn.train_step import ModelTrain
 from .gnn.st_model import StEmbeding
-from .st_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData, calculate_module_score, apply_module_score_qc, calculate_module_scores_from_degs
+from .st_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData, calculate_module_score, apply_module_score_qc, calculate_module_scores_from_degs, convert_to_human_genes
 from gsMap.config import FindLatentRepresentationsConfig
 
 from operator import itemgetter
@@ -65,8 +65,8 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
     set_seed(2024)
 
     # Find the hvg
-    hvg, n_cell_used, gene_name_dict = find_common_hvg(config.sample_h5ad_dict, config)
-    common_genes = np.array(list(gene_name_dict.keys()))
+    hvg, n_cell_used, gene_homolog_dict = find_common_hvg(config.sample_h5ad_dict, config)
+    common_genes = np.array(list(gene_homolog_dict.keys()))
 
     # Create subsampled concatenated adata with sample-specific stratified sampling
     training_adata = create_subsampled_adata(config.sample_h5ad_dict, n_cell_used, config)
@@ -240,11 +240,8 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
             else:
                 logger.warning(f"Annotation '{config.annotation}' not found in {sample_name}, skipping QC")
 
-        # Transfer the gene name
-        common_genes = np.array(list(gene_name_dict.keys()))
-        common_genes_transfer = np.array(itemgetter(*common_genes)(gene_name_dict))
-        adata = adata[:, common_genes].copy()
-        adata.var_names = common_genes_transfer
+        # Transfer to human gene names
+        adata = convert_to_human_genes(adata, gene_homolog_dict, species=config.species)
 
 
         # Compute the depth

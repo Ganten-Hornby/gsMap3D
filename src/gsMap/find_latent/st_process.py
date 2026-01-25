@@ -16,6 +16,47 @@ import scipy.sparse as sp
 
 logger = logging.getLogger(__name__)
 
+
+def convert_to_human_genes(adata, gene_homolog_dict: dict, species: str = None):
+    """
+    Convert gene names in adata to human gene symbols using a pre-computed mapping dictionary.
+    
+    Args:
+        adata: AnnData object to convert
+        gene_homolog_dict: Dictionary mapping current gene names to human gene symbols
+        species: Optional species name to use for the original gene column in var
+        
+    Returns:
+        adata: Processed AnnData object with human symbols as var_names
+    """
+    # Identify common genes present in mapping
+    common_genes = [g for g in gene_homolog_dict.keys() if g in adata.var_names]
+    
+    if len(common_genes) < 300:
+        logger.warning(f"Only {len(common_genes)} genes found in mapping dictionary.")
+    
+    # Filter to these genes
+    adata = adata[:, common_genes].copy()
+    
+    human_symbols = [gene_homolog_dict[g] for g in adata.var_names]
+    
+    # Store original gene names if species is provided
+    if species:
+        species_col_name = f"{species}_GENE_SYM"
+        adata.var[species_col_name] = adata.var_names.values
+    
+    # Update var_names to human symbols
+    adata.var_names = human_symbols
+    adata.var.index.name = "HUMAN_GENE_SYM"
+    
+    # Remove duplicated genes (keep first occurrence)
+    if adata.var_names.duplicated().any():
+        n_before = adata.n_vars
+        adata = adata[:, ~adata.var_names.duplicated()].copy()
+        logger.info(f"Removed {n_before - adata.n_vars} duplicate human gene symbols.")
+        
+    return adata
+
 def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     """
     Identifies common highly variable genes (HVGs) across multiple ST datasets and calculates
@@ -44,6 +85,9 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
             # Filter out mitochondrial and hemoglobin genes
             gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
+            if removed_genes := adata_temp.n_vars - gene_keep.sum():
+                logger.info(f"Removed {removed_genes} mitochondrial and hemoglobin genes in {sample_name}.")
+            
             adata_temp = adata_temp[:,gene_keep].copy()
 
             is_count_data, actual_data_layer = setup_data_layer(adata_temp, params.data_layer, verbose=False)
@@ -70,11 +114,15 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
             progress.update(task, advance=1)
 
-    # Find the common genes across all datasets
+    # Find the common genes across all samples
     common_genes = np.array(
         list(set.intersection(
             *map(set, [st.index.to_list() for st in variances_list])))
     )
+
+    # Error when gene number is too small
+    if len(common_genes) < 300:
+        ValueError(f"Only {len(common_genes)} common genes between all samples.")
 
     # Aggregate variances and identify HVGs
     df = pd.concat(variances_list, axis=0)
@@ -129,10 +177,14 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         homologs.columns = [params.species, 'HUMAN_GENE_SYM']
         homologs.set_index(params.species, inplace=True)
         common_genes = np.intersect1d(common_genes, homologs.index)
-        gene_name_dict = dict(zip(common_genes,homologs.loc[common_genes].HUMAN_GENE_SYM.values))
+        gene_homolog_dict = dict(zip(common_genes,homologs.loc[common_genes].HUMAN_GENE_SYM.values))
     else:
-        gene_name_dict = dict(zip(common_genes,common_genes))
-    return hvg, n_cell_used, gene_name_dict
+        gene_homolog_dict = dict(zip(common_genes,common_genes))
+
+    if len(gene_homolog_dict) < 300:
+        raise ValueError(f"Only {len(gene_homolog_dict)} genes could be mapped to human symbols. Please check the homolog file.")
+
+    return hvg, n_cell_used, gene_homolog_dict
 
 
 def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRepresentationsConfig):
