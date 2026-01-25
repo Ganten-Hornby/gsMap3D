@@ -106,10 +106,15 @@ class GWASSumstatsConfig:
             )
         # load the sumstats self file
         if self.sumstats_config_file is not None:
+            # get the directory of the config file to resolve relative paths
+            config_dir = Path(self.sumstats_config_file).parent
             with open(self.sumstats_config_file) as f:
                 config_loaded = yaml.load(f, Loader=yaml.FullLoader)
             for _trait_name, sumstats_file in config_loaded.items():
-                sumstats_config_dict[_trait_name] = Path(sumstats_file)
+                s_path = Path(sumstats_file)
+                if not s_path.is_absolute():
+                    s_path = config_dir / s_path
+                sumstats_config_dict[_trait_name] = s_path.resolve()
         # load the sumstats file
         elif self.sumstats_file is not None:
             sumstats_config_dict[self.trait_name] = Path(self.sumstats_file)
