@@ -60,6 +60,7 @@ class ReportDataManager:
         self.is_3d = False
         self.z_axis = None
         self.common_spots = None
+        self.analysis_spots = None
         self.gss_adata = None
         self.gene_stats = None
         self.metadata = None
@@ -142,14 +143,16 @@ class ReportDataManager:
         
         # Load GSS and common spots
         if self.gss_adata is None:
-            self.common_spots, self.gss_adata, self.gene_stats = _load_gss_and_calculate_stats_base(
+            self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = _load_gss_and_calculate_stats_base(
                 self.report_config, self.ldsc_results, self.coords, self.report_data_dir
             )
             
         # Pre-filter to high expression genes and pre-calculate centered matrix
         exp_frac = pd.read_parquet(self.report_config.mean_frac_path)
         high_expr_genes = exp_frac[exp_frac['frac'] > 0.01].index.tolist()
-        gss_adata_sub = self.gss_adata[self.common_spots, high_expr_genes]
+        
+        # Use analysis_spots (subsampled) for PCC calculation
+        gss_adata_sub = self.gss_adata[self.analysis_spots, high_expr_genes]
         gss_matrix = gss_adata_sub.X
         if hasattr(gss_matrix, 'toarray'):
             gss_matrix = gss_matrix.toarray()
@@ -170,7 +173,7 @@ class ReportDataManager:
                 continue
 
             trait_pcc = _calculate_pcc_for_single_trait_fast(
-                trait, self.ldsc_results, self.common_spots, gss_centered, gss_ssq, gene_names, self.gene_stats, self.report_config, self.report_data_dir, gss_dir
+                trait, self.ldsc_results, self.analysis_spots, gss_centered, gss_ssq, gene_names, self.gene_stats, self.report_config, self.report_data_dir, gss_dir
             )
             if trait_pcc is not None:
                 all_pcc.append(trait_pcc)
@@ -316,7 +319,7 @@ class ReportDataManager:
             # _render_gene_diagnostic_plots_refactored will return early if nothing to do, 
             # but we need some basic info to call it or decide to load.
             # For simplicity, we load the base GSS info here.
-            self.common_spots, self.gss_adata, self.gene_stats = _load_gss_and_calculate_stats_base(
+            self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = _load_gss_and_calculate_stats_base(
                 self.report_config, self.ldsc_results, self.coords, self.report_data_dir
             )
 
@@ -1012,7 +1015,7 @@ def _load_gss_and_calculate_stats_base(
     ldsc_results: pd.DataFrame,
     coords: pd.DataFrame,
     report_dir: Path
-) -> Tuple[np.ndarray, ad.AnnData, pd.DataFrame]:
+) -> Tuple[np.ndarray, ad.AnnData, pd.DataFrame, np.ndarray]:
     """Load GSS data, calculate general stats, and return analysis results."""
     logger.info("Loading GSS data...")
 
@@ -1058,7 +1061,7 @@ def _load_gss_and_calculate_stats_base(
     })
     gene_stats.dropna(subset=['Median_GSS'], inplace=True)
 
-    return common_spots, gss_adata, gene_stats
+    return common_spots, gss_adata, gene_stats, analysis_spots
 
 
 def _calculate_pcc_for_single_trait_fast(
