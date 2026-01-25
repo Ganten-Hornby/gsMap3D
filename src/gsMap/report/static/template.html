@@ -249,8 +249,7 @@
                     @click="sections.spatial3d = !sections.spatial3d">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-spatial3d')"></h2>
-                        <p class="text-sm text-gray-500">Interactive 3D view of spatial data with annotations and
-                            traits.</p>
+                        <p class="text-sm text-gray-500">Interactive 3D view of spatial data with -log10(p) values and annotations side by side.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform"
                         :class="sections.spatial3d ? 'rotate-180' : ''" fill="none" stroke="currentColor"
@@ -261,56 +260,79 @@
                 <div class="section-content" :class="sections.spatial3d ? 'expanded' : 'collapsed'">
                     <!-- 3D Controls -->
                     <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
-                        <div class="flex items-center gap-4">
-                            <span class="text-sm font-medium text-gray-700">Type:</span>
-                            <label class="inline-flex items-center cursor-pointer" @click="spatial3dLoading = true">
-                                <input type="radio" name="spatial3dType" value="annotation" x-model="spatial3dType"
-                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                <span class="ml-2 text-sm text-gray-700">Annotation</span>
-                            </label>
-                            <label class="inline-flex items-center cursor-pointer" @click="spatial3dLoading = true">
-                                <input type="radio" name="spatial3dType" value="trait" x-model="spatial3dType"
-                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                <span class="ml-2 text-sm text-gray-700">Trait</span>
-                            </label>
-                        </div>
-
-                        <div class="flex items-center gap-2" x-show="spatial3dType === 'annotation'">
-                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
-                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
-                                x-text="selectedAnnotationCategory"></span>
-                        </div>
-                        <div class="flex items-center gap-2" x-show="spatial3dType === 'trait'">
+                        <div class="flex items-center gap-2">
                             <label class="text-sm font-medium text-gray-700">Trait:</label>
                             <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
                                 x-text="selectedTrait"></span>
                         </div>
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedAnnotationCategory"></span>
+                        </div>
                     </div>
 
-                    <div class="p-2 relative min-h-[400px]">
-                        <!-- Loading Overlay -->
-                        <div x-show="has3dWidget && spatial3dLoading"
-                            class="absolute inset-0 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
-                            <div class="flex flex-col items-center gap-3">
-                                <svg class="spinner h-10 w-10 text-primary-600" xmlns="http://www.w3.org/2000/svg"
-                                    fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
-                                        stroke-width="4"></circle>
-                                    <path class="opacity-75" fill="currentColor"
-                                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                                </svg>
-                                <span class="text-sm font-medium text-gray-600">Loading 3D Scene...</span>
+                    <!-- Side-by-side 3D views -->
+                    <div class="p-2">
+                        <div class="flex flex-wrap gap-4">
+                            <!-- Left: Trait -log10(p) -->
+                            <div class="flex-1 min-w-[500px] relative">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">
+                                    -log10(p) - <span x-text="selectedTrait"></span>
+                                </h3>
+                                <!-- Loading Overlay for Trait -->
+                                <div x-show="spatial3dTraitLoading"
+                                    class="absolute inset-0 top-8 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
+                                    <div class="flex flex-col items-center gap-3">
+                                        <svg class="spinner h-10 w-10 text-primary-600" xmlns="http://www.w3.org/2000/svg"
+                                            fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                                stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor"
+                                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                        </svg>
+                                        <span class="text-sm font-medium text-gray-600">Loading 3D Scene...</span>
+                                    </div>
+                                </div>
+                                <template x-if="spatial3dTraitPath">
+                                    <iframe :src="spatial3dTraitPath" @load="spatial3dTraitLoading = false"
+                                        class="w-full border-0 rounded-lg" style="height: 800px; min-height: 600px;"
+                                        loading="lazy" title="3D Spatial Visualization - Trait">
+                                    </iframe>
+                                </template>
+                                <div x-show="!spatial3dTraitPath" class="p-8 text-center text-gray-500" style="height: 800px;">
+                                    No 3D visualization available for this trait.
+                                </div>
                             </div>
-                        </div>
-
-                        <template x-if="spatial3dWidgetPath">
-                            <iframe :src="spatial3dWidgetPath" @load="spatial3dLoading = false"
-                                class="w-full border-0 rounded-lg" style="height: 800px; min-height: 600px;"
-                                loading="lazy" title="3D Spatial Visualization">
-                            </iframe>
-                        </template>
-                        <div x-show="!spatial3dWidgetPath" class="p-8 text-center text-gray-500">
-                            No 3D visualization available for this selection.
+                            <!-- Right: Annotation -->
+                            <div class="flex-1 min-w-[500px] relative">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">
+                                    Annotation - <span x-text="selectedAnnotationCategory"></span>
+                                </h3>
+                                <!-- Loading Overlay for Annotation -->
+                                <div x-show="spatial3dAnnotationLoading"
+                                    class="absolute inset-0 top-8 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
+                                    <div class="flex flex-col items-center gap-3">
+                                        <svg class="spinner h-10 w-10 text-primary-600" xmlns="http://www.w3.org/2000/svg"
+                                            fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                                stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor"
+                                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                        </svg>
+                                        <span class="text-sm font-medium text-gray-600">Loading 3D Scene...</span>
+                                    </div>
+                                </div>
+                                <template x-if="spatial3dAnnotationPath">
+                                    <iframe :src="spatial3dAnnotationPath" @load="spatial3dAnnotationLoading = false"
+                                        class="w-full border-0 rounded-lg" style="height: 800px; min-height: 600px;"
+                                        loading="lazy" title="3D Spatial Visualization - Annotation">
+                                    </iframe>
+                                </template>
+                                <div x-show="!spatial3dAnnotationPath" class="p-8 text-center text-gray-500" style="height: 800px;">
+                                    No 3D visualization available for this annotation.
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -326,7 +348,7 @@
                             <span x-text="getSectionTitle('sec-gsmap')"></span> -
                             <span x-text="selectedSample"></span>
                         </h2>
-                        <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values or annotations.</p>
+                        <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values and annotations side by side.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.gsmap ? 'rotate-180' : ''"
                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -336,27 +358,12 @@
                 <div class="section-content" :class="sections.gsmap ? 'expanded' : 'collapsed'">
                     <!-- Spatial 2D Controls -->
                     <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
-                        <div class="flex items-center gap-4">
-                            <span class="text-sm font-medium text-gray-700">View:</span>
-                            <label class="inline-flex items-center cursor-pointer">
-                                <input type="radio" name="spatial2dType" value="trait" x-model="spatial2dType"
-                                    @change="renderSpatial2DPlot()"
-                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                <span class="ml-2 text-sm text-gray-700">gsMap -log10(p)</span>
-                            </label>
-                            <label class="inline-flex items-center cursor-pointer">
-                                <input type="radio" name="spatial2dType" value="annotation" x-model="spatial2dType"
-                                    @change="renderSpatial2DPlot()"
-                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                <span class="ml-2 text-sm text-gray-700">Annotation</span>
-                            </label>
-                        </div>
-                        <div class="flex items-center gap-2" x-show="spatial2dType === 'trait'">
+                        <div class="flex items-center gap-2">
                             <label class="text-sm font-medium text-gray-700">Trait:</label>
                             <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
                                 x-text="selectedTrait"></span>
                         </div>
-                        <div class="flex items-center gap-2" x-show="spatial2dType === 'annotation'">
+                        <div class="flex items-center gap-2">
                             <label class="text-sm font-medium text-gray-700">Annotation:</label>
                             <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
                                 x-text="selectedAnnotationCategory"></span>
@@ -377,8 +384,23 @@
                             </svg>
                             <span class="text-gray-500 text-lg">Loading sample data...</span>
                         </div>
-                        <!-- Plot container -->
-                        <div id="spatial2dPlot" x-show="!loadingSampleData" class="w-full" style="height: 600px;"></div>
+                        <!-- Side-by-side plot containers -->
+                        <div x-show="!loadingSampleData" class="flex flex-wrap gap-4">
+                            <!-- Left: Trait -log10(p) -->
+                            <div class="flex-1 min-w-[400px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">
+                                    -log10(p) - <span x-text="selectedTrait"></span>
+                                </h3>
+                                <div id="spatial2dPlotTrait" class="w-full" style="height: 500px;"></div>
+                            </div>
+                            <!-- Right: Annotation -->
+                            <div class="flex-1 min-w-[400px]">
+                                <h3 class="text-center font-medium text-gray-700 mb-2">
+                                    Annotation - <span x-text="selectedAnnotationCategory"></span>
+                                </h3>
+                                <div id="spatial2dPlotAnnotation" class="w-full" style="height: 500px;"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -549,7 +571,7 @@
                     @click="sections.umap = !sections.umap">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-umap')"></h2>
-                        <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings.</p>
+                        <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings with -log10(p) and annotations.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.umap ? 'rotate-180' : ''"
                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -559,30 +581,15 @@
                 <div class="section-content" :class="sections.umap ? 'expanded' : 'collapsed'">
                     <!-- UMAP Controls -->
                     <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
-                        <div class="flex items-center gap-4">
-                            <span class="text-sm font-medium text-gray-700">Color by:</span>
-                            <label class="inline-flex items-center cursor-pointer">
-                                <input type="radio" name="umapColorMode" value="annotation" x-model="umapColorMode"
-                                    @change="renderUmapPlots()"
-                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                <span class="ml-2 text-sm text-gray-700">Annotation</span>
-                            </label>
-                            <label class="inline-flex items-center cursor-pointer">
-                                <input type="radio" name="umapColorMode" value="trait" x-model="umapColorMode"
-                                    @change="renderUmapPlots()"
-                                    class="form-radio text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                <span class="ml-2 text-sm text-gray-700">Trait -log10(p)</span>
-                            </label>
-                        </div>
-                        <div class="flex items-center gap-2" x-show="umapColorMode === 'annotation'">
-                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
-                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
-                                x-text="selectedAnnotationCategory"></span>
-                        </div>
-                        <div class="flex items-center gap-2" x-show="umapColorMode === 'trait'">
+                        <div class="flex items-center gap-2">
                             <label class="text-sm font-medium text-gray-700">Trait:</label>
                             <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
                                 x-text="selectedTrait"></span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
+                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
+                                x-text="selectedAnnotationCategory"></span>
                         </div>
                         <div class="text-sm text-gray-500">
                             <span x-text="umapData ? umapData.spot.length : 0"></span> spots
@@ -591,16 +598,45 @@
 
                     <!-- UMAP Plots Container -->
                     <div class="p-4">
-                        <div class="flex flex-wrap gap-4" :class="umapHasNiche ? 'justify-center' : 'justify-center'">
-                            <!-- Cell Embedding UMAP -->
-                            <div class="flex-1 min-w-[400px] max-w-[600px]">
-                                <h3 class="text-center font-medium text-gray-700 mb-2">Cell Embedding</h3>
-                                <div id="umapCellPlot" class="w-full" style="height: 450px;"></div>
+                        <!-- Row 1: Cell Embedding -->
+                        <div class="mb-6">
+                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Cell Embedding</h3>
+                            <div class="flex flex-wrap gap-4">
+                                <!-- Left: Trait -log10(p) -->
+                                <div class="flex-1 min-w-[400px]">
+                                    <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
+                                        -log10(p) - <span x-text="selectedTrait"></span>
+                                    </h4>
+                                    <div id="umapCellPlotTrait" class="w-full" style="height: 400px;"></div>
+                                </div>
+                                <!-- Right: Annotation -->
+                                <div class="flex-1 min-w-[400px]">
+                                    <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
+                                        Annotation - <span x-text="selectedAnnotationCategory"></span>
+                                    </h4>
+                                    <div id="umapCellPlotAnnotation" class="w-full" style="height: 400px;"></div>
+                                </div>
                             </div>
-                            <!-- Niche Embedding UMAP (only if available) -->
-                            <div x-show="umapHasNiche" class="flex-1 min-w-[400px] max-w-[600px]">
-                                <h3 class="text-center font-medium text-gray-700 mb-2">Niche Embedding</h3>
-                                <div id="umapNichePlot" class="w-full" style="height: 450px;"></div>
+                        </div>
+
+                        <!-- Row 2: Niche Embedding (only if available) -->
+                        <div x-show="umapHasNiche">
+                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Niche Embedding</h3>
+                            <div class="flex flex-wrap gap-4">
+                                <!-- Left: Trait -log10(p) -->
+                                <div class="flex-1 min-w-[400px]">
+                                    <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
+                                        -log10(p) - <span x-text="selectedTrait"></span>
+                                    </h4>
+                                    <div id="umapNichePlotTrait" class="w-full" style="height: 400px;"></div>
+                                </div>
+                                <!-- Right: Annotation -->
+                                <div class="flex-1 min-w-[400px]">
+                                    <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
+                                        Annotation - <span x-text="selectedAnnotationCategory"></span>
+                                    </h4>
+                                    <div id="umapNichePlotAnnotation" class="w-full" style="height: 400px;"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -850,20 +886,21 @@
                 umapHasNiche: false,
                 umapAnnotationColumns: [],
                 selectedUmapAnnotation: '',
-                umapColorMode: 'annotation', // 'annotation' or 'trait'
-                umapCellPlotInitialized: false,
-                umapNichePlotInitialized: false,
+                umapCellPlotTraitInitialized: false,
+                umapCellPlotAnnotationInitialized: false,
+                umapNichePlotTraitInitialized: false,
+                umapNichePlotAnnotationInitialized: false,
 
                 // 3D visualization state
                 is3d: false,
                 has3dWidget: false,
-                spatial3dType: 'annotation', // 'annotation' or 'trait'
-                spatial3dLoading: true,
+                spatial3dTraitLoading: true,
+                spatial3dAnnotationLoading: true,
 
                 // Spatial 2D visualization state
                 selectedSample: '',
-                spatial2dType: 'trait', // 'trait' or 'annotation'
-                spatial2dPlotInitialized: false,
+                spatial2dPlotTraitInitialized: false,
+                spatial2dPlotAnnotationInitialized: false,
 
                 // Per-sample data loading (for efficient on-demand loading)
                 sampleDataCache: {},        // { sampleName: data } - cache loaded samples
@@ -948,20 +985,22 @@
                     return this.currentSections[sectionKey] || false;
                 },
 
-                get spatial3dWidgetPath() {
+                // Computed property for 3D trait path
+                get spatial3dTraitPath() {
                     if (!this.has3dWidget) return '';
-                    let name = '';
-                    let prefix = '';
-                    if (this.spatial3dType === 'annotation') {
-                        name = this.selectedAnnotationCategory;
-                        prefix = 'spatial_3d_anno';
-                    } else {
-                        name = this.selectedTrait;
-                        prefix = 'spatial_3d_trait';
-                    }
+                    const name = this.selectedTrait;
                     if (!name) return '';
                     const safeName = name.replace(/[^a-zA-Z0-9]/g, '_');
-                    return `spatial_3d/${prefix}_${safeName}.html`;
+                    return `spatial_3d/spatial_3d_trait_${safeName}.html`;
+                },
+
+                // Computed property for 3D annotation path
+                get spatial3dAnnotationPath() {
+                    if (!this.has3dWidget) return '';
+                    const name = this.selectedAnnotationCategory;
+                    if (!name) return '';
+                    const safeName = name.replace(/[^a-zA-Z0-9]/g, '_');
+                    return `spatial_3d/spatial_3d_anno_${safeName}.html`;
                 },
 
                 // Manhattan state
@@ -1190,39 +1229,27 @@
                     this.loadingGeneData = false; // Gene data ready
                     this.loadManhattanData();
 
-                    // Update 3D visualization if in trait mode
-                    if (this.spatial3dType === 'trait') {
-                        this.spatial3dLoading = true;
-                    }
+                    // Update 3D visualization - trait view needs reload
+                    this.spatial3dTraitLoading = true;
 
-                    // Update UMAP if in trait mode
-                    if (this.umapColorMode === 'trait') {
-                        this.renderUmapPlots();
-                    }
+                    // Update UMAP plots (both trait and annotation views)
+                    this.renderUmapPlots();
 
-                    // Update spatial 2D plot if in trait mode
-                    if (this.spatial2dType === 'trait') {
-                        this.renderSpatial2DPlot();
-                    }
+                    // Update spatial 2D plots (both trait and annotation views)
+                    this.renderSpatial2DPlot();
                 },
 
                 onAnnotationChange() {
                     this._cauchyFilterCache = null;
 
-                    // Update 3D visualization if in annotation mode
-                    if (this.spatial3dType === 'annotation') {
-                        this.spatial3dLoading = true;
-                    }
+                    // Update 3D visualization - annotation view needs reload
+                    this.spatial3dAnnotationLoading = true;
 
-                    // Update UMAP if in annotation mode
-                    if (this.umapColorMode === 'annotation') {
-                        this.renderUmapPlots();
-                    }
+                    // Update UMAP plots (both trait and annotation views)
+                    this.renderUmapPlots();
 
-                    // Update spatial 2D plot if in annotation mode
-                    if (this.spatial2dType === 'annotation') {
-                        this.renderSpatial2DPlot();
-                    }
+                    // Update spatial 2D plots (both trait and annotation views)
+                    this.renderSpatial2DPlot();
 
                     // Update Cauchy Heatmap
                     this.renderCauchyHeatmap();
@@ -1710,90 +1737,112 @@
                 renderUmapPlots() {
                     if (!this.umapData || !this.plotlyReady) return;
 
-                    // Determine what to color by based on umapColorMode
-                    let colorValues = [];
-                    let colorMap = null;
-                    let isContinuous = false;
-                    let colorLabel = '';
+                    // Prepare trait color data
+                    const trait = this.selectedTrait;
+                    let traitColorValues = [];
+                    const traitColorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
+                    const traitColorLabel = `-log10(p) ${trait}`;
 
-                    if (this.umapColorMode === 'annotation') {
-                        // Color by annotation category (from global sidebar selection)
-                        const anno = this.selectedAnnotationCategory;
-                        if (!anno || !this.umapData[anno]) return;
-
-                        colorValues = this.umapData[anno] || [];
-                        colorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
-                        isContinuous = Array.isArray(colorMap);
-                        colorLabel = anno;
+                    if (trait && this.umapData[trait]) {
+                        traitColorValues = this.umapData[trait];
                     } else {
-                        // Color by trait -log10(p) values
-                        const trait = this.selectedTrait;
-                        if (!trait) return;
-
-                        // Check if trait data exists in UMAP data
-                        if (this.umapData[trait]) {
-                            colorValues = this.umapData[trait];
-                        } else {
-                            // If trait not in UMAP data, show message
-                            console.warn(`Trait ${trait} not available in UMAP data`);
-                            colorValues = new Array(this.umapData.spot.length).fill(0);
-                        }
-
-                        // Use continuous colormap for trait values
-                        colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
-                        isContinuous = true;
-                        colorLabel = `-log10(p) ${trait}`;
+                        traitColorValues = new Array(this.umapData.spot.length).fill(0);
                     }
 
-                    // Build hover text with all annotations
-                    // Build hover text
-                    const hoverText = this.umapData.spot.map((spot, i) => {
-                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
+                    // Prepare annotation color data
+                    const anno = this.selectedAnnotationCategory;
+                    let annoColorValues = [];
+                    let annoColorMap = null;
 
-                        if (this.umapColorMode === 'annotation') {
-                            const anno = this.selectedAnnotationCategory;
-                            if (anno && this.umapData[anno]) {
-                                const val = this.umapData[anno][i];
-                                text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
-                            }
-                        } else {
-                            const trait = this.selectedTrait;
-                            if (trait && this.umapData[trait]) {
-                                const traitVal = this.umapData[trait][i];
-                                text += `<br><b>${trait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
-                            }
+                    if (anno && this.umapData[anno]) {
+                        annoColorValues = this.umapData[anno];
+                        annoColorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
+                    }
+
+                    // Build hover text for trait view
+                    const traitHoverText = this.umapData.spot.map((spot, i) => {
+                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
+                        if (trait && this.umapData[trait]) {
+                            const traitVal = this.umapData[trait][i];
+                            text += `<br><b>${trait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
                         }
                         return text;
                     });
 
-                    // Render Cell Embedding UMAP
+                    // Build hover text for annotation view
+                    const annoHoverText = this.umapData.spot.map((spot, i) => {
+                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
+                        if (anno && this.umapData[anno]) {
+                            const val = this.umapData[anno][i];
+                            text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
+                        }
+                        return text;
+                    });
+
+                    const cellPointSize = this.umapData.point_size_cell || 4;
+                    const nichePointSize = this.umapData.point_size_niche || 4;
+
+                    // Render Cell Embedding - Trait
                     this.renderSingleUmap(
-                        'umapCellPlot',
+                        'umapCellPlotTrait',
                         this.umapData.umap_cell_x,
                         this.umapData.umap_cell_y,
-                        colorValues,
-                        colorMap,
-                        isContinuous,
-                        hoverText,
-                        'Cell Embedding UMAP',
-                        colorLabel,
-                        this.umapData.point_size_cell || 4
+                        traitColorValues,
+                        traitColorMap,
+                        true, // isContinuous
+                        traitHoverText,
+                        'Cell Embedding',
+                        traitColorLabel,
+                        cellPointSize
                     );
 
-                    // Render Niche Embedding UMAP (if available)
-                    if (this.umapHasNiche && this.umapData.umap_niche_x) {
+                    // Render Cell Embedding - Annotation
+                    if (anno && annoColorValues.length > 0) {
                         this.renderSingleUmap(
-                            'umapNichePlot',
+                            'umapCellPlotAnnotation',
+                            this.umapData.umap_cell_x,
+                            this.umapData.umap_cell_y,
+                            annoColorValues,
+                            annoColorMap,
+                            false, // isContinuous
+                            annoHoverText,
+                            'Cell Embedding',
+                            anno,
+                            cellPointSize
+                        );
+                    }
+
+                    // Render Niche Embedding plots (if available)
+                    if (this.umapHasNiche && this.umapData.umap_niche_x) {
+                        // Render Niche Embedding - Trait
+                        this.renderSingleUmap(
+                            'umapNichePlotTrait',
                             this.umapData.umap_niche_x,
                             this.umapData.umap_niche_y,
-                            colorValues,
-                            colorMap,
-                            isContinuous,
-                            hoverText,
-                            'Niche Embedding UMAP',
-                            colorLabel,
-                            this.umapData.point_size_niche || 4
+                            traitColorValues,
+                            traitColorMap,
+                            true, // isContinuous
+                            traitHoverText,
+                            'Niche Embedding',
+                            traitColorLabel,
+                            nichePointSize
                         );
+
+                        // Render Niche Embedding - Annotation
+                        if (anno && annoColorValues.length > 0) {
+                            this.renderSingleUmap(
+                                'umapNichePlotAnnotation',
+                                this.umapData.umap_niche_x,
+                                this.umapData.umap_niche_y,
+                                annoColorValues,
+                                annoColorMap,
+                                false, // isContinuous
+                                annoHoverText,
+                                'Niche Embedding',
+                                anno,
+                                nichePointSize
+                            );
+                        }
                     }
                 },
 
@@ -1878,10 +1927,19 @@
                 },
 
                 // Spatial 2D Plot rendering (uses per-sample data loaded on-demand)
+                // Render both 2D spatial plots (trait and annotation side by side)
                 renderSpatial2DPlot() {
                     if (!this.plotlyReady || !this.currentSampleData) return;
 
-                    const plotDiv = document.getElementById('spatial2dPlot');
+                    // Render trait plot
+                    this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
+                    // Render annotation plot
+                    this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
+                },
+
+                // Helper to render a single 2D spatial plot
+                renderSpatial2DPlotSingle(divId, plotType) {
+                    const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
 
                     const data = this.currentSampleData;
@@ -1902,7 +1960,7 @@
                     // Determine what to color by
                     let colorValues, colorLabel, isContinuous, colorMap;
 
-                    if (this.spatial2dType === 'trait') {
+                    if (plotType === 'trait') {
                         const trait = this.selectedTrait;
                         // Values already rounded to 1 decimal during export
                         colorValues = data[trait] || x.map(() => 0);
@@ -1916,7 +1974,7 @@
                         isContinuous = false;
                     }
 
-                    // Build hover text with ALL annotations (not sample name since it's selected)
+                    // Build hover text with ALL annotations
                     const hoverText = data.spot.map((spot, i) => {
                         let text = `<b>Spot:</b> ${spot}`;
                         // Add all annotation columns
@@ -1926,9 +1984,9 @@
                                 text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
                             }
                         });
-                        // Add trait value if viewing trait
-                        if (this.spatial2dType === 'trait' && this.selectedTrait) {
-                            const val = data[this.selectedTrait] ? data[this.selectedTrait][i] : 'N/A';
+                        // Add trait value
+                        if (this.selectedTrait && data[this.selectedTrait]) {
+                            const val = data[this.selectedTrait][i];
                             const rounded = (val !== null && val !== undefined) ? val.toFixed(1) : 'N/A';
                             text += `<br><b>-log10(p):</b> ${rounded}`;
                         }
@@ -1993,10 +2051,11 @@
                         layoutExtras.showlegend = uniqueValues.length <= 50;
                     }
 
+                    const titleText = plotType === 'trait' ? this.selectedTrait : this.selectedAnnotationCategory;
                     const layout = {
                         title: {
-                            text: `${sample} - ${this.spatial2dType === 'trait' ? this.selectedTrait : this.selectedAnnotationCategory}`,
-                            font: { size: 16 }
+                            text: `${sample} - ${titleText}`,
+                            font: { size: 14 }
                         },
                         xaxis: {
                             showgrid: false,
@@ -2011,7 +2070,7 @@
                             autorange: (this.reportMeta.plot_origin === 'upper') ? 'reversed' : true
                         },
                         hovermode: 'closest',
-                        margin: { l: 20, r: 20, t: 50, b: 20 },
+                        margin: { l: 20, r: 20, t: 40, b: 20 },
                         legend: {
                             orientation: 'v',
                             x: 1.02,
@@ -2024,11 +2083,12 @@
 
                     const config = { responsive: true, displayModeBar: true };
 
-                    if (this.spatial2dPlotInitialized) {
+                    const initializedKey = plotType === 'trait' ? 'spatial2dPlotTraitInitialized' : 'spatial2dPlotAnnotationInitialized';
+                    if (this[initializedKey]) {
                         Plotly.react(plotDiv, traces, layout, config);
                     } else {
                         Plotly.newPlot(plotDiv, traces, layout, config);
-                        this.spatial2dPlotInitialized = true;
+                        this[initializedKey] = true;
                     }
                 },
 
