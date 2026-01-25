@@ -226,6 +226,11 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
             # Get DEG results from training data
             deg_results = training_adata.uns['rank_genes_groups']
 
+            # Keep the same gene list as training data, because the module score is based on the training data.
+            # This is critical for proper normalization: without this filter, normalize_total()
+            # would compute different scaling factors compared to training data.
+            adata = adata[:, training_adata.var_names].copy()
+
             # Calculate module scores using existing DEG results
             adata = calculate_module_scores_from_degs(adata, deg_results, config.annotation)
 
