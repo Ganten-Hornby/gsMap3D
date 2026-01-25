@@ -1291,7 +1291,14 @@
                             if (data) {
                                 this.sampleDataCache[sampleName] = data;
                                 this.currentSampleData = data;
-                                console.log(`Loaded sample ${sampleName}: ${data.spot?.length || 0} spots`);
+                                // Show downsampling info if applicable
+                                const nSpots = data.spot?.length || 0;
+                                const nSpotsOriginal = sampleInfo.n_spots_original || nSpots;
+                                if (nSpotsOriginal > nSpots) {
+                                    console.log(`Loaded sample ${sampleName}: ${nSpots.toLocaleString()} spots (downsampled from ${nSpotsOriginal.toLocaleString()})`);
+                                } else {
+                                    console.log(`Loaded sample ${sampleName}: ${nSpots.toLocaleString()} spots`);
+                                }
                                 resolve(data);
                             } else {
                                 reject(new Error(`Data not found for ${sampleName}`));
@@ -1954,8 +1961,8 @@
                         return;
                     }
 
-                    // Estimate point size dynamically
-                    const pointSize = this.estimateSpatialPointSize(x, y);
+                    // Use pre-computed point size if available, otherwise calculate
+                    const pointSize = data.point_size || this.estimateSpatialPointSize(x, y);
 
                     // Determine what to color by
                     let colorValues, colorLabel, isContinuous, colorMap;
@@ -2096,11 +2103,15 @@
                 estimateSpatialPointSize(x, y) {
                     if (x.length === 0) return 5;
 
-                    // Calculate data range
-                    const xMin = Math.min(...x);
-                    const xMax = Math.max(...x);
-                    const yMin = Math.min(...y);
-                    const yMax = Math.max(...y);
+                    // Calculate data range using reduce to avoid stack overflow on large arrays
+                    // Note: Math.min(...arr) fails when arr.length > ~100k elements
+                    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+                    for (let i = 0; i < x.length; i++) {
+                        if (x[i] < xMin) xMin = x[i];
+                        if (x[i] > xMax) xMax = x[i];
+                        if (y[i] < yMin) yMin = y[i];
+                        if (y[i] > yMax) yMax = y[i];
+                    }
 
                     const xRange = xMax - xMin;
                     const yRange = yMax - yMin;

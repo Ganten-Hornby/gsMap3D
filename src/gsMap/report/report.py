@@ -88,8 +88,8 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
 
         rprint("[bold]Ways to view the interactive report:[/bold]")
         rprint(f"1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:")
-        rprint(f"   [bold cyan]gsmap report-view {web_report_dir}[/bold cyan]")
-        rprint(f"2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n")
+        rprint(f"   [bold cyan]gsmap report-view {web_report_dir} --port 8080 --no-browser[/bold cyan]")
+        rprint(f"\n2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n")
 
     except ImportError:
         logger.error("Jinja2 not found. Please install it with 'pip install jinja2'.")

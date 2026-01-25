@@ -328,8 +328,9 @@ class ReportDataManager:
     def collect_cauchy_results(self):
         """Collect and save Cauchy combination results."""
         cauchy_file = self.report_data_dir / "cauchy_results.csv"
+        cauchy_js = self.js_data_dir / "cauchy_results.js"
         # Since this combines all traits/annotations, we check for the final csv
-        if self._is_step_complete([cauchy_file]):
+        if self._is_step_complete([cauchy_file, cauchy_js]):
             logger.info("Cauchy results already collected. Skipping.")
             return
 
@@ -1026,10 +1027,10 @@ def _load_gss_and_calculate_stats_base(
 
     # Stratified subsample if requested
     analysis_spots = common_spots
-    if report_config.downsampling_n_spots and len(common_spots) > report_config.downsampling_n_spots:
+    if report_config.downsampling_n_spots_pcc and len(common_spots) > report_config.downsampling_n_spots_pcc:
         sample_names = ldsc_results.loc[common_spots, 'sample_name']
         analysis_spots = _stratified_subsample(
-            common_spots, sample_names, report_config.downsampling_n_spots
+            common_spots, sample_names, report_config.downsampling_n_spots_pcc
         )
         logger.info(f"Stratified subsampled to {len(analysis_spots)} spots for PCC calculation.")
 
@@ -1488,6 +1489,7 @@ def _save_report_metadata(
     report_meta['top_corr_genes'] = report_config.top_corr_genes
     report_meta['plot_origin'] = report_config.plot_origin
     report_meta['legend_marker_size'] = report_config.legend_marker_size
+    report_meta['downsampling_n_spots_2d'] = getattr(report_config, 'downsampling_n_spots_2d', 250000)
 
     # Add chromosome tick positions for Manhattan plot
     if chrom_tick_positions:
@@ -1603,6 +1605,7 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: Dict)
         samples = df['sample_name'].unique().tolist() if 'sample_name' in df.columns else []
 
     sample_index = {}
+    max_spots_2d = meta.get('downsampling_n_spots_2d', 250000)
 
     for sample_name in samples:
         sample_df = df[df['sample_name'] == sample_name]
@@ -1611,11 +1614,36 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: Dict)
             logger.warning(f"No data found for sample: {sample_name}")
             continue
 
+        # Track original count before downsampling
+        n_spots_original = len(sample_df)
+
+        # Downsample if needed for 2D visualization performance
+        if len(sample_df) > max_spots_2d:
+            logger.info(f"Downsampling {sample_name} from {len(sample_df):,} to {max_spots_2d:,} spots for 2D visualization")
+            sample_df = sample_df.sample(n=max_spots_2d, random_state=42)
+
+        # Calculate point size for this sample
+        x_arr = sample_df['sx'].values
+        y_arr = sample_df['sy'].values
+        x_range = x_arr.max() - x_arr.min()
+        y_range = y_arr.max() - y_arr.min()
+        data_range = max(x_range, y_range)
+        if data_range > 0:
+            area = x_range * y_range
+            avg_spacing = np.sqrt(area / len(x_arr))
+            viewport_width = 600
+            pixels_per_unit = viewport_width / data_range
+            point_size = avg_spacing * pixels_per_unit * 0.8
+            point_size = max(2.0, min(15.0, point_size))
+        else:
+            point_size = 5.0
+
         # Build columnar data structure for efficient ScatterGL rendering
         data_struct = {
             'spot': sample_df['spot'].tolist(),
             'sx': sample_df['sx'].tolist(),
             'sy': sample_df['sy'].tolist(),
+            'point_size': round(point_size, 2),
         }
 
         # Add 3D coordinates if present
@@ -1650,10 +1678,15 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: Dict)
         sample_index[sample_name] = {
             'var_name': var_name,
             'file': file_name,
-            'n_spots': len(sample_df)
+            'n_spots': len(sample_df),
+            'n_spots_original': n_spots_original,
+            'point_size': round(point_size, 2)
         }
 
-        logger.info(f"  Exported {sample_name}: {len(sample_df)} spots -> {file_name}")
+        if n_spots_original > len(sample_df):
+            logger.info(f"  Exported {sample_name}: {len(sample_df):,} spots (downsampled from {n_spots_original:,}) -> {file_name}")
+        else:
+            logger.info(f"  Exported {sample_name}: {len(sample_df):,} spots -> {file_name}")
 
     # Export lightweight sample index (loaded upfront)
     js_content = f"window.GSMAP_SAMPLE_INDEX = {json.dumps(sample_index, separators=(',', ':'))};"

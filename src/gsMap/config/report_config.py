@@ -19,7 +19,7 @@ logger = logging.getLogger("gsMap.config")
 class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     """Report Generation Configuration"""
     
-    downsampling_n_spots: Annotated[int, typer.Option(
+    downsampling_n_spots_pcc: Annotated[int, typer.Option(
         help="Number of spots to downsample for PCC calculation if n_spots > this value",
         min=1000,
         max=100000
@@ -30,6 +30,12 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
         min=1000,
         max=2000000
     )] = 1000000
+
+    downsampling_n_spots_2d: Annotated[int, typer.Option(
+        help="Max spots per sample for 2D distribution plots. Samples with more spots will be randomly downsampled.",
+        min=10000,
+        max=500000
+    )] = 250000
 
     top_corr_genes: Annotated[int, typer.Option(
         help="Number of top correlated genes to display",
