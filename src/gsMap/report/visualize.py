@@ -111,7 +111,7 @@ def estimate_plotly_point_size(coordinates, DEFAULT_PIXEL_WIDTH=1000):
 
     tree = KDTree(coordinates)
     distances, _ = tree.query(coordinates, k=2)
-    avg_min_distance = np.mean(distances[:, 1])
+    avg_min_distance = np.median(distances[:, 1])
     # get the width and height of the plot
     width = np.max(coordinates[:, 0]) - np.min(coordinates[:, 0])
     height = np.max(coordinates[:, 1]) - np.min(coordinates[:, 1])
@@ -120,7 +120,8 @@ def estimate_plotly_point_size(coordinates, DEFAULT_PIXEL_WIDTH=1000):
     pixel_width = width * scale_factor
     pixel_height = height * scale_factor
 
-    point_size = np.ceil(avg_min_distance * scale_factor)
+    point_size = avg_min_distance * scale_factor
+
     return (pixel_width, pixel_height), point_size
 
 

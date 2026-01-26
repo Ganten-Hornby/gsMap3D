@@ -249,7 +249,8 @@
                     @click="sections.spatial3d = !sections.spatial3d">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-spatial3d')"></h2>
-                        <p class="text-sm text-gray-500">Interactive 3D view of spatial data with -log10(p) values and annotations side by side.</p>
+                        <p class="text-sm text-gray-500">Interactive 3D view of spatial data with -log10(p) values and
+                            annotations side by side.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform"
                         :class="sections.spatial3d ? 'rotate-180' : ''" fill="none" stroke="currentColor"
@@ -284,8 +285,8 @@
                                 <div x-show="spatial3dTraitLoading"
                                     class="absolute inset-0 top-8 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
                                     <div class="flex flex-col items-center gap-3">
-                                        <svg class="spinner h-10 w-10 text-primary-600" xmlns="http://www.w3.org/2000/svg"
-                                            fill="none" viewBox="0 0 24 24">
+                                        <svg class="spinner h-10 w-10 text-primary-600"
+                                            xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
                                                 stroke-width="4"></circle>
                                             <path class="opacity-75" fill="currentColor"
@@ -300,7 +301,8 @@
                                         loading="lazy" title="3D Spatial Visualization - Trait">
                                     </iframe>
                                 </template>
-                                <div x-show="!spatial3dTraitPath" class="p-8 text-center text-gray-500" style="height: 800px;">
+                                <div x-show="!spatial3dTraitPath" class="p-8 text-center text-gray-500"
+                                    style="height: 800px;">
                                     No 3D visualization available for this trait.
                                 </div>
                             </div>
@@ -313,8 +315,8 @@
                                 <div x-show="spatial3dAnnotationLoading"
                                     class="absolute inset-0 top-8 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
                                     <div class="flex flex-col items-center gap-3">
-                                        <svg class="spinner h-10 w-10 text-primary-600" xmlns="http://www.w3.org/2000/svg"
-                                            fill="none" viewBox="0 0 24 24">
+                                        <svg class="spinner h-10 w-10 text-primary-600"
+                                            xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
                                                 stroke-width="4"></circle>
                                             <path class="opacity-75" fill="currentColor"
@@ -329,7 +331,8 @@
                                         loading="lazy" title="3D Spatial Visualization - Annotation">
                                     </iframe>
                                 </template>
-                                <div x-show="!spatial3dAnnotationPath" class="p-8 text-center text-gray-500" style="height: 800px;">
+                                <div x-show="!spatial3dAnnotationPath" class="p-8 text-center text-gray-500"
+                                    style="height: 800px;">
                                     No 3D visualization available for this annotation.
                                 </div>
                             </div>
@@ -348,7 +351,8 @@
                             <span x-text="getSectionTitle('sec-gsmap')"></span> -
                             <span x-text="selectedSample"></span>
                         </h2>
-                        <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values and annotations side by side.</p>
+                        <p class="text-sm text-gray-500">Spatial distribution of -log10(p) values and annotations side
+                            by side.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.gsmap ? 'rotate-180' : ''"
                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -387,10 +391,24 @@
                         <!-- Side-by-side plot containers -->
                         <div x-show="!loadingSampleData" class="flex flex-wrap gap-4">
                             <!-- Left: Trait -log10(p) -->
-                            <div class="flex-1 min-w-[400px]">
+                            <div class="flex-1 min-w-[400px] relative">
                                 <h3 class="text-center font-medium text-gray-700 mb-2">
                                     -log10(p) - <span x-text="selectedTrait"></span>
                                 </h3>
+                                <!-- Loading Overlay for Trait plot -->
+                                <div x-show="loadingSpatial2dTraitData"
+                                    class="absolute inset-0 top-8 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
+                                    <div class="flex flex-col items-center gap-3">
+                                        <svg class="spinner h-10 w-10 text-primary-600"
+                                            xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                                stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor"
+                                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                        </svg>
+                                        <span class="text-sm font-medium text-gray-600">Loading trait data...</span>
+                                    </div>
+                                </div>
                                 <div id="spatial2dPlotTrait" class="w-full" style="height: 500px;"></div>
                             </div>
                             <!-- Right: Annotation -->
@@ -571,7 +589,8 @@
                     @click="sections.umap = !sections.umap">
                     <div>
                         <h2 class="text-lg font-semibold text-gray-800" x-text="getSectionTitle('sec-umap')"></h2>
-                        <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings with -log10(p) and annotations.</p>
+                        <p class="text-sm text-gray-500">UMAP visualization of cell and niche embeddings with -log10(p)
+                            and annotations.</p>
                     </div>
                     <svg class="w-5 h-5 text-gray-500 transition-transform" :class="sections.umap ? 'rotate-180' : ''"
                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -600,7 +619,8 @@
                     <div class="p-4">
                         <!-- Row 1: Cell Embedding -->
                         <div class="mb-6">
-                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Cell Embedding</h3>
+                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Cell
+                                Embedding</h3>
                             <div class="flex flex-wrap gap-4">
                                 <!-- Left: Trait -log10(p) -->
                                 <div class="flex-1 min-w-[400px]">
@@ -621,7 +641,8 @@
 
                         <!-- Row 2: Niche Embedding (only if available) -->
                         <div x-show="umapHasNiche">
-                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Niche Embedding</h3>
+                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Niche
+                                Embedding</h3>
                             <div class="flex flex-wrap gap-4">
                                 <!-- Left: Trait -log10(p) -->
                                 <div class="flex-1 min-w-[400px]">
@@ -905,6 +926,7 @@
                 // Per-sample data loading (for efficient on-demand loading)
                 sampleDataCache: {},        // { sampleName: data } - cache loaded samples
                 loadingSampleData: false,   // Loading indicator
+                loadingSpatial2dTraitData: false,  // Loading indicator for trait switch on 2D plot
                 currentSampleData: null,    // Currently loaded sample data
                 loadingGeneData: false,     // Loading indicator for gene PCC data
 
@@ -1232,6 +1254,9 @@
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
 
+                    // Show loading overlay for 2D trait plot
+                    this.loadingSpatial2dTraitData = true;
+
                     // Invalidate trait-specific caches
                     this._umapTraitColorCache = null;
                     this._spatial2dTraitColorCache = null;
@@ -1264,6 +1289,9 @@
                         // Render plots in parallel - only update trait-related views
                         this.renderUmapPlotTrait();
                         this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
+
+                        // Clear loading state after render
+                        this.loadingSpatial2dTraitData = false;
                     });
                 },
 
@@ -1798,11 +1826,18 @@
                     }
 
                     // Build hover text for trait view (cached implicitly by browser)
+                    const anno = this.selectedAnnotationCategory;
                     const traitHoverText = this.umapData.spot.map((spot, i) => {
                         let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
+                        // Include annotation value
+                        if (anno && this.umapData[anno]) {
+                            const annoVal = this.umapData[anno][i];
+                            text += `<br><b>${anno}:</b> ${typeof annoVal === 'number' ? annoVal.toFixed(1) : annoVal}`;
+                        }
+                        // Include trait log10p value
                         if (trait && this.umapData[trait]) {
                             const traitVal = this.umapData[trait][i];
-                            text += `<br><b>${trait}:</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
+                            text += `<br><b>-log10(p):</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
                         }
                         return text;
                     });
@@ -2029,11 +2064,20 @@
                         const colorValues = data[trait] || x.map(() => 0);
                         const colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
 
-                        // Build hover text - simplified for trait view
+                        // Build hover text - include annotation value for trait view
+                        const anno = this.selectedAnnotationCategory;
                         const hoverText = data.spot.map((spot, i) => {
+                            let text = `<b>Spot:</b> ${spot}`;
+                            // Include annotation value
+                            if (anno && data[anno]) {
+                                const annoVal = data[anno][i];
+                                text += `<br><b>${anno}:</b> ${annoVal}`;
+                            }
+                            // Include trait log10p value
                             const val = data[trait] ? data[trait][i] : 0;
                             const rounded = (val !== null && val !== undefined) ? val.toFixed(1) : 'N/A';
-                            return `<b>Spot:</b> ${spot}<br><b>-log10(p):</b> ${rounded}`;
+                            text += `<br><b>-log10(p):</b> ${rounded}`;
+                            return text;
                         });
 
                         // Single trace with colorbar
@@ -2093,7 +2137,7 @@
                                 marker: {
                                     size: pointSize,
                                     color: color,
-                                    opacity: 0.8
+                                    // opacity: 0.8
                                 }
                             };
                         });

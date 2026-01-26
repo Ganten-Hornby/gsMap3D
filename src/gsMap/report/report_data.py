@@ -63,6 +63,10 @@ class ReportDataManager:
         self.analysis_spots = None
         self.gene_stats = None
         self.metadata = None
+        self.gss_adata = None
+        self.chrom_tick_positions = None
+        self.umap_info = None
+        self.spatial_3d_html = None
 
     def close(self):
         """Release resources and close file handles."""
@@ -1633,7 +1637,7 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: Dict)
             sample_df = sample_df.sample(n=max_spots_2d, random_state=42)
 
         # Calculate point size for this sample
-        _, point_size = estimate_plotly_point_size(sample_df[['sx','sy']], DEFAULT_PIXEL_WIDTH=600)
+        _, point_size = estimate_plotly_point_size(sample_df[['sx','sy']], DEFAULT_PIXEL_WIDTH=560)
 
         # Build columnar data structure for efficient ScatterGL rendering
         data_struct = {
