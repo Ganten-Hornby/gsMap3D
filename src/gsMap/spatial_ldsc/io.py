@@ -392,6 +392,9 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
         obsm=src_adata.obsm.copy(),
         varm=src_adata.varm.copy()
     )
+    # Close metadata source to release file handle
+    if src_adata.isbacked:
+        src_adata.file.close()
 
     # Attach the manager to allow access to MemMapDense methods
     adata.uns['memmap_manager'] = mm

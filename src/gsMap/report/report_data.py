@@ -61,9 +61,17 @@ class ReportDataManager:
         self.z_axis = None
         self.common_spots = None
         self.analysis_spots = None
-        self.gss_adata = None
         self.gene_stats = None
         self.metadata = None
+
+    def close(self):
+        """Release resources and close file handles."""
+        if self.gss_adata is not None:
+            logger.info("Closing GSS AnnData and memory maps...")
+            if 'memmap_manager' in self.gss_adata.uns:
+                self.gss_adata.uns['memmap_manager'].close()
+            self.gss_adata = None
+            gc.collect()
 
     def _is_step_complete(self, files: List[Path]) -> bool:
         if self.force_re_run:
@@ -73,37 +81,40 @@ class ReportDataManager:
     def run(self):
         """Orchestrate the report data preparation."""
         logger.info("Starting report data preparation...")
-        
-        # 1. Base Metadata
-        self.prepare_base_metadata()
-        
-        # 2. GSS Statistics (PCC)
-        self.prepare_gss_stats()
-        
-        # 3. Spot Metadata (depends on GSS stats for gene_list.csv)
-        self.prepare_spot_metadata()
-        
-        # 4. Manhattan Data
-        self.prepare_manhattan_data()
-        
-        # 5. Static Plots
-        self.render_static_plots()
-        
-        # 6. Cauchy Results
-        self.collect_cauchy_results()
-        
-        # 7. UMAP Data
-        self.prepare_umap_data()
-        
-        # 8. 3D Visualization
-        self.prepare_3d_visualization()
-        
-        # 9. Finalize Metadata and JS Assets
-        self.finalize_report()
-        
-        logger.info(f"Report data preparation complete.")
-        logger.info(f"  Data files: {self.report_data_dir}")
-        logger.info(f"  Web report: {self.web_report_dir}")
+        try:
+            # 1. Base Metadata
+            self.prepare_base_metadata()
+            
+            # 2. GSS Statistics (PCC)
+            self.prepare_gss_stats()
+            
+            # 3. Spot Metadata (depends on GSS stats for gene_list.csv)
+            self.prepare_spot_metadata()
+            
+            # 4. Manhattan Data
+            self.prepare_manhattan_data()
+            
+            # 5. Static Plots
+            self.render_static_plots()
+            
+            # 6. Cauchy Results
+            self.collect_cauchy_results()
+            
+            # 7. UMAP Data
+            self.prepare_umap_data()
+            
+            # 8. 3D Visualization
+            self.prepare_3d_visualization()
+            
+            # 9. Finalize Metadata and JS Assets
+            self.finalize_report()
+            
+            logger.info(f"Report data preparation complete.")
+            logger.info(f"  Data files: {self.report_data_dir}")
+            logger.info(f"  Web report: {self.web_report_dir}")
+        finally:
+            self.close()
+            
         return self.web_report_dir
 
 
@@ -1001,6 +1012,10 @@ def _load_coordinates(report_config: QuickModeConfig) -> Tuple[pd.DataFrame, boo
         coords = pd.DataFrame(coords_2d, columns=['sx', 'sy'], index=adata_concat.obs_names)
 
     coords = pd.concat([coords, sample_info], axis=1)
+
+    # Close backed file
+    if adata_concat.isbacked:
+        adata_concat.file.close()
 
     # Return is_3d as True if dataset type is 3D (regardless of coord dimensions)
     return coords, is_3d_type, z_axis
