@@ -315,10 +315,6 @@ class ReportDataManager:
 
         # Ensure GSS data is loaded if we need to plot
         if self.gss_adata is None:
-            # We only load if there's at least one plot missing
-            # _render_gene_diagnostic_plots_refactored will return early if nothing to do, 
-            # but we need some basic info to call it or decide to load.
-            # For simplicity, we load the base GSS info here.
             self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = _load_gss_and_calculate_stats_base(
                 self.report_config, self.ldsc_results, self.coords, self.report_data_dir
             )
@@ -340,10 +336,9 @@ class ReportDataManager:
     def prepare_umap_data(self):
         """Prepare UMAP data from embeddings."""
         umap_file = self.report_data_dir / "umap_data.csv"
-        if self._is_step_complete([umap_file]):
+        umap_js = self.js_data_dir / "umap_data.js"
+        if self._is_step_complete([umap_file,umap_js]):
             logger.info("UMAP data already exists. Skipping.")
-            # Still need to populate self.umap_info for metadata
-            # For simplicity, we can load it if needed or just skip if the goal is completed
             return
 
         self.umap_info = _prepare_umap_data(self.report_config, self.metadata, self.report_data_dir)
