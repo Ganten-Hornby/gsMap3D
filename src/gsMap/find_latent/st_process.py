@@ -87,12 +87,15 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
             if removed_genes := adata_temp.n_vars - gene_keep.sum():
                 logger.info(f"Removed {removed_genes} mitochondrial and hemoglobin genes in {sample_name}.")
-            
+
             adata_temp = adata_temp[:,gene_keep].copy()
+
+            # Make gene names unique to avoid issues with HVG calculation
+            adata_temp.var_names_make_unique()
 
             is_count_data, actual_data_layer = setup_data_layer(adata_temp, params.data_layer, verbose=False)
             cell_number.append(adata_temp.n_obs)
-            
+
             try:
                 # Identify highly variable genes
                 if is_count_data:
@@ -102,9 +105,9 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
                 else:
                     sc.pp.highly_variable_genes(
                         adata_temp, n_top_genes=params.feat_cell, subset=False, flavor='seurat'
-                    )                
-                    
-                var_df = adata_temp.var
+                    )
+
+                var_df = adata_temp.var.copy()
                 var_df["gene"] = var_df.index.tolist()
                 variances_list.append(var_df)
             except Exception as e:
@@ -114,6 +117,10 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
             progress.update(task, advance=1)
 
+    # Check if we have any valid variance results
+    if len(variances_list) == 0:
+        raise ValueError("No valid HVG results obtained from any sample. Please check your data and parameters.")
+
     # Find the common genes across all samples
     common_genes = np.array(
         list(set.intersection(
@@ -122,7 +129,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
     # Error when gene number is too small
     if len(common_genes) < 300:
-        ValueError(f"Only {len(common_genes)} common genes between all samples.")
+        raise ValueError(f"Only {len(common_genes)} common genes between all samples.")
 
     # Aggregate variances and identify HVGs
     df = pd.concat(variances_list, axis=0)
@@ -213,6 +220,9 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
         # Filter out mitochondrial and hemoglobin genes
         gene_keep = ~adata.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
         adata = adata[:,gene_keep].copy()
+
+        # Make gene names unique to avoid issues with concatenation
+        adata.var_names_make_unique()
 
         # Setup data layer consistently
         is_count_data, actual_data_layer = setup_data_layer(adata, params.data_layer)
@@ -704,10 +714,13 @@ class InferenceData(object):
         # Load the ST data
         adata = sc.read_h5ad(st_file)
         # sc.pp.filter_genes(adata, min_counts=1)
-        
+
+        # Make gene names unique to avoid reindexing issues
+        adata.var_names_make_unique()
+
         # Setup data layer consistently
         is_count_data, actual_data_layer = setup_data_layer(adata, self.params.data_layer)
-        
+
         # print(adata.shape)
         # Convert expression data to torch.Tensor
         expression_array = torch.Tensor(adata[:, self.hvg].X.toarray())

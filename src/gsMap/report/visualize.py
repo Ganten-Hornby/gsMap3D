@@ -104,6 +104,11 @@ def load_st_coord(adata, feature_series: pd.Series, annotation):
 
 
 def estimate_plotly_point_size(coordinates, DEFAULT_PIXEL_WIDTH=1000):
+    # Convert to numpy array if it's a DataFrame or other array-like object
+    if hasattr(coordinates, 'values'):
+        coordinates = coordinates.values
+    coordinates = np.asarray(coordinates)
+
     tree = KDTree(coordinates)
     distances, _ = tree.query(coordinates, k=2)
     avg_min_distance = np.mean(distances[:, 1])
