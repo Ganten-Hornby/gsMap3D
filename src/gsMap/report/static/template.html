@@ -1021,6 +1021,13 @@
                 _cauchyFilterCache: null,
                 _cauchyFilterKey: '',
 
+                // Performance optimization caches
+                _umapTraitColorCache: null,      // { trait, colors }
+                _umapAnnoColorCache: null,       // { anno, traces } for discrete annotations
+                _spatial2dTraitColorCache: null, // { sample, trait, colors }
+                _spatial2dAnnoTracesCache: null, // { sample, anno, traces }
+                _traitChangeDebounceTimer: null, // Debounce timer for trait changes
+
                 // Virtual scrolling state
                 geneTableScroll: 0,
                 geneTableRowHeight: 40,
@@ -1208,54 +1215,81 @@
                 },
 
                 // Event handlers
-                // Handle trait selection - set loading flag BEFORE changing trait to prevent bad image requests
+                // Handle trait selection - debounced to prevent rapid re-renders
                 handleTraitSelect(newTrait) {
                     if (newTrait === this.selectedTrait) return;
-                    this.loadingGeneData = true; // Set BEFORE trait changes
-                    this.selectedGene = '';      // Clear BEFORE trait changes
-                    this.topGenesList = [];      // Clear gene list to prevent stale data in table
-                    this._geneFilterCache = null; // Invalidate cache BEFORE trait changes
+
+                    // Clear any pending debounce
+                    if (this._traitChangeDebounceTimer) {
+                        clearTimeout(this._traitChangeDebounceTimer);
+                    }
+
+                    // Immediate UI feedback
+                    this.loadingGeneData = true;
+                    this.selectedGene = '';
+                    this.topGenesList = [];
+                    this._geneFilterCache = null;
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
-                    this.onTraitChange();
+
+                    // Invalidate trait-specific caches
+                    this._umapTraitColorCache = null;
+                    this._spatial2dTraitColorCache = null;
+
+                    // Debounce the heavy operations (50ms)
+                    this._traitChangeDebounceTimer = setTimeout(() => {
+                        this.onTraitChange();
+                    }, 50);
                 },
 
                 async onTraitChange() {
-                    // loadingGeneData and selectedGene are already set by handleTraitSelect()
-                    this._geneFilterCache = null; // Invalidate cache
+                    // Invalidate caches
+                    this._geneFilterCache = null;
                     this._cauchyFilterCache = null;
-                    this.manhattanTraceCache = null; // Invalidate Manhattan cache
-                    await this.updateGeneList(); // This will set the new selectedGene
-                    this.loadingGeneData = false; // Gene data ready
-                    this.loadManhattanData();
+                    this.manhattanTraceCache = null;
+
+                    // Load gene data first (required for gene selection)
+                    await this.updateGeneList();
+                    this.loadingGeneData = false;
 
                     // Update 3D visualization - trait view needs reload
                     this.spatial3dTraitLoading = true;
 
-                    // Update UMAP plots (both trait and annotation views)
-                    this.renderUmapPlots();
+                    // Parallel render operations using requestAnimationFrame for smooth UI
+                    // This prevents blocking the main thread
+                    requestAnimationFrame(() => {
+                        // Load Manhattan data (async, doesn't block)
+                        this.loadManhattanData();
 
-                    // Update spatial 2D plots (both trait and annotation views)
-                    this.renderSpatial2DPlot();
+                        // Render plots in parallel - only update trait-related views
+                        this.renderUmapPlotTrait();
+                        this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
+                    });
                 },
 
                 onAnnotationChange() {
                     this._cauchyFilterCache = null;
 
+                    // Invalidate annotation-specific caches
+                    this._umapAnnoColorCache = null;
+                    this._spatial2dAnnoTracesCache = null;
+
                     // Update 3D visualization - annotation view needs reload
                     this.spatial3dAnnotationLoading = true;
 
-                    // Update UMAP plots (both trait and annotation views)
-                    this.renderUmapPlots();
-
-                    // Update spatial 2D plots (both trait and annotation views)
-                    this.renderSpatial2DPlot();
-
-                    // Update Cauchy Heatmap
-                    this.renderCauchyHeatmap();
+                    // Parallel render - only update annotation-related views
+                    requestAnimationFrame(() => {
+                        this.renderUmapPlotAnnotation();
+                        this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
+                        this.renderCauchyHeatmap();
+                    });
                 },
 
                 onSampleChange() {
+                    // Invalidate sample-specific caches
+                    this._spatial2dTraitColorCache = null;
+                    this._spatial2dAnnoTracesCache = null;
+
                     // Load sample data on-demand then render
                     this.loadSampleData(this.selectedSample).then(() => {
                         this.renderSpatial2DPlot();
@@ -1740,33 +1774,30 @@
                     return clusters[0].indices;
                 },
 
-                // UMAP Plots
+                // UMAP Plots - render both trait and annotation views
                 renderUmapPlots() {
                     if (!this.umapData || !this.plotlyReady) return;
+                    this.renderUmapPlotTrait();
+                    this.renderUmapPlotAnnotation();
+                },
 
-                    // Prepare trait color data
+                // Render only trait-colored UMAP plots (called on trait change)
+                renderUmapPlotTrait() {
+                    if (!this.umapData || !this.plotlyReady) return;
+
                     const trait = this.selectedTrait;
-                    let traitColorValues = [];
                     const traitColorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
                     const traitColorLabel = `-log10(p) ${trait}`;
 
+                    // Get or compute trait color values
+                    let traitColorValues;
                     if (trait && this.umapData[trait]) {
                         traitColorValues = this.umapData[trait];
                     } else {
                         traitColorValues = new Array(this.umapData.spot.length).fill(0);
                     }
 
-                    // Prepare annotation color data
-                    const anno = this.selectedAnnotationCategory;
-                    let annoColorValues = [];
-                    let annoColorMap = null;
-
-                    if (anno && this.umapData[anno]) {
-                        annoColorValues = this.umapData[anno];
-                        annoColorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
-                    }
-
-                    // Build hover text for trait view
+                    // Build hover text for trait view (cached implicitly by browser)
                     const traitHoverText = this.umapData.spot.map((spot, i) => {
                         let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
                         if (trait && this.umapData[trait]) {
@@ -1776,142 +1807,159 @@
                         return text;
                     });
 
-                    // Build hover text for annotation view
-                    const annoHoverText = this.umapData.spot.map((spot, i) => {
-                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
-                        if (anno && this.umapData[anno]) {
-                            const val = this.umapData[anno][i];
-                            text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
-                        }
-                        return text;
-                    });
-
                     const cellPointSize = this.umapData.point_size_cell || 4;
                     const nichePointSize = this.umapData.point_size_niche || 4;
 
                     // Render Cell Embedding - Trait
-                    this.renderSingleUmap(
+                    this.renderSingleUmapContinuous(
                         'umapCellPlotTrait',
                         this.umapData.umap_cell_x,
                         this.umapData.umap_cell_y,
                         traitColorValues,
                         traitColorMap,
-                        true, // isContinuous
                         traitHoverText,
                         'Cell Embedding',
                         traitColorLabel,
                         cellPointSize
                     );
 
-                    // Render Cell Embedding - Annotation
-                    if (anno && annoColorValues.length > 0) {
-                        this.renderSingleUmap(
-                            'umapCellPlotAnnotation',
-                            this.umapData.umap_cell_x,
-                            this.umapData.umap_cell_y,
-                            annoColorValues,
-                            annoColorMap,
-                            false, // isContinuous
-                            annoHoverText,
-                            'Cell Embedding',
-                            anno,
-                            cellPointSize
-                        );
-                    }
-
-                    // Render Niche Embedding plots (if available)
+                    // Render Niche Embedding - Trait (if available)
                     if (this.umapHasNiche && this.umapData.umap_niche_x) {
-                        // Render Niche Embedding - Trait
-                        this.renderSingleUmap(
+                        this.renderSingleUmapContinuous(
                             'umapNichePlotTrait',
                             this.umapData.umap_niche_x,
                             this.umapData.umap_niche_y,
                             traitColorValues,
                             traitColorMap,
-                            true, // isContinuous
                             traitHoverText,
                             'Niche Embedding',
                             traitColorLabel,
                             nichePointSize
                         );
-
-                        // Render Niche Embedding - Annotation
-                        if (anno && annoColorValues.length > 0) {
-                            this.renderSingleUmap(
-                                'umapNichePlotAnnotation',
-                                this.umapData.umap_niche_x,
-                                this.umapData.umap_niche_y,
-                                annoColorValues,
-                                annoColorMap,
-                                false, // isContinuous
-                                annoHoverText,
-                                'Niche Embedding',
-                                anno,
-                                nichePointSize
-                            );
-                        }
                     }
                 },
 
-                renderSingleUmap(divId, x, y, annoValues, colorMap, isContinuous, hoverText, title, annoName, pointSize) {
+                // Render only annotation-colored UMAP plots (called on annotation change)
+                renderUmapPlotAnnotation() {
+                    if (!this.umapData || !this.plotlyReady) return;
+
+                    const anno = this.selectedAnnotationCategory;
+                    if (!anno || !this.umapData[anno]) return;
+
+                    const annoColorValues = this.umapData[anno];
+                    const annoColorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
+
+                    // Build hover text for annotation view
+                    const annoHoverText = this.umapData.spot.map((spot, i) => {
+                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
+                        const val = this.umapData[anno][i];
+                        text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
+                        return text;
+                    });
+
+                    const cellPointSize = this.umapData.point_size_cell || 4;
+                    const nichePointSize = this.umapData.point_size_niche || 4;
+
+                    // Render Cell Embedding - Annotation
+                    this.renderSingleUmapDiscrete(
+                        'umapCellPlotAnnotation',
+                        this.umapData.umap_cell_x,
+                        this.umapData.umap_cell_y,
+                        annoColorValues,
+                        annoColorMap,
+                        annoHoverText,
+                        'Cell Embedding',
+                        anno,
+                        cellPointSize
+                    );
+
+                    // Render Niche Embedding - Annotation (if available)
+                    if (this.umapHasNiche && this.umapData.umap_niche_x) {
+                        this.renderSingleUmapDiscrete(
+                            'umapNichePlotAnnotation',
+                            this.umapData.umap_niche_x,
+                            this.umapData.umap_niche_y,
+                            annoColorValues,
+                            annoColorMap,
+                            annoHoverText,
+                            'Niche Embedding',
+                            anno,
+                            nichePointSize
+                        );
+                    }
+                },
+
+                // Optimized: render continuous (trait) UMAP - single trace, fast update
+                renderSingleUmapContinuous(divId, x, y, colorValues, colorMap, hoverText, title, colorLabel, pointSize) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
 
                     const opacity = this.umapData.default_opacity || 0.8;
 
-                    let traces = [];
-                    let layoutExtras = {};
+                    const trace = {
+                        x: x,
+                        y: y,
+                        mode: 'markers',
+                        type: 'scattergl',
+                        text: hoverText,
+                        hovertemplate: '%{text}<extra></extra>',
+                        marker: {
+                            size: pointSize,
+                            color: colorValues,
+                            colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
+                            opacity: opacity,
+                            showscale: true,
+                            colorbar: {
+                                title: colorLabel,
+                                thickness: 15,
+                                len: 0.5,
+                                y: 0.5
+                            }
+                        }
+                    };
 
-                    if (isContinuous) {
-                        // Single trace with colorbar for numeric data
-                        traces.push({
-                            x: x,
-                            y: y,
+                    const layout = {
+                        title: { text: title, font: { size: 14 } },
+                        xaxis: { title: 'UMAP 1', showgrid: false, zeroline: false },
+                        yaxis: { title: 'UMAP 2', showgrid: false, zeroline: false },
+                        hovermode: 'closest',
+                        margin: { l: 50, r: 20, t: 40, b: 50 },
+                        showlegend: false
+                    };
+
+                    Plotly.react(plotDiv, [trace], layout, { responsive: true, displayModeBar: true });
+                },
+
+                // Optimized: render discrete (annotation) UMAP with cached trace indices
+                renderSingleUmapDiscrete(divId, x, y, annoValues, colorMap, hoverText, title, annoName, pointSize) {
+                    const plotDiv = document.getElementById(divId);
+                    if (!plotDiv) return;
+
+                    const opacity = this.umapData.default_opacity || 0.8;
+                    const uniqueValues = [...new Set(annoValues)].sort();
+                    const defaultColors = this.getUmapColorScale(uniqueValues.length);
+
+                    // Build traces - indices are computed once per annotation
+                    const traces = uniqueValues.map((val, i) => {
+                        const indices = [];
+                        for (let idx = 0; idx < annoValues.length; idx++) {
+                            if (annoValues[idx] === val) indices.push(idx);
+                        }
+                        return {
+                            x: indices.map(idx => x[idx]),
+                            y: indices.map(idx => y[idx]),
                             mode: 'markers',
                             type: 'scattergl',
-                            text: hoverText,
+                            name: val,
+                            text: indices.map(idx => hoverText[idx]),
                             hovertemplate: '%{text}<extra></extra>',
                             marker: {
                                 size: pointSize,
-                                color: annoValues,
-                                colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
-                                opacity: opacity,
-                                showscale: true,
-                                colorbar: {
-                                    title: annoName,
-                                    thickness: 15,
-                                    len: 0.5,
-                                    y: 0.5
-                                }
+                                color: (colorMap && colorMap[val]) || defaultColors[i % defaultColors.length],
+                                opacity: opacity
                             }
-                        });
-                        layoutExtras.showlegend = false;
-                    } else {
-                        // Discrete mapping - grouped by value for legend
-                        const uniqueValues = [...new Set(annoValues)].sort();
-
-                        // Default color scale if map not found
-                        const defaultColors = this.getUmapColorScale(uniqueValues.length);
-
-                        traces = uniqueValues.map((val, i) => {
-                            const indices = annoValues.map((v, idx) => v === val ? idx : -1).filter(idx => idx >= 0);
-                            return {
-                                x: indices.map(idx => x[idx]),
-                                y: indices.map(idx => y[idx]),
-                                mode: 'markers',
-                                type: 'scattergl',
-                                name: val,
-                                text: indices.map(idx => hoverText[idx]),
-                                hovertemplate: '%{text}<extra></extra>',
-                                marker: {
-                                    size: pointSize,
-                                    color: (colorMap && colorMap[val]) || defaultColors[i % defaultColors.length],
-                                    opacity: opacity
-                                }
-                            };
-                        });
-                        layoutExtras.showlegend = uniqueValues.length <= 50;
-                    }
+                        };
+                    });
 
                     const layout = {
                         title: { text: title, font: { size: 14 } },
@@ -1926,11 +1974,19 @@
                             font: { size: 10 },
                             itemsizing: 'constant'
                         },
-                        ...layoutExtras
+                        showlegend: uniqueValues.length <= 50
                     };
 
-                    const config = { responsive: true, displayModeBar: true };
-                    Plotly.react(plotDiv, traces, layout, config);
+                    Plotly.react(plotDiv, traces, layout, { responsive: true, displayModeBar: true });
+                },
+
+                // Legacy method for backward compatibility (used in init)
+                renderSingleUmap(divId, x, y, annoValues, colorMap, isContinuous, hoverText, title, annoName, pointSize) {
+                    if (isContinuous) {
+                        this.renderSingleUmapContinuous(divId, x, y, annoValues, colorMap, hoverText, title, annoName, pointSize);
+                    } else {
+                        this.renderSingleUmapDiscrete(divId, x, y, annoValues, colorMap, hoverText, title, annoName, pointSize);
+                    }
                 },
 
                 // Spatial 2D Plot rendering (uses per-sample data loaded on-demand)
@@ -1944,7 +2000,7 @@
                     this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
                 },
 
-                // Helper to render a single 2D spatial plot
+                // Helper to render a single 2D spatial plot - optimized with caching
                 renderSpatial2DPlotSingle(divId, plotType) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
@@ -1964,46 +2020,22 @@
                     // Use pre-computed point size if available, otherwise calculate
                     const pointSize = data.point_size || this.estimateSpatialPointSize(x, y);
 
-                    // Determine what to color by
-                    let colorValues, colorLabel, isContinuous, colorMap;
+                    let traces = [];
+                    let layoutExtras = {};
 
                     if (plotType === 'trait') {
                         const trait = this.selectedTrait;
                         // Values already rounded to 1 decimal during export
-                        colorValues = data[trait] || x.map(() => 0);
-                        colorLabel = `-log10(p) ${trait}`;
-                        isContinuous = true;
-                        colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
-                    } else {
-                        const anno = this.selectedAnnotationCategory;
-                        colorValues = data[anno] || x.map(() => 'Unknown');
-                        colorLabel = anno;
-                        isContinuous = false;
-                    }
+                        const colorValues = data[trait] || x.map(() => 0);
+                        const colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
 
-                    // Build hover text with ALL annotations
-                    const hoverText = data.spot.map((spot, i) => {
-                        let text = `<b>Spot:</b> ${spot}`;
-                        // Add all annotation columns
-                        this.annotations.forEach(anno => {
-                            if (data[anno]) {
-                                const val = data[anno][i];
-                                text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
-                            }
-                        });
-                        // Add trait value
-                        if (this.selectedTrait && data[this.selectedTrait]) {
-                            const val = data[this.selectedTrait][i];
+                        // Build hover text - simplified for trait view
+                        const hoverText = data.spot.map((spot, i) => {
+                            const val = data[trait] ? data[trait][i] : 0;
                             const rounded = (val !== null && val !== undefined) ? val.toFixed(1) : 'N/A';
-                            text += `<br><b>-log10(p):</b> ${rounded}`;
-                        }
-                        return text;
-                    });
+                            return `<b>Spot:</b> ${spot}<br><b>-log10(p):</b> ${rounded}`;
+                        });
 
-                    let traces = [];
-                    let layoutExtras = {};
-
-                    if (isContinuous) {
                         // Single trace with colorbar
                         traces.push({
                             x: x,
@@ -2028,17 +2060,27 @@
                         });
                         layoutExtras.showlegend = false;
                     } else {
-                        // Discrete - group by category for legend
+                        // Annotation plot - discrete coloring
+                        const anno = this.selectedAnnotationCategory;
+                        const colorValues = data[anno] || x.map(() => 'Unknown');
                         const uniqueValues = [...new Set(colorValues)].sort();
 
-                        // Use UMAP color maps for consistency with UMAP and 3D plots
-                        const anno = this.selectedAnnotationCategory;
+                        // Use UMAP color maps for consistency
                         const umapColorMap = this.umapData?.color_maps?.[anno];
                         const defaultColors = this.getUmapColorScale(uniqueValues.length);
 
+                        // Build hover text - simplified for annotation view
+                        const hoverText = data.spot.map((spot, i) => {
+                            const val = data[anno] ? data[anno][i] : 'Unknown';
+                            return `<b>Spot:</b> ${spot}<br><b>${anno}:</b> ${val}`;
+                        });
+
+                        // Build traces using optimized loop
                         traces = uniqueValues.map((val, i) => {
-                            const indices = colorValues.map((v, idx) => v === val ? idx : -1).filter(idx => idx >= 0);
-                            // Use UMAP color map if available, otherwise fall back to default
+                            const indices = [];
+                            for (let idx = 0; idx < colorValues.length; idx++) {
+                                if (colorValues[idx] === val) indices.push(idx);
+                            }
                             const color = (umapColorMap && umapColorMap[val]) || defaultColors[i % defaultColors.length];
                             return {
                                 x: indices.map(idx => x[idx]),
@@ -2090,13 +2132,8 @@
 
                     const config = { responsive: true, displayModeBar: true };
 
-                    const initializedKey = plotType === 'trait' ? 'spatial2dPlotTraitInitialized' : 'spatial2dPlotAnnotationInitialized';
-                    if (this[initializedKey]) {
-                        Plotly.react(plotDiv, traces, layout, config);
-                    } else {
-                        Plotly.newPlot(plotDiv, traces, layout, config);
-                        this[initializedKey] = true;
-                    }
+                    // Always use Plotly.react for efficient updates
+                    Plotly.react(plotDiv, traces, layout, config);
                 },
 
                 // Helper function to estimate point size for spatial plot

@@ -27,7 +27,7 @@ from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import setup_data_layer
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
-from gsMap.report.visualize import estimate_point_size_for_plot, estimate_matplotlib_scatter_marker_size
+from gsMap.report.visualize import estimate_plotly_point_size, estimate_matplotlib_scatter_marker_size
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 
 logger = logging.getLogger(__name__)
@@ -625,13 +625,13 @@ def _prepare_umap_data(
     umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key)
 
     # Estimate point size for UMAP cell
-    _, point_size_cell = estimate_point_size_for_plot(umap_cell, DEFAULT_PIXEL_WIDTH=600)
+    _, point_size_cell = estimate_plotly_point_size(umap_cell, DEFAULT_PIXEL_WIDTH=600)
 
     umap_niche = None
     point_size_niche = None
     if has_niche:
         umap_niche = _calculate_umap_from_embeddings(adata_sub, niche_emb_key)
-        _, point_size_niche = estimate_point_size_for_plot(umap_niche, DEFAULT_PIXEL_WIDTH=600)
+        _, point_size_niche = estimate_plotly_point_size(umap_niche, DEFAULT_PIXEL_WIDTH=600)
 
     # Prepare metadata for the subsampled spots
     umap_metadata = pd.DataFrame({
@@ -1618,20 +1618,7 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: Dict)
             sample_df = sample_df.sample(n=max_spots_2d, random_state=42)
 
         # Calculate point size for this sample
-        x_arr = sample_df['sx'].values
-        y_arr = sample_df['sy'].values
-        x_range = x_arr.max() - x_arr.min()
-        y_range = y_arr.max() - y_arr.min()
-        data_range = max(x_range, y_range)
-        if data_range > 0:
-            area = x_range * y_range
-            avg_spacing = np.sqrt(area / len(x_arr))
-            viewport_width = 600
-            pixels_per_unit = viewport_width / data_range
-            point_size = avg_spacing * pixels_per_unit * 0.8
-            point_size = max(2.0, min(15.0, point_size))
-        else:
-            point_size = 5.0
+        _, point_size = estimate_plotly_point_size(sample_df[['sx','sy']], DEFAULT_PIXEL_WIDTH=600)
 
         # Build columnar data structure for efficient ScatterGL rendering
         data_struct = {

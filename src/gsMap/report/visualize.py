@@ -103,7 +103,7 @@ def load_st_coord(adata, feature_series: pd.Series, annotation):
     return space_coord_concat
 
 
-def estimate_point_size_for_plot(coordinates, DEFAULT_PIXEL_WIDTH=1000):
+def estimate_plotly_point_size(coordinates, DEFAULT_PIXEL_WIDTH=1000):
     tree = KDTree(coordinates)
     distances, _ = tree.query(coordinates, k=2)
     avg_min_distance = np.mean(distances[:, 1])
@@ -399,7 +399,7 @@ class VisualizeRunner:
 
             # Annotation distribution plots
             sample_data = obs_ldsc_merged.query(f'sample_name == "{sample_name}"')
-            (pixel_width, pixel_height), point_size = estimate_point_size_for_plot(sample_data[['sx', 'sy']].values)
+            (pixel_width, pixel_height), point_size = estimate_plotly_point_size(sample_data[['sx', 'sy']].values)
 
             for annotation in self.config.cauchy_annotations:
                 annotation_dir = annotation_folder / annotation

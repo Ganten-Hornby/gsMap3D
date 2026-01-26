@@ -13,7 +13,7 @@ from scipy.stats import norm
 from gsMap.config import DiagnosisConfig
 from gsMap.utils.manhattan_plot import ManhattanPlot
 from gsMap.utils.regression_read import _read_chr_files
-from .visualize import draw_scatter, estimate_point_size_for_plot, load_ldsc, load_st_coord
+from .visualize import draw_scatter, estimate_plotly_point_size, load_ldsc, load_st_coord
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ def generate_GSS_distribution(config: DiagnosisConfig, adata: ad.AnnData):
             config.point_size,
         )
     else:
-        (pixel_width, pixel_height), point_size = estimate_point_size_for_plot(
+        (pixel_width, pixel_height), point_size = estimate_plotly_point_size(
             adata.obsm["spatial"]
         )
     sub_fig_save_dir = config.get_GSS_plot_dir(config.trait_name)
@@ -324,7 +324,7 @@ def generate_gsMap_plot(config: DiagnosisConfig, adata: ad.AnnData):
             config.point_size,
         )
     else:
-        (pixel_width, pixel_height), point_size = estimate_point_size_for_plot(
+        (pixel_width, pixel_height), point_size = estimate_plotly_point_size(
             adata.obsm["spatial"]
         )
     fig = draw_scatter(
