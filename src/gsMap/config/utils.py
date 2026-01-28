@@ -220,10 +220,16 @@ def process_h5ad_inputs(config, input_options):
             
         if processing_type == 'yaml':
             logger.info(f"Using {option_name}: {field_value}")
+            yaml_file_path = Path(field_value)
+            yaml_parent_dir = yaml_file_path.parent
             with open(field_value) as f:
                 h5ad_data = yaml.safe_load(f)
                 for sample_name, h5ad_path in h5ad_data.items():
-                    sample_h5ad_dict[sample_name] = Path(h5ad_path)
+                    h5ad_path = Path(h5ad_path)
+                    # Resolve relative paths relative to yaml file location
+                    if not h5ad_path.is_absolute():
+                        h5ad_path = yaml_parent_dir / h5ad_path
+                    sample_h5ad_dict[sample_name] = h5ad_path
                     
         elif processing_type == 'list':
             logger.info(f"Using {option_name} with {len(field_value)} files")
@@ -236,11 +242,16 @@ def process_h5ad_inputs(config, input_options):
                 
         elif processing_type == 'file':
             logger.info(f"Using {option_name}: {field_value}")
+            list_file_path = Path(field_value)
+            list_file_parent_dir = list_file_path.parent
             with open(field_value) as f:
                 for line in f:
                     line = line.strip()
                     if line:  # Skip empty lines
                         h5ad_path = Path(line)
+                        # Resolve relative paths relative to list file location
+                        if not h5ad_path.is_absolute():
+                            h5ad_path = list_file_parent_dir / h5ad_path
                         sample_name = h5ad_path.stem
                         if sample_name in sample_h5ad_dict:
                             logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
