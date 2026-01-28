@@ -112,14 +112,12 @@ def run_quick_mode(config: QuickModeConfig):
         logger.info("=== Step 4: Cauchy Combination ===")
         start_time = time.time()
 
-        for trait_name in traits_to_process:
-            logger.info(f"--- Processing Cauchy for {trait_name} ---")
-            if check_cauchy_done(config, trait_name):
-                 logger.info(f"Cauchy result already exists for {trait_name}. Skipping...")
-            else:
-                cauchy_config = config.cauchy_config
-                cauchy_config.trait_name = trait_name
-                run_Cauchy_combination(cauchy_config)
+        cauchy_check_list = [check_cauchy_done(config, trait_name) for trait_name in traits_to_process]
+        if all(cauchy_check_list):
+            logger.info("Cauchy combination already done for all traits. Skipping...")
+        else:
+            cauchy_config = config.cauchy_config
+            run_Cauchy_combination(cauchy_config)
 
         logger.info(f"Step 4 completed in {format_duration(time.time() - start_time)}")
 
