@@ -332,7 +332,7 @@ def draw_scatter(
 
 
 def _create_color_map(category_list: List, hex=False, rng=42) -> Dict[str, tuple]:
-    unique_categories = sorted(list(set(category_list)))
+    unique_categories = sorted(list(set(category_list)), key=str)
     
     # Check for 'NaN' or nan and handle separately
     nan_values = [v for v in unique_categories if str(v).lower() in ['nan', 'none', 'null']]

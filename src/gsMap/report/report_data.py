@@ -1334,6 +1334,11 @@ def _render_gene_diagnostic_plots_refactored(
     all_futures = []
     futures_lock = threading.Lock()
     max_workers = 20
+
+    # Use semaphore to limit the number of pending tasks in the executor queue.
+    max_pending_tasks = max_workers * 4  # e.g., 80 pending tasks
+    task_semaphore = threading.Semaphore(max_pending_tasks)
+
     max_loading_threads = min(4, len(sample_names_sorted))
 
     # Group tasks by sample for efficient processing
@@ -1372,37 +1377,62 @@ def _render_gene_diagnostic_plots_refactored(
                 unique_sample_genes = list(set(sample_genes))
                 available_genes = [g for g in unique_sample_genes if g in adata_rep.var_names]
                 
-                if not available_genes: return
-                adata_sample_exp = adata_rep[sample_spots, available_genes]
+                if not available_genes: 
+                    del adata_rep
+                    return
+                
+                # Extract to memory and then delete the large AnnData object to save RAM
+                adata_sample_exp = adata_rep[sample_spots, available_genes].copy()
                 adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
+                
+                del adata_rep
+                gc.collect()
 
             except Exception as e:
                 logger.error(f"Failed to load data for {sample_name}: {e}")
                 return
 
             safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
-            local_futures = []
+            
             for trait, gene in tasks_by_sample[sample_name]:
                 if gene not in available_genes: continue
                 
                 exp_vals = np.ravel(adata_sample_exp[:, gene].X.toarray() if sp.issparse(adata_sample_exp[:, gene].X) else adata_sample_exp[:, gene].X).astype(np.float32)
                 gss_vals = np.ravel(adata_sample_gss[:, gene].X.toarray() if sp.issparse(adata_sample_gss[:, gene].X) else adata_sample_gss[:, gene].X).astype(np.float32)
 
-                local_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
-                    'gene': gene, 'sample_name': sample_name, 'trait': trait,
-                    'plot_type': 'exp', 'coords': coords.copy(), 'values': exp_vals,
-                    'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
-                    'plot_origin': report_config.plot_origin, 'fig_width': 6.0, 'dpi': 150,
-                }))
-                local_futures.append(executor.submit(_render_single_sample_gene_plot_task, {
-                    'gene': gene, 'sample_name': sample_name, 'trait': trait,
-                    'plot_type': 'gss', 'coords': coords.copy(), 'values': gss_vals,
-                    'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
-                    'plot_origin': report_config.plot_origin, 'fig_width': 6.0, 'dpi': 150,
-                }))
+                # Submit Expression task with semaphore throttling
+                task_semaphore.acquire()
+                try:
+                    f_exp = executor.submit(_render_single_sample_gene_plot_task, {
+                        'gene': gene, 'sample_name': sample_name, 'trait': trait,
+                        'plot_type': 'exp', 'coords': coords.copy(), 'values': exp_vals,
+                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
+                        'plot_origin': report_config.plot_origin, 'fig_width': 6.0, 'dpi': 150,
+                    })
+                    f_exp.add_done_callback(lambda _: task_semaphore.release())
+                    with futures_lock:
+                        all_futures.append(f_exp)
+                except Exception:
+                    task_semaphore.release()
+                    raise
 
-            with futures_lock:
-                all_futures.extend(local_futures)
+                # Submit GSS task with semaphore throttling
+                task_semaphore.acquire()
+                try:
+                    f_gss = executor.submit(_render_single_sample_gene_plot_task, {
+                        'gene': gene, 'sample_name': sample_name, 'trait': trait,
+                        'plot_type': 'gss', 'coords': coords.copy(), 'values': gss_vals,
+                        'output_path': gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
+                        'plot_origin': report_config.plot_origin, 'fig_width': 6.0, 'dpi': 150,
+                    })
+                    f_gss.add_done_callback(lambda _: task_semaphore.release())
+                    with futures_lock:
+                        all_futures.append(f_gss)
+                except Exception:
+                    task_semaphore.release()
+                    raise
+
+            # Cleanup sample slices
             del adata_sample_exp, adata_sample_gss
             gc.collect()
 
@@ -1410,6 +1440,7 @@ def _render_gene_diagnostic_plots_refactored(
             loader.map(process_sample, tasks_by_sample.keys())
 
         # Wait for all
+        logger.info(f"Waiting for {len(all_futures)} diagnostic plot tasks to complete...")
         for future in as_completed(all_futures):
             future.result()
 
