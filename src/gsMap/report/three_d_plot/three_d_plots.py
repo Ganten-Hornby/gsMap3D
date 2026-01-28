@@ -349,7 +349,13 @@ def three_d_plot_save(
     """
     # save html
     logger.info('saving 3d plot as html...')
-    plotter.export_html(f'{filename}.html')
+    
+    # Workaround for asyncio conflict: use 'static' backend for export
+    pv.set_jupyter_backend('static')
+    try:
+        plotter.export_html(f'{filename}.html')
+    finally:
+        pv.set_jupyter_backend(pv.global_theme.jupyter_backend)
 
     # save gif
     if save_gif:
