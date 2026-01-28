@@ -31,6 +31,79 @@ from .memmap_io import MemMapDense
 logger = logging.getLogger(__name__)
 
 
+def filter_cells(obs_df, X=None, annotation_key=None, min_cells_per_type=None, min_genes=20, precomputed_gene_counts=None):
+    """
+    Apply cell filtering based on annotation and gene expression criteria.
+
+    Args:
+        obs_df: DataFrame with cell metadata
+        X: Optional expression matrix (sparse or dense) for gene count filtering
+        annotation_key: Optional annotation column to filter by
+        min_cells_per_type: Minimum cells required per annotation group
+        min_genes: Minimum number of genes expressed per cell (default: 20)
+        precomputed_gene_counts: Optional precomputed gene counts per cell (e.g., from CSR indptr)
+
+    Returns:
+        Tuple of (filtered_obs_df, filtering_stats_dict, keep_mask)
+    """
+    n_cells_before = obs_df.shape[0]
+    stats = {
+        "input_cells": n_cells_before,
+        "nan_removed": 0,
+        "small_group_removed": 0,
+        "low_gene_count_removed": 0,
+        "final_cells": 0
+    }
+
+    # Create a mask for cells to keep (start with all True)
+    keep_mask = pd.Series(True, index=obs_df.index)
+
+    # Filter 1: Remove cells with NaN in annotation_key
+    if annotation_key is not None and annotation_key in obs_df.columns:
+        nan_mask = obs_df[annotation_key].notna()
+        stats["nan_removed"] = (~nan_mask).sum()
+        keep_mask &= nan_mask
+
+    # Filter 2: Remove cells from small annotation groups
+    if annotation_key is not None and annotation_key in obs_df.columns and min_cells_per_type is not None:
+        # Apply on the current filtered data
+        temp_obs = obs_df[keep_mask]
+        annotation_counts = temp_obs[annotation_key].value_counts()
+        valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
+
+        if len(valid_annotations) < len(annotation_counts):
+            small_group_mask = obs_df[annotation_key].isin(valid_annotations)
+            stats["small_group_removed"] = keep_mask.sum() - (keep_mask & small_group_mask).sum()
+            keep_mask &= small_group_mask
+
+    # Filter 3: Remove cells with too few genes
+    if min_genes is not None:
+        if precomputed_gene_counts is not None:
+            # Use precomputed gene counts (efficient for CSR format from indptr)
+            nfeature_mask = precomputed_gene_counts > min_genes
+            nfeature_mask = pd.Series(nfeature_mask, index=obs_df.index)
+        elif X is not None:
+            nfeature_mask, n_genes_per_cell = sc.pp.filter_cells(
+                X,
+                min_genes=min_genes,
+                inplace=False
+            )
+            # Convert to pandas Series for consistent indexing
+            nfeature_mask = pd.Series(nfeature_mask, index=obs_df.index)
+        else:
+            # No gene count information available, skip this filter
+            nfeature_mask = pd.Series(True, index=obs_df.index)
+
+        stats["low_gene_count_removed"] = keep_mask.sum() - (keep_mask & nfeature_mask).sum()
+        keep_mask &= nfeature_mask
+
+    # Apply the combined filter
+    filtered_obs = obs_df[keep_mask].copy()
+    stats["final_cells"] = filtered_obs.shape[0]
+
+    return filtered_obs, stats, keep_mask
+
+
 @jit
 def jax_process_chunk(dense_matrix, n_genes):
 
@@ -229,39 +302,51 @@ class RankCalculator:
             # Apply same filtering logic as in main loop
             with h5py.File(h5ad_path, 'r') as f:
                 adata_temp_obs = read_elem(f['obs'])
-                n_cells_before = adata_temp_obs.shape[0]
-                nan_count = 0
-                small_group_removed = 0
-                
+
+                # Efficiently read gene counts per cell without loading full expression matrix
+                # For CSR format, we only need indptr to calculate non-zero counts
+                X_group = f['X']
+                if 'encoding-type' in X_group.attrs and X_group.attrs['encoding-type'] == 'csr_matrix':
+                    # CSR format: number of non-zero genes = indptr[i+1] - indptr[i]
+                    indptr = X_group['indptr'][:]
+                    n_genes_per_cell = np.diff(indptr)
+                    # Pass precomputed counts to filter function
+                    X_temp = None
+                    use_precomputed_counts = True
+                else:
+                    # Not CSR or unknown format, read the full matrix
+                    X_temp = read_elem(X_group)
+                    n_genes_per_cell = None
+                    use_precomputed_counts = False
+
                 if annotation_key is not None:
                     assert annotation_key and annotation_key in adata_temp_obs.columns, \
                         f"Annotation key '{annotation_key}' not found in the obs of {sample_name}"
 
-                    # Check for and handle NaN values
-                    nan_count = adata_temp_obs[annotation_key].isna().sum()
-                    if nan_count > 0:
-                        adata_temp_obs = adata_temp_obs[adata_temp_obs[annotation_key].notna()].copy()
+                # Apply unified filtering function
+                if use_precomputed_counts:
+                    filtered_obs, stats, _ = filter_cells(
+                        adata_temp_obs,
+                        X=None,
+                        annotation_key=annotation_key,
+                        min_cells_per_type=self.config.homogeneous_neighbors,
+                        min_genes=20,
+                        precomputed_gene_counts=n_genes_per_cell
+                    )
+                else:
+                    filtered_obs, stats, _ = filter_cells(
+                        adata_temp_obs,
+                        X=X_temp,
+                        annotation_key=annotation_key,
+                        min_cells_per_type=self.config.homogeneous_neighbors,
+                        min_genes=20
+                    )
 
-                    # Filter cells based on annotation group size
-                    min_cells_per_type = self.config.homogeneous_neighbors
-                    annotation_counts = adata_temp_obs[annotation_key].value_counts()
-                    valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
+                total_cells_expected += stats["final_cells"]
 
-                    if len(valid_annotations) < len(annotation_counts):
-                        # Filter to valid annotations
-                        mask = adata_temp_obs[annotation_key].isin(valid_annotations)
-                        adata_temp_obs = adata_temp_obs[mask].copy()
-                        small_group_removed = n_cells_before - nan_count - adata_temp_obs.shape[0]
-
-                n_cells_after = adata_temp_obs.shape[0]
-                total_cells_expected += n_cells_after
-                
                 filtering_stats.append({
                     "Sample": sample_name,
-                    "Total": n_cells_before,
-                    "NaN": nan_count,
-                    "Small Group": small_group_removed,
-                    "Final": n_cells_after
+                    **stats
                 })
 
         # Display filtering summary table
@@ -270,24 +355,27 @@ class RankCalculator:
         table.add_column("Input Cells", justify="right")
         table.add_column("NaN Removed", justify="right", style="red")
         table.add_column("Small Group Removed", justify="right", style="red")
+        table.add_column("Low Gene Count Removed", justify="right", style="red")
         table.add_column("Final Cells", justify="right", style="green")
 
         for stat in filtering_stats:
             table.add_row(
                 stat["Sample"],
-                str(stat["Total"]),
-                str(stat["NaN"]),
-                str(stat["Small Group"]),
-                str(stat["Final"])
+                str(stat["input_cells"]),
+                str(stat["nan_removed"]),
+                str(stat["small_group_removed"]),
+                str(stat["low_gene_count_removed"]),
+                str(stat["final_cells"])
             )
-        
+
         # Add a total row
         table.add_section()
         table.add_row(
             "[bold]Total[/bold]",
-            str(sum(s["Total"] for s in filtering_stats)),
-            str(sum(s["NaN"] for s in filtering_stats)),
-            str(sum(s["Small Group"] for s in filtering_stats)),
+            str(sum(s["input_cells"] for s in filtering_stats)),
+            str(sum(s["nan_removed"] for s in filtering_stats)),
+            str(sum(s["small_group_removed"] for s in filtering_stats)),
+            str(sum(s["low_gene_count_removed"] for s in filtering_stats)),
             f"[bold green]{total_cells_expected}[/bold green]"
         )
         
@@ -332,18 +420,24 @@ class RankCalculator:
                 # This must be done BEFORE adding to rank zarr to maintain index consistency
                 if annotation_key is not None:
                     assert annotation_key and annotation_key in adata.obs.columns
-                    # Check for and handle NaN values
-                    nan_count = adata.obs[annotation_key].isna().sum()
-                    if nan_count > 0:
-                        adata = adata[adata.obs[annotation_key].notna()].copy()
 
-                    # Filter cells based on annotation group size
-                    min_cells_per_type = self.config.min_cells_per_type
-                    annotation_counts = adata.obs[annotation_key].value_counts()
-                    valid_annotations = annotation_counts[annotation_counts >= min_cells_per_type].index
+                # Get expression data for filtering
+                if data_layer in adata.layers:
+                    X_filter = adata.layers[data_layer]
+                else:
+                    X_filter = adata.X
 
-                    if len(valid_annotations) < len(annotation_counts):
-                        adata = adata[adata.obs[annotation_key].isin(valid_annotations)].copy()
+                # Apply unified filtering function
+                filtered_obs, filter_stats, keep_mask = filter_cells(
+                    adata.obs,
+                    X=X_filter,
+                    annotation_key=annotation_key,
+                    min_cells_per_type=self.config.min_cells_per_type,
+                    min_genes=20
+                )
+
+                # Apply the filter mask to the AnnData object
+                adata = adata[keep_mask].copy()
 
                 # Get gene list (should be consistent across sections)
                 if gene_list is None:
