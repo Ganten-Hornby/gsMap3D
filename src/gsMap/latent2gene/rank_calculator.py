@@ -80,7 +80,7 @@ def filter_cells(obs_df, X=None, annotation_key=None, min_cells_per_type=None, m
     if min_genes is not None:
         if precomputed_gene_counts is not None:
             # Use precomputed gene counts (efficient for CSR format from indptr)
-            nfeature_mask = precomputed_gene_counts > min_genes
+            nfeature_mask = precomputed_gene_counts >= min_genes
             nfeature_mask = pd.Series(nfeature_mask, index=obs_df.index)
         elif X is not None:
             nfeature_mask, n_genes_per_cell = sc.pp.filter_cells(
@@ -293,10 +293,11 @@ class RankCalculator:
         rank_memmap = None
         current_row_offset = 0  # Track current position in rank memory map
 
-        # First pass: count total cells to initialize memory map
+        # First pass: count total cells and determine which cells to keep
         logger.info("Counting total cells across all sections...")
         total_cells_expected = 0
         filtering_stats = []
+        sample_keep_indices = {}  # Store cell indices to keep for each sample
 
         for sample_name, h5ad_path in sample_h5ad_dict.items():
             # Apply same filtering logic as in main loop
@@ -325,22 +326,25 @@ class RankCalculator:
 
                 # Apply unified filtering function
                 if use_precomputed_counts:
-                    filtered_obs, stats, _ = filter_cells(
+                    filtered_obs, stats, keep_mask = filter_cells(
                         adata_temp_obs,
                         X=None,
                         annotation_key=annotation_key,
-                        min_cells_per_type=self.config.homogeneous_neighbors,
+                        min_cells_per_type=self.config.min_cells_per_type,
                         min_genes=20,
                         precomputed_gene_counts=n_genes_per_cell
                     )
                 else:
-                    filtered_obs, stats, _ = filter_cells(
+                    filtered_obs, stats, keep_mask = filter_cells(
                         adata_temp_obs,
                         X=X_temp,
                         annotation_key=annotation_key,
-                        min_cells_per_type=self.config.homogeneous_neighbors,
+                        min_cells_per_type=self.config.min_cells_per_type,
                         min_genes=20
                     )
+
+                # Store the indices of cells to keep for this sample
+                sample_keep_indices[sample_name] = keep_mask
 
                 total_cells_expected += stats["final_cells"]
 
@@ -416,27 +420,8 @@ class RankCalculator:
                 adata.obs_names_make_unique()
                 adata.obs_names = adata.obs_names.astype(str) +'|'+ adata.obs['slice_name'].astype(str)
 
-                # Apply the same filtering logic as in counting phase
-                # This must be done BEFORE adding to rank zarr to maintain index consistency
-                if annotation_key is not None:
-                    assert annotation_key and annotation_key in adata.obs.columns
-
-                # Get expression data for filtering
-                if data_layer in adata.layers:
-                    X_filter = adata.layers[data_layer]
-                else:
-                    X_filter = adata.X
-
-                # Apply unified filtering function
-                filtered_obs, filter_stats, keep_mask = filter_cells(
-                    adata.obs,
-                    X=X_filter,
-                    annotation_key=annotation_key,
-                    min_cells_per_type=self.config.min_cells_per_type,
-                    min_genes=20
-                )
-
-                # Apply the filter mask to the AnnData object
+                # Apply the pre-computed filter mask from first pass
+                keep_mask = sample_keep_indices[sample_name]
                 adata = adata[keep_mask].copy()
 
                 # Get gene list (should be consistent across sections)
