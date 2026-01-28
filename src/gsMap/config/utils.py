@@ -31,7 +31,7 @@ def configure_jax_platform(
     use_accelerator: bool = True, 
     device_ids: Optional[str] = None,
     preallocate: bool = True
-) -> Tuple[str, List[Any]]:
+) -> Tuple[str, List[int]]:
     try:
         import jax
         from jax import config as jax_config
@@ -49,7 +49,7 @@ def configure_jax_platform(
             jax_config.update('jax_platforms', 'cpu')
             devices = jax.devices('cpu')
             _log_device_info(devices)
-            return 'cpu', devices
+            return 'cpu', [d.id for d in devices]
 
         # 3. Corrected Backend Detection
         try:
@@ -78,7 +78,7 @@ def configure_jax_platform(
         jax_config.update('jax_platforms', best_platform)
         _log_device_info(selected_devices)
         
-        return best_platform, selected_devices
+        return best_platform, [d.id for d in selected_devices]
 
     except ImportError:
         logger.error("JAX/jaxlib not found.")

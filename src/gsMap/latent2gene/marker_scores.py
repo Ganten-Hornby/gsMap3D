@@ -969,18 +969,19 @@ class MarkerScoreCalculator:
             # For pooling strategies, num_homogeneous is per slice
             num_homogeneous_per_slice = self.config.homogeneous_neighbors
         
+        num_compute_workers = self.config.mkscore_compute_workers * len(self.config.devices)
         self.computer = ParallelMarkerScoreComputer(
             global_log_gmean,
             global_expr_frac,
             self.config.homogeneous_neighbors,
-            num_workers=self.config.mkscore_compute_workers,
+            num_workers=num_compute_workers,
             input_queue=reader_to_computer_queue,  # Input from reader
             output_queue=computer_to_writer_queue,  # Output to writer
             cross_slice_strategy=cross_slice_strategy,
             n_slices=n_slices,
             num_homogeneous_per_slice=num_homogeneous_per_slice,
             no_expression_fraction=self.config.no_expression_fraction,
-            devices=get_jax_devices(self.config.device_ids, platform=self.config.platform)
+            devices=self.config.devices
         )
         
         self.writer = ParallelMarkerScoreWriter(
@@ -990,7 +991,7 @@ class MarkerScoreCalculator:
         )
 
         logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
-                   f"{self.config.mkscore_compute_workers} computers, "
+                   f"{num_compute_workers} computers, "
                    f"{self.config.mkscore_write_workers} writers")
         
         self.marker_score_queue = MarkerScoreMessageQueue(

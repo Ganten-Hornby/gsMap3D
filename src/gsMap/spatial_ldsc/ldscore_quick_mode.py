@@ -609,10 +609,10 @@ class SpatialLDSCProcessor:
 
         # Check for spots with very few non-zero markers
         non_zero_counts = np.count_nonzero(mk_score_chunk, axis=0)
-        low_count_mask = non_zero_counts < 50
+        low_count_mask = non_zero_counts < 10
         if np.any(low_count_mask):
             low_count_spots = spot_names[low_count_mask].tolist()
-            logger.warning(f"Found {len(low_count_spots)} spots with fewer than 50 non-zero marker scores. "
+            logger.warning(f"Found {len(low_count_spots)} spots with fewer than 10 non-zero marker scores. "
                            f"Spot names: {low_count_spots}")
 
         # Calculate absolute positions in original data
@@ -639,10 +639,11 @@ class SpatialLDSCProcessor:
             num_workers=self.config.ldsc_read_workers,
         )
         
+        num_compute_workers = self.config.ldsc_compute_workers * len(self.config.devices)
         computer = ParallelLDScoreComputer(
             processor=self,
             process_chunk_jit_fn=process_chunk_jit_fn,
-            num_workers=self.config.ldsc_compute_workers,
+            num_workers=num_compute_workers,
             input_queue=reader.result_queue,  # Connect reader output to computer input
             devices=devices
         )

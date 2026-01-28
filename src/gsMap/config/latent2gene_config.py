@@ -45,8 +45,9 @@ class LatentToGeneComputeConfig:
              "If None, uses all available GPUs or the default JAX device."
     )] = None
 
+    selected_device_ids: Optional[List[int]] = None
+
     platform: Optional[str] = None
-    devices: Optional[List[Any]] = None
 
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
@@ -71,7 +72,7 @@ class LatentToGeneComputeConfig:
     )] = 10
 
     mkscore_compute_workers: Annotated[int, typer.Option(
-        help="Number of parallel compute threads for marker score calculation",
+        help="Number of parallel compute threads per device for marker score calculation",
         min=1,
         max=16
     )] = 4
@@ -93,6 +94,21 @@ class LatentToGeneComputeConfig:
         min=10,
         max=500
     )] = 100
+
+    @property
+    def devices(self):
+        if self.platform is None or self.selected_device_ids is None:
+            return None
+        import jax
+        available_devices = jax.devices(self.platform)
+        return [d for d in available_devices if d.id in self.selected_device_ids]
+
+    @devices.setter
+    def devices(self, value):
+        # Allow setting for backward compatibility or direct assignment
+        if value is not None:
+            self.selected_device_ids = [d.id for d in value]
+
 
 @dataclass
 class LatentToGeneCoreConfig:
@@ -226,7 +242,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         super().__post_init__()
 
         # Step 1: Configure JAX platform
-        self.platform, self.devices = configure_jax_platform(self.use_gpu, self.device_ids)
+        self.platform, self.selected_device_ids = configure_jax_platform(self.use_gpu, self.device_ids)
 
         # Step 2: Process and validate h5ad inputs
         self._resolve_h5ad_inputs()
