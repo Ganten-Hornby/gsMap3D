@@ -4,7 +4,7 @@ Configuration for spatial LD score regression.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Annotated, List, Literal, Dict
+from typing import Optional, Annotated, List, Literal, Dict, Any
 import logging
 import typer
 import yaml
@@ -46,6 +46,14 @@ class SpatialLDSCComputeConfig:
         help="Number of spots per chunk in quick mode",
         min=1
     )] = 50
+
+    device_ids: Annotated[Optional[str], typer.Option(
+        help="Comma-separated list of GPU device IDs to use (e.g., '0,1'). "
+             "If None, uses the first available GPU or the default JAX device."
+    )] = None
+
+    platform: Optional[str] = None
+    devices: Optional[List[Any]] = None
 
 @dataclass
 class GWASSumstatsConfig:
@@ -210,8 +218,8 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape
 
         # Configure JAX platform if use_gpu is enabled
-        if self.use_gpu:
-            configure_jax_platform(self.use_gpu)
+        self.platform, self.devices = configure_jax_platform(self.use_gpu, self.device_ids)
+
 
         # Auto-detect marker_score_format if not specified
         if self.marker_score_format is None:

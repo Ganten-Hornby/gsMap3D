@@ -5,7 +5,7 @@ Configuration for latent to gene mapping.
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Annotated, List, OrderedDict, Literal
+from typing import Optional, Annotated, List, OrderedDict, Literal, Any
 import yaml
 import logging
 import typer
@@ -39,6 +39,14 @@ class LatentToGeneComputeConfig:
         "--use-gpu/--no-gpu",
         help="Use GPU for JAX computations (requires sufficient GPU memory)"
     )] = True
+
+    device_ids: Annotated[Optional[str], typer.Option(
+        help="Comma-separated list of GPU device IDs to use (e.g., '0,1'). "
+             "If None, uses all available GPUs or the default JAX device."
+    )] = None
+
+    platform: Optional[str] = None
+    devices: Optional[List[Any]] = None
 
     memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
@@ -218,7 +226,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         super().__post_init__()
 
         # Step 1: Configure JAX platform
-        configure_jax_platform(self.use_gpu)
+        self.platform, self.devices = configure_jax_platform(self.use_gpu, self.device_ids)
 
         # Step 2: Process and validate h5ad inputs
         self._resolve_h5ad_inputs()

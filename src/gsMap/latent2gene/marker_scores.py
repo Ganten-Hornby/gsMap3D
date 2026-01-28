@@ -10,7 +10,7 @@ import time
 import json
 import traceback
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict, Any
+from typing import Optional, Tuple, Union, Dict, Any, List
 from functools import partial
 from dataclasses import dataclass, asdict
 
@@ -41,7 +41,7 @@ from rich.progress import (
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
-from .memmap_io import ComponentThroughput, ParallelMarkerScoreWriter,ParallelRankReader
+from .memmap_io import ComponentThroughput, ParallelMarkerScoreWriter, ParallelRankReader
 
 
 class ParallelMarkerScoreComputer:
@@ -58,7 +58,8 @@ class ParallelMarkerScoreComputer:
         cross_slice_strategy: str = None,
         n_slices: int = 1,
         num_homogeneous_per_slice: int = None,
-        no_expression_fraction: bool = False
+        no_expression_fraction: bool = False,
+        devices: Optional[List[jax.Device]] = None
     ):
         """
         Initialize computer pool
@@ -81,6 +82,7 @@ class ParallelMarkerScoreComputer:
         self.n_slices = n_slices
         self.num_homogeneous_per_slice = num_homogeneous_per_slice or homogeneous_neighbors
         self.no_expression_fraction = no_expression_fraction
+        self.devices = devices
         
         # Store global statistics as JAX arrays
         self.global_log_gmean = jnp.array(global_log_gmean)
@@ -157,40 +159,50 @@ class ParallelMarkerScoreComputer:
                 batch_weights = self.neighbor_weights[batch_start:batch_end]
                 batch_cell_indices = self.cell_indices_sorted[batch_start:batch_end]
                 
-                # Convert to JAX for efficient computation
-                rank_data_jax = jnp.array(rank_data)
-                rank_indices_jax = jnp.array(rank_indices)
+                # Assign device if multiple devices are available
+                device = None
+                if self.devices:
+                    device = self.devices[worker_id % len(self.devices)]
                 
-                # Use JAX fancy indexing
-                batch_ranks = rank_data_jax[rank_indices_jax]
-                
-                # Compute marker scores using appropriate strategy
-                if self.cross_slice_strategy == 'hierarchical_pool':
-                    # Use hierarchical pooling (per-slice marker score average) for 3D data
-                    marker_scores = compute_marker_scores_3d_hierarchical_pool_jax(
-                        batch_ranks,
-                        batch_weights,
-                        actual_batch_size,
-                        self.n_slices,
-                        self.num_homogeneous_per_slice,
-                        self.global_log_gmean,
-                        self.global_expr_frac,
-                        self.no_expression_fraction
-                    )
-                else:
-                    # Use standard computation (includes mean pooling via weights)
-                    marker_scores = compute_marker_scores_jax(
-                        batch_ranks,
-                        batch_weights,
-                        actual_batch_size,
-                        self.homogeneous_neighbors * self.n_slices,
-                        self.global_log_gmean,
-                        self.global_expr_frac,
-                        self.no_expression_fraction
-                    )
-                
-                # Convert back to numpy as float16 for memory efficiency
-                marker_scores_np = np.array(marker_scores, dtype=np.float16)
+                # Use assigned device context
+                with jax.default_device(device):
+                    # Convert to JAX for efficient computation
+                    rank_data_jax = jnp.array(rank_data)
+                    rank_indices_jax = jnp.array(rank_indices)
+                    
+                    # Use JAX fancy indexing
+                    batch_ranks = rank_data_jax[rank_indices_jax]
+                    
+                    # Compute marker scores using appropriate strategy
+                    if self.cross_slice_strategy == 'hierarchical_pool':
+                        # Use hierarchical pooling (per-slice marker score average) for 3D data
+                        marker_scores = compute_marker_scores_3d_hierarchical_pool_jax(
+                            batch_ranks,
+                            batch_weights,
+                            actual_batch_size,
+                            self.n_slices,
+                            self.num_homogeneous_per_slice,
+                            self.global_log_gmean,
+                            self.global_expr_frac,
+                            self.no_expression_fraction
+                        )
+                    else:
+                        # Use standard computation (includes mean pooling via weights)
+                        marker_scores = compute_marker_scores_jax(
+                            batch_ranks,
+                            batch_weights,
+                            actual_batch_size,
+                            self.homogeneous_neighbors * self.n_slices,
+                            self.global_log_gmean,
+                            self.global_expr_frac,
+                            self.no_expression_fraction
+                        )
+                    
+                    # Ensure computation completes
+                    marker_scores.block_until_ready()
+                    
+                    # Convert back to numpy as float16 for memory efficiency
+                    marker_scores_np = np.array(marker_scores, dtype=np.float16)
                 
                 # Track throughput
                 elapsed = time.time() - start_time
@@ -967,7 +979,8 @@ class MarkerScoreCalculator:
             cross_slice_strategy=cross_slice_strategy,
             n_slices=n_slices,
             num_homogeneous_per_slice=num_homogeneous_per_slice,
-            no_expression_fraction=self.config.no_expression_fraction
+            no_expression_fraction=self.config.no_expression_fraction,
+            devices=get_jax_devices(self.config.device_ids, platform=self.config.platform)
         )
         
         self.writer = ParallelMarkerScoreWriter(

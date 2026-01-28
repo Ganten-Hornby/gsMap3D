@@ -299,6 +299,10 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     # Determine number of loader threads based on platform
     n_loader_threads = 10 if jax.default_backend() == 'gpu' else 2
 
+    # Resolve JAX devices
+    jax_devices = config.devices
+    logger.info(f"Using {len(jax_devices)} JAX device(s) on {config.platform.upper()}: {[d.id for d in jax_devices]}")
+
     # Load marker scores once (format-agnostic)
     logger.info(f"Loading marker scores (format: {config.marker_score_format})...")
     marker_score_adata = None
@@ -368,7 +372,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
                 # Process all chunks for current trait
                 start_time = time.time()
-                processor.process_all_chunks(wrapper_of_process_chunk_jit)
+                processor.process_all_chunks(wrapper_of_process_chunk_jit, devices=jax_devices)
 
                 elapsed_time = time.time() - start_time
                 h, rem = divmod(elapsed_time, 3600)
