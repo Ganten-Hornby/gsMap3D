@@ -597,7 +597,15 @@ class SpatialLDSCProcessor:
         
         # Get spot names
         spot_names = pd.Index(self.spot_names_filtered[start:end])
-        
+
+        # Check for spots with very few non-zero markers
+        non_zero_counts = np.count_nonzero(mk_score_chunk, axis=0)
+        low_count_mask = non_zero_counts < 50
+        if np.any(low_count_mask):
+            low_count_spots = spot_names[low_count_mask].tolist()
+            logger.warning(f"Found {len(low_count_spots)} spots with fewer than 50 non-zero marker scores. "
+                           f"Spot names: {low_count_spots}")
+
         # Calculate absolute positions in original data
         absolute_start = self.spot_indices[start] if start < len(self.spot_indices) else start
         absolute_end = self.spot_indices[end - 1] + 1 if end > 0 else absolute_start
