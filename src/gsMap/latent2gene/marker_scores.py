@@ -163,16 +163,20 @@ class ParallelMarkerScoreComputer:
                 device = None
                 if self.devices:
                     device = self.devices[worker_id % len(self.devices)]
-                
+
                 # Use assigned device context
                 with jax.default_device(device):
                     # Convert to JAX for efficient computation
                     rank_data_jax = jnp.array(rank_data)
                     rank_indices_jax = jnp.array(rank_indices)
-                    
+
+                    # Move global arrays to worker's device to avoid cross-device transfers
+                    global_log_gmean_device = jax.device_put(self.global_log_gmean, device)
+                    global_expr_frac_device = jax.device_put(self.global_expr_frac, device)
+
                     # Use JAX fancy indexing
                     batch_ranks = rank_data_jax[rank_indices_jax]
-                    
+
                     # Compute marker scores using appropriate strategy
                     if self.cross_slice_strategy == 'hierarchical_pool':
                         # Use hierarchical pooling (per-slice marker score average) for 3D data
@@ -182,8 +186,8 @@ class ParallelMarkerScoreComputer:
                             actual_batch_size,
                             self.n_slices,
                             self.num_homogeneous_per_slice,
-                            self.global_log_gmean,
-                            self.global_expr_frac,
+                            global_log_gmean_device,
+                            global_expr_frac_device,
                             self.no_expression_fraction
                         )
                     else:
@@ -193,8 +197,8 @@ class ParallelMarkerScoreComputer:
                             batch_weights,
                             actual_batch_size,
                             self.homogeneous_neighbors * self.n_slices,
-                            self.global_log_gmean,
-                            self.global_expr_frac,
+                            global_log_gmean_device,
+                            global_expr_frac_device,
                             self.no_expression_fraction
                         )
                     
