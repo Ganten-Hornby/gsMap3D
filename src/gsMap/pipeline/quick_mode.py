@@ -15,7 +15,7 @@ from gsMap.config.spatial_ldsc_config import check_spatial_ldsc_done
 from gsMap.cauchy_combination_test import run_Cauchy_combination
 from gsMap.config.cauchy_config import check_cauchy_done
 from gsMap.report import run_report
-from gsMap.config.report_config import check_report_done
+from gsMap.config.quick_mode_config import check_report_done
 
 logger = logging.getLogger("gsMap.pipeline")
 
