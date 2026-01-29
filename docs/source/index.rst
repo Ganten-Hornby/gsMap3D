@@ -61,7 +61,11 @@ Users could upload their own GWAS summary statistics data to perform the analysi
     :caption: Contents:
 
     install
-    tutorials
-    data
-    api
+    gsMap2D <2d_tutorial/index>
+    gsMap3D <3d_tutorial/index>
+    advanced_usage
+    notes
     release
+    gsmap_cli_readmi.md
+
+
