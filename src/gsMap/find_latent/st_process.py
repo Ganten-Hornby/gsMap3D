@@ -286,10 +286,10 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
             adata.obs['label'] = 'unknown'
 
         subsampled_adatas.append(adata)
-        logger.info(f"Subsampled {sample_name}: {adata.n_obs} cells, {adata.n_vars} genes")
+        logger.info(f"Processed {sample_name}: {adata.n_obs} cells, {adata.n_vars} genes")
 
     # Concatenate all samples
-    logger.info("Concatenating all subsampled data...")
+    logger.info("Concatenating all processed data...")
     concatenated_adata = sc.concat(subsampled_adatas, axis=0, join='inner',
                                    index_unique='_', fill_value=0)
 
