@@ -4,7 +4,7 @@ Configuration for spatial LD score regression.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Annotated, List, Literal, Dict, Any
+from typing import Optional, Annotated, List, Literal, Dict
 import logging
 import typer
 import yaml
@@ -38,7 +38,7 @@ class SpatialLDSCComputeConfig:
     )] = 10
 
     ldsc_compute_workers: Annotated[int, typer.Option(
-        help="Number of compute workers per device for LDSC regression",
+        help="Number of compute workers for LDSC regression",
         min=1
     )] = 10
 
@@ -46,28 +46,6 @@ class SpatialLDSCComputeConfig:
         help="Number of spots per chunk in quick mode",
         min=1
     )] = 50
-
-    device_ids: Annotated[Optional[str], typer.Option(
-        help="Comma-separated list of GPU device IDs to use (e.g., '0,1'). "
-             "If None, uses the first available GPU or the default JAX device."
-    )] = None
-
-    selected_device_ids: Optional[List[int]] = None
-
-    platform: Optional[str] = None
-
-    @property
-    def devices(self) -> Optional[List['jax.Device']]:
-        if self.platform is None or self.selected_device_ids is None:
-            return None
-        import jax
-        available_devices = jax.devices(self.platform)
-        return [d for d in available_devices if d.id in self.selected_device_ids]
-
-    @devices.setter
-    def devices(self, value):
-        if value is not None:
-            self.selected_device_ids = [d.id for d in value]
 
 @dataclass
 class GWASSumstatsConfig:
@@ -232,8 +210,7 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape
 
         # Configure JAX platform if use_gpu is enabled
-        self.platform, self.selected_device_ids = configure_jax_platform(self.use_gpu, self.device_ids)
-
+        configure_jax_platform(self.use_gpu)
 
         # Auto-detect marker_score_format if not specified
         if self.marker_score_format is None:

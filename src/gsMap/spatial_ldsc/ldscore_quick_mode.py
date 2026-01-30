@@ -236,14 +236,12 @@ class ParallelLDScoreComputer:
         processor,  # Reference to SpatialLDSCProcessor
         process_chunk_jit_fn,  # JIT-compiled processing function
         num_workers: int = 4,
-        input_queue: queue.Queue = None,
-        devices: Optional[List[jax.Device]] = None
+        input_queue: queue.Queue = None
     ):
         """Initialize computer pool"""
         self.processor = processor
         self.process_chunk_jit_fn = process_chunk_jit_fn
         self.num_workers = num_workers
-        self.devices = devices
         
         # Queues for communication
         self.compute_queue = input_queue if input_queue else queue.Queue(maxsize=num_workers * 2)
@@ -328,39 +326,32 @@ class ParallelLDScoreComputer:
                 spot_names = item['spot_names']
                 abs_start = item['abs_start']
                 abs_end = item['abs_end']
-                
-                # Assign device if multiple devices are available
-                device = None
-                if self.devices:
-                    device = self.devices[worker_id % len(self.devices)]
-                
+
                 # Track timing
                 start_time = time.time()
                 
-                # Use assigned device context
-                with jax.default_device(device):
-                    # Convert to JAX and process
-                    spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
+                # Convert to JAX and process
+                spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
 
-                    # Process with batched JIT function
-                    betas, ses = self.process_chunk_jit_fn(
-                        self.processor.config.n_blocks,
-                        spatial_ld_jax,
-                        self.baseline_ld_sum_jax,
-                        self.chisq_jax,
-                        self.N_jax,
-                        self.baseline_ann_jax,
-                        self.w_ld_jax,
-                        self.Nbar
-                    )
-                    
-                    # Ensure computation completes
-                    betas.block_until_ready()
-                    ses.block_until_ready()
-                    
-                    # Convert to numpy
-                    betas_np = np.array(betas)
-                    ses_np = np.array(ses)
+                # Process with batched JIT function (no batch_size needed - processes all spots at once)
+                betas, ses = self.process_chunk_jit_fn(
+                    self.processor.config.n_blocks,
+                    spatial_ld_jax,
+                    self.baseline_ld_sum_jax,
+                    self.chisq_jax,
+                    self.N_jax,
+                    self.baseline_ann_jax,
+                    self.w_ld_jax,
+                    self.Nbar
+                )
+                
+                # Ensure computation completes
+                betas.block_until_ready()
+                ses.block_until_ready()
+                
+                # Convert to numpy
+                betas_np = np.array(betas)
+                ses_np = np.array(ses)
                 
                 # Track throughput and statistics
                 elapsed = time.time() - start_time
@@ -609,10 +600,10 @@ class SpatialLDSCProcessor:
 
         # Check for spots with very few non-zero markers
         non_zero_counts = np.count_nonzero(mk_score_chunk, axis=0)
-        low_count_mask = non_zero_counts < 10
+        low_count_mask = non_zero_counts < 50
         if np.any(low_count_mask):
             low_count_spots = spot_names[low_count_mask].tolist()
-            logger.warning(f"Found {len(low_count_spots)} spots with fewer than 10 non-zero marker scores. "
+            logger.warning(f"Found {len(low_count_spots)} spots with fewer than 50 non-zero marker scores. "
                            f"Spot names: {low_count_spots}")
 
         # Calculate absolute positions in original data
@@ -622,13 +613,12 @@ class SpatialLDSCProcessor:
         return ldscore_chunk.astype(np.float32, copy=False), spot_names, absolute_start, absolute_end
     
     
-    def process_all_chunks(self, process_chunk_jit_fn, devices: Optional[List[jax.Device]] = None) -> pd.DataFrame:
+    def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
         """
         Process all chunks using parallel reader-computer pipeline.
         
         Args:
             process_chunk_jit_fn: JIT-compiled function for processing chunks
-            devices: Optional list of JAX devices to use for computation
             
         Returns:
             Merged DataFrame with all results
@@ -638,14 +628,12 @@ class SpatialLDSCProcessor:
             processor=self,
             num_workers=self.config.ldsc_read_workers,
         )
-        
-        num_compute_workers = self.config.ldsc_compute_workers * len(self.config.devices)
+
         computer = ParallelLDScoreComputer(
             processor=self,
             process_chunk_jit_fn=process_chunk_jit_fn,
-            num_workers=num_compute_workers,
-            input_queue=reader.result_queue,  # Connect reader output to computer input
-            devices=devices
+            num_workers=self.config.ldsc_compute_workers,
+            input_queue=reader.result_queue  # Connect reader output to computer input
         )
         
         try:
@@ -662,10 +650,7 @@ class SpatialLDSCProcessor:
             if self.config.cell_indices_range:
                 start_cell, end_cell = self.config.cell_indices_range
                 desc_parts.append(f"Range: [{start_cell:,}-{end_cell:,})")
-            
-            if devices:
-                desc_parts.append(f"Devices: {[str(i) for i in devices]}")
-            
+
             description = " | ".join(desc_parts)
             
             # # Start JAX profiling if needed

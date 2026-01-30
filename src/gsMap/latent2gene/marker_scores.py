@@ -10,7 +10,7 @@ import time
 import json
 import traceback
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict, Any, List
+from typing import Optional, Tuple, Union, Dict, Any
 from functools import partial
 from dataclasses import dataclass, asdict
 
@@ -41,7 +41,7 @@ from rich.progress import (
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
-from .memmap_io import ComponentThroughput, ParallelMarkerScoreWriter, ParallelRankReader
+from .memmap_io import ComponentThroughput, ParallelMarkerScoreWriter,ParallelRankReader
 
 
 class ParallelMarkerScoreComputer:
@@ -58,8 +58,7 @@ class ParallelMarkerScoreComputer:
         cross_slice_strategy: str = None,
         n_slices: int = 1,
         num_homogeneous_per_slice: int = None,
-        no_expression_fraction: bool = False,
-        devices: Optional[List[jax.Device]] = None
+        no_expression_fraction: bool = False
     ):
         """
         Initialize computer pool
@@ -82,7 +81,6 @@ class ParallelMarkerScoreComputer:
         self.n_slices = n_slices
         self.num_homogeneous_per_slice = num_homogeneous_per_slice or homogeneous_neighbors
         self.no_expression_fraction = no_expression_fraction
-        self.devices = devices
         
         # Store global statistics as JAX arrays
         self.global_log_gmean = jnp.array(global_log_gmean)
@@ -105,7 +103,7 @@ class ParallelMarkerScoreComputer:
         # Exception handling
         self.exception_queue = queue.Queue()
         self.has_error = threading.Event()
-        
+
         # Start worker threads
         self.workers = []
         self.stop_workers = threading.Event()
@@ -123,7 +121,7 @@ class ParallelMarkerScoreComputer:
             worker.start()
             self.workers.append(worker)
         logger.info(f"Started {self.num_workers} compute workers")
-    
+
     def _compute_worker(self, worker_id: int):
         """Compute worker thread"""
         logger.info(f"Compute worker {worker_id} started")
@@ -159,54 +157,40 @@ class ParallelMarkerScoreComputer:
                 batch_weights = self.neighbor_weights[batch_start:batch_end]
                 batch_cell_indices = self.cell_indices_sorted[batch_start:batch_end]
                 
-                # Assign device if multiple devices are available
-                device = None
-                if self.devices:
-                    device = self.devices[worker_id % len(self.devices)]
-
-                # Use assigned device context
-                with jax.default_device(device):
-                    # Convert to JAX for efficient computation
-                    rank_data_jax = jnp.array(rank_data)
-                    rank_indices_jax = jnp.array(rank_indices)
-
-                    # Move global arrays to worker's device to avoid cross-device transfers
-                    global_log_gmean_device = jax.device_put(self.global_log_gmean, device)
-                    global_expr_frac_device = jax.device_put(self.global_expr_frac, device)
-
-                    # Use JAX fancy indexing
-                    batch_ranks = rank_data_jax[rank_indices_jax]
-
-                    # Compute marker scores using appropriate strategy
-                    if self.cross_slice_strategy == 'hierarchical_pool':
-                        # Use hierarchical pooling (per-slice marker score average) for 3D data
-                        marker_scores = compute_marker_scores_3d_hierarchical_pool_jax(
-                            batch_ranks,
-                            batch_weights,
-                            actual_batch_size,
-                            self.n_slices,
-                            self.num_homogeneous_per_slice,
-                            global_log_gmean_device,
-                            global_expr_frac_device,
-                            self.no_expression_fraction
-                        )
-                    else:
-                        # Use standard computation (includes mean pooling via weights)
-                        marker_scores = compute_marker_scores_jax(
-                            batch_ranks,
-                            batch_weights,
-                            actual_batch_size,
-                            self.homogeneous_neighbors * self.n_slices,
-                            global_log_gmean_device,
-                            global_expr_frac_device,
-                            self.no_expression_fraction
-                        )
-                    
-                    # Ensure computation completes
-                    marker_scores.block_until_ready()
-                    
-                    # Convert back to numpy as float16 for memory efficiency
-                    marker_scores_np = np.array(marker_scores, dtype=np.float16)
+                # Convert to JAX for efficient computation
+                rank_data_jax = jnp.array(rank_data)
+                rank_indices_jax = jnp.array(rank_indices)
+                
+                # Use JAX fancy indexing
+                batch_ranks = rank_data_jax[rank_indices_jax]
+                
+                # Compute marker scores using appropriate strategy
+                if self.cross_slice_strategy == 'hierarchical_pool':
+                    # Use hierarchical pooling (per-slice marker score average) for 3D data
+                    marker_scores = compute_marker_scores_3d_hierarchical_pool_jax(
+                        batch_ranks,
+                        batch_weights,
+                        actual_batch_size,
+                        self.n_slices,
+                        self.num_homogeneous_per_slice,
+                        self.global_log_gmean,
+                        self.global_expr_frac,
+                        self.no_expression_fraction
+                    )
+                else:
+                    # Use standard computation (includes mean pooling via weights)
+                    marker_scores = compute_marker_scores_jax(
+                        batch_ranks,
+                        batch_weights,
+                        actual_batch_size,
+                        self.homogeneous_neighbors * self.n_slices,
+                        self.global_log_gmean,
+                        self.global_expr_frac,
+                        self.no_expression_fraction
+                    )
+                
+                # Convert back to numpy as float16 for memory efficiency
+                marker_scores_np = np.array(marker_scores, dtype=np.float16)
                 
                 # Track throughput
                 elapsed = time.time() - start_time
@@ -972,20 +956,18 @@ class MarkerScoreCalculator:
             n_slices = 1 + 2 * self.config.n_adjacent_slices
             # For pooling strategies, num_homogeneous is per slice
             num_homogeneous_per_slice = self.config.homogeneous_neighbors
-        
-        num_compute_workers = self.config.mkscore_compute_workers * len(self.config.devices)
+
         self.computer = ParallelMarkerScoreComputer(
             global_log_gmean,
             global_expr_frac,
             self.config.homogeneous_neighbors,
-            num_workers=num_compute_workers,
+            num_workers=self.config.mkscore_compute_workers,
             input_queue=reader_to_computer_queue,  # Input from reader
             output_queue=computer_to_writer_queue,  # Output to writer
             cross_slice_strategy=cross_slice_strategy,
             n_slices=n_slices,
             num_homogeneous_per_slice=num_homogeneous_per_slice,
-            no_expression_fraction=self.config.no_expression_fraction,
-            devices=self.config.devices
+            no_expression_fraction=self.config.no_expression_fraction
         )
         
         self.writer = ParallelMarkerScoreWriter(
@@ -995,7 +977,7 @@ class MarkerScoreCalculator:
         )
 
         logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
-                   f"{num_compute_workers} computers, "
+                   f"{self.config.mkscore_compute_workers} computers, "
                    f"{self.config.mkscore_write_workers} writers")
         
         self.marker_score_queue = MarkerScoreMessageQueue(

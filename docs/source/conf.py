@@ -12,11 +12,9 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
     "sphinx.ext.napoleon",
-    "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
     "sphinx_autodoc_typehints",
     "sphinx_copybutton",
-    "sphinx.ext.viewcode",
     "sphinxarg.ext",
     "nbsphinx",
     "myst_parser",
@@ -38,6 +36,8 @@ exclude_patterns = []
 html_theme = "furo"
 html_static_path = ["_static"]
 templates_path = ["_templates"]
+html_show_sourcelink = False
+html_css_files = ["custom.css"]
 
 html_theme_options = {
     # "light_css_variables": {

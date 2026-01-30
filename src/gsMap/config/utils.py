@@ -7,82 +7,58 @@ from pathlib import Path
 from collections import OrderedDict
 from typing import Optional, List, Dict, Any, Tuple
 import h5py
-import psutil
 import yaml
 
 logger = logging.getLogger("gsMap.config")
 
-def _log_device_info(devices: List[Any]):
-    """Helper to log memory specs correctly for CPU vs GPU."""
-    for d in devices:
-        if d.device_kind == "cpu":
-            # Using psutil for meaningful CPU memory reporting
-            mem_gb = psutil.virtual_memory().total / 1e9
-            mem_type = "System RAM"
-        else:
-            # VRAM reporting for GPUs
-            mem_stats = d.memory_stats()
-            mem_gb = mem_stats.get('bytes_limit', 0) / 1e9
-            mem_type = "VRAM"
-            
-        logger.info(f"Initialized JAX Device {d.id}: {d.device_kind} ({mem_type}: {mem_gb:.2f} GB)")
-        
-def configure_jax_platform(
-    use_accelerator: bool = True, 
-    device_ids: Optional[str] = None,
-    preallocate: bool = True
-) -> Tuple[str, List[int]]:
+def configure_jax_platform(use_accelerator: bool = True):
+    """Configure JAX platform based on availability of accelerators.
+
+    Args:
+        use_accelerator: If True, try to use GPU then TPU if available, 
+                        otherwise fall back to CPU. If False, force CPU usage.
+
+    Raises:
+        ImportError: If JAX is not installed.
+    """
     try:
+        import os
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        logging.getLogger("jax._src.xla_bridge").setLevel(logging.ERROR)
+
         import jax
         from jax import config as jax_config
-        import os
 
-        # 1. Memory Management
-        if not preallocate:
-            # Must be set before JAX starts its first operation
-            os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-        
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-
-        # 2. Forced CPU Fallback
         if not use_accelerator:
-            jax_config.update('jax_platforms', 'cpu')
-            devices = jax.devices('cpu')
-            _log_device_info(devices)
-            return 'cpu', [d.id for d in devices]
+            jax_config.update('jax_platform_name', 'cpu')
+            logger.info("JAX configured to use CPU for computations (accelerators disabled)")
+            return
 
-        # 3. Corrected Backend Detection
-        try:
-            # This is the stable modern replacement for get_backend()
-            best_platform = jax.default_backend() 
-        except Exception:
-            best_platform = 'cpu'
+        # Priority list for accelerators
+        platforms = ['gpu', 'tpu']
+        configured = False
 
-        # 4. Device Filtering
-        available_devices = jax.devices(best_platform)
-        selected_devices = available_devices
-        
-        if device_ids and best_platform != 'cpu':
+        for platform in platforms:
             try:
-                requested_ids = [int(i.strip()) for i in device_ids.split(',')]
-                # Filter based on the .id attribute
-                selected_devices = [d for d in available_devices if d.id in requested_ids]
-                
-                if not selected_devices:
-                    logger.warning(f"IDs {requested_ids} not found. Defaulting to all {best_platform}s.")
-                    selected_devices = available_devices
-            except (ValueError, TypeError):
-                logger.error(f"Malformed device_ids: {device_ids}")
+                devices = jax.devices(platform)
+                if len(devices) > 0:
+                    jax_config.update('jax_platform_name', platform)
+                    logger.info(f"JAX configured to use {platform.upper()} for computations.")
+                    logger.info(f" ({len(devices)} device(s) detected). Device {devices[0]} will be used.")
+                    configured = True
+                    break
+            except (RuntimeError, ValueError, Exception):
+                continue
 
-        # Finalize
-        jax_config.update('jax_platforms', best_platform)
-        _log_device_info(selected_devices)
-        
-        return best_platform, [d.id for d in selected_devices]
+        if not configured:
+            jax_config.update('jax_platform_name', 'cpu')
+            logger.info("No GPU or TPU detected, JAX configured to use CPU for computations")
 
     except ImportError:
-        logger.error("JAX/jaxlib not found.")
-        raise
+        raise ImportError(
+            "JAX is required but not installed. Please install JAX by running: "
+            "pip install jax jaxlib (for CPU) or see JAX documentation for GPU/TPU installation."
+        )
 
 def get_anndata_shape(h5ad_path: str):
     """Get the shape (n_obs, n_vars) of an AnnData file without loading it."""
