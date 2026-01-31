@@ -32,7 +32,7 @@ Explore gsMap
        
        Understand how to prepare data and configure gsMap.
        
-       :doc:`Go to Key Concepts <key_concepts>`
+       :doc:`Go to Key Concepts <key_concepts/index>`
 
    * - **Tutorials**
        
@@ -74,7 +74,7 @@ If you use ``gsMap`` in your studies, please cite:
     :hidden:
 
     install
-    key_concepts
+    key_concepts/index
     gsMap2D <2d_tutorial/index>
     gsMap3D <3d_tutorial/index>
     advanced_usage
