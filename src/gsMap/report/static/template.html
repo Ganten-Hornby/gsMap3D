@@ -1929,7 +1929,7 @@
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
 
-                    const opacity = this.umapData.default_opacity || 0.8;
+                    const opacity = this.umapData.default_opacity || 0.9;
 
                     const trace = {
                         x: x,
@@ -2092,13 +2092,19 @@
                                 size: pointSize,
                                 color: colorValues,
                                 colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
-                                opacity: 0.8,
+                                // opacity: 0.8,
                                 showscale: true,
                                 colorbar: {
-                                    title: '-log10(p)',
+                                    title: {
+                                        text: '-log10(p)',
+                                        side: 'top',
+                                        font: { size: 12 }
+                                    },
                                     thickness: 15,
                                     len: 0.5,
-                                    y: 0.5
+                                    y: 0.5,
+                                    x: 1.0,
+                                    xanchor: 'left'
                                 }
                             }
                         });
