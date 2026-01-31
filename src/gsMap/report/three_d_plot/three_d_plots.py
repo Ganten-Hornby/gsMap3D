@@ -1,15 +1,14 @@
-import sys
-import matplotlib as mpl
-from typing import Optional, Union, Literal, List
-from pyvista import MultiBlock, Plotter, PolyData
-import pyvista as pv
-import math
 import logging
+import math
+from typing import Literal
+
+import matplotlib as mpl
 import numpy as np
+import pyvista as pv
+from pyvista import MultiBlock, Plotter, PolyData
 
-from .three_d_plot_prepare import create_plotter, _get_default_cmap, construct_pc
-from .three_d_plot_decorate import add_legend, add_outline, add_text, add_model
-
+from .three_d_plot_decorate import add_legend, add_model, add_outline, add_text
+from .three_d_plot_prepare import _get_default_cmap, construct_pc, create_plotter
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +17,9 @@ _get_default_cmap()
 
 def wrap_to_plotter(
     plotter: Plotter,
-    model: Union[PolyData, MultiBlock],
-    key: Optional[str] = None,
-    colormap: Optional[Union[str, list]] = None,
+    model: PolyData | MultiBlock,
+    key: str | None = None,
+    colormap: str | list | None = None,
 
     # parameters for model settings
     ambient: float = 0.2,
@@ -29,13 +28,13 @@ def wrap_to_plotter(
     model_style: Literal["points", "surface", "wireframe"] = "surface",
     font_family: Literal["times", "courier", "arial"] = "arial",
     background: str = "black",
-    cpo: Union[str, list] = "iso",
-    clim: Optional[list] = None,
-    legend_kwargs: Optional[dict] = None,
-    outline_kwargs: Optional[dict] = None,
-    text: Optional[str] = None,
-    scalar_bar_title: Optional[str] = None,
-    text_kwargs: Optional[dict] = None,
+    cpo: str | list = "iso",
+    clim: list | None = None,
+    legend_kwargs: dict | None = None,
+    outline_kwargs: dict | None = None,
+    text: str | None = None,
+    scalar_bar_title: str | None = None,
+    text_kwargs: dict | None = None,
     show_outline: bool = False,
     show_text: bool = True,
     show_legend: bool = True
@@ -98,7 +97,7 @@ def wrap_to_plotter(
             fmt="%.1e",
             vertical=True,
         )
-        if not (legend_kwargs is None):
+        if legend_kwargs is not None:
             lg_kwargs.update(
                 (k, legend_kwargs[k]) for k in lg_kwargs.keys() & legend_kwargs.keys())
 
@@ -112,7 +111,7 @@ def wrap_to_plotter(
             outline_color=cbg_rgb,
         )
 
-        if not (outline_kwargs is None):
+        if outline_kwargs is not None:
             ol_kwargs.update(
                 (k, outline_kwargs[k]) for k in ol_kwargs.keys() & outline_kwargs.keys())
 
@@ -127,7 +126,7 @@ def wrap_to_plotter(
             text_loc="upper_edge",
         )
 
-        if not (text_kwargs is None):
+        if text_kwargs is not None:
             t_kwargs.update((k, text_kwargs[k])
                             for k in t_kwargs.keys() & text_kwargs.keys())
 
@@ -139,26 +138,26 @@ def three_d_plot(
     adata,
     spatial_key: str,
     keys: list,
-    cmaps: Optional[Union[str, list, dict]] = 'default_cmap',
-    scalar_bar_titles: Optional[Union[str, list]] = None,
-    texts:  Optional[Union[str, list]] = None,
+    cmaps: str | list | dict | None = 'default_cmap',
+    scalar_bar_titles: str | list | None = None,
+    texts:  str | list | None = None,
 
-    window_size: Optional[tuple[int, int]] = None,
+    window_size: tuple[int, int] | None = None,
     off_screen: bool = False,
-    shape: Optional[tuple] = None,
+    shape: tuple | None = None,
     show_camera_orientation: bool = True,
     show_axis_orientation: bool = False,
     jupyter: bool = True,
 
     # parameters for model settings
     ambient: float = 0.2,
-    opacity: Union[float, list[float]] = 1,
+    opacity: float | list[float] = 1,
     point_size: float = 1,
-    clim: Optional[list] = None,
+    clim: list | None = None,
     model_style: Literal["points", "surface", "wireframe"] = "surface",
     font_family: Literal["times", "courier", "arial"] = "arial",
     background: str = "black",
-    cpo: Union[str, list] = "iso",
+    cpo: str | list = "iso",
 
     # parameters for show decoration
     show_outline: bool = False,
@@ -166,9 +165,9 @@ def three_d_plot(
     show_legend: bool = True,
 
     # parameters for legends, outline, and text
-    legend_kwargs: Optional[dict] = None,
-    outline_kwargs: Optional[dict] = None,
-    text_kwargs: Optional[dict] = None
+    legend_kwargs: dict | None = None,
+    outline_kwargs: dict | None = None,
+    text_kwargs: dict | None = None
 ):
     """
     Generate a 3D plot using pyvista for spatial data visualization.
@@ -211,14 +210,14 @@ def three_d_plot(
             scalar_bar_n_labels: int = 5
             fmt="%.1e",
             vertical: bool = True
-        
+
     - outline_kwargs (dict, optional): Additional keyword arguments for the plot outline, the default values are:
             outline_width: float = 1.0
             outline_color: Optional[str] = None
             show_outline_labels: bool = False
             outline_font_size: Optional[int] = None
             outline_font_color: Optional[str] = None
-            
+
     - text_kwargs (dict, optional): Additional keyword arguments for the text, the default values are:
             text_font_size: Optional[float] = None,
             text_font_color: Optional[str] = None,
@@ -255,7 +254,7 @@ def three_d_plot(
     n_window = len(keys)
     shape = (math.ceil(n_window / 3), n_window if n_window <
              3 else 3) if shape is None else shape
-    if isinstance(shape, (tuple, list)):
+    if isinstance(shape, tuple | list):
         n_subplots = shape[0] * shape[1]
         subplots = []
         for i in range(n_subplots):
@@ -279,7 +278,7 @@ def three_d_plot(
     )
 
     # Set the plotter
-    for (model, key, plot_cmap, subplot_index, scalar_bar_title, text) in zip(models, keys, plot_cmaps, subplots, scalar_bar_titles, texts):
+    for (model, key, plot_cmap, subplot_index, scalar_bar_title, text) in zip(models, keys, plot_cmaps, subplots, scalar_bar_titles, texts, strict=False):
         plotter.subplot(subplot_index[0], subplot_index[1])
 
         wrap_to_plotter(
@@ -314,7 +313,7 @@ def three_d_plot(
 
     plotter.link_views()
     # plotter.camera_position = 'yz'
-    
+
     return plotter
 
 
@@ -349,7 +348,7 @@ def three_d_plot_save(
     """
     # save html
     logger.info('saving 3d plot as html...')
-    
+
     # Workaround for asyncio conflict: use 'static' backend for export
     pv.set_jupyter_backend('static')
     try:
@@ -364,7 +363,7 @@ def three_d_plot_save(
         plotter.open_gif(filename=f'{filename}.gif')
         plotter.orbit_on_path(path, write_frames=True, viewup=view_up_2, step=step)
         plotter.close()
-        
+
     # save mp4
     if save_mp4:
         logger.info('saving 3d plot as mp4...')
@@ -376,9 +375,9 @@ def three_d_plot_save(
 
 
 def rotate_around_xyz(
-    camera_coordinates, 
-    angle_x=0, 
-    angle_y=0, 
+    camera_coordinates,
+    angle_x=0,
+    angle_y=0,
     angle_z=0
 ):
     """
@@ -396,31 +395,31 @@ def rotate_around_xyz(
     angle_x_rad = np.radians(angle_x)
     angle_y_rad = np.radians(angle_y)
     angle_z_rad = np.radians(angle_z)
-    
+
     # Rotation matrix for x-axis
     rotation_matrix_x = np.array([
         [1, 0, 0],
         [0, np.cos(angle_x_rad), -np.sin(angle_x_rad)],
         [0, np.sin(angle_x_rad), np.cos(angle_x_rad)]
     ])
-    
+
     # Rotation matrix for y-axis
     rotation_matrix_y = np.array([
         [np.cos(angle_y_rad), 0, np.sin(angle_y_rad)],
         [0, 1, 0],
         [-np.sin(angle_y_rad), 0, np.cos(angle_y_rad)]
     ])
-    
+
     # Rotation matrix for z-axis
     rotation_matrix_z = np.array([
         [np.cos(angle_z_rad), -np.sin(angle_z_rad), 0],
         [np.sin(angle_z_rad), np.cos(angle_z_rad), 0],
         [0, 0, 1]
     ])
-    
+
     # Apply rotations
     camera_rotated = np.dot(rotation_matrix_x, camera_coordinates)
     camera_rotated = np.dot(rotation_matrix_y, camera_rotated)
     camera_rotated = np.dot(rotation_matrix_z, camera_rotated)
-    
+
     return camera_rotated

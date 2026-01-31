@@ -4,20 +4,19 @@ gsMap CLI - Main command-line interface using the modular config design.
 """
 
 import logging
-from typing import Optional, Annotated
+from typing import Annotated
 
 import typer
 
 from gsMap.config import (
-    dataclass_typer,
-    QuickModeConfig,
-    FindLatentRepresentationsConfig,
-    LatentToGeneConfig,
-    SpatialLDSCConfig,
-    ReportConfig,
-    LDScoreConfig,
     CauchyCombinationConfig,
+    FindLatentRepresentationsConfig,
     FormatSumstatsConfig,
+    LatentToGeneConfig,
+    LDScoreConfig,
+    QuickModeConfig,
+    SpatialLDSCConfig,
+    dataclass_typer,
 )
 
 # Setup logging
@@ -49,10 +48,10 @@ def quick_mode(config: QuickModeConfig):
     - GWAS integration (Spatial LDSC)
     - Cauchy Combination Test
     - Result generation (Report)
-    
+
     Requires pre-generated SNP-gene weight matrix and LD weights.
     """
-    logger.info(f"Starting Quick Mode Pipeline")
+    logger.info("Starting Quick Mode Pipeline")
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
 
@@ -73,7 +72,7 @@ def quick_mode(config: QuickModeConfig):
 def find_latent_representations(config: FindLatentRepresentationsConfig):
     """
     Find latent representations of each spot using Graph Neural Networks.
-    
+
     This step:
     - Loads spatial transcriptomics data
     - Builds neighborhood graphs
@@ -82,17 +81,17 @@ def find_latent_representations(config: FindLatentRepresentationsConfig):
     """
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
-    
+
     # Show auto-generated paths
     logger.info(f"Latent representations will be saved to: {config.latent_dir}")
     logger.info(f"Model will be saved to: {config.model_path}")
     logger.info(f"H5AD with latent: {config.hdf5_with_latent_path}")
-    
+
     if config.annotation and config.two_stage:
         logger.info(f"Using two-stage training with annotation: {config.annotation}")
     else:
         logger.info("Using single-stage training with reconstruction loss only")
-    
+
     try:
         from gsMap.find_latent import run_find_latent_representation
         run_find_latent_representation(config)
@@ -107,7 +106,7 @@ def find_latent_representations(config: FindLatentRepresentationsConfig):
 def latent_to_gene(config: LatentToGeneConfig):
     """
     Estimate gene marker scores for each spot using latent representations.
-    
+
     This step:
     - Loads latent representations
     - Estimates gene marker scores
@@ -116,12 +115,12 @@ def latent_to_gene(config: LatentToGeneConfig):
     """
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
-    
+
     # Show auto-generated paths
     logger.info(f"Marker scores will be saved to: {config.mkscore_feather_path}")
     if config.annotation:
         logger.info(f"Tuned scores will be saved to: {config.tuned_mkscore_feather_path}")
-    
+
     try:
         from gsMap.latent2gene import run_latent_to_gene
         run_latent_to_gene(config)
@@ -136,7 +135,7 @@ def latent_to_gene(config: LatentToGeneConfig):
 def spatial_ldsc(config: SpatialLDSCConfig):
     """
     Run spatial LDSC analysis for genetic association.
-    
+
     This step:
     - Loads LD scores and GWAS summary statistics
     - Performs spatial LDSC regression
@@ -146,16 +145,16 @@ def spatial_ldsc(config: SpatialLDSCConfig):
     logger.info(f"Trait: {config.trait_name}")
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
-    
+
     # Show auto-generated paths
     logger.info(f"LDSC results will be saved to: {config.ldsc_save_dir}")
     logger.info(f"Result file: {config.get_ldsc_result_file(config.trait_name)}")
-    
+
     if config.use_gpu:
         logger.info("Using JAX-accelerated implementation")
     else:
         logger.info("Using standard implementation")
-    
+
     try:
         if config.use_gpu:
             from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
@@ -174,7 +173,7 @@ def spatial_ldsc(config: SpatialLDSCConfig):
 def cauchy_combination(config: CauchyCombinationConfig):
     """
     Run Cauchy combination test to combine spatial LDSC results across spots.
-    
+
     This step:
     - Loads spatial LDSC results for a trait
     - Removes outliers
@@ -184,7 +183,7 @@ def cauchy_combination(config: CauchyCombinationConfig):
     logger.info(f"Trait: {config.trait_name}")
     logger.info(f"Project: {config.project_name}")
     logger.info(f"Annotation: {config.annotation}")
-    
+
     try:
         from gsMap.cauchy_combination_test import run_Cauchy_combination
         run_Cauchy_combination(config)
@@ -209,7 +208,7 @@ def ldscore_weight_matrix(config: LDScoreConfig):
     - Compute LD-based weights between SNPs and Features
     - Save results as AnnData (.h5ad)
     """
-    logger.info(f"Command: ldscore-weight-matrix")
+    logger.info("Command: ldscore-weight-matrix")
     logger.info(f"Target Chromosomes: {config.chromosomes}")
     logger.info(f"Output Directory: {config.output_dir}")
 
@@ -295,7 +294,7 @@ def report_view(
         with socketserver.TCPServer(("", port), handler) as httpd:
             url = f"http://localhost:{port}"
             logger.info(f"Serving report at {url}")
-            logger.info(f"Press Ctrl+C to stop the server")
+            logger.info("Press Ctrl+C to stop the server")
 
             if not no_browser:
                 webbrowser.open(url)
@@ -324,7 +323,7 @@ def version_callback(value: bool):
 
 @app.callback()
 def main(
-    version: Annotated[Optional[bool], typer.Option(
+    version: Annotated[bool | None, typer.Option(
         "--version", "-v",
         callback=version_callback,
         is_eager=True,
@@ -333,20 +332,20 @@ def main(
 ):
     """
     gsMap: genetically informed spatial mapping of cells for complex traits.
-    
+
     Use 'gsmap COMMAND --help' for more information on a specific command.
-    
+
     Common workflows:
-    
+
     1. Quick mode (recommended for first-time users):
        gsmap quick-mode --workdir /path/to/work --sample-name my_sample ...
-    
+
     2. Step-by-step analysis:
        gsmap find-latent ...
        gsmap latent-to-gene ...
        gsmap spatial-ldsc ...
        gsmap report ...
-    
+
     For detailed documentation, visit: https://github.com/JianYang-Lab/gsMap
     """
     pass

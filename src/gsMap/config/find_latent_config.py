@@ -2,18 +2,20 @@
 Configuration for finding latent representations.
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional, Annotated, List, OrderedDict
 import logging
-import yaml
+from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated
+
 import typer
+import yaml
 
 from gsMap.config.base import ConfigWithAutoPaths
 from gsMap.config.utils import (
     process_h5ad_inputs,
     validate_h5ad_structure,
-    verify_homolog_file_format
+    verify_homolog_file_format,
 )
 
 logger = logging.getLogger("gsMap.config")
@@ -135,27 +137,27 @@ class FindLatentModelConfig:
 
 @dataclass
 class FindLatentCoreConfig:
-    h5ad_path: Annotated[Optional[List[Path]], typer.Option(
+    h5ad_path: Annotated[list[Path] | None, typer.Option(
         help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
         exists=True,
         file_okay=True,
     )] = None
 
-    h5ad_yaml: Annotated[Path, typer.Option(
+    h5ad_yaml: Annotated[Path | None, typer.Option(
         help="YAML file with sample names and h5ad paths",
         exists=True,
         file_okay=True,
         dir_okay=False,
     )] = None
 
-    h5ad_list_file: Annotated[Optional[Path], typer.Option(
+    h5ad_list_file: Annotated[Path | None, typer.Option(
         help="Each row is a h5ad file path, sample name is the file name without suffix",
         exists=True,
         file_okay=True,
         dir_okay=False,
     )] = None
 
-    sample_h5ad_dict: Optional[OrderedDict] = None
+    sample_h5ad_dict: OrderedDict | None = None
 
     data_layer: Annotated[str, typer.Option(
         help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
@@ -165,18 +167,18 @@ class FindLatentCoreConfig:
         help="Spatial key in adata.obsm storing spatial coordinates"
     )] = "spatial"
 
-    annotation: Annotated[Optional[str], typer.Option(
+    annotation: Annotated[str | None, typer.Option(
         help="Annotation of cell type in adata.obs to use"
     )] = None
 
-    homolog_file: Annotated[Optional[Path], typer.Option(
+    homolog_file: Annotated[Path | None, typer.Option(
         help="Path to homologous gene conversion file",
         exists=True,
         file_okay=True,
         dir_okay=False
     )] = None
 
-    species: Optional[str] = None
+    species: str | None = None
 
     latent_representation_niche: Annotated[str, typer.Option(
         help="Key for spatial niche embedding in obsm"
@@ -252,7 +254,7 @@ def check_find_latent_done(config: FindLatentRepresentationsConfig) -> bool:
         return False
 
     try:
-        with open(metadata_path, 'r') as f:
+        with open(metadata_path) as f:
             metadata = yaml.safe_load(f)
 
         if 'outputs' not in metadata or 'latent_files' not in metadata['outputs']:

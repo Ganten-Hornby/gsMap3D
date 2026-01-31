@@ -7,25 +7,33 @@ import gc
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any
 
+import anndata as ad
 import h5py
-import pandas as pd
-from anndata._io.specs import read_elem
-
 import jax
 import jax.numpy as jnp
+import jax.scipy
 import numpy as np
 import pandas as pd
 import scanpy as sc
+from anndata._io.specs import read_elem
 from jax import jit
-from scipy.sparse import csr_matrix
-from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
-import jax.scipy
-import anndata as ad
+from scipy.sparse import csr_matrix
+
 from gsMap.config import LatentToGeneConfig
+
 from .memmap_io import MemMapDense
 
 logger = logging.getLogger(__name__)
@@ -121,7 +129,7 @@ def jax_process_chunk(dense_matrix, n_genes):
 
 def rank_data_jax(X: csr_matrix, n_genes,
                   memmap_dense=None,
-                  metadata: Optional[Dict[str, Any]] = None,
+                  metadata: dict[str, Any] | None = None,
                   chunk_size: int = 1000,
                   write_interval: int = 10,
                   current_row_offset: int = 0,
@@ -157,7 +165,7 @@ def rank_data_jax(X: csr_matrix, n_genes,
     pending_chunks = []  # Buffer for batching writes
     pending_indices = []  # Track global indices for writing
     chunks_processed = 0
-    
+
     # Track speed at chunk level
     chunk_start_time = time.time()
     processed_cells = 0
@@ -219,11 +227,11 @@ def rank_data_jax(X: csr_matrix, n_genes,
 
 class RankCalculator:
     """Calculate gene expression ranks and create concatenated latent representations"""
-    
+
     def __init__(self, config: LatentToGeneConfig):
         """
         Initialize RankCalculator with configuration
-        
+
         Args:
             config: LatentToGeneConfig object with all necessary parameters
         """
@@ -232,43 +240,43 @@ class RankCalculator:
         self.output_dir = Path(config.latent2gene_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.console = Console()
-        
+
     def calculate_ranks_and_concatenate(
         self,
-        sample_h5ad_dict: Optional[Dict[str, Path]] = None,
-        annotation_key: Optional[str] = None,
+        sample_h5ad_dict: dict[str, Path] | None = None,
+        annotation_key: str | None = None,
         data_layer: str = "counts"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Calculate expression ranks and create concatenated latent representation
-        
+
         This combines the rank calculation and concatenation logic from find_latent_representation.py
-        
+
         Args:
             sample_h5ad_dict: Optional dict of sample_name -> h5ad path. If None, uses config.sample_h5ad_dict
             annotation_key: Optional annotation to filter cells. If None, uses config.annotation
             data_layer: Data layer to use for expression
-            
+
         Returns:
             Dictionary with paths to:
                 - concatenated_latent_adata: Path to concatenated latent representations
                 - rank_zarr: Path to rank zarr file
                 - mean_frac: Path to mean expression fraction parquet
         """
-        
+
         # Use provided sample_h5ad_dict or get from config
         if sample_h5ad_dict is None:
             sample_h5ad_dict = self.config.sample_h5ad_dict
-        
+
         # Use provided annotation_key or get from config
         if annotation_key is None:
             annotation_key = self.config.annotation
-            
+
         # Output paths from config
         concat_adata_path = Path(self.config.concatenated_latent_adata_path)
         rank_memmap_path = Path(self.config.rank_memmap_path)
         mean_frac_path = Path(self.config.mean_frac_path)
-        
+
         # Check if outputs already exist
         if concat_adata_path.exists() and mean_frac_path.exists() and MemMapDense.check_complete(rank_memmap_path)[0]:
             logger.info(f"Rank outputs already exist in {self.output_dir}")
@@ -280,12 +288,12 @@ class RankCalculator:
 
         logger.info("Starting rank calculation and concatenation...")
         logger.info(f"Processing {len(sample_h5ad_dict)} samples")
-        
+
         # Process each section
         adata_list = []
         n_total_cells = 0
         gene_list = None
-        
+
         # Initialize global accumulators
         sum_log_ranks = None
         sum_frac = None
@@ -382,10 +390,10 @@ class RankCalculator:
             str(sum(s["low_gene_count_removed"] for s in filtering_stats)),
             f"[bold green]{total_cells_expected}[/bold green]"
         )
-        
+
         self.console.print(table)
         logger.info(f"Expected total cells after filtering: {total_cells_expected}")
-        
+
         # Create overall section progress tracking
         with Progress(
             SpinnerColumn(),
@@ -401,16 +409,16 @@ class RankCalculator:
                 "Processing sections",
                 total=len(sample_h5ad_dict)
             )
-            
+
             processed_cells_total = 0
-            
+
             for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items()):
-                
+
                 section_progress.console.log(f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})...")
-                
+
                 # Load the h5ad file (which should already contain latent representations)
                 adata = sc.read_h5ad(h5ad_path)
-                
+
                 # Add slice information
                 adata.obs['slice_id'] = st_id
                 adata.obs['slice_name'] = sample_name
@@ -464,7 +472,7 @@ class RankCalculator:
 
                 # Get number of cells after filtering
                 n_cells = X.shape[0]
-                
+
                 # Use nested progress bar for detailed chunk processing
                 with Progress(
                     SpinnerColumn(),
@@ -479,12 +487,12 @@ class RankCalculator:
                 ) as chunk_progress:
                     # Detailed chunk progress task
                     chunk_task = chunk_progress.add_task(
-                        f"Processing chunks",
+                        "Processing chunks",
                         total=n_cells,
                         cells=n_cells,
                         speed="0"
                     )
-                    
+
                     # Use JAX rank calculation with nested progress
                     metadata = {'name': sample_name, 'cells': n_cells, 'study_id': st_id}
 
@@ -506,7 +514,7 @@ class RankCalculator:
                 total_cells += n_cells
                 current_row_offset += n_cells  # Update offset for next section
                 processed_cells_total += n_cells
-                
+
                 # Update section progress
                 section_progress.update(section_task, advance=1)
 
@@ -529,11 +537,11 @@ class RankCalculator:
             if rank_memmap is not None:
                 rank_memmap.close()
                 logger.info(f"Saved rank matrix to {rank_memmap_path}")
-        
+
         # Calculate mean log ranks and mean fraction
         mean_log_ranks = sum_log_ranks / total_cells
         mean_frac = sum_frac / total_cells
-        
+
         # Save mean and fraction to parquet file
         mean_frac_df = pd.DataFrame(
             data=dict(
@@ -550,7 +558,7 @@ class RankCalculator:
             compression="gzip",
         )
         logger.info(f"Mean fraction data saved to {mean_frac_path}")
-        
+
         # Concatenate all sections
         if adata_list:
             with self.console.status("[bold blue]Concatenating and saving latent representations..."):
@@ -574,7 +582,7 @@ class RankCalculator:
 
         # Final completion message
         logger.info("Rank calculation and concatenation completed successfully")
-        
+
         return {
             "concatenated_latent_adata": str(concat_adata_path),
             "rank_memmap": str(rank_memmap_path),

@@ -5,9 +5,8 @@ This module provides optimized readers for PLINK binary files and omics feature 
 leveraging pandas-plink for efficient I/O and standardizing data with NumPy.
 """
 
-from pathlib import Path
-from typing import Optional, List, Tuple
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -47,8 +46,8 @@ class PlinkBEDReader:
     def __init__(
         self,
         bfile_prefix: str,
-        maf_min: Optional[float] = None,
-        keep_snps: Optional[List[str]] = None,
+        maf_min: float | None = None,
+        keep_snps: list[str] | None = None,
         preload: bool = True
     ):
         """
@@ -132,8 +131,8 @@ class PlinkBEDReader:
 
     def _apply_filters(
         self,
-        maf_min: Optional[float] = None,
-        keep_snps: Optional[List[str]] = None
+        maf_min: float | None = None,
+        keep_snps: list[str] | None = None
     ) -> None:
         """
         Apply SNP filters directly to the xarray DataArray.

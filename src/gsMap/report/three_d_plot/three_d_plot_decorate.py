@@ -28,11 +28,11 @@ def add_model(
     def _add_model(_p, _model, _key, _colormap, _style, _ambient, _opacity, _point_size,_clim):
         """Add any PyVista/VTK model to the scene."""
         if _style == "points":
-            render_spheres, render_tubes, smooth_shading = True, False, True
+            _render_spheres, render_tubes, _smooth_shading = True, False, True
         elif _style == "wireframe":
-            render_spheres, render_tubes, smooth_shading = False, True, False
+            _render_spheres, render_tubes, _smooth_shading = False, True, False
         else:
-            render_spheres, render_tubes, smooth_shading = False, False, True
+            _render_spheres, render_tubes, _smooth_shading = False, False, True
         mesh_kwargs = dict(
             style=_style,
             render_points_as_spheres=True,
@@ -168,7 +168,7 @@ def add_legend(
             keys = key if isinstance(key, list) else [key] * len(model)
 
             legend_label_data, legend_color_data = [], []
-            for m, k in zip(model, keys):
+            for m, k in zip(model, keys, strict=False):
                 legend_label_data.append(np.asarray(m[k]).flatten())
                 legend_color_data.append(np.asarray(
                     [mpl.colors.to_hex(i) for i in m[f"{k}_rgba"]]).flatten())
@@ -220,14 +220,14 @@ def add_outline(
     outline_color="black",
 ):
 
-    model_outline = model.outline()
+    model.outline()
     plotter.add_bounding_box(
         color=outline_color,
         line_width=outline_width
     )
 
 
-        
+
 def add_text(
     plotter,
     text,

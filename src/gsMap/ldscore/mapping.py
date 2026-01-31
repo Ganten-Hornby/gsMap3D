@@ -1,9 +1,9 @@
+import logging
+
 import numpy as np
 import pandas as pd
 import pyranges as pr
 import scipy.sparse
-from typing import Union, Dict, Tuple, List, Optional
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 def create_snp_feature_map(
         bim_df: pd.DataFrame,
         mapping_type: str,
-        mapping_data: Union[pd.DataFrame, Dict[str, str]],
+        mapping_data: pd.DataFrame | dict[str, str],
         feature_window_size: int = 0,
         strategy: str = "score",
-) -> Tuple[scipy.sparse.csr_matrix, List[str], Optional[pd.DataFrame]]:
+) -> tuple[scipy.sparse.csr_matrix, list[str], pd.DataFrame | None]:
     """
     Create a sparse mapping matrix assigning each SNP in the BIM file to feature indices.
 
@@ -85,7 +85,7 @@ def create_snp_feature_map(
             raise ValueError("mapping_data must be a dictionary when mapping_type='dict'")
 
         # 1. Identify all unique features
-        unique_feature_names = sorted(list(set(mapping_data.values())))
+        unique_feature_names = sorted(set(mapping_data.values()))
         feature_to_idx = {f: i for i, f in enumerate(unique_feature_names)}
         n_features = len(unique_feature_names)
 
@@ -130,7 +130,7 @@ def create_snp_feature_map(
             'BP': 'Start'
         })
         bim_pr_df['End'] = bim_pr_df['Start'] + 1
-        
+
         # Clean chromosome names (remove 'chr' prefix if present)
         # PLINK BIM files typically use numeric chromosome identifiers
         bim_pr_df['Chromosome'] = bim_pr_df['Chromosome'].astype(str).str.replace('chr', '', case=False)

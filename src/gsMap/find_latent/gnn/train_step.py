@@ -1,9 +1,9 @@
 import numpy as np
 import torch
 from tqdm import tqdm
-import torch.nn.functional as F
 
-from .loss import rec_loss, ce_loss
+from .loss import ce_loss, rec_loss
+
 
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
@@ -33,9 +33,9 @@ class EarlyStopping:
             self.early_stop = False
 
 
-class ModelTrain(object):
-    def __init__(self, 
-                 model, 
+class ModelTrain:
+    def __init__(self,
+                 model,
                  optimizer,
                  distribution,
                  mode,
@@ -50,12 +50,12 @@ class ModelTrain(object):
         self.mode = mode
         self.lr = lr
         self.model_path = model_path
-        
+
         self.train_loader = None
         self.val_loader = None
         self.losses = []
         self.val_losses = []
-    
+
         self.train_step_fn = self._make_train_step_fn()
         self.val_step_fn = self._make_val_step_fn()
 
@@ -74,10 +74,10 @@ class ModelTrain(object):
                 loss_rec = rec_loss(x_hat[id],x,log_theata,zi_logit[id],self.distribution)
                 loss_kld = self.model.encoder[id].kl_loss()
                 loss = loss + loss_rec + loss_kld
-                
+
         elif self.mode == 'classification':
             loss = ce_loss(x_class, labels)
-        
+
         return loss
 
     def _make_train_step_fn(self):
@@ -89,19 +89,19 @@ class ModelTrain(object):
             x_hat, x_class, zi_logit, _ = self.model([x,x_gcn], ST_batches)
             log_theata = self.model.logtheta[ST_batches]
             loss = self.compute_loss(x_hat,x, log_theata, zi_logit,x_class,labels)
-            
+
             loss.backward()
             self.optimizer.step()
             self.optimizer.zero_grad()
 
             return loss.item()
-                
+
         return perform_train_step_fn
-    
+
     def _make_val_step_fn(self):
         # Builds function that performs a step in the validation loop
         def perform_val_step_fn(x_gcn,ST_batches, x, labels):
-            
+
             self.model.eval()
 
             x_hat, x_class, zi_logit, _ = self.model([x,x_gcn], ST_batches)
@@ -111,7 +111,7 @@ class ModelTrain(object):
             return loss.item()
 
         return perform_val_step_fn
-            
+
     def _mini_batch(self, epoch_idx, n_epochs, validation=False):
         # The mini-batch can be used with both loaders
         if validation:
@@ -123,7 +123,7 @@ class ModelTrain(object):
 
         # mini-batch loop
         mini_batch_losses = []
-        batch_iter = len(self.train_loader)    
+        len(self.train_loader)
 
         for batch_idx, (x_gcn,ST_batches,x,labels) in enumerate(data_loader):
             # p = float(batch_idx + epoch_idx * batch_iter) / (n_epochs * batch_iter)
@@ -146,11 +146,11 @@ class ModelTrain(object):
             requires_grad = (mode == name)
             for param in param_group.parameters():
                 param.requires_grad = requires_grad
-    
-    
+
+
     def train(self, n_epochs,patience):
         loss_track = EarlyStopping(patience)
-        
+
         self._set_requires_grad(self.model.decoder, self.mode)
 
         pbar = tqdm(range(n_epochs), desc=f'LGCN train ({self.mode})', total=n_epochs)

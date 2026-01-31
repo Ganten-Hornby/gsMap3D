@@ -4,6 +4,7 @@ from pathlib import Path
 
 import gsMap
 from gsMap.config import QuickModeConfig
+
 from .report_data import ReportDataManager
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
 
     try:
         from jinja2 import Template
-        with open(template_path, "r", encoding="utf-8") as f:
+        with open(template_path, encoding="utf-8") as f:
             template = Template(f.read())
 
         # Prepare context
@@ -82,12 +83,12 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
             f.write(rendered_html)
 
         from rich import print as rprint
-        rprint(f"\n[bold green]Report generated successfully![/bold green]")
+        rprint("\n[bold green]Report generated successfully![/bold green]")
         rprint(f"Web report directory: [cyan]{web_report_dir}[/cyan]")
         rprint(f"Data files directory: [cyan]{config.report_data_dir}[/cyan]\n")
 
         rprint("[bold]Ways to view the interactive report:[/bold]")
-        rprint(f"1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:")
+        rprint("1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:")
         rprint(f"   [bold cyan]gsmap report-view {web_report_dir} --port 8080 --no-browser[/bold cyan]")
         rprint(f"\n2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n")
 

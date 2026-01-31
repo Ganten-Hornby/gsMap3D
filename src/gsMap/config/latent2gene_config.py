@@ -2,21 +2,18 @@
 Configuration for latent to gene mapping.
 """
 
-from dataclasses import dataclass, field
+import logging
+from collections import OrderedDict
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Annotated, List, OrderedDict, Literal
-import yaml
-import logging
+from typing import Annotated
+
 import typer
+import yaml
 
 from gsMap.config.base import ConfigWithAutoPaths
-from gsMap.config.utils import (
-    configure_jax_platform,
-    process_h5ad_inputs,
-    validate_h5ad_structure,
-    get_anndata_shape
-)
+from gsMap.config.utils import configure_jax_platform, process_h5ad_inputs, validate_h5ad_structure
 
 logger = logging.getLogger("gsMap.config")
 
@@ -40,7 +37,7 @@ class LatentToGeneComputeConfig:
         help="Use GPU for JAX computations (requires sufficient GPU memory)"
     )] = True
 
-    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
+    memmap_tmp_dir: Annotated[Path | None, typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
              "If provided, memory maps will be copied to this directory for faster random access during computation.",
         exists=True,
@@ -95,31 +92,31 @@ class LatentToGeneCoreConfig:
     )] = 'spatial2D'
 
     # --------input h5ad file paths which have the latent representations
-    h5ad_path: Annotated[Optional[List[Path]], typer.Option(
+    h5ad_path: Annotated[list[Path] | None, typer.Option(
         help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
         exists=True,
         file_okay=True,
     )] = None
 
-    h5ad_yaml: Annotated[Path, typer.Option(
+    h5ad_yaml: Annotated[Path | None, typer.Option(
         help="YAML file with sample names and h5ad paths",
         exists=True,
         file_okay=True,
         dir_okay=False,
     )] = None
 
-    h5ad_list_file: Annotated[Optional[Path], typer.Option(
+    h5ad_list_file: Annotated[Path | None, typer.Option(
         help="Each row is a h5ad file path, sample name is the file name without suffix",
         exists=True,
         file_okay=True,
         dir_okay=False,
     )] = None
 
-    sample_h5ad_dict: Optional[OrderedDict] = None
+    sample_h5ad_dict: OrderedDict | None = None
 
     # --------input h5ad obs, obsm, layers keys
 
-    annotation: Annotated[Optional[str], typer.Option(
+    annotation: Annotated[str | None, typer.Option(
         help="Cell type annotation in adata.obs to use. This would constrain finding homogeneous spots within each cell type"
     )] = None
 
@@ -127,7 +124,7 @@ class LatentToGeneCoreConfig:
         help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
     )] = "X"
 
-    latent_representation_niche: Annotated[Optional[str], typer.Option(
+    latent_representation_niche: Annotated[str | None, typer.Option(
         help="Key for spatial niche embedding in obsm"
     )] = None
 
@@ -260,7 +257,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         """Auto-detect h5ad files from latent directory"""
         if self.find_latent_metadata_path.exists():
             import yaml
-            with open(self.find_latent_metadata_path, 'r') as f:
+            with open(self.find_latent_metadata_path) as f:
                 find_latent_metadata = yaml.safe_load(f)
             self.sample_h5ad_dict = OrderedDict(
                 {sample_name: Path(latent_file)
@@ -386,7 +383,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
 
         logger.info(
             f"Dataset type is spatial3D, using adjacent_slices={self.n_adjacent_slices} for cross-slice search")
-        logger.info(f"The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
+        logger.info("The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
         logger.info(f"{' -> '.join(list(self.sample_h5ad_dict.keys()))}")
 
         homogeneous_neighbors = self.homogeneous_neighbors
@@ -404,7 +401,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
 
         elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.GLOBAL_POOL:
             logger.info(
-                f"Using global_pool strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
+                "Using global_pool strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
 
         logger.info(
             f"Each focal cell will select {homogeneous_neighbors * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
@@ -446,7 +443,7 @@ def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
             return False
 
         # Check metadata
-        with open(expected_outputs["metadata"], 'r') as f:
+        with open(expected_outputs["metadata"]) as f:
             metadata = yaml.unsafe_load(f)
 
         if 'outputs' not in metadata:

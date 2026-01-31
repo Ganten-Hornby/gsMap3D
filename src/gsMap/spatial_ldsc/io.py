@@ -2,17 +2,16 @@ import glob
 import logging
 import os
 from pathlib import Path
-from typing import Tuple, List, Optional, Union
 
-import pandas as pd
-import numpy as np
 import anndata as ad
-
+import numpy as np
+import pandas as pd
+import psutil
 import pyarrow.feather as feather
 from statsmodels.stats.multitest import multipletests
 
-from ..config import SpatialLDSCConfig
-from ..latent2gene.memmap_io import MemMapDense
+from gsMap.config import SpatialLDSCConfig
+from gsMap.latent2gene.memmap_io import MemMapDense
 
 logger = logging.getLogger("gsMap.spatial_ldsc.io")
 
@@ -190,7 +189,6 @@ def _read_w_ld(w_ld_dir):
 # ============================================================================
 # Memory monitoring
 # ============================================================================
-import psutil
 
 def log_memory_usage(message=""):
     """Log current memory usage."""
@@ -208,7 +206,7 @@ def log_memory_usage(message=""):
 # Data loading and preparation
 # ============================================================================
 
-def load_common_resources(config: SpatialLDSCConfig) -> Tuple[pd.DataFrame, pd.DataFrame, ad.AnnData]:
+def load_common_resources(config: SpatialLDSCConfig) -> tuple[pd.DataFrame, pd.DataFrame, ad.AnnData]:
     """
     Load resources common to all traits (weights, baseline, SNP-gene matrix).
     Returns (baseline_ld, w_ld, snp_gene_weight_adata)
@@ -231,7 +229,7 @@ def load_common_resources(config: SpatialLDSCConfig) -> Tuple[pd.DataFrame, pd.D
     # Compute base annotations
     all_gene = X[:, :-1].sum(axis=1)
     base = all_gene + X[:, -1]
-    
+
     baseline_ld = pd.DataFrame(
         np.column_stack((base, all_gene)),
         columns=["base", "all_gene"],
@@ -239,68 +237,68 @@ def load_common_resources(config: SpatialLDSCConfig) -> Tuple[pd.DataFrame, pd.D
     )
     baseline_ld.index.name = "SNP"
     logger.info(f"Constructed baseline LD from SNP-gene weights. Shape: {baseline_ld.shape}")
-    
+
     # 4. Find common SNPs between baseline and weights
     common_snps = baseline_ld.index.intersection(w_ld.index)
-    
+
     # 5. Load additional baselines and update common SNPs
     if config.additional_baseline_h5ad_path_list:
         logger.info(f"Loading {len(config.additional_baseline_h5ad_path_list)} additional baseline annotations...")
-        
+
         # We need to process additional baselines carefully to maintain the dataframe structure
         # First, ensure we only work with currently common SNPs
         baseline_ld = baseline_ld.loc[common_snps]
-        
+
         for i, h5ad_path in enumerate(config.additional_baseline_h5ad_path_list):
             logger.info(f"Loading additional baseline {i+1}: {h5ad_path}")
             add_adata = ad.read_h5ad(h5ad_path)
-            
+
             # Intersect with current common SNPs
             common_in_add = common_snps.intersection(add_adata.obs_names)
-            
+
             if len(common_in_add) < len(common_snps):
                 logger.warning(f"Additional baseline {h5ad_path} only has {len(common_in_add)}/{len(common_snps)} common SNPs. Intersecting...")
                 common_snps = common_in_add
                 baseline_ld = baseline_ld.loc[common_snps]
-            
+
             # Extract data
             add_X = add_adata[common_snps].X
             if hasattr(add_X, "toarray"):
                 add_X = add_X.toarray()
-            
+
             add_df = pd.DataFrame(
                 add_X,
                 index=common_snps,
                 columns=add_adata.var_names
             )
-            
+
             # Concatenate
             baseline_ld = pd.concat([baseline_ld, add_df], axis=1)
 
     # Final subsetting
     baseline_ld = baseline_ld.loc[common_snps]
     w_ld = w_ld.loc[common_snps]
-    
+
     log_memory_usage("after loading common resources")
     return baseline_ld, w_ld, snp_gene_weight_adata
 
 
-def prepare_trait_data(config: SpatialLDSCConfig, 
+def prepare_trait_data(config: SpatialLDSCConfig,
                       trait_name: str,
                       sumstats_file: str,
                       baseline_ld: pd.DataFrame,
                       w_ld: pd.DataFrame,
-                      snp_gene_weight_adata: ad.AnnData) -> Tuple[dict, pd.Index]:
+                      snp_gene_weight_adata: ad.AnnData) -> tuple[dict, pd.Index]:
     """
     Prepare data for a specific trait using pre-loaded common resources.
     """
     logger.info(f"Preparing data for {trait_name}...")
-    
+
     # Load and process summary statistics
     sumstats = _read_sumstats(fh=sumstats_file, alleles=False, dropna=False)
     sumstats.set_index("SNP", inplace=True)
     sumstats = sumstats.astype(np.float32)
-    
+
     # Filter by chi-squared
     chisq_max = config.chisq_max
     if chisq_max is None:
@@ -313,23 +311,23 @@ def prepare_trait_data(config: SpatialLDSCConfig,
 
     sumstats = sumstats[sumstats.chisq < chisq_max]
     logger.info(f"Filtered to {len(sumstats)} SNPs with chi^2 < {chisq_max}")
-    
+
     # Intersect trait sumstats with common resources
     common_snps = baseline_ld.index.intersection(sumstats.index)
     logger.info(f"Common SNPs: {len(common_snps)}")
-    
+
     if len(common_snps) < 200000:
         logger.warning(f"WARNING: Only {len(common_snps)} common SNPs")
-    
+
     # Get SNP positions relative to the original snp_gene_weight_adata
     # This is crucial for QuickMode to know which rows of the weight matrix to pick
     snp_positions = snp_gene_weight_adata.obs_names.get_indexer(common_snps)
-    
+
     # Subset data
     trait_baseline_ld = baseline_ld.loc[common_snps]
     trait_w_ld = w_ld.loc[common_snps]
     trait_sumstats = sumstats.loc[common_snps]
-    
+
     # Prepare data dictionary
     data = {
         'baseline_ld': trait_baseline_ld,
@@ -341,7 +339,7 @@ def prepare_trait_data(config: SpatialLDSCConfig,
         'Nbar': np.float32(trait_sumstats.N.mean()),
         'snp_positions': snp_positions
     }
-    
+
     return data, common_snps
 
 def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
@@ -401,7 +399,7 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
 
     return adata
 
-def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str) -> Optional[str]:
+def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str) -> str | None:
 
     base_name = f"{config.project_name}_{trait_name}"
 
@@ -414,7 +412,7 @@ def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str
     # but we can't predict exact start/end without loading data
     # For now, just check the simple complete case
     # If using sample filter, we might not be able to easily predict output name
-    # without knowing the sample filtering results. 
+    # without knowing the sample filtering results.
     # But usually we don't skip in that case or logic is handled by caller.
     if config.sample_filter:
         return None
@@ -522,10 +520,10 @@ class LazyFeatherX:
                 final_cols = self.feature_names[col_key]
                 sliced_table = sliced_table.select(final_cols)
 
-            elif isinstance(col_key, (list, np.ndarray)):
+            elif isinstance(col_key, list | np.ndarray):
                 # Check if it's integers or strings
                 if len(col_key) > 0:
-                    if isinstance(col_key[0], (int, np.integer)):
+                    if isinstance(col_key[0], int | np.integer):
                         final_cols = get_col_names_by_indices(col_key)
                     else:
                         # Assume strings
@@ -546,17 +544,17 @@ class LazyFeatherX:
                 df = df.iloc[::row_key.step]
 
             return df.to_numpy()
-        
+
         else:
-            # Transposed mode: 
+            # Transposed mode:
             # row_key selects from feature_names (which were columns in feather)
             # col_key selects from table rows
-            
+
             # --- 1. Determine which columns to read (Observations) ---
             if isinstance(row_key, slice):
                 selected_cols = self.feature_names[row_key]
-            elif isinstance(row_key, (list, np.ndarray)):
-                if len(row_key) > 0 and isinstance(row_key[0], (int, np.integer)):
+            elif isinstance(row_key, list | np.ndarray):
+                if len(row_key) > 0 and isinstance(row_key[0], int | np.integer):
                     selected_cols = [self.feature_names[i] for i in row_key]
                 else:
                     selected_cols = row_key
@@ -579,7 +577,7 @@ class LazyFeatherX:
             elif isinstance(col_key, int):
                 sliced_table = self.table.slice(offset=col_key, length=1)
                 df = sliced_table.select(selected_cols).to_pandas()
-            elif isinstance(col_key, (list, np.ndarray)):
+            elif isinstance(col_key, list | np.ndarray):
                 # Use take for arbitrary row selection
                 # Note: col_key should be integer indices
                 sliced_table = self.table.take(col_key)

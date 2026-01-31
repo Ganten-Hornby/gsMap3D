@@ -1,18 +1,18 @@
-import torch
-import scanpy as sc
-import sys
-import torch.nn.functional as F
+import logging
+import re
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import logging
-import re 
-from pathlib import Path
-from torch.utils.data import DataLoader, TensorDataset
-from rich.progress import Progress, BarColumn, TaskProgressColumn, TimeRemainingColumn
-from scipy.special import softmax
-from .gnn.gcn import GCN, build_spatial_graph
-from gsMap.config import FindLatentRepresentationsConfig
+import scanpy as sc
 import scipy.sparse as sp
+import torch
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TimeRemainingColumn
+from torch.utils.data import DataLoader, TensorDataset
+
+from gsMap.config import FindLatentRepresentationsConfig
+
+from .gnn.gcn import GCN, build_spatial_graph
 
 logger = logging.getLogger(__name__)
 
@@ -20,41 +20,41 @@ logger = logging.getLogger(__name__)
 def convert_to_human_genes(adata, gene_homolog_dict: dict, species: str = None):
     """
     Convert gene names in adata to human gene symbols using a pre-computed mapping dictionary.
-    
+
     Args:
         adata: AnnData object to convert
         gene_homolog_dict: Dictionary mapping current gene names to human gene symbols
         species: Optional species name to use for the original gene column in var
-        
+
     Returns:
         adata: Processed AnnData object with human symbols as var_names
     """
     # Identify common genes present in mapping
     common_genes = [g for g in gene_homolog_dict.keys() if g in adata.var_names]
-    
+
     if len(common_genes) < 300:
         logger.warning(f"Only {len(common_genes)} genes found in mapping dictionary.")
-    
+
     # Filter to these genes
     adata = adata[:, common_genes].copy()
-    
+
     human_symbols = [gene_homolog_dict[g] for g in adata.var_names]
-    
+
     # Store original gene names if species is provided
     if species:
         species_col_name = f"{species}_GENE_SYM"
         adata.var[species_col_name] = adata.var_names.values
-    
+
     # Update var_names to human symbols
     adata.var_names = human_symbols
     adata.var.index.name = "HUMAN_GENE_SYM"
-    
+
     # Remove duplicated genes (keep first occurrence)
     if adata.var_names.duplicated().any():
         n_before = adata.n_vars
         adata = adata[:, ~adata.var_names.duplicated()].copy()
         logger.info(f"Removed {n_before - adata.n_vars} duplicate human gene symbols.")
-        
+
     return adata
 
 def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
@@ -113,7 +113,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             except Exception as e:
                 logger.warning(f"[HVG skipped] {e}")
                 continue
-            
+
 
             progress.update(task, advance=1)
 
@@ -134,7 +134,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     # Aggregate variances and identify HVGs
     df = pd.concat(variances_list, axis=0)
     df["highly_variable"] = df["highly_variable"].astype(int)
-    
+
     if is_count_data:
         df = df.groupby("gene", observed=True).agg(
             dict(
@@ -184,9 +184,9 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         homologs.columns = [params.species, 'HUMAN_GENE_SYM']
         homologs.set_index(params.species, inplace=True)
         common_genes = np.intersect1d(common_genes, homologs.index)
-        gene_homolog_dict = dict(zip(common_genes,homologs.loc[common_genes].HUMAN_GENE_SYM.values))
+        gene_homolog_dict = dict(zip(common_genes,homologs.loc[common_genes].HUMAN_GENE_SYM.values, strict=False))
     else:
-        gene_homolog_dict = dict(zip(common_genes,common_genes))
+        gene_homolog_dict = dict(zip(common_genes,common_genes, strict=False))
 
     if len(gene_homolog_dict) < 300:
         raise ValueError(f"Only {len(gene_homolog_dict)} genes could be mapped to human symbols. Please check the homolog file.")
@@ -417,7 +417,7 @@ def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=
 
     # Filter genes based on significance and fold change
     annotation_genes = []
-    for gene, pval, lfc in zip(gene_names, pvals_adj, logfoldchanges):
+    for gene, pval, lfc in zip(gene_names, pvals_adj, logfoldchanges, strict=False):
         if gene is not None and pval < pval_threshold and abs(lfc) > lfc_threshold:
             annotation_genes.append(gene)
 
@@ -602,7 +602,7 @@ def apply_module_score_qc(adata, annotation_key, module_score_threshold_dict):
 
 
 # prepare the trainning data
-class TrainingData(object):
+class TrainingData:
     """
     Managing and processing training data for graph-based models.
 
@@ -619,8 +619,8 @@ class TrainingData(object):
         self.batch_merge = None
         self.batch_size = None
         self.label_name = None
-             
- 
+
+
     def prepare(self, concatenated_adata, hvg):
         logger.info("Processing concatenated subsampled data...")
 
@@ -686,7 +686,7 @@ class TrainingData(object):
 
 
 # Inference for each ST dataset
-class InferenceData(object):
+class InferenceData:
     """
     Infer cell embeddings for each spatial transcriptomics (ST) dataset.
     Attributes:
@@ -705,7 +705,7 @@ class InferenceData(object):
         self.model = model.to(self.device)
         self.label_name = label_name
         self.processed_list_path = self.params.latent_dir / 'processed.list'
-    
+
 
     def infer_embedding_single(self, st_id, st_file) -> Path:
         st_name = (Path(st_file).name).split(".h5ad")[0]
@@ -761,7 +761,7 @@ class InferenceData(object):
                 _,x_class, _, _ = self.model(
                     [expression_focal, expression_gcn_focal], batch_indices_fcocal
                 )
-                
+
                 class_prob.append(x_class.cpu().numpy())
                 emb_cell.append(mu_focal[0].cpu().numpy())
                 emb_niche.append(mu_focal[1].cpu().numpy())
@@ -770,12 +770,12 @@ class InferenceData(object):
         emb_cell = np.concatenate(emb_cell, axis=0)
         emb_niche = np.concatenate(emb_niche, axis=0)
         class_prob = np.concatenate(class_prob, axis=0)
-        
+
         # if self.label_name is not None:
         #     class_prob = pd.DataFrame(softmax(class_prob,axis=1), columns=self.label_name,index=adata.obs_names)
         #     adata.obsm["class_prob"] = class_prob
-            
+
         adata.obsm[self.params.latent_representation_cell] = emb_cell
         adata.obsm[self.params.latent_representation_niche] = emb_niche
-        
+
         return adata

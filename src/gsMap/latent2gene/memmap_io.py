@@ -3,22 +3,18 @@ Memory-mapped I/O utilities for efficient large-scale data handling
 Replaces Zarr-backed storage with NumPy memory maps for better performance
 """
 
-import logging
 import json
+import logging
 import queue
+import shutil
 import threading
+import time
 import traceback
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Union
-import time
-import shutil
-import tempfile
-import uuid
 
 import numpy as np
-import pandas as pd
-import anndata as ad
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +24,13 @@ class MemMapDense:
 
     def __init__(
         self,
-        path: Union[str, Path],
-        shape: Tuple[int, int],
+        path: str | Path,
+        shape: tuple[int, int],
         dtype=np.float16,
         mode: str = 'w',
         num_write_workers: int = 4,
         flush_interval: float = 30,
-        tmp_dir: Optional[Union[str, Path]] = None,
+        tmp_dir: str | Path | None = None,
     ):
         """
         Initialize a memory-mapped dense matrix.
@@ -110,7 +106,7 @@ class MemMapDense:
                 tmp_data_path = self.tmp_path.with_suffix('.dat')
                 tmp_meta_path = self.tmp_path.with_suffix('.meta.json')
 
-                logger.info(f"Copying memmap files to temporary directory for faster access...")
+                logger.info("Copying memmap files to temporary directory for faster access...")
                 shutil.copy2(original_data_path, tmp_data_path)
                 shutil.copy2(original_meta_path, tmp_meta_path)
                 logger.info(f"Memmap files copied to {self.tmp_subdir}")
@@ -126,7 +122,7 @@ class MemMapDense:
         original_meta_path = self.original_path.with_suffix('.meta.json')
 
         if tmp_data_path.exists():
-            logger.info(f"Syncing memmap data from tmp to original location...")
+            logger.info("Syncing memmap data from tmp to original location...")
             shutil.move(str(tmp_data_path), str(original_data_path))
 
         if tmp_meta_path.exists():
@@ -148,7 +144,7 @@ class MemMapDense:
         # Check if already exists and is complete
         if self.meta_path.exists():
             try:
-                with open(self.meta_path, 'r') as f:
+                with open(self.meta_path) as f:
                     meta = json.load(f)
                 if meta.get('complete', False):
                     raise ValueError(
@@ -190,7 +186,7 @@ class MemMapDense:
             raise FileNotFoundError(f"Metadata file not found: {self.meta_path}")
 
         # Read metadata
-        with open(self.meta_path, 'r') as f:
+        with open(self.meta_path) as f:
             meta = json.load(f)
 
         if not meta.get('complete', False):
@@ -218,7 +214,7 @@ class MemMapDense:
             raise FileNotFoundError(f"Metadata file not found: {self.meta_path}")
 
         # Read metadata
-        with open(self.meta_path, 'r') as f:
+        with open(self.meta_path) as f:
             meta = json.load(f)
 
         # Open memory map
@@ -246,7 +242,7 @@ class MemMapDense:
                     # Write data with thread safety using shared memmap
                     if isinstance(row_indices, slice):
                         self.memmap[row_indices, col_slice] = data
-                    elif isinstance(row_indices, (int, np.integer)):
+                    elif isinstance(row_indices, int | np.integer):
                         start_row = row_indices
                         end_row = start_row + data.shape[0]
                         self.memmap[start_row:end_row, col_slice] = data
@@ -276,7 +272,7 @@ class MemMapDense:
             self.writer_threads.append(thread)
         logger.info(f"Started {self.num_write_workers} writer threads for MemMapDense")
 
-    def write_batch(self, data: np.ndarray, row_indices: Union[int, slice, np.ndarray], col_slice=slice(None)):
+    def write_batch(self, data: np.ndarray, row_indices: int | slice | np.ndarray, col_slice=slice(None)):
         """Queue batch for async writing
 
         Args:
@@ -290,7 +286,7 @@ class MemMapDense:
 
         self.write_queue.put((data, row_indices, col_slice))
 
-    def read_batch(self, row_indices: Union[int, slice, np.ndarray], col_slice=slice(None)) -> np.ndarray:
+    def read_batch(self, row_indices: int | slice | np.ndarray, col_slice=slice(None)) -> np.ndarray:
         """Read batch of data
 
         Args:
@@ -300,7 +296,7 @@ class MemMapDense:
         Returns:
             NumPy array with the requested data
         """
-        if isinstance(row_indices, (int, np.integer)):
+        if isinstance(row_indices, int | np.integer):
             return self.memmap[row_indices:row_indices+1, col_slice].copy()
         else:
             return self.memmap[row_indices, col_slice].copy()
@@ -330,7 +326,7 @@ class MemMapDense:
             logger.info("Memmap flush complete")
 
             # Update metadata
-            with open(self.meta_path, 'r') as f:
+            with open(self.meta_path) as f:
                 meta = json.load(f)
             meta['complete'] = True
             meta['completed_at'] = time.time()
@@ -343,7 +339,7 @@ class MemMapDense:
             logger.info(f"Marked MemMapDense at {self.path} as complete")
 
     @classmethod
-    def check_complete(cls, memmap_path: Union[str, Path], meta_path: Optional[Union[str, Path]] = None) -> Tuple[bool, Optional[dict]]:
+    def check_complete(cls, memmap_path: str | Path, meta_path: str | Path | None = None) -> tuple[bool, dict | None]:
         """
         Check if a memory map file is complete without opening it.
 
@@ -372,10 +368,10 @@ class MemMapDense:
             return False, None
 
         try:
-            with open(meta_path, 'r') as f:
+            with open(meta_path) as f:
                 meta = json.load(f)
             return meta.get('complete', False), meta
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             logger.warning(f"Could not read metadata from {meta_path}: {e}")
             return False, None
 
@@ -418,7 +414,7 @@ class MemMapDense:
             return self._attrs
 
         if self.meta_path.exists():
-            with open(self.meta_path, 'r') as f:
+            with open(self.meta_path) as f:
                 self._attrs = json.load(f)
         else:
             self._attrs = {}
@@ -460,7 +456,7 @@ class ParallelRankReader:
 
     def __init__(
             self,
-            rank_memmap: Union[MemMapDense, str],
+            rank_memmap: MemMapDense | str,
             num_workers: int = 4,
             output_queue: queue.Queue = None,
             cache_size_mb: int = 1000
@@ -476,7 +472,7 @@ class ParallelRankReader:
             self.memmap_path = Path(rank_memmap)
             meta_path = self.memmap_path.with_suffix('.meta.json')
             data_path = self.memmap_path.with_suffix('.dat')
-            with open(meta_path, 'r') as f:
+            with open(meta_path) as f:
                 meta = json.load(f)
             self.shape = tuple(meta['shape'])
             self.dtype = np.dtype(meta['dtype'])

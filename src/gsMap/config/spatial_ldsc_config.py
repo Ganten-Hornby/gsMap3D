@@ -2,10 +2,11 @@
 Configuration for spatial LD score regression.
 """
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Annotated, List, Literal, Dict
-import logging
+from typing import Annotated, Literal
+
 import typer
 import yaml
 
@@ -23,7 +24,7 @@ class SpatialLDSCComputeConfig:
         help="Use GPU for JAX-accelerated spatial LDSC implementation"
     ), {"__display_in_quick_mode_cli__": True}] = True
 
-    memmap_tmp_dir: Annotated[Optional[Path], typer.Option(
+    memmap_tmp_dir: Annotated[Path | None, typer.Option(
         help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
              "If provided, memory maps will be copied to this directory for faster random access during computation.",
         exists=True,
@@ -50,11 +51,11 @@ class SpatialLDSCComputeConfig:
 @dataclass
 class GWASSumstatsConfig:
     """Configuration for GWAS summary statistics."""
-    trait_name: Annotated[Optional[str], typer.Option(
+    trait_name: Annotated[str | None, typer.Option(
         help="Name of the trait for GWAS analysis"
     )] = None
 
-    sumstats_file: Annotated[Optional[Path], typer.Option(
+    sumstats_file: Annotated[Path | None, typer.Option(
         help="Path to GWAS summary statistics file",
         exists=True,
         file_okay=True,
@@ -62,7 +63,7 @@ class GWASSumstatsConfig:
         resolve_path=True
     )] = None
 
-    sumstats_config_file: Annotated[Optional[Path], typer.Option(
+    sumstats_config_file: Annotated[Path | None, typer.Option(
         help="Path to sumstats config file",
         exists=True,
         file_okay=True,
@@ -70,10 +71,10 @@ class GWASSumstatsConfig:
         resolve_path=True
     )] = None
 
-    sumstats_config_dict: Dict[str, Path] = field(default_factory=dict)
+    sumstats_config_dict: dict[str, Path] = field(default_factory=dict)
 
     @property
-    def trait_name_list(self) -> List[str]:
+    def trait_name_list(self) -> list[str]:
         """Return the list of trait names to process."""
         return list(self.sumstats_config_dict.keys())
 
@@ -130,7 +131,7 @@ class GWASSumstatsConfig:
 @dataclass
 class SpatialLDSCCoreConfig(GWASSumstatsConfig):
     """Core configuration for spatial LDSC."""
-    w_ld_dir: Annotated[Optional[Path], typer.Option(
+    w_ld_dir: Annotated[Path | None, typer.Option(
         help="Directory containing the weights files (w_ld)",
         exists=True,
         file_okay=False,
@@ -138,7 +139,7 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
         resolve_path=True
     )] = None
 
-    additional_baseline_h5ad_path_list: Annotated[List[Path], typer.Option(
+    additional_baseline_h5ad_path_list: Annotated[list[Path], typer.Option(
         help="List of additional baseline h5ad paths",
         exists=True,
         file_okay=True,
@@ -147,15 +148,15 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
     )] = field(default_factory=list)
 
 
-    chisq_max: Annotated[Optional[int], typer.Option(
+    chisq_max: Annotated[int | None, typer.Option(
         help="Maximum chi-square value"
     )] = None
 
-    cell_indices_range: Annotated[Optional[tuple[int, int]], typer.Option(
+    cell_indices_range: Annotated[tuple[int, int] | None, typer.Option(
         help="0-based range [start, end) of cell indices to process"
     )] = None
 
-    sample_filter: Annotated[Optional[str], typer.Option(
+    sample_filter: Annotated[str | None, typer.Option(
         help="Filter processing to a specific sample"
     )] = None
 
@@ -166,7 +167,7 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
 
     # spots_per_chunk_quick_mode is inherited from SpatialLDSCComputeConfig
 
-    snp_gene_weight_adata_path: Annotated[Path, typer.Option(
+    snp_gene_weight_adata_path: Annotated[Path | None, typer.Option(
         help="Path to the SNP-gene weight matrix (H5AD format)",
         exists=True,
         file_okay=True,
@@ -176,7 +177,7 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
 
     # use_gpu is inherited from SpatialLDSCComputeConfig
 
-    marker_score_feather_path: Annotated[Optional[Path], typer.Option(
+    marker_score_feather_path: Annotated[Path | None, typer.Option(
         help="Path to marker score feather file",
         exists=True,
         file_okay=True,
@@ -184,7 +185,7 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
         resolve_path=True
     )] = None
 
-    marker_score_h5ad_path: Annotated[Optional[Path], typer.Option(
+    marker_score_h5ad_path: Annotated[Path | None, typer.Option(
         help="Path to marker score h5ad file",
         exists=True,
         file_okay=True,
@@ -192,7 +193,7 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
         resolve_path=True
     )] = None
 
-    marker_score_format: Annotated[Optional[Literal["memmap", "feather", "h5ad"]], typer.Option(
+    marker_score_format: Annotated[Literal["memmap", "feather", "h5ad"] | None, typer.Option(
         help="Format of marker scores"
     )] = None
 

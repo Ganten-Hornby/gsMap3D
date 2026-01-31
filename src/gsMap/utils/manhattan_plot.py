@@ -69,6 +69,7 @@ def ManhattanPlot(
     genomewideline_width=1,
     highlight_color="red",
     highlight_gene_list=None,
+    highlight=True,
     **kwargs,
 ):
     """Returns a figure for a manhattan plot.
@@ -158,7 +159,7 @@ def ManhattanPlot(
 
     """
     mh = _ManhattanPlot(
-        dataframe, chrm=chrm, bp=bp, p=p, snp=snp, gene=gene, annotation=annotation, logp=logp, 
+        dataframe, chrm=chrm, bp=bp, p=p, snp=snp, gene=gene, annotation=annotation, logp=logp,
         color_by=kwargs.get('highlight_color_by')
     )
 
@@ -623,7 +624,7 @@ class _ManhattanPlot:
                     color=highlight_color,
                     size=point_size * 2,
                 )
-                
+
             data_to_plot.append(
                 go.Scattergl(
                     x=highlight_tmp[self.pos].values,

@@ -3,9 +3,9 @@ Utility functions for gsMap configuration and data validation.
 """
 
 import logging
-from pathlib import Path
 from collections import OrderedDict
-from typing import Optional, List, Dict, Any, Tuple
+from pathlib import Path
+
 import h5py
 import yaml
 
@@ -15,7 +15,7 @@ def configure_jax_platform(use_accelerator: bool = True):
     """Configure JAX platform based on availability of accelerators.
 
     Args:
-        use_accelerator: If True, try to use GPU then TPU if available, 
+        use_accelerator: If True, try to use GPU then TPU if available,
                         otherwise fall back to CPU. If False, force CPU usage.
 
     Raises:
@@ -58,7 +58,7 @@ def configure_jax_platform(use_accelerator: bool = True):
         raise ImportError(
             "JAX is required but not installed. Please install JAX by running: "
             "pip install jax jaxlib (for CPU) or see JAX documentation for GPU/TPU installation."
-        )
+        ) from None
 
 def get_anndata_shape(h5ad_path: str):
     """Get the shape (n_obs, n_vars) of an AnnData file without loading it."""
@@ -100,15 +100,15 @@ def get_anndata_shape(h5ad_path: str):
 def inspect_h5ad_structure(filename):
     """
     Inspect the structure of an h5ad file without loading data.
-    
+
     Returns dict with keys present in each slot.
     """
     structure = {}
-    
+
     with h5py.File(filename, 'r') as f:
         # Check main slots
         slots = ['obs', 'var', 'obsm', 'varm', 'obsp', 'varp', 'uns', 'layers', 'X', 'raw']
-        
+
         for slot in slots:
             if slot in f:
                 if slot in ['obsm', 'varm', 'obsp', 'varp', 'layers', 'uns']:
@@ -123,34 +123,34 @@ def inspect_h5ad_structure(filename):
                 else:
                     # X, raw - just note they exist
                     structure[slot] = True
-    
+
     return structure
 
 def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=None):
     """
     Validate h5ad files have required structure.
-    
+
     Args:
         sample_h5ad_dict: OrderedDict of {sample_name: h5ad_path}
         required_fields: Dict of {field_name: (slot, field_key, error_msg_template)}
             e.g., {'spatial': ('obsm', 'spatial', 'Spatial key')}
         optional_fields: Dict of {field_name: (slot, field_key)} for fields to warn about
-    
+
     Returns:
         None, raises ValueError if required fields are missing
     """
     for sample_name, h5ad_path in sample_h5ad_dict.items():
         if not h5ad_path.exists():
             raise FileNotFoundError(f"H5AD file not found for sample '{sample_name}': {h5ad_path}")
-        
+
         # Inspect h5ad structure
         structure = inspect_h5ad_structure(h5ad_path)
-        
+
         # Check required fields
         for field_name, (slot, field_key, error_msg) in required_fields.items():
             if field_key is None:  # Skip if field not specified
                 continue
-                
+
             # Special handling for data_layer
             if field_name == 'data_layer' and field_key != 'X':
                 if 'layers' not in structure or field_key not in structure.get('layers', []):
@@ -169,13 +169,13 @@ def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=N
                         f"{error_msg} '{field_key}' not found in {slot} for sample '{sample_name}'. "
                         f"Available keys in {slot}: {available}"
                     )
-        
+
         # Check optional fields (warn only)
         if optional_fields:
             for field_name, (slot, field_key) in optional_fields.items():
                 if field_key is None:  # Skip if field not specified
                     continue
-                    
+
                 if slot not in structure or field_key not in structure.get(slot, []):
                     available = structure.get(slot, [])
                     logger.warning(
@@ -186,14 +186,14 @@ def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=N
 def process_h5ad_inputs(config, input_options):
     """
     Process h5ad input options and create sample_h5ad_dict.
-    
+
     Args:
         config: Configuration object with h5ad input fields
         input_options: Dict mapping option names to (field_name, processing_type)
-            e.g., {'h5ad_yaml': ('h5ad_yaml', 'yaml'), 
+            e.g., {'h5ad_yaml': ('h5ad_yaml', 'yaml'),
                    'h5ad': ('h5ad', 'list'),
                    'h5ad_list_file': ('h5ad_list_file', 'file')}
-    
+
     Returns:
         OrderedDict of {sample_name: h5ad_path}
     """
@@ -203,26 +203,23 @@ def process_h5ad_inputs(config, input_options):
         return OrderedDict(config.sample_h5ad_dict)
 
     sample_h5ad_dict = OrderedDict()
-    
+
     # Check which options are provided
     options_provided = []
     for option_name, (field_name, _) in input_options.items():
         if hasattr(config, field_name) and getattr(config, field_name):
             options_provided.append(option_name)
-    
+
     # Ensure at most one option is provided
     if len(options_provided) > 1:
-        assert False, (
-            f"At most one input option can be provided. Got {len(options_provided)}: {', '.join(options_provided)}. "
-            f"Please provide only one of: {', '.join(input_options.keys())}"
-        )
-    
+        raise AssertionError(f"At most one input option can be provided. Got {len(options_provided)}: {', '.join(options_provided)}. " f"Please provide only one of: {', '.join(input_options.keys())}")
+
     # Process the provided input option
     for option_name, (field_name, processing_type) in input_options.items():
         field_value = getattr(config, field_name, None)
         if not field_value:
             continue
-            
+
         if processing_type == 'yaml':
             logger.info(f"Using {option_name}: {field_value}")
             yaml_file_path = Path(field_value)
@@ -235,7 +232,7 @@ def process_h5ad_inputs(config, input_options):
                     if not h5ad_path.is_absolute():
                         h5ad_path = yaml_parent_dir / h5ad_path
                     sample_h5ad_dict[sample_name] = h5ad_path
-                    
+
         elif processing_type == 'list':
             logger.info(f"Using {option_name} with {len(field_value)} files")
             for h5ad_path in field_value:
@@ -244,7 +241,7 @@ def process_h5ad_inputs(config, input_options):
                 if sample_name in sample_h5ad_dict:
                     logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
                 sample_h5ad_dict[sample_name] = h5ad_path
-                
+
         elif processing_type == 'file':
             logger.info(f"Using {option_name}: {field_value}")
             list_file_path = Path(field_value)
@@ -262,7 +259,7 @@ def process_h5ad_inputs(config, input_options):
                             logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
                         sample_h5ad_dict[sample_name] = h5ad_path
         break
-    
+
     return sample_h5ad_dict
 
 def verify_homolog_file_format(config):

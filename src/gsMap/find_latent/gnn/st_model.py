@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from .encoder_decoder import Encoder, Decoder
+from .encoder_decoder import Decoder, Encoder
+
 
 class StEmbeding(nn.Module):
     """
     Learn graph-smoothed and expression embeddings for each cell, with optional batch correction.
-    
+
     Args:
         input_size (list): List of input feature sizes for each encoder.
         hidden_size (int): Hidden layer size in encoder/decoder.
@@ -19,7 +20,7 @@ class StEmbeding(nn.Module):
         distribution (str): Output distribution type ('nb', 'zinb', 'gaussian', etc.).
         Other GNN-related args passed to Encoder.
     """
-    def __init__(self, 
+    def __init__(self,
                  input_size,
                  hidden_size,
                  embedding_size,
@@ -56,7 +57,7 @@ class StEmbeding(nn.Module):
 
         # Build encoders for each modality
         self.encoder = nn.ModuleList()
-        for eid in range(self.z_num): 
+        for eid in range(self.z_num):
             self.encoder.append(
                 Encoder(self.input_size[eid],
                         hidden_size,
@@ -99,7 +100,7 @@ class StEmbeding(nn.Module):
             library_size = torch.ones(n, 1, device=device)
 
         x_rec_list, zi_logit_list, z_list = [], [], []
-        for eid in range(self.z_num):  
+        for eid in range(self.z_num):
             z = self.encoder[eid](x_list[eid], batch)
             x_rec, zi_logit = self.decoder['reconstruction'](z, batch)
             x_rec = x_rec * library_size
@@ -118,7 +119,7 @@ class StEmbeding(nn.Module):
     def encode(self, x_list, batch):
         batch = self._process_batch(batch)
         z_list = []
-        for eid in range(self.z_num):  
+        for eid in range(self.z_num):
             z = self.encoder[eid](x_list[eid], batch)
             z_list.append(z)
         return z_list

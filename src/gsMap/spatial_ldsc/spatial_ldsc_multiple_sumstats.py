@@ -370,18 +370,18 @@ def determine_cell_indices_range(config, total_chunk_number_found):
         # Convert cell indices to chunk indices (both 0-based)
         start_cell, end_cell = config.cell_indices_range  # 0-based [start, end)
         chunk_size = config.spots_per_chunk_quick_mode if hasattr(config, 'spots_per_chunk_quick_mode') else 1000
-        
+
         # Calculate which chunks contain these cells
         start_chunk = start_cell // chunk_size  # 0-based chunk index
         end_chunk = (end_cell - 1) // chunk_size if end_cell > 0 else 0  # 0-based, inclusive
-        
+
         # Validate chunk indices
         if start_chunk >= total_chunk_number_found:
             raise ValueError(f"cell_indices_range start ({start_cell}) maps to chunk {start_chunk} which is >= total chunks ({total_chunk_number_found})")
         if end_chunk >= total_chunk_number_found:
             logger.warning(f"cell_indices_range end ({end_cell}) maps to chunk {end_chunk} which is >= total chunks ({total_chunk_number_found}). Capping to last chunk.")
             end_chunk = total_chunk_number_found - 1
-        
+
         logger.info(f"Cell range [{start_cell}, {end_cell}) maps to chunks {start_chunk}-{end_chunk} (0-based)")
         # Convert to 1-based for compatibility with existing code that expects 1-based chunks
         return start_chunk + 1, end_chunk + 1

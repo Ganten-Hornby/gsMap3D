@@ -4,7 +4,7 @@ Configuration for generating reports.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Annotated
+from typing import Annotated
 
 import typer
 
@@ -16,7 +16,7 @@ logger = logging.getLogger("gsMap.config")
 @dataclass
 class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     """Report Generation Configuration"""
-    
+
     downsampling_n_spots_pcc: Annotated[int, typer.Option(
         help="Number of spots to downsample for PCC calculation if n_spots > this value",
         min=1000,
@@ -43,11 +43,11 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
 
     # Advanced visualization parameters
     single_sample_multi_trait_max_cols: int = 5
-    subsample_n_points: Optional[int] = None
+    subsample_n_points: int | None = None
     single_sample_multi_trait_subplot_width_inches: float = 4.0
     single_sample_multi_trait_dpi: int = 300
     enable_pdf_output: bool = True
-    hover_text_list: Optional[list] = None
+    hover_text_list: list | None = None
     single_trait_multi_sample_max_cols: int = 8
     single_trait_multi_sample_subplot_width_inches: float = 4.0
     single_trait_multi_sample_scaling_factor: float = 1.0
@@ -55,7 +55,7 @@ class ReportConfig(CauchyCombinationConfig,ConfigWithAutoPaths):
     share_coords: bool = False
 
     # Weather to generate single-feature multi-sample plots (LDSC, annotation, and gene diagnostic plots)
-    generate_multi_sample_plots: bool = False 
+    generate_multi_sample_plots: bool = False
 
     # Plot origin for spatial plots ('upper' or 'lower')
     plot_origin: Annotated[str, typer.Option(

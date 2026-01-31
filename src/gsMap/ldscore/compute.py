@@ -4,9 +4,9 @@ Simplified LD score computation without masking or padding.
 Direct computation of unbiased L2 statistics from genotype matrices using NumPy and Scipy.
 """
 
+
 import numpy as np
 import scipy.sparse
-from typing import Tuple, List, Union
 
 from .constants import LDSC_BIAS_CORRECTION_DF
 
@@ -82,7 +82,7 @@ def compute_ld_scores(
 def compute_batch_weights_sparse(
     X_hm3: np.ndarray,
     X_ref_block: np.ndarray,
-    block_mapping_matrix: Union[scipy.sparse.csr_matrix, np.ndarray],
+    block_mapping_matrix: scipy.sparse.csr_matrix | np.ndarray,
 ) -> np.ndarray:
     """
     Compute LD score weight matrix using matrix multiplication.

@@ -2,18 +2,19 @@
 Decorators for CLI and resource tracking.
 """
 
+import functools
 import inspect
 import logging
 import os
+import re
+import subprocess
 import sys
 import threading
 import time
 from dataclasses import fields
 from functools import wraps
-import functools
-import re
-import subprocess
-from typing import Annotated, get_origin, get_args, Any, Type
+from typing import Annotated, Any, get_args, get_origin
+
 import psutil
 import pyfiglet
 
@@ -36,12 +37,12 @@ def track_resource_usage(func):
     def wrapper(*args, **kwargs):
         # Get the current process
         process = psutil.Process(os.getpid())
-        
+
         # Initialize tracking variables
         peak_memory = 0
         cpu_percent_samples = []
         stop_thread = False
-        
+
         # Function to monitor resource usage
         def resource_monitor():
             nonlocal peak_memory, cpu_percent_samples
@@ -50,25 +51,25 @@ def track_resource_usage(func):
                     # Get current memory usage in MB
                     current_memory = process.memory_info().rss / (1024 * 1024)
                     peak_memory = max(peak_memory, current_memory)
-                    
+
                     # Get CPU usage percentage
                     cpu_percent = process.cpu_percent(interval=None)
                     if cpu_percent > 0:  # Skip initial zero readings
                         cpu_percent_samples.append(cpu_percent)
-                    
+
                     time.sleep(0.5)
                 except Exception:
                     pass
-        
+
         # Start resource monitoring in a separate thread
         monitor_thread = threading.Thread(target=resource_monitor)
         monitor_thread.daemon = True
         monitor_thread.start()
-        
+
         # Get start times
         start_wall_time = time.time()
         start_cpu_time = process_cpu_time(process)
-        
+
         try:
             # Run the actual function
             result = func(*args, **kwargs)
@@ -77,32 +78,32 @@ def track_resource_usage(func):
             # Stop the monitoring thread
             stop_thread = True
             monitor_thread.join(timeout=1.0)
-            
+
             # Calculate elapsed times
             end_wall_time = time.time()
             end_cpu_time = process_cpu_time(process)
-            
+
             wall_time = end_wall_time - start_wall_time
             cpu_time = end_cpu_time - start_cpu_time
-            
+
             # Calculate average CPU percentage
             avg_cpu_percent = (
                 sum(cpu_percent_samples) / len(cpu_percent_samples) if cpu_percent_samples else 0
             )
-            
+
             # Adjust for macOS if needed
             if sys.platform == "darwin":
-                from ..utils import macos_timebase_factor
+                from gsMap.utils import macos_timebase_factor
                 factor = macos_timebase_factor()
                 cpu_time *= factor
                 avg_cpu_percent *= factor
-            
+
             # Format memory for display
             if peak_memory < 1024:
                 memory_str = f"{peak_memory:.2f} MB"
             else:
                 memory_str = f"{peak_memory / 1024:.2f} GB"
-            
+
             # Format times for display
             if wall_time < 60:
                 wall_time_str = f"{wall_time:.2f} seconds"
@@ -110,21 +111,21 @@ def track_resource_usage(func):
                 wall_time_str = f"{wall_time / 60:.2f} minutes"
             else:
                 wall_time_str = f"{wall_time / 3600:.2f} hours"
-            
+
             if cpu_time < 60:
                 cpu_time_str = f"{cpu_time:.2f} seconds"
             elif cpu_time < 3600:
                 cpu_time_str = f"{cpu_time / 60:.2f} minutes"
             else:
                 cpu_time_str = f"{cpu_time / 3600:.2f} hours"
-            
+
             # Log the resource usage
             logger.info("Resource usage summary:")
             logger.info(f"  • Wall clock time: {wall_time_str}")
             logger.info(f"  • CPU time: {cpu_time_str}")
             logger.info(f"  • Average CPU utilization: {avg_cpu_percent:.1f}%")
             logger.info(f"  • Peak memory usage: {memory_str}")
-    
+
     return wrapper
 
 
@@ -142,7 +143,7 @@ def show_banner(command_name: str, version: str = "1.73.5"):
     print(version_number.center(80), flush=True)
     print("=" * 80, flush=True)
     logger.info(f"Running {command_name}...")
-    
+
     # Record start time for the log message
     start_time = time.strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"Started at: {start_time}")
@@ -154,39 +155,39 @@ def dataclass_typer(func):
     into a Typer command with individual CLI options.
     """
     sig = inspect.signature(func)
-    
+
     # Get the dataclass type from the function signature
     config_param = list(sig.parameters.values())[0]
     config_class = config_param.annotation
-    
+
     @wraps(func)
     @track_resource_usage  # Add resource tracking
     def wrapper(**kwargs):
         # Show banner
         try:
-            from .. import __version__
+            from gsMap import __version__
             version = __version__
         except ImportError:
             version = "development"
         show_banner(func.__name__, version)
-        
+
         # Create the config instance
         config = config_class(**kwargs)
         result = func(config)
-        
+
         # Record end time
         end_time = time.strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"Finished at: {end_time}")
-        
+
         return result
-    
+
     # Build new parameters from dataclass fields
     from dataclasses import MISSING
     params = []
-    
+
     core_only = getattr(config_class, "__core_only__", False)
-    
-    def is_core_field(field_name: str, cls: Type[Any]) -> bool:
+
+    def is_core_field(field_name: str, cls: type[Any]) -> bool:
         """Check if a field originates from a 'Core' config class."""
         for base in cls.__mro__:
             if field_name in getattr(base, "__annotations__", {}):
@@ -202,10 +203,10 @@ def dataclass_typer(func):
         # Check if the field type is Annotated
         if get_origin(field.type) != Annotated:
             continue
-            
+
         # Get Annotated metadata
         annotated_args = get_args(field.type)
-        
+
         # Check for explicit display override in Annotated metadata
         # e.g., Annotated[int, typer.Option(...), {"__display_in_quick_mode_cli__": True}]
         display_override = None
@@ -213,11 +214,11 @@ def dataclass_typer(func):
             if isinstance(arg, dict) and "__display_in_quick_mode_cli__" in arg:
                 display_override = arg["__display_in_quick_mode_cli__"]
                 break
-        
+
         if core_only:
             # If field explicitly says True, we show it even if class says False
             if display_override is True:
-                pass 
+                pass
             # If field explicitly says False, we hide it
             elif display_override is False:
                 continue
@@ -227,7 +228,7 @@ def dataclass_typer(func):
 
         # Get the actual type and typer.Option from Annotated
         # Annotated[type, typer.Option(...)] -> type is at args[0]
-        actual_type = get_args(field.type)[0]
+        get_args(field.type)[0]
 
         # Determine the default value
         if field.default is not MISSING:
@@ -255,13 +256,13 @@ def dataclass_typer(func):
                 annotation=field.type  # Keep the full Annotated type
             )
         params.append(param)
-    
+
     # Update the wrapper's signature
     wrapper.__signature__ = inspect.Signature(params)
-    
+
     # Preserve the original function's docstring
     wrapper.__doc__ = func.__doc__
-    
+
     return wrapper
 
 

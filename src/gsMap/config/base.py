@@ -1,30 +1,31 @@
 """
 Base configuration classes and utilities for gsMap.
 """
-from dataclasses import dataclass, asdict, field
+import inspect
+import logging
+from dataclasses import asdict, dataclass
+from enum import Enum
 from functools import wraps
 from pathlib import Path
-from enum import Enum
-from typing import Optional, Annotated, List, Dict, Any
-import yaml
+from typing import Annotated, Any
+
 import typer
-import logging
-import inspect
-from datetime import datetime
-from rich.logging import RichHandler
+import yaml
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.syntax import Syntax
+
 
 def config_logger():
     logger = logging.getLogger("gsMap")
     # clean up existing handlers
     if logger.hasHandlers():
         logger.handlers.clear()
-    
+
     # Set logger to DEBUG to capture all messages
     logger.setLevel(logging.DEBUG)
-    
+
     # Create rich console handler for INFO level messages
     console = Console()
     rich_handler = RichHandler(
@@ -39,7 +40,7 @@ def config_logger():
         logging.Formatter("{levelname:.5s} | {name} - {message}", style="{")
     )
     logger.addHandler(rich_handler)
-    
+
     # # Create file handler for DEBUG level messages with timestamp
     # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     # log_dir = Path("logs")
@@ -80,17 +81,17 @@ def ensure_path_exists(func):
 class BaseConfig:
     """Base configuration class with display and conversion utility."""
 
-    def to_dict_with_paths_as_strings(self) -> Dict[str, Any]:
+    def to_dict_with_paths_as_strings(self) -> dict[str, Any]:
         """
         Convert the config object to a dictionary with all Path objects converted to strings.
         Also handles nested Path and Enum objects in dictionaries and lists.
-        
+
         Returns:
             Dictionary representation of the config with all Path objects as strings
         """
         # Convert config to dict
         config_dict = asdict(self)
-        
+
         # Convert all Path and Enum objects in config to strings/values
         for key, value in config_dict.items():
             if isinstance(value, Path):
@@ -99,29 +100,29 @@ class BaseConfig:
                 config_dict[key] = value.value
             elif isinstance(value, dict):
                 config_dict[key] = {
-                    k: (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
+                    k: (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v))
                     for k, v in value.items()
                 }
             elif isinstance(value, list):
                 config_dict[key] = [
-                    (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v)) 
+                    (str(v) if isinstance(v, Path) else (v.value if isinstance(v, Enum) else v))
                     for v in value
                 ]
-        
+
         return config_dict
 
-    def show_config(self, cls: Optional[type] = None):
+    def show_config(self, cls: type | None = None):
         """Show configuration in a nice way using rich."""
         if cls is not None and type(self) is not cls:
             return
-            
+
         config_dict = self.to_dict_with_paths_as_strings()
         config_yaml = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
-        
+
         # Get title from docstring (first line)
         doc = inspect.getdoc(type(self))
         title = doc.split('\n')[0] if doc else "Configuration"
-            
+
         console = Console()
         console.print(Panel(
             Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
@@ -179,27 +180,27 @@ class ConfigWithAutoPaths(BaseConfig):
     def latent2gene_dir(self) -> Path:
         """Directory for latent to gene outputs"""
         return self.project_dir / "latent_to_gene"
-    
+
     @property
     def concatenated_latent_adata_path(self) -> Path:
         """Path to concatenated latent representations"""
         return self.latent2gene_dir / "concatenated_latent_adata.h5ad"
-    
+
     @property
     def rank_memmap_path(self) -> Path:
         """Path to rank zarr file"""
         return self.latent2gene_dir / "ranks.dat"
-    
+
     @property
     def mean_frac_path(self) -> Path:
         """Path to mean expression fraction parquet"""
         return self.latent2gene_dir / "mean_frac.parquet"
-    
+
     @property
     def marker_scores_memmap_path(self) -> Path:
         """Path to marker scores zarr"""
         return self.latent2gene_dir / "marker_scores.dat"
-    
+
     @property
     def latent2gene_metadata_path(self) -> Path:
         """Path to latent2gene metadata YAML"""
@@ -222,7 +223,7 @@ class ConfigWithAutoPaths(BaseConfig):
     def ldscore_save_dir(self) -> Path:
         """Directory for LD score generation results"""
         return self.project_dir / "generate_ldscore"
-    
+
     @property
     @ensure_path_exists
     def cauchy_save_dir(self) -> Path:
@@ -250,7 +251,7 @@ class ConfigWithAutoPaths(BaseConfig):
     def get_report_dir(self, trait_name: str) -> Path:
         """Deprecated: Use report_dir property instead"""
         return self.report_dir
-    
+
     def get_gsMap_report_file(self, trait_name: str) -> Path:
         """Path to main HTML report file"""
         return self.report_dir / "index.html"
@@ -264,7 +265,7 @@ class ConfigWithAutoPaths(BaseConfig):
     def get_GSS_plot_dir(self, trait_name: str) -> Path:
         """Directory for gene diagnostic plots"""
         return self.report_dir / "gene_diagnostic_plots"
-    
+
     def get_GSS_plot_select_gene_file(self, trait_name: str) -> Path:
         return self.get_GSS_plot_dir(trait_name) / "plot_genes.csv"
 
@@ -272,19 +273,19 @@ class ConfigWithAutoPaths(BaseConfig):
     def ldsc_combined_parquet_path(self) -> Path:
         return self.cauchy_save_dir / f"{self.project_name}_combined_ldsc.parquet"
 
-    def get_cauchy_result_file(self, trait_name: str, annotation: Optional[str] = None, all_samples: bool = False) -> Path:
+    def get_cauchy_result_file(self, trait_name: str, annotation: str | None = None, all_samples: bool = False) -> Path:
         if annotation is None:
             annotation = getattr(self, 'annotation', 'unknown')
         if all_samples:
             return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.{annotation}.cauchy.csv"
         else:
             return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.{annotation}.sample_cauchy.csv"
-    
+
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:
         """Path for gene diagnostic info CSV - uses trait prefix in gss_stats subfolder"""
         return self.report_data_dir / "gss_stats" / f"gene_trait_correlation_{trait_name}.csv"
-    
+
     @ensure_path_exists
     def get_gsMap_plot_save_dir(self, trait_name: str) -> Path:
         """Directory for spatial LDSC plots"""

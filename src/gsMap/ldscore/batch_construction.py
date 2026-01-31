@@ -6,11 +6,11 @@ This module handles:
 2. Calculating reference block boundaries for each batch based on LD window
 """
 
+import logging
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
-import logging
-from typing import List
-from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,11 @@ class BatchInfo:
 
 def construct_batches(
     bim_df: pd.DataFrame,
-    hm3_snp_names: List[str],
+    hm3_snp_names: list[str],
     batch_size_hm3: int,
     ld_wind: float = 1.0,
     ld_unit: str = "CM",
-) -> List[BatchInfo]:
+) -> list[BatchInfo]:
     """
     Construct batches of HM3 SNPs with reference block boundaries.
 
@@ -71,8 +71,8 @@ def construct_batches(
     chromosome = str(bim_df["CHR"].iloc[0])
 
     # Pre-extract arrays for performance
-    bim_snps = bim_df["SNP"].values
-    
+    bim_df["SNP"].values
+
     # helper to get coordinates based on unit
     if ld_unit == "SNP":
         coords = np.arange(len(bim_df))
@@ -112,26 +112,26 @@ def construct_batches(
     batch_starts = np.arange(0, n_hm3, batch_size_hm3)
     # End indices: batch_size, 2*batch_size, ..., n_hm3
     batch_ends = np.minimum(batch_starts + batch_size_hm3, n_hm3)
-    
+
     n_batches = len(batch_starts)
-    
+
     # Get indices in BIM for start and end of each batch
     # hm3_indices_all contains the BIM indices of HM3 SNPs
     # We need the BIM index of the first and last HM3 SNP in each batch
-    
+
     # First HM3 SNP in each batch
     batch_start_bim_indices = hm3_indices_all[batch_starts]
     # Last HM3 SNP in each batch (indices are exclusive in slice, so -1 for element access)
     batch_end_bim_indices = hm3_indices_all[batch_ends - 1]
-    
+
     # Get coordinates for these batch boundaries
     min_coords = coords[batch_start_bim_indices]
     max_coords = coords[batch_end_bim_indices]
-    
+
     # Calculate window boundaries
     window_starts = min_coords - max_dist
     window_ends = max_coords + max_dist
-    
+
     if ld_unit == "SNP":
         # For SNP unit, coordinates are indices, so we just clip
         ref_starts = np.maximum(window_starts, 0).astype(int)
@@ -141,13 +141,13 @@ def construct_batches(
         # Find insertion points for all window starts and ends at once
         ref_starts = np.searchsorted(coords, window_starts, side='left')
         ref_ends = np.searchsorted(coords, window_ends, side='right')
-    
+
     # Construct BatchInfo objects
     batch_infos = []
     for i in range(n_batches):
         # Slice the HM3 indices for this batch
         b_hm3_indices = hm3_indices_all[batch_starts[i]:batch_ends[i]]
-        
+
         batch_infos.append(BatchInfo(
             chromosome=chromosome,
             hm3_indices=b_hm3_indices,

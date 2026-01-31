@@ -1,9 +1,14 @@
 import warnings
-from typing import Optional, Tuple, Union
+
 import torch
 import torch.nn.functional as F
 from torch.distributions import Distribution, Gamma, Poisson, constraints
-from torch.distributions.utils import (broadcast_all, lazy_property, logits_to_probs, probs_to_logits)
+from torch.distributions.utils import (
+    broadcast_all,
+    lazy_property,
+    logits_to_probs,
+    probs_to_logits,
+)
 
 
 def log_zinb_positive(
@@ -274,12 +279,12 @@ class NegativeBinomial(Distribution):
 
     def __init__(
         self,
-        total_count: Optional[torch.Tensor] = None,
-        probs: Optional[torch.Tensor] = None,
-        logits: Optional[torch.Tensor] = None,
-        mu: Optional[torch.Tensor] = None,
-        theta: Optional[torch.Tensor] = None,
-        scale: Optional[torch.Tensor] = None,
+        total_count: torch.Tensor | None = None,
+        probs: torch.Tensor | None = None,
+        logits: torch.Tensor | None = None,
+        mu: torch.Tensor | None = None,
+        theta: torch.Tensor | None = None,
+        scale: torch.Tensor | None = None,
         validate_args: bool = False,
     ):
         self._eps = 1e-8
@@ -305,17 +310,17 @@ class NegativeBinomial(Distribution):
         super().__init__(validate_args=validate_args)
 
     @property
-    def mean(self):  # noqa: D102
+    def mean(self):
         return self.mu
 
     @property
-    def variance(self):  # noqa: D102
+    def variance(self):
         return self.mean + (self.mean**2) / self.theta
 
     @torch.inference_mode()
     def sample(
         self,
-        sample_shape: Optional[Union[torch.Size, Tuple]] = None,
+        sample_shape: torch.Size | tuple | None = None,
     ) -> torch.Tensor:
         """Sample from the distribution."""
         sample_shape = sample_shape or torch.Size()
@@ -330,18 +335,18 @@ class NegativeBinomial(Distribution):
         return counts
 
     @torch.inference_mode()
-    def rsample(self, sample_shape: Optional[Union[torch.Size, Tuple]] = None):
+    def rsample(self, sample_shape: torch.Size | tuple | None = None):
         """Sample from the distribution."""
         return self.sample(sample_shape=sample_shape)
 
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:  # noqa: D102
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         if self._validate_args:
             try:
                 self._validate_sample(value)
             except ValueError:
                 warnings.warn(
                     "The value argument must be within the support of the distribution",
-                    UserWarning,
+                    UserWarning, stacklevel=2,
                 )
 
         return log_nb_positive(value, mu=self.mu, theta=self.theta, eps=self._eps)
@@ -413,13 +418,13 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
 
     def __init__(
         self,
-        total_count: Optional[torch.Tensor] = None,
-        probs: Optional[torch.Tensor] = None,
-        logits: Optional[torch.Tensor] = None,
-        mu: Optional[torch.Tensor] = None,
-        theta: Optional[torch.Tensor] = None,
-        zi_logits: Optional[torch.Tensor] = None,
-        scale: Optional[torch.Tensor] = None,
+        total_count: torch.Tensor | None = None,
+        probs: torch.Tensor | None = None,
+        logits: torch.Tensor | None = None,
+        mu: torch.Tensor | None = None,
+        theta: torch.Tensor | None = None,
+        zi_logits: torch.Tensor | None = None,
+        scale: torch.Tensor | None = None,
         validate_args: bool = False,
     ):
         super().__init__(
@@ -436,12 +441,12 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
         )
 
     @property
-    def mean(self):  # noqa: D102
+    def mean(self):
         pi = self.zi_probs
         return (1 - pi) * self.mu
 
     @property
-    def variance(self):  # noqa: D102
+    def variance(self):
         pi = self.zi_probs
         return (1 - pi) * self.mu * (1 + self.mu * (pi + 1 / self.theta))
 
@@ -451,13 +456,13 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
         return probs_to_logits(self.zi_probs, is_binary=True)
 
     @lazy_property
-    def zi_probs(self) -> torch.Tensor:  # noqa: D102
+    def zi_probs(self) -> torch.Tensor:
         return logits_to_probs(self.zi_logits, is_binary=True)
 
     @torch.inference_mode()
     def sample(
         self,
-        sample_shape: Optional[Union[torch.Size, Tuple]] = None,
+        sample_shape: torch.Size | tuple | None = None,
     ) -> torch.Tensor:
         """Sample from the distribution."""
         sample_shape = sample_shape or torch.Size()
@@ -471,7 +476,7 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
     @torch.inference_mode()
     def rsample(  # type: ignore
         self,
-        sample_shape: Optional[Union[torch.Size, Tuple]] = None,
+        sample_shape: torch.Size | tuple | None = None,
     ) -> torch.Tensor:
         """Sample from the distribution."""
         sample_shape = sample_shape or torch.Size()
@@ -488,6 +493,6 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
         except ValueError:
             warnings.warn(
                 "The value argument must be within the support of the distribution",
-                UserWarning,
+                UserWarning, stacklevel=2,
             )
         return log_zinb_positive(value, self.mu, self.theta, self.zi_logits, eps=1e-08)

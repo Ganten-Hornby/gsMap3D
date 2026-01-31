@@ -48,12 +48,14 @@ dependencies = [
     'anndata >= 0.8.0',
     'h5py >= 3.0.0',
     'statsmodels >= 0.13.0',
-    'psutil >= 5.8.0',
-#    'pyvista >= 0.35.0',
-    'typer ~= 0.20.0',
-    'panel >= 1.2.0',
+        'psutil >= 5.8.0',
+        'pyvista >= 0.35.0',
+        'typer ~= 0.20.0',
+        'panel >= 1.2.0',
+    
     'holoviews',
-    'einops'
+    'einops',
+    "distinctipy>=1.3.4",
 ]
 
 [project.optional-dependencies]
@@ -200,6 +202,14 @@ line-ending = "auto"
 [tool.jupytext]
 formats = "ipynb,md"
 
+[dependency-groups]
+dev = [
+    "ty>=0.0.14",
+]
+
 [tool.ruff.lint.flake8-type-checking]
 exempt-modules = []
 strict = true
+
+[tool.ty]
+# Configuration for ty type checker

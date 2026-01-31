@@ -8,10 +8,10 @@ This package contains all components for converting latent representations to ge
 - Memory-mapped storage utilities
 """
 
-from .rank_calculator import RankCalculator
 from .connectivity import ConnectivityMatrixBuilder
-from .marker_scores import MarkerScoreCalculator
 from .entry_point import run_latent_to_gene
+from .marker_scores import MarkerScoreCalculator
+from .rank_calculator import RankCalculator
 
 __all__ = [
     'run_latent_to_gene'

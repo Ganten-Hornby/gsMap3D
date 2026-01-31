@@ -1,63 +1,48 @@
-import warnings
-
-from scipy.spatial import KDTree
-
-warnings.filterwarnings("ignore")
+import gc
 import logging
-import os
-import time
 import warnings
-from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List
-from typing import Optional, Literal, Union
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-import numpy as np
-import pandas as pd
-import matplotlib.axes
-from rich import print
-import anndata as ad
-import h5py
-from typing import Tuple, Optional
+from typing import Literal
 
+import distinctipy
+import matplotlib
+import matplotlib.axes
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import yaml
-from filelock import FileLock
-from more_itertools import chunked_even
-from plotly.subplots import make_subplots
 import scipy.stats as stats
-from scipy.cluster.hierarchy import linkage, leaves_list
+from rich import print
+from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.spatial import KDTree
 from tqdm import tqdm
-from gsMap.config import ReportConfig
-import distinctipy
-import gc
+
+warnings.filterwarnings("ignore")
+
 
 def remove_outliers_MAD(data, threshold=3.5):
     """
     Remove outliers based on Median Absolute Deviation (MAD).
     """
-    if isinstance(data, (pd.Series, pd.DataFrame)):
+    if isinstance(data, pd.Series | pd.DataFrame):
         data_values = data.values.flatten()
     else:
         data_values = np.asarray(data).flatten()
-    
+
     if len(data_values) == 0:
         return data, np.ones(len(data), dtype=bool)
-    
+
     median = np.nanmedian(data_values)
     mad = np.nanmedian(np.abs(data_values - median))
     if mad == 0:
         return data, np.ones(len(data), dtype=bool)
-    
+
     modified_z_score = 0.6745 * (data_values - median) / mad
     mask = np.abs(modified_z_score) <= threshold
-    
+
     if isinstance(data, pd.Series):
         return data[mask], mask
     elif isinstance(data, np.ndarray):
@@ -126,8 +111,8 @@ def estimate_plotly_point_size(coordinates, DEFAULT_PIXEL_WIDTH=1000):
 
 
 def estimate_matplotlib_scatter_marker_size(ax: matplotlib.axes.Axes, coordinates: np.ndarray,
-                                            x_limits: Optional[tuple] = None,
-                                            y_limits: Optional[tuple] = None) -> float:
+                                            x_limits: tuple | None = None,
+                                            y_limits: tuple | None = None) -> float:
     """
     Estimates the appropriate marker size to make adjacent markers touch.
 
@@ -331,19 +316,19 @@ def draw_scatter(
     return fig
 
 
-def _create_color_map(category_list: List, hex=False, rng=42) -> Dict[str, tuple]:
-    unique_categories = sorted(list(set(category_list)), key=str)
-    
+def _create_color_map(category_list: list, hex=False, rng=42) -> dict[str, tuple]:
+    unique_categories = sorted(set(category_list), key=str)
+
     # Check for 'NaN' or nan and handle separately
     nan_values = [v for v in unique_categories if str(v).lower() in ['nan', 'none', 'null']]
     other_categories = [v for v in unique_categories if v not in nan_values]
-    
+
     n_colors = len(other_categories)
 
     # Generate N visually distinct colors for non-NaN categories
     if n_colors > 0:
         colors = distinctipy.get_colors(n_colors, rng=rng)
-        color_map = {category: color for category, color in zip(other_categories, colors)}
+        color_map = dict(zip(other_categories, colors, strict=False))
     else:
         color_map = {}
 
@@ -525,11 +510,10 @@ class VisualizeRunner:
         print(f"Calculated grid layout: {n_rows} rows × {n_cols} cols for {item_count} items")
         return n_rows, n_cols
 
-    @classmethod
-    def _create_single_trait_multi_sample_matplotlib_plot(cls, obs_ldsc_merged: pd.DataFrame, trait_abbreviation: str,
-                                                          sample_name_list: Optional[List[str]] = None,
-                                                          output_png_path: Optional[Path] = None,
-                                                          output_pdf_path: Optional[Path] = None,
+    def _create_single_trait_multi_sample_matplotlib_plot(self, obs_ldsc_merged: pd.DataFrame, trait_abbreviation: str,
+                                                          sample_name_list: list[str] | None = None,
+                                                          output_png_path: Path | None = None,
+                                                          output_pdf_path: Path | None = None,
                                                           n_rows: int = 6, n_cols: int = 8,
                                                           subplot_width_inches: float = 4.0,
                                                           scaling_factor: float = 1.0, dpi: int = 300,
@@ -553,7 +537,7 @@ class VisualizeRunner:
         plt.rcParams['font.family'] = 'sans-serif'
         plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Liberation Sans', 'Bitstream Vera Sans', 'sans-serif']
 
-        custom_cmap = mcolors.LinearSegmentedColormap.from_list('custom_cmap', cls.custom_colors_list)
+        custom_cmap = mcolors.LinearSegmentedColormap.from_list('custom_cmap', self.custom_colors_list)
         custom_cmap = custom_cmap.reversed()
 
         # Calculate figure size based on subplot dimensions
@@ -600,7 +584,7 @@ class VisualizeRunner:
             # Get data for this sample
             sample_data = obs_ldsc_merged_filtered[obs_ldsc_merged_filtered['sample_name'] == select_sample_name]
 
-            point_size = cls.estimate_matplitlib_scatter_marker_size(ax, sample_data[['sx', 'sy']].values,
+            point_size = self.estimate_matplitlib_scatter_marker_size(ax, sample_data[['sx', 'sy']].values,
                                                                      x_limits=x_limits, y_limits=y_limits)
             point_size *= scaling_factor  # Apply scaling factor
             # Create scatter plot
@@ -640,20 +624,20 @@ class VisualizeRunner:
         # Close the figure to free memory only if not returning it
         if show:
             plt.show()
-        
+
         gc.collect()
         return fig
 
     def _create_single_sample_multi_trait_plots(self,
                                                 obs_ldsc_merged: pd.DataFrame,
-                                                trait_names: List[str],
+                                                trait_names: list[str],
                                                 sample_name: str,
                                                 # New arguments for output paths, as matplotlib saves directly
-                                                output_png_path: Optional[Path],
-                                                output_pdf_path: Optional[Path],
+                                                output_png_path: Path | None,
+                                                output_pdf_path: Path | None,
                                                 # Arguments from original function signature, adapted for matplotlib
                                                 max_cols: int = 5,
-                                                subsample_n_points: Optional[int] = None,
+                                                subsample_n_points: int | None = None,
                                                 # subplot_width is now interpreted as inches for figsize
                                                 subplot_width_inches: float = 4.0,
                                                 dpi: int = 300,
@@ -736,7 +720,7 @@ class VisualizeRunner:
 
             ax.set_title(trait, fontsize=16, pad=10, fontweight='bold')
             ax.set_aspect('equal', adjustable='box')
-            
+
             if self.config.plot_origin == 'upper':
                 ax.invert_yaxis()
 
@@ -768,11 +752,11 @@ class VisualizeRunner:
         # Clean up to free memory
         plt.close(fig)
 
-    def _draw_scatter(self, space_coord_concat: pd.DataFrame, title: Optional[str] = None,
-                      fig_style: str = 'light', point_size: Optional[int] = None,
-                      hover_text_list: Optional[List[str]] = None,
-                      width: int = 800, height: int = 600, annotation: Optional[str] = None,
-                      color_by: str = 'logp', color_map: Optional[Dict] = None):
+    def _draw_scatter(self, space_coord_concat: pd.DataFrame, title: str | None = None,
+                      fig_style: str = 'light', point_size: int | None = None,
+                      hover_text_list: list[str] | None = None,
+                      width: int = 800, height: int = 600, annotation: str | None = None,
+                      color_by: str = 'logp', color_map: dict | None = None):
         """Create scatter plot (adapted from original draw_scatter function)"""
         # Set theme based on fig_style
         if fig_style == 'dark':
@@ -904,15 +888,15 @@ class VisualizeRunner:
 
     @classmethod
     def estimate_matplitlib_scatter_marker_size(cls, ax: matplotlib.axes.Axes, coordinates: np.ndarray,
-                                                x_limits: Optional[tuple] = None,
-                                                y_limits: Optional[tuple] = None) -> float:
+                                                x_limits: tuple | None = None,
+                                                y_limits: tuple | None = None) -> float:
         """Alias for estimate_matplotlib_scatter_marker_size (with typo) for backward compatibility."""
         return estimate_matplotlib_scatter_marker_size(ax, coordinates, x_limits, y_limits)
 
     @classmethod
     def estimate_matplotlib_scatter_marker_size(cls, ax: matplotlib.axes.Axes, coordinates: np.ndarray,
-                                                x_limits: Optional[tuple] = None,
-                                                y_limits: Optional[tuple] = None) -> float:
+                                                x_limits: tuple | None = None,
+                                                y_limits: tuple | None = None) -> float:
         """Alias for estimate_matplotlib_scatter_marker_size for backward compatibility."""
         return estimate_matplotlib_scatter_marker_size(ax, coordinates, x_limits, y_limits)
 
@@ -962,7 +946,7 @@ class VisualizeRunner:
 
             # Create scatter plot
             if pd.api.types.is_numeric_dtype(obs_ldsc_merged[annotation]):
-                scatter = ax.scatter(sample_data['sx'], sample_data['sy'],
+                ax.scatter(sample_data['sx'], sample_data['sy'],
                                      c=sample_data[annotation], cmap=cmap, norm=norm,
                                      s=point_size, alpha=1.0, edgecolors='none')
             else:
@@ -1003,7 +987,7 @@ class VisualizeRunner:
             output_path = output_dir / f'multi_sample_{annotation}.png'
             plt.savefig(output_path, dpi=dpi, bbox_inches='tight', facecolor='white')
             print(f"Saved multi-sample annotation plot: {output_path}")
-        
+
         return fig
 
     def _run_cauchy_analysis(self, obs_ldsc_merged: pd.DataFrame):
@@ -1025,15 +1009,15 @@ class VisualizeRunner:
             self._generate_cauchy_heatmaps(cauchy_results, annotation_col)
 
     def _run_cauchy_combination_per_annotation(self, df: pd.DataFrame, annotation_col: str,
-                                               trait_cols: List[str], max_workers=None):
+                                               trait_cols: list[str], max_workers=None):
         """
         Runs the Cauchy combination on each annotation category for each given trait in parallel.
         Also calculates odds ratios with confidence intervals for significant spots in each annotation.
         """
-        from concurrent.futures import ThreadPoolExecutor
         from functools import partial
-        from scipy.stats import fisher_exact
+
         import statsmodels.api as sm
+        from scipy.stats import fisher_exact
 
         results_dict = {}
         annotations = df[annotation_col].unique()
@@ -1283,10 +1267,10 @@ class VisualizeRunner:
         return pivot_df
 
     def _plot_p_cauchy_heatmap(self, df: pd.DataFrame, title: str = "Cauchy Combination Heatmap",
-                               normalize_axis: Optional[Literal["row", "column"]] = None,
+                               normalize_axis: Literal["row", "column"] | None = None,
                                cluster_rows: bool = False, cluster_cols: bool = False,
-                               color_continuous_scale: Union[str, list] = "RdBu_r",
-                               width: Optional[int] = None, height: Optional[int] = None, 
+                               color_continuous_scale: str | list = "RdBu_r",
+                               width: int | None = None, height: int | None = None,
                                text_format: str = ".2f",
                                show_text: bool = True, font_size: int = 10, margin_pad: int = 150) -> go.Figure:
         """

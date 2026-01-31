@@ -2,10 +2,11 @@
 Configuration dataclasses for the general LD score framework.
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional, Union, Annotated
 import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated
+
 import typer
 
 from gsMap.config.base import BaseConfig, ConfigWithAutoPaths
@@ -30,7 +31,7 @@ class LDScoreConfig(BaseConfig):
         resolve_path=True
     )]
 
-    output_dir: Annotated[Optional[Path], typer.Option(
+    output_dir: Annotated[Path | None, typer.Option(
         help="Output directory. If None, uses {workdir}/{project_name}/generate_ldscore"
     )] = None
 
@@ -39,7 +40,7 @@ class LDScoreConfig(BaseConfig):
     )] = "ld_score_weights"
 
     # Omics Input
-    omics_h5ad_path: Annotated[Optional[Path], typer.Option(
+    omics_h5ad_path: Annotated[Path | None, typer.Option(
         help="Path to omics H5AD file",
         exists=True,
         file_okay=True,
@@ -52,7 +53,7 @@ class LDScoreConfig(BaseConfig):
          help="Mapping type: 'bed' or 'dict'"
     )] = "bed"
 
-    mapping_file: Annotated[Optional[Path], typer.Option(
+    mapping_file: Annotated[Path | None, typer.Option(
         help="Path to mapping file",
         exists=True,
         file_okay=True,
@@ -61,7 +62,7 @@ class LDScoreConfig(BaseConfig):
     )] = None
 
     # Annotation Input (Strategy C - Direct Annotation Matrix)
-    annot_file: Annotated[Optional[str], typer.Option(
+    annot_file: Annotated[str | None, typer.Option(
         help="Template for annotation files (e.g., 'baseline.{chr}.annot.gz')"
     )] = None
 
@@ -101,7 +102,7 @@ class LDScoreConfig(BaseConfig):
         help="Whether to calculate w_ld"
     )] = False
 
-    w_ld_dir: Annotated[Optional[Path], typer.Option(
+    w_ld_dir: Annotated[Path | None, typer.Option(
         help="Directory for w_ld outputs"
     )] = None
 
@@ -161,7 +162,7 @@ class LDScoreConfig(BaseConfig):
 @dataclass
 class GenerateLDScoreConfig(ConfigWithAutoPaths):
     """Generate LDScore Configuration"""
-    
+
     # Required from parent
     workdir: Annotated[Path, typer.Option(
         help="Path to the working directory",
@@ -174,11 +175,11 @@ class GenerateLDScoreConfig(ConfigWithAutoPaths):
     chrom: Annotated[str, typer.Option(
         help='Chromosome id (1-22) or "all"'
     )]
-    
+
     bfile_root: Annotated[str, typer.Option(
         help="Root path for genotype plink bfiles (.bim, .bed, .fam)"
     )]
-    
+
     gtf_annotation_file: Annotated[Path, typer.Option(
         help="Path to GTF annotation file",
         exists=True,
@@ -186,60 +187,60 @@ class GenerateLDScoreConfig(ConfigWithAutoPaths):
         dir_okay=False
     )]
 
-    sample_name: Annotated[str, typer.Option(
+    sample_name: Annotated[str | None, typer.Option(
         help="Name of the sample"
     )] = None
 
-    keep_snp_root: Optional[str] = None  # Internal field
-    
+    keep_snp_root: str | None = None  # Internal field
+
     gene_window_size: Annotated[int, typer.Option(
         help="Gene window size in base pairs",
         min=1000,
         max=1000000
     )] = 50000
-    
-    enhancer_annotation_file: Annotated[Optional[Path], typer.Option(
+
+    enhancer_annotation_file: Annotated[Path | None, typer.Option(
         help="Path to enhancer annotation file",
         exists=True,
         file_okay=True,
         dir_okay=False
     )] = None
-    
+
     snp_multiple_enhancer_strategy: Annotated[str, typer.Option(
         help="Strategy for handling multiple enhancers per SNP",
         case_sensitive=False
     )] = "max_mkscore"
-    
-    gene_window_enhancer_priority: Annotated[Optional[str], typer.Option(
+
+    gene_window_enhancer_priority: Annotated[str | None, typer.Option(
         help="Priority between gene window and enhancer annotations"
     )] = None
-    
-    additional_baseline_annotation: Annotated[Optional[str], typer.Option(
+
+    additional_baseline_annotation: Annotated[str | None, typer.Option(
         help="Path of additional baseline annotations"
     )] = None
-    
+
     spots_per_chunk: Annotated[int, typer.Option(
         help="Number of spots per chunk",
         min=100,
         max=10000
     )] = 1000
-    
+
     ld_wind: Annotated[int, typer.Option(
         help="LD window size",
         min=1,
         max=10
     )] = 1
-    
+
     ld_unit: Annotated[str, typer.Option(
         help="Unit for LD window",
         case_sensitive=False
     )] = "CM"
-    
+
     # Additional fields
     ldscore_save_format: str = "feather"
     save_pre_calculate_snp_gene_weight_matrix: bool = False
-    baseline_annotation_dir: Optional[str] = None
-    SNP_gene_pair_dir: Optional[str] = None
+    baseline_annotation_dir: str | None = None
+    SNP_gene_pair_dir: str | None = None
 
 
     def __post_init__(self):
@@ -255,6 +256,6 @@ def check_ldscore_done(config: GenerateLDScoreConfig) -> bool:
     w_ld_dir = Path(config.ldscore_save_dir) / "w_ld"
     if not w_ld_dir.exists():
         return False
-    
+
     # Check if there are any .l2.ldscore.gz files
     return any(w_ld_dir.glob("*.l2.ldscore.gz"))

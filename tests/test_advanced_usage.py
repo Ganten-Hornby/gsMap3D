@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from gsMap.main import main
+from gsMap.cli import main
 
 
 def parse_bash_command(command: str) -> list[str]:

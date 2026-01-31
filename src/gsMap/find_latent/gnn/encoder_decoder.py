@@ -18,8 +18,8 @@ class transform(nn.Module):
     """
     batch transform encoder
     """
-    def __init__(self, 
-                 input_size, 
+    def __init__(self,
+                 input_size,
                  hidden_size,
                  batch_emb_size,
                  module_dim,
@@ -28,7 +28,7 @@ class transform(nn.Module):
                  nhead,
                  n_enc_layer,
                  use_tf):
-        
+
         super().__init__()
         self.use_tf = use_tf
 
@@ -41,18 +41,18 @@ class transform(nn.Module):
                                         nhead=nhead,
                                         n_enc_layer=n_enc_layer
                                         )
-            self.transform = full_block(self.input_size,hidden_size) 
+            self.transform = full_block(self.input_size,hidden_size)
         else:
             self.input_size = input_size + batch_emb_size
-            self.transform = full_block(self.input_size,hidden_size)   
+            self.transform = full_block(self.input_size,hidden_size)
             self.norm = nn.LayerNorm(hidden_size)
-    
+
     def forward(self, x, batch):
         if self.use_tf:
             x = self.gmf(x)
             x = self.transform(torch.cat([x,batch],dim=1))
         else:
-            x = self.transform(torch.cat([x,batch],dim=1)) 
+            x = self.transform(torch.cat([x,batch],dim=1))
         return self.norm(x)
 
 
@@ -61,8 +61,8 @@ class Encoder(nn.Module):
     """
     GCN encoder
     """
-    def __init__(self, 
-                 input_size, 
+    def __init__(self,
+                 input_size,
                  hidden_size,
                  emb_size,
                  batch_emb_size,
@@ -73,12 +73,12 @@ class Encoder(nn.Module):
                  n_enc_layer,
                  use_tf,
                  variational=True):
-        
+
         super().__init__()
         self.variational = variational
 
         self.tf = transform(
-            input_size, 
+            input_size,
             hidden_size,
             batch_emb_size,
             module_dim,
@@ -91,42 +91,42 @@ class Encoder(nn.Module):
 
         self.mlp = nn.Sequential(full_block(hidden_size, hidden_size),
                                  full_block(hidden_size,hidden_size))
-        
+
 
         self.fc_mean = nn.Linear(hidden_size,emb_size)
         self.fc_var = nn.Linear(hidden_size,emb_size)
-    
+
     def forward(self, x, batch):
-        
+
         xtf = self.tf(x,batch)
         h = self.mlp(xtf)
         if not self.variational:
             mu = self.fc_mean(h)
             return mu
-        
+
         mu = self.fc_mean(h)
         logvar = self.fc_var(h)
-        setattr(self, "mu", mu)
-        setattr(self, "sigma", logvar.exp().sqrt())
-        setattr(self, "dist", Normal(self.mu, self.sigma))
+        self.mu = mu
+        self.sigma = logvar.exp().sqrt()
+        self.dist = Normal(self.mu, self.sigma)
         return self.dist.rsample()
 
     def kl_loss(self):
         if not hasattr(self, "dist"):
             return 0
-        
+
         mean = torch.zeros_like(self.mu)
         scale = torch.ones_like(self.sigma)
         kl_loss = kl(self.dist, Normal(mean, scale))
-        return kl_loss.mean()   
+        return kl_loss.mean()
 
 class Decoder(nn.Module):
     """
     Shared decoder
     """
-    def __init__(self, 
+    def __init__(self,
                  out_put_size,
-                 hidden_size, 
+                 hidden_size,
                  emb_size,
                  batch_emb_size,
                  class_size,
@@ -137,7 +137,7 @@ class Decoder(nn.Module):
 
         self.decoder_type = decoder_type
         self.mlp = nn.ModuleList()
-        
+
         # Set initial input size
         if decoder_type == 'reconstruction':
             input_size = emb_size + batch_emb_size
@@ -149,7 +149,7 @@ class Decoder(nn.Module):
         # Build MLP layers with batch embedding concat at each step
         if isinstance(n_layers, int):
             n_layers = [hidden_size] * n_layers
-        
+
         for hidden_size in n_layers:
             self.mlp.append(full_block(input_size, hidden_size))
             input_size = hidden_size + batch_emb_size  # update for next layer input
@@ -163,7 +163,7 @@ class Decoder(nn.Module):
 
         if distribution in ['nb','zinb']:
             self.act = nn.Softmax(dim=-1)
-        else: 
+        else:
             self.act = nn.Identity()
 
     def forward(self, z, batch):

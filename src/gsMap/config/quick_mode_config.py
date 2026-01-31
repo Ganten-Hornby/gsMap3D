@@ -5,15 +5,17 @@ Configuration for Quick Mode pipeline.
 import logging
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Optional, Annotated, List, Tuple
+from typing import Annotated
 
 import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
+
 from .cauchy_config import CauchyCombinationConfig
+
 # Use relative imports to avoid circular dependency
 from .find_latent_config import FindLatentRepresentationsConfig
-from .latent2gene_config import LatentToGeneConfig, DatasetType
+from .latent2gene_config import DatasetType, LatentToGeneConfig
 from .report_config import ReportConfig
 from .spatial_ldsc_config import SpatialLDSCConfig
 
@@ -32,7 +34,7 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
         case_sensitive=False
     )] = "find_latent"
 
-    stop_step: Annotated[Optional[str], typer.Option(
+    stop_step: Annotated[str | None, typer.Option(
         help="Step to stop execution at (inclusive)",
         case_sensitive=False
     )] = None
@@ -111,7 +113,7 @@ def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
     return len(missing_files) == 0
 
 
-def get_report_missing_files(config: QuickModeConfig) -> Tuple[List[Path], List[Path]]:
+def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[Path]]:
     """
     Get lists of missing report files, categorized by type.
 

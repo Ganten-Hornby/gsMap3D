@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gsMap.main import create_parser
+from gsMap.cli import create_parser
 
 
 # Import your original functions

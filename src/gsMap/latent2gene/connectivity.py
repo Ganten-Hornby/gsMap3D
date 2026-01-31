@@ -4,21 +4,29 @@ Implements the spatial → anchor → homogeneous neighbor finding algorithm
 """
 
 import logging
-from typing import Optional, Tuple, Union, Dict
 from functools import partial
 
-import numpy as np
+import anndata as ad
 import jax
 import jax.numpy as jnp
-from jax import jit
-from scipy.spatial import cKDTree
-from scipy.sparse import csr_matrix
-from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, \
-    TimeRemainingColumn, MofNCompleteColumn, TimeElapsedColumn
+import numpy as np
 import scanpy as sc
-import anndata as ad
+from jax import jit
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    track,
+)
+from scipy.sparse import csr_matrix
+from scipy.spatial import cKDTree
 
-from gsMap.config import LatentToGeneConfig, MarkerScoreCrossSliceStrategy, DatasetType
+from gsMap.config import DatasetType, LatentToGeneConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +36,13 @@ jax.config.update("jax_enable_x64", False)  # Use float32 for speed
 
 def find_spatial_neighbors_with_slices(
     coords: np.ndarray,
-    slice_ids: Optional[np.ndarray] = None,
-    query_cell_mask: Optional[np.ndarray] = None,
+    slice_ids: np.ndarray | None = None,
+    query_cell_mask: np.ndarray | None = None,
     high_quality_cell_mask: np.ndarray = None,
     k_central: int = 101,
     k_adjacent: int = 50,
     n_adjacent_slices: int = 1
-) -> Tuple[np.ndarray, Dict[int, np.ndarray]]:
+) -> tuple[np.ndarray, dict[int, np.ndarray]]:
     """
     Find spatial neighbors with slice-aware search for 3D data.
 
@@ -91,7 +99,7 @@ def find_spatial_neighbors_with_slices(
         # Convert local indices to global indices
         spatial_neighbors = neighbor_pool_indices[neighbor_local_indices]
         return spatial_neighbors, {}
-    
+
     # Slice-aware neighbor search with fixed-size arrays
     logger.info(f"Performing slice-aware neighbor search: k_central={k_central}, "
                 f"k_adjacent={k_adjacent}, n_adjacent_slices={n_adjacent_slices}")
@@ -267,7 +275,7 @@ def _find_anchors_and_homogeneous_batch_jit(
     homogeneous_neighbors: int,
     cell_embedding_similarity_threshold: float = 0.0,
     spatial_domain_similarity_threshold: float = 0.5
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     JIT-compiled function to find anchors and homogeneous neighbors.
     Processes a batch of cells to manage GPU memory.
@@ -320,7 +328,7 @@ def _find_homogeneous_3d_memory_efficient(
     cell_embedding_similarity_threshold: float,
     spatial_domain_similarity_threshold: float,
     find_homogeneous_batch_size: int
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Memory-efficient version of 3D homogeneous neighbor finding.
     Processes slices separately to avoid large memory allocations.
@@ -344,14 +352,14 @@ def _find_homogeneous_3d_memory_efficient(
         homogeneous_weights: Corresponding weights
     """
     n_masked = emb_indv_masked_jax.shape[0]
-    n_slices = 1 + 2 * n_adjacent_slices
-    
+    1 + 2 * n_adjacent_slices
+
     homogeneous_neighbors_all_slices = []
     homogeneous_weights_all_slices = []
-    
+
     # Process all slices (central + adjacent) in a single loop
     total_slices = 1 + 2 * n_adjacent_slices
-    
+
     # Create overall slice progress tracking
     with Progress(
         SpinnerColumn(),
@@ -368,14 +376,13 @@ def _find_homogeneous_3d_memory_efficient(
             "Finding homogeneous neighbors (3D cross-slice)...",
             total=total_slices
         )
-        
+
         for slice_num in range(total_slices):
             # Determine slice name and parameters
             if slice_num == 0:
                 slice_name = "central slice"
                 slice_start = 0
                 slice_end = k_central
-                k_slice = k_central
             else:
                 # Adjacent slices
                 adj_idx = slice_num - 1
@@ -383,17 +390,16 @@ def _find_homogeneous_3d_memory_efficient(
                     slice_name = f"adjacent slice -{n_adjacent_slices - adj_idx}"
                 else:
                     slice_name = f"adjacent slice +{adj_idx - n_adjacent_slices + 1}"
-                
+
                 slice_start = k_central + adj_idx * k_adjacent
                 slice_end = slice_start + k_adjacent
-                k_slice = k_adjacent
-            
+
             # Convert slice neighbors to JAX array once per slice
             spatial_neighbors_slice = jnp.asarray(spatial_neighbors[:, slice_start:slice_end])
-            
+
             homogeneous_neighbors_slice_list = []
             homogeneous_weights_slice_list = []
-            
+
             # Process batches for this slice using simple transient track
             for batch_start in track(range(0, n_masked, find_homogeneous_batch_size),
                                     description=f"Finding homogeneous neighbors ({slice_name})",
@@ -404,10 +410,10 @@ def _find_homogeneous_3d_memory_efficient(
                 # Get batch data (emb_niche always exists now, may be dummy ones)
                 emb_niche_batch_norm = emb_niche_masked_jax[batch_indices]
                 emb_indv_batch_norm = emb_indv_masked_jax[batch_indices]
-                
+
                 # Extract batch of neighbors for this slice
                 spatial_neighbors_slice_batch = spatial_neighbors_slice[batch_indices, :]
-                
+
                 # Process with 2D function
                 homo_neighbors_batch, homo_weights_batch = _find_anchors_and_homogeneous_batch_jit(
                     emb_niche_batch_norm=emb_niche_batch_norm,
@@ -419,41 +425,41 @@ def _find_homogeneous_3d_memory_efficient(
                     cell_embedding_similarity_threshold=cell_embedding_similarity_threshold,
                     spatial_domain_similarity_threshold=spatial_domain_similarity_threshold
                 )
-                
+
                 homogeneous_neighbors_slice_list.append(np.array(homo_neighbors_batch))
                 homogeneous_weights_slice_list.append(np.array(homo_weights_batch))
-            
+
             # Concatenate this slice's results
             homogeneous_neighbors_slice = np.vstack(homogeneous_neighbors_slice_list)
             homogeneous_weights_slice = np.vstack(homogeneous_weights_slice_list)
             homogeneous_neighbors_all_slices.append(homogeneous_neighbors_slice)
             homogeneous_weights_all_slices.append(homogeneous_weights_slice)
-            
+
             # Update slice progress
             slice_progress.update(slice_task, advance=1)
-    
+
     # Concatenate all slices along axis 1
     homogeneous_neighbors = np.concatenate(homogeneous_neighbors_all_slices, axis=1)
     homogeneous_weights = np.concatenate(homogeneous_weights_all_slices, axis=1)
-    
+
     return homogeneous_neighbors, homogeneous_weights
 
 
 def build_scrna_connectivity(
     emb_cell: np.ndarray,
-    cell_mask: Optional[np.ndarray] = None,
+    cell_mask: np.ndarray | None = None,
     n_neighbors: int = 21,
     metric: str = 'euclidean'
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Build connectivity for scRNA-seq data using KNN on cell embeddings.
-    
+
     Args:
         emb_cell: Cell embeddings (n_cells, d)
         cell_mask: Boolean mask for cells to process
         n_neighbors: Number of nearest neighbors
         metric: Distance metric for KNN
-    
+
     Returns:
         neighbor_indices: (n_masked, n_neighbors) array of neighbor indices
         neighbor_weights: (n_masked, n_neighbors) array of weights from KNN graph
@@ -461,16 +467,16 @@ def build_scrna_connectivity(
     n_cells = len(emb_cell)
     if cell_mask is None:
         cell_mask = np.ones(n_cells, dtype=bool)
-    
+
     cell_indices = np.where(cell_mask)[0]
     n_masked = len(cell_indices)
-    
+
     logger.info(f"Building scRNA-seq connectivity using KNN with k={n_neighbors}")
-    
+
     # Create temporary AnnData for using scanpy's neighbors function
     adata_temp = ad.AnnData(X=emb_cell[cell_mask])
     adata_temp.obsm['X_emb'] = emb_cell[cell_mask]
-    
+
     # Compute neighbors using scanpy
     sc.pp.neighbors(
         adata_temp,
@@ -479,25 +485,25 @@ def build_scrna_connectivity(
         metric=metric,
         method='umap'
     )
-    
+
     # Extract connectivity matrix
     connectivities = adata_temp.obsp['connectivities'].tocsr()
-    
+
     # Convert to dense format for consistency with spatial methods
     # Check the actual max cell index value to determine dtype
     max_cell_idx = cell_indices.max() if len(cell_indices) > 0 else 0
     idx_dtype = np.int16 if max_cell_idx < 32768 else np.int32
     neighbor_indices = np.zeros((n_masked, n_neighbors), dtype=idx_dtype)
     neighbor_weights = np.zeros((n_masked, n_neighbors), dtype=np.float16)
-    
+
     for i in range(n_masked):
         row = connectivities.getrow(i)
         neighbors = row.indices
         weights = row.data
-        
+
         # Sort by weight (descending)
         sorted_idx = np.argsort(-weights)[:n_neighbors]
-        
+
         if len(sorted_idx) < n_neighbors:
             # Pad with self-index if needed
             n_found = len(sorted_idx)
@@ -508,24 +514,24 @@ def build_scrna_connectivity(
         else:
             neighbor_indices[i] = cell_indices[neighbors[sorted_idx]]
             neighbor_weights[i] = weights[sorted_idx]
-    
+
     # Normalize weights to sum to 1
     weight_sums = neighbor_weights.sum(axis=1, keepdims=True)
     weight_sums = np.where(weight_sums > 0, weight_sums, 1.0)
     neighbor_weights = neighbor_weights / weight_sums
-    
+
     logger.info(f"scRNA-seq connectivity built: {n_masked} cells × {n_neighbors} neighbors")
-    
+
     return neighbor_indices, neighbor_weights
 
 
 class ConnectivityMatrixBuilder:
     """Build connectivity matrix using JAX-accelerated computation with GPU memory optimization"""
-    
+
     def __init__(self, config: LatentToGeneConfig):
         """
         Initialize with configuration
-        
+
         Args:
             config: LatentToGeneConfig object
         """
@@ -533,20 +539,20 @@ class ConnectivityMatrixBuilder:
         # Use configured batch size for GPU processing
         self.find_homogeneous_batch_size = config.find_homogeneous_batch_size
         self.dataset_type = config.dataset_type
-    
+
     def build_connectivity_matrix(
         self,
-        coords: Optional[np.ndarray] = None,
+        coords: np.ndarray | None = None,
         emb_niche: np.ndarray = None,
-        emb_indv: Optional[np.ndarray] = None,
-        cell_mask: Optional[np.ndarray] = None,
+        emb_indv: np.ndarray | None = None,
+        cell_mask: np.ndarray | None = None,
         high_quality_mask: np.ndarray = None,
-        slice_ids: Optional[np.ndarray] = None,
+        slice_ids: np.ndarray | None = None,
         return_dense: bool = True,
-        k_central: Optional[int] = None,
-        k_adjacent: Optional[int] = None,
-        n_adjacent_slices: Optional[int] = None
-    ) -> Union[csr_matrix, Tuple[np.ndarray, np.ndarray]]:
+        k_central: int | None = None,
+        k_adjacent: int | None = None,
+        n_adjacent_slices: int | None = None
+    ) -> csr_matrix | tuple[np.ndarray, np.ndarray]:
         """
         Build connectivity matrix for a group of cells based on dataset type.
 
@@ -574,21 +580,21 @@ class ConnectivityMatrixBuilder:
             logger.info("Building connectivity for scRNA-seq dataset")
             if emb_indv is None:
                 raise ValueError("emb_indv (cell embeddings) required for scRNA-seq dataset")
-            
+
             return build_scrna_connectivity(
                 emb_cell=emb_indv,
                 cell_mask=cell_mask,
                 n_neighbors=self.config.homogeneous_neighbors,
                 metric='euclidean'
             )
-        
+
         elif self.dataset_type in ['spatial2D', 'spatial3D']:
             logger.info(f"Building connectivity for {self.dataset_type} dataset")
-            
+
             # Validate required inputs for spatial datasets
             if coords is None or emb_indv is None:
                 raise ValueError("coords and emb_indv required for spatial datasets")
-            
+
             # Use config defaults if not provided
             if k_central is None:
                 k_central = self.config.spatial_neighbors
@@ -599,11 +605,11 @@ class ConnectivityMatrixBuilder:
                     n_adjacent_slices = 0
                 else:  # spatial3D
                     n_adjacent_slices = self.config.n_adjacent_slices
-            
+
             # For spatial2D, ensure no cross-slice search (but can still have slice_ids)
             if self.dataset_type == DatasetType.SPATIAL_2D:
                 n_adjacent_slices = 0  # No cross-slice search, but keep slice_ids if provided
-            
+
             return self._build_spatial_connectivity(
                 coords=coords,
                 emb_niche=emb_niche,
@@ -616,23 +622,23 @@ class ConnectivityMatrixBuilder:
                 k_adjacent=k_adjacent,
                 n_adjacent_slices=n_adjacent_slices
             )
-        
+
         else:
             raise ValueError(f"Unknown dataset type: {self.dataset_type}")
-    
+
     def _build_spatial_connectivity(
         self,
         coords: np.ndarray,
         emb_indv: np.ndarray,
         emb_niche: np.ndarray = None,
-        cell_mask: Optional[np.ndarray] = None,
+        cell_mask: np.ndarray | None = None,
         high_quality_mask: np.ndarray = None,
-        slice_ids: Optional[np.ndarray] = None,
+        slice_ids: np.ndarray | None = None,
         return_dense: bool = True,
         k_central: int = 101,
         k_adjacent: int = 50,
         n_adjacent_slices: int = 1
-    ) -> Union[csr_matrix, Tuple[np.ndarray, np.ndarray]]:
+    ) -> csr_matrix | tuple[np.ndarray, np.ndarray]:
         """
         Internal method for building spatial connectivity matrix.
 
@@ -651,14 +657,14 @@ class ConnectivityMatrixBuilder:
         Returns:
             Connectivity matrix (sparse or dense format)
         """
-        
+
         n_cells = len(coords)
         if cell_mask is None:
             cell_mask = np.ones(n_cells, dtype=bool)
-        
+
         cell_indices = np.where(cell_mask)[0]
         n_masked = len(cell_indices)
-        
+
         # Step 1: Find spatial neighbors (slice-aware if slice_ids provided)
         spatial_neighbors, neighbor_pool_per_slice = find_spatial_neighbors_with_slices(
             coords=coords,
@@ -674,7 +680,7 @@ class ConnectivityMatrixBuilder:
         if neighbor_pool_per_slice:
             for slice_id, neighbor_pool_indices in neighbor_pool_per_slice.items():
                 logger.debug(f"Slice {slice_id}: {len(neighbor_pool_indices)} high quality cells available for neighbor search")
-        
+
         # Step 2 & 3: Find anchors and homogeneous neighbors in batches
         logger.info(f"Finding anchors and homogeneous neighbors (batch size: {self.find_homogeneous_batch_size})...")
 
@@ -708,7 +714,7 @@ class ConnectivityMatrixBuilder:
                 spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold,
                 find_homogeneous_batch_size=self.find_homogeneous_batch_size
             )
-            
+
         else:
             # Convert spatial_neighbors to JAX array for regular processing
             spatial_neighbors_jax = jnp.array(spatial_neighbors, dtype=jnp.int32)
@@ -745,7 +751,7 @@ class ConnectivityMatrixBuilder:
             # Regular batched processing
             homogeneous_neighbors = np.vstack(homogeneous_neighbors_list)
             homogeneous_weights = np.vstack(homogeneous_weights_list)
-        
+
         if return_dense:
             # Return dense format: (n_masked, num_homogeneous) arrays
             return homogeneous_neighbors, homogeneous_weights
@@ -754,7 +760,7 @@ class ConnectivityMatrixBuilder:
             rows = np.repeat(cell_indices, self.config.homogeneous_neighbors)
             cols = homogeneous_neighbors.flatten()
             data = homogeneous_weights.flatten()
-            
+
             connectivity = csr_matrix(
                 (data, (rows, cols)),
                 shape=(n_cells, n_cells)

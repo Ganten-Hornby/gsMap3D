@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from gsMap.config import RunAllModeConfig
-from gsMap.main import main
+from gsMap.cli import main
+from gsMap.config import QuickModeConfig
 
 
 def parse_bash_command(command: str) -> list[str]:
@@ -149,7 +149,7 @@ def base_config(
     reference_panel,
 ):
     """Create a base RunAllModeConfig fixture"""
-    basic_config = RunAllModeConfig(
+    basic_config = QuickModeConfig(
         workdir=work_dir,
         sample_name="test_sample",  # This will be overridden in specific test fixtures
         annotation="annotation",

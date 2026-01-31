@@ -9,28 +9,35 @@ This module orchestrates the complete workflow:
 5. Save results as AnnData
 """
 
+import logging
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import anndata as ad
 import numpy as np
 import pandas as pd
-import logging
-import os
-import sys
-from pathlib import Path
-from typing import Dict, List, Optional, Union, Any, Tuple
-from dataclasses import dataclass
-
-import scipy.sparse
-import anndata as ad
 import pyranges as pr
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
-
-from .io import PlinkBEDReader
-from .batch_construction import construct_batches, BatchInfo
-from .compute import (
-    compute_ld_scores,
-    compute_batch_weights_sparse,
+import scipy.sparse
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
 )
-from .mapping import create_snp_feature_map
+
 from gsMap.config import LDScoreConfig
+
+from .batch_construction import construct_batches
+from .compute import (
+    compute_batch_weights_sparse,
+    compute_ld_scores,
+)
+from .io import PlinkBEDReader
+from .mapping import create_snp_feature_map
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +56,13 @@ class ChromosomeResult:
     feature_names : List[str]
         Names of mapped features
     """
-    hm3_snp_names: List[str]
-    hm3_snp_chr: List[int]
-    hm3_snp_bp: List[int]
-    weights: Union[scipy.sparse.csr_matrix, np.ndarray]
-    feature_names: List[str]
-    mapping_df: Optional[pd.DataFrame] = None
-    ld_scores: Optional[np.ndarray] = None
+    hm3_snp_names: list[str]
+    hm3_snp_chr: list[int]
+    hm3_snp_bp: list[int]
+    weights: scipy.sparse.csr_matrix | np.ndarray
+    feature_names: list[str]
+    mapping_df: pd.DataFrame | None = None
+    ld_scores: np.ndarray | None = None
 
 
 class LDScorePipeline:
@@ -127,7 +134,7 @@ class LDScorePipeline:
 
         self._save_aggregated_results(results, self.config.output_dir, self.config.output_filename)
 
-    def _load_mapping_data(self) -> Union[pd.DataFrame, Dict[str, str]]:
+    def _load_mapping_data(self) -> pd.DataFrame | dict[str, str]:
         """Helper to load mapping file based on config."""
         logger.info(f"Loading mapping data from: {self.config.mapping_file}")
 
@@ -153,7 +160,7 @@ class LDScorePipeline:
                 # Ensure required columns exist
                 required_cols = ['Chromosome', 'Start', 'End', 'Feature']
                 if not all(col in bed_df.columns for col in required_cols):
-                    logger.error(f"BED file missing required columns after parsing")
+                    logger.error("BED file missing required columns after parsing")
                     logger.error("Required format: standard BED6 (chr, start, end, name, score, strand)")
                     logger.error("Note: BED file should NOT have a header line")
                     sys.exit(1)
@@ -172,16 +179,16 @@ class LDScorePipeline:
             df_map = pd.read_csv(self.config.mapping_file, sep=None, engine='python')
 
             if 'SNP' in df_map.columns and 'Feature' in df_map.columns:
-                return dict(zip(df_map['SNP'], df_map['Feature']))
+                return dict(zip(df_map['SNP'], df_map['Feature'], strict=False))
             elif len(df_map.columns) >= 2:
                 logger.info("Assuming first column is SNP and second is Feature.")
-                return dict(zip(df_map.iloc[:, 0], df_map.iloc[:, 1]))
+                return dict(zip(df_map.iloc[:, 0], df_map.iloc[:, 1], strict=False))
             else:
                 raise ValueError(f"Dictionary mapping file {self.config.mapping_file} must have at least 2 columns.")
         else:
             raise ValueError(f"Unsupported mapping_type: {self.config.mapping_type}")
 
-    def _load_hm3_snps(self, chromosome: int) -> List[str]:
+    def _load_hm3_snps(self, chromosome: int) -> list[str]:
         """Load HM3 SNP list for a chromosome."""
         possible_paths = [
             self.hm3_dir / f"hm.{chromosome}.snp",
@@ -203,7 +210,7 @@ class LDScorePipeline:
         logger.warning(f"No HM3 SNP file found for chromosome {chromosome}")
         return []
 
-    def _load_plink_reader(self, chromosome: int) -> Optional[PlinkBEDReader]:
+    def _load_plink_reader(self, chromosome: int) -> PlinkBEDReader | None:
         """Helper to initialize the PLINK reader for a chromosome."""
         bfile_prefix = self.config.bfile_root.format(chr=chromosome)
         logger.info(f"Loading PLINK data from: {bfile_prefix}")
@@ -222,8 +229,8 @@ class LDScorePipeline:
     def _process_chromosome_from_mapping(
         self,
         chromosome: int,
-        mapping_data: Union[pd.DataFrame, Dict[str, str]],
-    ) -> Optional[ChromosomeResult]:
+        mapping_data: pd.DataFrame | dict[str, str],
+    ) -> ChromosomeResult | None:
         """Process a single chromosome using mapping rules (BED/Dict)."""
         logger.info("=" * 80)
         logger.info(f"Processing Chromosome {chromosome}")
@@ -275,7 +282,7 @@ class LDScorePipeline:
     def _process_chromosome_from_annotation(
         self,
         chromosome: int,
-    ) -> Optional[ChromosomeResult]:
+    ) -> ChromosomeResult | None:
         """Process a single chromosome using external annotation files."""
         logger.info("=" * 80)
         logger.info(f"Processing Chromosome {chromosome} (Annotation Mode)")
@@ -307,7 +314,7 @@ class LDScorePipeline:
             return None
 
         # Drop metadata columns
-        cols_to_drop = [c for c in ["CHR", "BP", "CM", "SNP"] if c in df_annot.columns]
+        [c for c in ["CHR", "BP", "CM", "SNP"] if c in df_annot.columns]
 
         if "SNP" in df_annot.columns:
             # Align to filtered BIM
@@ -354,16 +361,16 @@ class LDScorePipeline:
         self,
         chromosome: int,
         reader: PlinkBEDReader,
-        target_hm3_snps: List[str],
-        mapping_matrix: Union[scipy.sparse.csr_matrix, np.ndarray],
-        feature_names: List[str],
-        mapping_df: Optional[pd.DataFrame] = None,
+        target_hm3_snps: list[str],
+        mapping_matrix: scipy.sparse.csr_matrix | np.ndarray,
+        feature_names: list[str],
+        mapping_df: pd.DataFrame | None = None,
         output_format: str = "sparse"
-    ) -> Optional[ChromosomeResult]:
+    ) -> ChromosomeResult | None:
         """
         Core logic: Batches -> Load Genotypes -> Slice Mapping -> Compute Weights.
         """
-        logger.info(f"Constructing batches...")
+        logger.info("Constructing batches...")
         batch_infos = construct_batches(
             bim_df=reader.bim,
             hm3_snp_names=target_hm3_snps,
@@ -436,20 +443,20 @@ class LDScorePipeline:
             mapping_df=mapping_df
         )
 
-    def _create_sparse_matrix_from_batches(self, batch_data: List[Dict], n_rows: int, n_cols: int) -> scipy.sparse.csr_matrix:
+    def _create_sparse_matrix_from_batches(self, batch_data: list[dict], n_rows: int, n_cols: int) -> scipy.sparse.csr_matrix:
         """Helper to stack batch results into sparse CSR."""
         if not batch_data:
             return scipy.sparse.csr_matrix((n_rows, n_cols), dtype=np.float32)
         matrices = [scipy.sparse.csr_matrix(b['weights']) for b in batch_data]
         return scipy.sparse.vstack(matrices, format='csr')
 
-    def _create_dense_matrix_from_batches(self, batch_data: List[Dict], n_rows: int, n_cols: int) -> np.ndarray:
+    def _create_dense_matrix_from_batches(self, batch_data: list[dict], n_rows: int, n_cols: int) -> np.ndarray:
         """Helper to stack batch results into dense numpy array."""
         if not batch_data:
             return np.zeros((n_rows, n_cols), dtype=np.float32)
         return np.vstack([b['weights'] for b in batch_data])
 
-    def _compute_w_ld(self, chromosome: int, hm3_snps: List[str]):
+    def _compute_w_ld(self, chromosome: int, hm3_snps: list[str]):
         """
         Compute 'w_ld' (weighted LD scores) for a chromosome.
         w_ld is typically the LD score of a SNP computed against the set of regression SNPs (HM3 SNPs).
@@ -474,7 +481,7 @@ class LDScorePipeline:
         # Note: reader.bim now ONLY contains HM3 SNPs (and those passing MAF)
         # We use all available SNPs in the reader as targets
         available_hm3 = reader.bim["SNP"].tolist()
-        
+
         batch_infos = construct_batches(
             bim_df=reader.bim,
             hm3_snp_names=available_hm3,
@@ -497,7 +504,7 @@ class LDScorePipeline:
             for batch in batch_infos:
                 # Genotypes (filtered to HM3)
                 X_hm3 = reader.genotypes[:, batch.hm3_indices]
-                
+
                 # Reference block is also from the filtered reader (so it's HM3 only)
                 ref_indices = np.arange(batch.ref_start_idx, batch.ref_end_idx)
                 # Clip to valid range (should be handled by construct_batches but safe to double check)
@@ -506,43 +513,43 @@ class LDScorePipeline:
 
                 # Compute LD Scores (L2 sum)
                 ld_scores_batch = compute_ld_scores(X_hm3, X_ref)
-                
+
                 w_ld_values.append(ld_scores_batch)
-                
+
                 batch_snps = reader.bim.iloc[batch.hm3_indices]["SNP"].tolist()
                 w_ld_snps.extend(batch_snps)
-                
+
                 progress.update(task, advance=len(batch.hm3_indices))
 
         # 3. Aggregate and Save
         if w_ld_values:
             w_ld_arr = np.concatenate(w_ld_values)
-            
+
             # Match with metadata
             df_w_ld = reader.bim[reader.bim["SNP"].isin(w_ld_snps)].copy()
             # Ensure order
             df_w_ld = df_w_ld.set_index("SNP").reindex(w_ld_snps).reset_index()
             df_w_ld["L2"] = w_ld_arr
-            
+
             # Select columns
             out_cols = ["CHR", "SNP", "BP", "CM", "L2"]
             # Ensure columns exist (CM might be missing or 0)
             if "CM" not in df_w_ld.columns:
                  df_w_ld["CM"] = 0.0
-            
+
             df_w_ld = df_w_ld[out_cols]
-            
+
             # Determine output path
             w_ld_base = Path(self.config.w_ld_dir) if self.config.w_ld_dir else Path(self.config.output_dir) / "w_ld"
             w_ld_base.mkdir(parents=True, exist_ok=True)
-            
+
             out_file = w_ld_base / f"weights.{chromosome}.l2.ldscore.gz"
             df_w_ld.to_csv(out_file, sep="\t", index=False, compression="gzip")
             logger.info(f"  Saved w_ld to: {out_file}")
 
     def _save_aggregated_results(
         self,
-        results: Dict[str, ChromosomeResult],
+        results: dict[str, ChromosomeResult],
         output_dir: str,
         output_filename: str
     ):
@@ -585,7 +592,7 @@ class LDScorePipeline:
             'BP': all_snp_bp
         }, index=all_snp_names)
         obs.index.name = 'SNP'
-        
+
         var = pd.DataFrame(index=feature_names)
         var.index.name = 'Feature'
 

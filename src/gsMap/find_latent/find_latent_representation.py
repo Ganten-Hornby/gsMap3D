@@ -1,25 +1,33 @@
-import os
-import torch
-import numpy as np
 import logging
+import os
 import random
+from collections import OrderedDict
+from typing import Any
+
+import numpy as np
+import torch
 import yaml
-from pathlib import Path
-from typing import Dict, Any
 from torch.utils.data import (
     DataLoader,
-    random_split,
-    TensorDataset,
     SubsetRandomSampler,
+    TensorDataset,
+    random_split,
 )
-from collections import OrderedDict
 
-from .gnn.train_step import ModelTrain
-from .gnn.st_model import StEmbeding
-from .st_process import TrainingData, find_common_hvg, create_subsampled_adata, InferenceData, calculate_module_score, apply_module_score_qc, calculate_module_scores_from_degs, convert_to_human_genes
 from gsMap.config import FindLatentRepresentationsConfig
 
-from operator import itemgetter
+from .gnn.st_model import StEmbeding
+from .gnn.train_step import ModelTrain
+from .st_process import (
+    InferenceData,
+    TrainingData,
+    apply_module_score_qc,
+    calculate_module_score,
+    calculate_module_scores_from_degs,
+    convert_to_human_genes,
+    create_subsampled_adata,
+    find_common_hvg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +58,13 @@ def index_splitter(n, splits):
     return random_split(idx, splits_tensor)
 
 
-def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> Dict[str, Any]:
+def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> dict[str, Any]:
     """
     Run the find latent representation pipeline.
-    
+
     Args:
         config: FindLatentRepresentationsConfig object with all necessary parameters
-        
+
     Returns:
         Dictionary containing metadata about the run including config, model info,
         training info, outputs, and annotation info
@@ -255,10 +263,10 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
 
     # Convert config to dict with all Path objects as strings
     config_dict = config.to_dict_with_paths_as_strings()
-    
+
     # Convert output_h5ad_path_dict to strings
     output_h5ad_path_dict_str = {k: str(v) for k, v in output_h5ad_path_dict.items()}
-    
+
     # Save metadata
     metadata = {
         "config": config_dict,
@@ -293,12 +301,12 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> D
             "label_names": label_name if isinstance(label_name, list) else label_name.tolist() if hasattr(label_name, 'tolist') else list(label_name),
         }
     }
-    
+
     # Save metadata to YAML file
     metadata_path = config.find_latent_metadata_path
     with open(metadata_path, 'w') as f:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
-    
+
     logger.info(f"Saved metadata to {metadata_path}")
-    
+
     return metadata

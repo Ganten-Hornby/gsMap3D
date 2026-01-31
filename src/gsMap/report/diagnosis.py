@@ -3,16 +3,16 @@ import multiprocessing
 import os
 import warnings
 from pathlib import Path
-from typing import Optional
 
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 from scipy.stats import norm
 
 from gsMap.config import DiagnosisConfig
 from gsMap.utils.manhattan_plot import ManhattanPlot
 from gsMap.utils.regression_read import _read_chr_files
+
 from .visualize import draw_scatter, estimate_plotly_point_size, load_ldsc, load_st_coord
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -27,7 +27,7 @@ def convert_z_to_p(gwas_data):
     return gwas_data
 
 
-def load_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[ad.AnnData] = None):
+def load_gene_diagnostic_info(config: DiagnosisConfig, adata: ad.AnnData | None = None):
     """Load or compute gene diagnostic info."""
     gene_diagnostic_info_save_path = config.get_gene_diagnostic_info_save_path(config.trait_name)
     if gene_diagnostic_info_save_path.exists():
@@ -42,10 +42,10 @@ def load_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[ad.AnnDat
         return compute_gene_diagnostic_info(config, adata=adata)
 
 
-def compute_gene_diagnostic_info(config: DiagnosisConfig, adata: Optional[ad.AnnData] = None):
+def compute_gene_diagnostic_info(config: DiagnosisConfig, adata: ad.AnnData | None = None):
     """Calculate gene diagnostic info and save it to adata."""
     logger.info("Loading ST data and LDSC results...")
-    
+
     if adata is None:
         adata = ad.read_h5ad(config.hdf5_with_latent_path)
 
@@ -135,7 +135,7 @@ def filter_snps(gwas_data_with_gene_annotation_sort, SUBSAMPLE_SNP_NUMBER):
     return snps2plot
 
 
-def generate_manhattan_plot(config: DiagnosisConfig, adata: Optional[ad.AnnData] = None):
+def generate_manhattan_plot(config: DiagnosisConfig, adata: ad.AnnData | None = None):
     """Generate Manhattan plot."""
     # report_save_dir = config.get_report_dir(config.trait_name)
     gwas_data = load_gwas_data(config.sumstats_file)
@@ -358,12 +358,12 @@ def run_Diagnosis(config: DiagnosisConfig):
             x_dense = adata.X.toarray()
         else:
             x_dense = adata.X
-        
+
         # Normalize to target sum 1e4
         row_sums = x_dense.sum(axis=1)
         row_sums[row_sums == 0] = 1 # Avoid division by zero
         x_norm = (x_dense / row_sums.reshape(-1, 1)) * 1e4
-        
+
         # Log transformation
         adata.X = np.log1p(x_norm)
 

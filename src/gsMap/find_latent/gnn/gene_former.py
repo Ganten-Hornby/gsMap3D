@@ -1,8 +1,8 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn
 from einops import repeat
-import numpy as np
+from torch import nn
 
 
 class Linear2D(nn.Module):
@@ -15,10 +15,10 @@ class Linear2D(nn.Module):
         bias (bool, optional): Whether to use bias. Defaults to False.
     """
 
-    def __init__(self, 
-                 input_dim, 
-                 hidden_dim, 
-                 n_modules, 
+    def __init__(self,
+                 input_dim,
+                 hidden_dim,
+                 n_modules,
                  bias=False):
 
         super().__init__()
@@ -53,9 +53,9 @@ class GeneModuler(nn.Module):
         extractor (Linear2D): The Linear2D object.
     """
 
-    def __init__(self, 
-                 input_dim=2000, 
-                 hidden_dim=8, 
+    def __init__(self,
+                 input_dim=2000,
+                 hidden_dim=8,
                  n_modules=16):
 
         super().__init__()
@@ -84,12 +84,12 @@ class PositionalEncoding(nn.Module):
         d_model (int): The dimensionality of the model. This should match the dimension of the input embeddings.
         max_len (int): The maximum length of the sequence for which positional encoding is computed.
     """
-    def __init__(self, 
+    def __init__(self,
                  d_model,
                  max_len=500):
-        
+
         super().__init__()
-        
+
         self.d_model = d_model
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).float().unsqueeze(1)
@@ -104,7 +104,7 @@ class PositionalEncoding(nn.Module):
         scaled_x = x * np.sqrt(self.d_model)
         encoded = scaled_x + self.pe[:, x.size(1), :]
         return encoded
-    
+
 
 class GeneModuleFormer(nn.Module):
     """GeneModuleFormer is a gene expression model based on the Transformer architecture.
@@ -127,7 +127,7 @@ class GeneModuleFormer(nn.Module):
         nhead=8,
         n_enc_layer=3,
     ):
- 
+
         super().__init__()
 
         self.moduler = GeneModuler(
@@ -139,7 +139,7 @@ class GeneModuleFormer(nn.Module):
             if module_dim != hidden_dim
             else nn.Identity()
         )
-        
+
         self.module = nn.TransformerEncoder(
             encoder_layer=nn.TransformerEncoderLayer(d_model=hidden_dim,
                                                      nhead=nhead,
@@ -147,11 +147,11 @@ class GeneModuleFormer(nn.Module):
                                                      batch_first=True),
             num_layers=n_enc_layer
         )
-        
+
         self.pe = PositionalEncoding(d_model=module_dim)
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, module_dim))
-        
+
     def forward(self, x,):
         auto_fold = self.moduler(x)
         b, _, _ = auto_fold.shape
