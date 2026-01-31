@@ -1,26 +1,49 @@
 Welcome to gsMap's documentation!
 ===================================
 
+**gsMap**: **g**\ enetically informed **s**\ patial **Map**\ ping of cells for complex traits.
 
-Introduction
-------------
-
-``gsMap`` (genetically informed spatial mapping of cells for complex traits) integrates spatial transcriptomics (ST) data with genome-wide association study (GWAS) summary statistics to map cells to human complex traits, including diseases, in a spatially resolved manner.
+**gsMap** integrates spatial transcriptomics (ST) data with genome-wide association study (GWAS) summary statistics to map cells to human complex traits and diseases.
 
 
-How to Cite
-------------
-If you use ``gsMap`` in your studies, please cite:
 
-   Song, L., Chen, W., Hou, J., Guo, M. & Yang, J. `Spatially resolved mapping of cells associated with human complex traits <https://doi.org/10.1038/s41586-025-08757-x>`_. Nature (2025).
-
-Key Features
-------------
+Features
+--------
 
 - **Spatially-aware High-Resolution Trait Mapping**: Maps trait-associated cells at single-cell resolution, offering insights into their spatial distributions.
 - **Spatial Region Identification**: Aggregates trait-cell association p-values into trait-tissue region association p-values, prioritizing tissue regions relevant to traits of interest.
 - **Putative Causal Genes Identification**: Prioritizes putative causal genes by associating gene expression levels with cell-trait relevance.
+- **Scalability**: Employs `JAX <https://github.com/google/jax>`_ JIT and GPU/TPU acceleration to scale to million-scale cells/spots spatial omics datasets.
 
+
+Explore gsMap
+-------------
+
+.. list-table::
+   :widths: 50 50
+   :header-rows: 0
+
+   * - **Installation**
+       
+       Get gsMap running on your system using uv, pip, or conda.
+       
+       :doc:`Go to Installation <install>`
+     - **Key Concepts**
+       
+       Understand how to prepare data and configure gsMap.
+       
+       :doc:`Go to Key Concepts <key_concepts>`
+
+   * - **Tutorials**
+       
+       Step-by-step guides for 2D and 3D spatial data.
+       
+       :doc:`2D Tutorial <2d_tutorial/index>` | :doc:`3D Tutorial <3d_tutorial/index>`
+     - **Advanced Usage**
+       
+       Customize SNP-to-gene linking, use custom embeddings, and optimize performance.
+       
+       :doc:`Go to Advanced Usage <advanced_usage>`
 
 Overview of ``gsMap`` Method
 -----------------------------
@@ -36,36 +59,26 @@ Overview of ``gsMap`` Method
    :width: 600
    :alt: Model architecture
 
-Schmatics of ``gsMap`` method. For more details about the ``gsMap``, please check out our `publication <URL>`__.
+Schematics of ``gsMap`` method. For more details about ``gsMap``, please check out our `publication <https://doi.org/10.1038/s41586-025-08757-x>`_.
 
-Installation
+
+How to Cite
 ------------
+If you use ``gsMap`` in your studies, please cite:
 
-``gsMap`` is available on `gsMap GitHub <https://github.com/JianYang-Lab/gsMap>`__.
-
-
-How to install ``gsMap``, check out the `installation guide <install.rst>`__
-
-Tutorials
----------
-How to use ``gsMap``, check out the `tutorials <tutorials.rst>`__
-
-
-Online Analysis Service (coming soon)
---------------------------------------
-Users could upload their own GWAS summary statistics data to perform the analysis.
+   Song, L., Chen, W., Hou, J., Guo, M. & Yang, J. "**Spatially resolved mapping of cells associated with human complex traits.**" *Nature* (2025). `doi:10.1038/s41586-025-08757-x <https://doi.org/10.1038/s41586-025-08757-x>`_
 
 
 .. toctree::
     :maxdepth: 2
-    :caption: Contents:
+    :hidden:
 
     install
+    key_concepts
     gsMap2D <2d_tutorial/index>
     gsMap3D <3d_tutorial/index>
     advanced_usage
     notes
     release
-    gsmap_cli_readmi.md
 
 

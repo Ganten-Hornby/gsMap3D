@@ -1,6 +1,6 @@
 # Advanced Usage
 
-This section covers advanced configurations for `gsMap`, allowing users to customize key steps of the pipeline.
+This section covers advanced configurations for `gsMap`, allowing users to customize key steps of the pipeline and optimize performance for large-scale datasets.
 
 ## Customize SNP to gene linking
 
@@ -14,9 +14,11 @@ gsmap quick-mode \
     ...
 ```
 
+For details on generating this matrix, refer to the ``ldscore-weight-matrix`` command in the CLI.
+
 ## Use your customized GSS
 
-If you have pre-calculated Gene Specificity Scores (GSS) or marker scores from other analytical pipelines, you can provide them directly in the `spatial-ldsc` step.
+If you have pre-calculated Gene Specificity Scores (GSS) or marker scores from other analytical pipelines, you can provide them directly in the `spatial-ldsc` step to skip the earlier computation steps.
 
 ```bash
 gsmap spatial-ldsc \
@@ -33,9 +35,52 @@ While `gsMap` provides GNN-based embeddings, you can utilize embeddings from oth
 
 ```bash
 gsmap quick-mode \
-    --latent-representation-cell "my_cell_embedding_key" \
-    --latent-representation-niche "my_niche_embedding_key" \
+    --latent-representation-cell "X_pca" \
+    --latent-representation-niche "X_spatial_pca" \
     ...
 ```
 
 This bypasses the internal latent representation finding step and uses your provided embeddings for all downstream calculations.
+
+## Running Scalability
+
+`gsMap` is designed to handle large-scale spatial omics data. Here are some tips to optimize performance.
+
+### Running Speed Optimization
+
+The **latent-to-gene** step involves calculating the Gene Specificity Score (GSS) using a rank-based approach. This process requires frequent random access to the gene rank matrix, which can be a bottleneck on slower storage systems (like HDDs or network drives).
+
+To boost performance, use the `--memmap-tmp-dir` option to specify a directory on a high-speed **SSD** (Solid State Drive). `gsMap` will copy the memory-mapped rank matrix to this location for faster random reads.
+
+```bash
+gsmap quick-mode \
+    --memmap-tmp-dir /mnt/fast_ssd/tmp \
+    ...
+```
+
+### GPU/TPU Acceleration
+
+`gsMap` leverages **JAX** for accelerated computation in the `spatial-ldsc` step.
+
+*   **Enable GPU**: Use the `--use-gpu` flag (enabled by default).
+*   **Disable GPU**: Use `--no-gpu` if you encounter memory issues or lack GPU hardware.
+
+#### JAX Memory Management
+JAX attempts to preallocate a significant portion of GPU memory by default. If this causes OOM (Out Of Memory) errors or conflicts with other processes, you can control it via environment variables before running `gsMap`:
+
+```bash
+# Prevent JAX from preallocating all memory
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+
+# Limit JAX to a specific fraction of memory
+export XLA_PYTHON_CLIENT_MEM_FRACTION=.75
+```
+
+#### Device Selection
+To restrict `gsMap` to specific GPU devices, use `CUDA_VISIBLE_DEVICES`:
+
+```bash
+# Use only GPU 0
+export CUDA_VISIBLE_DEVICES=0
+gsmap quick-mode ...
+```

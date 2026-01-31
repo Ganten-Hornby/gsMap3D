@@ -4,6 +4,11 @@ The `Quick Mode` option provides a simplified and efficient way to execute the e
 
 **Note**: This tutorial is designed for 2D spatial transcriptomics data. For 3D spatial data, please refer to the {doc}`3D Tutorial <../3d_tutorial/human_gastrulation>`.
 
+.. note::
+    
+    Before starting, ensure you have downloaded the necessary reference resources (SNP-gene weights, LD scores, etc.). 
+    `Download gsMap Resources <https://github.com/JianYang-Lab/gsMap>`_
+
 ## Preparation
 
 Make sure you have {doc}`installed <../install>` the `gsMap` package before proceeding.

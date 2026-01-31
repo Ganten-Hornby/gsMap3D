@@ -1,0 +1,4 @@
+/* Hide the theme toggle button in Furo theme */
+.theme-toggle-container {
+    display: none !important;
+}
