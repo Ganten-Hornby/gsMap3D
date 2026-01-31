@@ -86,7 +86,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             # Filter out mitochondrial and hemoglobin genes
             gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
             if removed_genes := adata_temp.n_vars - gene_keep.sum():
-                logger.info(f"Removed {removed_genes} mitochondrial and hemoglobin genes in {sample_name}.")
+                progress.console.log(f"Removed {removed_genes} mitochondrial and hemoglobin genes in {sample_name}.")
 
             adata_temp = adata_temp[:,gene_keep].copy()
 

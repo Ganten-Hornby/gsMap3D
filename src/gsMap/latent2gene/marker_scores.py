@@ -1065,6 +1065,12 @@ class MarkerScoreCalculator:
         adata.obsm['gsMap_homo_indices'][cell_indices_sorted] = neighbor_indices
         adata.obsm['gsMap_homo_weights'][cell_indices_sorted] = neighbor_weights
 
+        # warning for cells not find homo neighbors
+        homo_neighbor_count = np.count_nonzero(neighbor_weights, axis=1)
+        zero_homo_neighbor_mask = (homo_neighbor_count <=5)
+        if np.any(zero_homo_neighbor_mask):
+            logger.warning(f"Cell type {cell_type}: {zero_homo_neighbor_mask.sum()} cells can't find enough homogeneous neighbors")
+
         return neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells
 
     def _calculate_marker_scores_by_cell_type(

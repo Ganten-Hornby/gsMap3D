@@ -142,7 +142,7 @@ class LatentToGeneCoreConfig:
         help="k1: Number of spatial neighbors in it's own slice for spatial dataset",
         min=10,
         max=5000
-    )] = 201
+    )] = 301
 
     homogeneous_neighbors: Annotated[int, typer.Option(
         help="k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)",

@@ -5,6 +5,7 @@ Unified spatial LDSC processor combining chunk production, parallel loading, and
 import gc
 import logging
 import queue
+import sys
 import threading
 import time
 import traceback
@@ -598,14 +599,6 @@ class SpatialLDSCProcessor:
         # Get spot names
         spot_names = pd.Index(self.spot_names_filtered[start:end])
 
-        # Check for spots with very few non-zero markers
-        non_zero_counts = np.count_nonzero(mk_score_chunk, axis=0)
-        low_count_mask = non_zero_counts < 50
-        if np.any(low_count_mask):
-            low_count_spots = spot_names[low_count_mask].tolist()
-            logger.warning(f"Found {len(low_count_spots)} spots with fewer than 50 non-zero marker scores. "
-                           f"Spot names: {low_count_spots}")
-
         # Calculate absolute positions in original data
         absolute_start = self.spot_indices[start] if start < len(self.spot_indices) else start
         absolute_end = self.spot_indices[end - 1] + 1 if end > 0 else absolute_start
@@ -661,8 +654,15 @@ class SpatialLDSCProcessor:
             # print('starting jax profiler...')
             # print('starting jax profiler...')
             # jax.profiler.start_trace("/tmp/jax-trace-ldsc")
-            console = Console(force_terminal=True, soft_wrap=True) # For showing progress in some environments
-            # console = Console()
+            # Auto-detect terminal vs redirected output
+            # When output is redirected, Console will disable progress bar animations
+            is_terminal = sys.stdout.isatty()
+            console = Console(soft_wrap=True)
+
+            # Log interval for non-terminal mode (every 10% or at least every 60 seconds)
+            log_interval_pct = 10
+            last_log_pct = 0
+            last_log_time = 0
 
             with Progress(
                 SpinnerColumn(),
@@ -675,7 +675,8 @@ class SpatialLDSCProcessor:
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
                 console=console,
-                refresh_per_second=2
+                refresh_per_second=2,
+                disable=not is_terminal  # Disable rich progress bar when not in terminal
             ) as progress:
                 task = progress.add_task(
                     description,
@@ -721,13 +722,30 @@ class SpatialLDSCProcessor:
                             elapsed_total = current_time - start_time
                             speed_10s = n_cells_processed / elapsed_total if elapsed_total > 0 else 0
 
-                        # Update progress bar
+                        # Update progress bar (only effective in terminal mode)
                         progress.update(
                             task,
                             completed=n_cells_processed,
                             speed=f"{speed_10s:,.0f}",
                             r_to_c_queue=f"{r_to_c}"
                         )
+
+                        # Log progress when output is redirected
+                        if not is_terminal:
+                            current_pct = (n_cells_processed / self.total_cells_to_process) * 100 if self.total_cells_to_process > 0 else 0
+                            time_since_last_log = current_time - last_log_time
+
+                            # Log every 10% or every 60 seconds
+                            if current_pct >= last_log_pct + log_interval_pct or time_since_last_log >= 60:
+                                elapsed = current_time - start_time
+                                logger.info(
+                                    f"Progress: {n_cells_processed:,}/{self.total_cells_to_process:,} cells "
+                                    f"({current_pct:.1f}%) | {n_chunks_processed}/{self.total_chunks} chunks | "
+                                    f"Speed: {speed_10s:,.0f} cells/s | Elapsed: {elapsed:.1f}s"
+                                )
+                                last_log_pct = (current_pct // log_interval_pct) * log_interval_pct
+                                last_log_time = current_time
+
                         last_update_time = current_time
 
                     # Update last processed count
