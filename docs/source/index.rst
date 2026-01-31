@@ -78,6 +78,7 @@ If you use ``gsMap`` in your studies, please cite:
     gsMap2D <2d_tutorial/index>
     gsMap3D <3d_tutorial/index>
     advanced_usage
+    ldscore_weight_matrix
     notes
     release
 

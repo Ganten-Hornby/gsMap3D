@@ -14,7 +14,7 @@ gsmap quick-mode \
     ...
 ```
 
-For details on generating this matrix, refer to the ``ldscore-weight-matrix`` command in the CLI.
+For detailed instructions on generating this matrix using your own SNP-to-gene BED file and PLINK reference panel, see [Computing Custom LD Score Weight Matrix](ldscore_weight_matrix.md).
 
 ## Use your customized GSS
 
