@@ -21,6 +21,7 @@ extensions = [
     # "sphinx_charts.charts",
     "sphinxcontrib.jquery",
     "sphinx_inline_tabs",
+    "sphinxcontrib.mermaid",
 ]
 
 exclude_patterns = []

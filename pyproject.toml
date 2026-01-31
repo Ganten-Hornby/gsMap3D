@@ -80,6 +80,7 @@ doc = [
     'furo',
     'myst-parser',
     'nbsphinx',
+    'sphinxcontrib-mermaid',
 ]
 
 tests = [
