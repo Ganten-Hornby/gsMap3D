@@ -39,11 +39,11 @@ Explore gsMap
        Step-by-step guides for 2D and 3D spatial data.
        
        :doc:`2D Tutorial <2d_tutorial/index>` | :doc:`3D Tutorial <3d_tutorial/index>`
-     - **Advanced Usage**
+     - **Customization Guide**
        
        Customize SNP-to-gene linking, use custom embeddings, and optimize performance.
        
-       :doc:`Go to Advanced Usage <advanced_usage>`
+       :doc:`Go to Customization Guide <advanced_usage>`
 
 Overview of ``gsMap`` Method
 -----------------------------

@@ -185,7 +185,7 @@ Use this table to identify pipeline bottlenecks:
 
 - **Reader is the bottleneck** (Reader throughput < Computer throughput): 
   - Increase `rank_read_workers` to add more parallel readers
-  - Use [`--memmap-tmp-dir`](#memory-mapping-with-ssd-optimization) to copy memory-mapped files to a fast SSD
+  - Use [`--memmap-tmp-dir`](#memory-mapping) to copy memory-mapped files to a fast SSD
   
 - **Computer is the bottleneck** (Computer throughput < Reader/Writer throughput):
   - Ensure GPU acceleration is enabled (`--use-gpu`)

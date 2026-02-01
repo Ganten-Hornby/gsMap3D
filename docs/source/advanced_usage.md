@@ -1,4 +1,4 @@
-# Advanced Usage
+# Customization Guide
 
 This section covers advanced configurations for `gsMap`, allowing users to customize key steps of the pipeline and optimize performance for large-scale datasets.
 
