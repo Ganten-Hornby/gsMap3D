@@ -15,37 +15,37 @@ Make sure you have {doc}`installed <../install>` the `gsMap` package before proc
 
 ### 1. Download Dependencies
 
-The `gsMap` package in quick mode requires the following resources (v2):
+The `gsMap` package in quick mode requires the following resources:
 
 - **LD reference panel weights**, for heritability partitioning.
 - **SNP-to-gene weight matrix**, linking SNPs to gene expression specificity.
 - **Homologous gene transformations file** (optional), to map genes between species.
 
-To download all the required files (v2):
+To download all the required files:
 
 ```bash
-wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_resource_v2.tar.gz
-tar -xvzf gsMap_resource_v2.tar.gz
+wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_quick_mode_resource.tar.gz
+tar -xvzf gsMap_quick_mode_resource.tar.gz
 ```
 
 Directory structure:
 
 ```bash
-tree -L 2 gsMap_resource_v2
+tree -L 2 gsMap_quick_mode_resource
 
-gsMap_resource_v2
-    ├── genome_annotation
-    │   ├── enhancer
-    │   └── gtf
-    ├── homologs
-    │   ├── macaque_human_homologs.txt
-    │   └── mouse_human_homologs.txt
-    ├── LD_Reference_Panel
-    │   └── 1000G_EUR_Phase3_plink
-    └── quick_mode
-        ├── baseline
-        ├── weights_hm3_no_hla
-        └── 1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad
+gsMap_quick_mode_resource/
+├── 1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad
+└── weights_hm3_no_hla
+    ├── weights.1.l2.ldscore.gz
+    ├── ...
+    └── weights.22.l2.ldscore.gz
+```
+
+For homolog files (mouse/macaque to human gene mapping), download separately:
+
+```bash
+wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_homologs.tar.gz
+tar -xvzf gsMap_homologs.tar.gz
 ```
 
 ### 2. Download Example Data
@@ -80,12 +80,14 @@ First, set up environment variables for resource directories to make commands ea
 
 ```bash
 # Define resource and data directories
-GSMAP_RESOURCE_DIR="./gsMap_resource_v2"
+GSMAP_RESOURCE_DIR="./gsMap_quick_mode_resource"
+HOMOLOG_DIR="./gsMap_homologs"
 EXAMPLE_DATA_DIR="./mouse_embryo_E16_example_data"
 ```
 
 Now run the analysis using `gsmap quick-mode`:
 
+````{tab} CLI
 ```bash
 # Create output directory
 mkdir -p ./gsmap_2d_tutorial/mouse_embryo
@@ -96,9 +98,9 @@ gsmap quick-mode \
     --project-name "E16.5_E1S1" \
     --dataset-type "spatial2D" \
     --h5ad-path "${EXAMPLE_DATA_DIR}/ST/E16.5_E1S1.MOSTA.h5ad" \
-    --homolog-file "${GSMAP_RESOURCE_DIR}/homologs/mouse_human_homologs.txt" \
-    --w-ld-dir "${GSMAP_RESOURCE_DIR}/quick_mode/weights_hm3_no_hla" \
-    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/quick_mode/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
+    --homolog-file "${HOMOLOG_DIR}/mouse_human_homologs.txt" \
+    --w-ld-dir "${GSMAP_RESOURCE_DIR}/weights_hm3_no_hla" \
+    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
     --annotation "annotation" \
     --spatial-key "spatial" \
     --data-layer "count" \
@@ -106,6 +108,31 @@ gsmap quick-mode \
     --sumstats-file "${EXAMPLE_DATA_DIR}/GWAS/IQ_NG_2018.sumstats.gz" \
     --plot-origin "lower"
 ```
+````
+
+````{tab} Python
+```python
+from gsMap.config import QuickModeConfig
+from gsMap.pipeline import run_quick_mode
+
+config = QuickModeConfig(
+    workdir="./gsmap_2d_tutorial/mouse_embryo",
+    project_name="E16.5_E1S1",
+    dataset_type="spatial2D",
+    h5ad_path="./mouse_embryo_E16_example_data/ST/E16.5_E1S1.MOSTA.h5ad",
+    homolog_file="./gsMap_homologs/mouse_human_homologs.txt",
+    w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
+    snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
+    annotation="annotation",
+    spatial_key="spatial",
+    data_layer="count",
+    sumstats_config_dict={"IQ": "./mouse_embryo_E16_example_data/GWAS/IQ_NG_2018.sumstats.gz"},
+    plot_origin="lower"
+)
+
+run_quick_mode(config)
+```
+````
 
 ### Parameters
 
@@ -127,18 +154,45 @@ gsmap quick-mode \
 
 You can analyze multiple traits simultaneously by providing a configuration file:
 
+````{tab} CLI
 ```bash
 gsmap quick-mode \
     --workdir "./gsmap_2d_tutorial/mouse_embryo" \
     --project-name "E16.5_E1S1" \
     --dataset-type "spatial2D" \
     --h5ad-path "${EXAMPLE_DATA_DIR}/ST/E16.5_E1S1.MOSTA.h5ad" \
-    --homolog-file "${GSMAP_RESOURCE_DIR}/homologs/mouse_human_homologs.txt" \
-    --w-ld-dir "${GSMAP_RESOURCE_DIR}/quick_mode/weights_hm3_no_hla" \
-    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/quick_mode/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
+    --homolog-file "${HOMOLOG_DIR}/mouse_human_homologs.txt" \
+    --w-ld-dir "${GSMAP_RESOURCE_DIR}/weights_hm3_no_hla" \
+    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
     --annotation "annotation" \
     --sumstats-config-file "${EXAMPLE_DATA_DIR}/GWAS/gwas_config.yaml"
 ```
+````
+
+````{tab} Python
+```python
+from gsMap.config import QuickModeConfig
+from gsMap.pipeline import run_quick_mode
+
+config = QuickModeConfig(
+    workdir="./gsmap_2d_tutorial/mouse_embryo",
+    project_name="E16.5_E1S1",
+    dataset_type="spatial2D",
+    h5ad_path="./mouse_embryo_E16_example_data/ST/E16.5_E1S1.MOSTA.h5ad",
+    homolog_file="./gsMap_homologs/mouse_human_homologs.txt",
+    w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
+    snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
+    annotation="annotation",
+    sumstats_config_dict={
+        "IQ": "./mouse_embryo_E16_example_data/GWAS/IQ_NG_2018.sumstats.gz",
+        "Height": "./mouse_embryo_E16_example_data/GWAS/GIANT_EUR_Height_2022_Nature.sumstats.gz",
+        "MCHC": "./mouse_embryo_E16_example_data/GWAS/BCX2_MCHC_EA_GWAMA.sumstats.gz"
+    }
+)
+
+run_quick_mode(config)
+```
+````
 
 ### Output Description
 

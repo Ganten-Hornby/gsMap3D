@@ -56,8 +56,8 @@ class LatentToGeneComputeConfig:
     rank_read_workers: Annotated[int, typer.Option(
         help="Number of parallel reader threads for rank memory map",
         min=1,
-        max=16
-    )] = 10
+        max=50
+    )] = 16
 
     mkscore_compute_workers: Annotated[int, typer.Option(
         help="Number of parallel compute threads for marker score calculation",
@@ -68,7 +68,7 @@ class LatentToGeneComputeConfig:
     mkscore_write_workers: Annotated[int, typer.Option(
         help="Number of parallel writer threads for marker scores",
         min=1,
-        max=16
+        max=50
     )] = 4
 
     compute_input_queue_size: Annotated[int, typer.Option(

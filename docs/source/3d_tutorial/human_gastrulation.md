@@ -22,11 +22,23 @@ This example demonstrates how to run `gsMap` on a 3D dataset comprising multiple
 
 ### Preparation
 
-First, set up environment variables for the resource and data directories:
+First, download the required resources:
+
+```bash
+# Download gsMap quick mode resources
+wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_quick_mode_resource.tar.gz
+tar -xvzf gsMap_quick_mode_resource.tar.gz
+
+# Download 3D example data (Human Gastrulation)
+wget https://yanglab.westlake.edu.cn/data/gsMap/Human_Gastrulation_3D.tar.gz
+tar -xvzf Human_Gastrulation_3D.tar.gz
+```
+
+Set up environment variables for the resource and data directories:
 
 ```bash
 WORK_DIR="./gsmap_3d_tutorial"
-GSMAP_RESOURCE_DIR="./gsMap_resource_v2"
+GSMAP_RESOURCE_DIR="./gsMap_quick_mode_resource"
 GASTRULATION_3D_DATA_DIR="./Human_Gastrulation_3D"
 
 mkdir -p $WORK_DIR
@@ -36,14 +48,15 @@ mkdir -p $WORK_DIR
 
 Run the `quick-mode` command with the `--dataset-type spatial3D` flag:
 
+````{tab} CLI
 ```bash
 gsmap quick-mode \
     --workdir "$WORK_DIR" \
     --project-name "human_gastrulation_3d" \
     --dataset-type "spatial3D" \
     --h5ad-list-file "$GASTRULATION_3D_DATA_DIR/sample_path_list.txt" \
-    --w-ld-dir "${GSMAP_RESOURCE_DIR}/quick_mode/weights_hm3_no_hla" \
-    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/quick_mode/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
+    --w-ld-dir "${GSMAP_RESOURCE_DIR}/weights_hm3_no_hla" \
+    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
     --sumstats-config-file "${GASTRULATION_3D_DATA_DIR}/GWAS/gwas_config.yaml" \
     --annotation "clusters" \
     --spatial-key "spatial_3d" \
@@ -51,6 +64,31 @@ gsmap quick-mode \
     --no-high-quality-cell-qc \
     --memmap-tmp-dir "/data/tmp"
 ```
+````
+
+````{tab} Python
+```python
+from gsMap.config import QuickModeConfig
+from gsMap.pipeline import run_quick_mode
+
+config = QuickModeConfig(
+    workdir="./gsmap_3d_tutorial",
+    project_name="human_gastrulation_3d",
+    dataset_type="spatial3D",
+    h5ad_list_file="./Human_Gastrulation_3D/sample_path_list.txt",
+    w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
+    snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
+    sumstats_config_file="./Human_Gastrulation_3D/GWAS/gwas_config.yaml",
+    annotation="clusters",
+    spatial_key="spatial_3d",
+    data_layer="counts",
+    high_quality_cell_qc=False,
+    memmap_tmp_dir="/data/tmp"
+)
+
+run_quick_mode(config)
+```
+````
 
 ### Parameters for 3D Analysis
 

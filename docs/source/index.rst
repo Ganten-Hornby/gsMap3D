@@ -24,15 +24,15 @@ Explore gsMap
    :header-rows: 0
 
    * - **Installation**
-       
+
        Get gsMap running on your system using uv, pip, or conda.
-       
+
        :doc:`Go to Installation <install>`
      - **Key Concepts**
-       
+
        Understand how to prepare data and configure gsMap.
-       
-       :doc:`Go to Key Concepts <key_concepts/index>`
+
+       :doc:`Go to Key Concepts <key_concepts>`
 
    * - **Tutorials**
        
@@ -74,12 +74,12 @@ If you use ``gsMap`` in your studies, please cite:
     :hidden:
 
     install
-    key_concepts/index
+    key_concepts
     gsMap2D <2d_tutorial/index>
     gsMap3D <3d_tutorial/index>
     advanced_usage
+    scalability
     ldscore_weight_matrix
-    notes
     release
 
 
