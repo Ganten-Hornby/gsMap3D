@@ -48,7 +48,13 @@ class LatentToGeneComputeConfig:
 
     # Batch sizes
     rank_batch_size: int = 500
-    mkscore_batch_size: int = 500
+
+    mkscore_batch_size: Annotated[int, typer.Option(
+        help="Number of cells per batch for marker score calculation. Reduce this value (e.g., 50) if encountering GPU OOM errors.",
+        min=10,
+        max=1000
+    )] = 500
+
     find_homogeneous_batch_size: int = 100
     rank_write_interval: int = 10
 

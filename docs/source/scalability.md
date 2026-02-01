@@ -273,67 +273,164 @@ gsMap processes data in batches to balance memory usage and computational effici
 
 Larger batch sizes can improve throughput but require more memory. Adjust based on your available RAM and GPU memory.
 
-## Additional Optimizations
-
-### Sparse Matrix Support
-
-gsMap uses sparse matrix representations (CSR format) for the SNP-gene weight matrix, reducing memory usage significantly for large genomic datasets.
-
-### Numba JIT Compilation
-
-CPU-intensive operations like Jaccard similarity computation use Numba's `@njit` decorator for near-native performance.
-
-### KDTree with Multi-Core
-
-Spatial neighbor searches use scipy's cKDTree with `workers=-1` to utilize all available CPU cores:
-
-```python
-kdtree.query(coords, k=k, workers=-1)  # Use all cores
-```
-
-### Cache Optimization
-
-Row ordering optimization sorts data access patterns to improve CPU cache locality, reducing cache misses during random access operations.
 
 ## Performance Recommendations
 
-### For Large Datasets (>100K spots)
-
-1. **Use GPU acceleration**: Ensure `--use-gpu` is enabled (default)
-2. **Use fast SSD**: Set `--memmap-tmp-dir` to a fast NVMe SSD
-3. **Allocate sufficient memory**: Ensure at least 64GB RAM for 100K+ spots
 
 ### For Very Large Datasets (>1M spots)
 
 1. **Use high-end GPU**: NVIDIA A100 or similar recommended
-2. **Use NVMe SSD**: Fast local storage is critical
+2. **Use NVMe SSD**: Fast local storage is critical. Use `--memmap-tmp-dir` to specify a fast SSD for temporary files to avoid reading becoming a bottleneck. If SSD is not available, increase `rank_read_workers` to compensate. 
 3. **Increase batch sizes**: If memory allows, larger batches improve throughput
-4. **Monitor memory**: Use `XLA_PYTHON_CLIENT_MEM_FRACTION` to prevent OOM errors
+
 
 ### For CPU-Only Systems
 
 1. **Disable GPU**: Use `--no-gpu` to avoid JAX GPU initialization overhead
-2. **Increase workers**: More CPU threads can compensate for lack of GPU
+2. **Increase CPU cores and compute workers**: The Spatial LDSC step scales near-linearly with the number of available CPU cores. Increase `ldsc_compute_workers` to match available cores.
 3. **Use SSD**: Fast storage becomes even more important without GPU acceleration
+
+### For Cluster Users
+
+When running on HPC clusters, you can parallelize gsMap across multiple nodes:
+
+#### 1. Submit Each Trait as a Separate Job
+
+For multiple GWAS traits, submit each as an independent job:
+
+```bash
+# Job 1: Process trait1
+gsmap quick-mode \
+    --start-step spatial_ldsc --stop-step spatial_ldsc \
+    --trait-name trait1 --sumstats-file /path/to/trait1.sumstats.gz \
+    ...
+
+# Job 2: Process trait2  
+gsmap quick-mode \
+    --start-step spatial_ldsc --stop-step spatial_ldsc \
+    --trait-name trait2 --sumstats-file /path/to/trait2.sumstats.gz \
+    ...
+```
+
+#### 2. Split Large Datasets by Cell Indices
+
+For very large datasets, use `--cell-indices-range` to process subsets of cells in parallel:
+
+````{tab} CLI
+```bash
+# Job 1: Process cells 0-1000000
+gsmap quick-mode \
+    --start-step spatial_ldsc --stop-step spatial_ldsc \
+    --cell-indices-range 0 1000000 \
+    --trait-name trait1 --sumstats-file /path/to/trait1.sumstats.gz \
+    ...
+
+# Job 2: Process cells 1000000-2000000
+gsmap quick-mode \
+    --start-step spatial_ldsc --stop-step spatial_ldsc \
+    --cell-indices-range 1000000 2000000 \
+    --trait-name trait1 --sumstats-file /path/to/trait1.sumstats.gz \
+    ...
+```
+````
+
+````{tab} Python
+```python
+from gsMap.config import QuickModeConfig
+from gsMap.run_all_mode import run_quick_mode
+
+# Job 1: Process cells 0-1000000
+config = QuickModeConfig(
+    start_step="spatial_ldsc",
+    stop_step="spatial_ldsc",
+    cell_indices_range=(0, 1000000),
+    trait_name="trait1",
+    sumstats_file="/path/to/trait1.sumstats.gz",
+    ...
+)
+run_quick_mode(config)
+
+# Job 2: Process cells 1000000-2000000
+config = QuickModeConfig(
+    start_step="spatial_ldsc",
+    stop_step="spatial_ldsc",
+    cell_indices_range=(1000000, 2000000),
+    trait_name="trait1",
+    sumstats_file="/path/to/trait1.sumstats.gz",
+    ...
+)
+run_quick_mode(config)
+```
+````
+
+```{note}
+The `--cell-indices-range` option uses 0-based indexing with the format `[start, end)` (start inclusive, end exclusive).
+```
+
+#### 3. Merge Results
+
+After all jobs complete, merge the partial result files. Each partial file is named with the cell range:
+
+```text
+# File naming pattern for partial results:
+{workdir}/{project_name}/spatial_ldsc/{project_name}_{trait_name}_cells_{start}_{end}.csv.gz
+
+# Example files:
+my_project_trait1_cells_0_1000000.csv.gz
+my_project_trait1_cells_1000000_2000000.csv.gz
+```
+
+Use pandas to concatenate the partial results:
+
+```python
+import pandas as pd
+from pathlib import Path
+
+workdir = Path('/path/to/workdir')
+project = 'my_project'
+trait = 'trait1'
+
+# Find all partial result files
+result_dir = workdir / project / 'spatial_ldsc'
+partial_files = sorted(result_dir.glob(f'{project}_{trait}_cells_*.csv.gz'))
+
+print(f"Found {len(partial_files)} partial result files")
+
+# Concatenate and save
+results = pd.concat([pd.read_csv(f) for f in partial_files], ignore_index=True)
+results.to_csv(result_dir / f'{project}_{trait}.csv.gz', index=False, compression='gzip')
+
+print(f"Merged {len(results)} spots to {result_dir / f'{project}_{trait}.csv.gz'}")
+```
+
+
 
 ## Troubleshooting
 
-### Out of Memory (OOM) Errors
+### GPU Out of Memory (OOM) Errors
+
+If you encounter GPU out of memory errors in latent to gene step, try the following solutions in order:
+
+**1. Reduce batch size** (recommended first step):
 
 ```bash
-# Reduce JAX memory pre-allocation
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.3
-
-# Or disable GPU entirely
-gsmap quick-mode --no-gpu ...
+# Reduce the marker score batch size (default: 500)
+gsmap quick-mode --mkscore-batch-size 50 ...
 ```
 
-### Slow Performance
+**2. Limit JAX memory allocation**:
 
-1. Check if `--memmap-tmp-dir` points to a fast SSD
-2. Verify GPU is being used (check for CUDA initialization messages)
-3. Ensure sufficient RAM is available (check for swap usage)
+```bash
+# Remove JAX memory pre-allocation
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+```
+
+**3. Disable GPU entirely**:
+
+```bash
+# Fall back to CPU computation
+gsmap quick-mode --no-gpu ...
+```
 
 ### JAX/CUDA Issues
 
