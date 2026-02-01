@@ -10,12 +10,27 @@ Disease genetic risk is fundamentally encoded within the native three-dimensiona
 Methodology Overview
 --------------------
 
-The gsMap3D framework utilizes a **Dual-Embedding Strategy**:
+.. figure:: ../_static/gsMap3D_Method_schematic.png
+   :align: center
+   :width: 100%
+   :alt: gsMap3D Method Schematic
+
+   Overview of the gsMap3D computational framework.
+
+**Dual-Embedding Strategy**
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The gsMap3D framework utilizes a dual-embedding strategy:
 
 1. **Cell Embedding**: Captures each spot's transcriptomic identity.
 2. **Spatial-Domain/Niche Embedding**: Encodes the local 3D spatial context across tissue sections.
 
-By leveraging these dual embeddings, gsMap3D identifies **homogeneous cell neighborhoods** in 3D space—cells that share both similar transcriptomic identity and spatial niche context. These neighborhoods are then used to compute a **3D Gene Specificity Score (GSS)**, which quantifies the spatial specificity of gene expression in three dimensions. Finally, the 3D GSS is linked to GWAS summary statistics using the S-LDSC framework to pinpoint trait-associated cellular niches within the reconstructed 3D tissue architecture.
+By leveraging these dual embeddings, gsMap3D identifies **homogeneous cell neighborhoods** in 3D space—cells that share both similar transcriptomic identity and spatial niche context.
+
+**3D Gene Specificity Score (GSS)**
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+These homogeneous neighborhoods are then used to compute a **3D Gene Specificity Score (GSS)**, which quantifies the spatial specificity of gene expression in three dimensions. Finally, the 3D GSS is linked to GWAS summary statistics using the S-LDSC framework to pinpoint trait-associated cellular niches within the reconstructed 3D tissue architecture.
 
 Advantages of gsMap3D
 ---------------------

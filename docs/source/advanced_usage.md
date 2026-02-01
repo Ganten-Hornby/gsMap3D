@@ -2,11 +2,15 @@
 
 This section covers advanced configurations for `gsMap`, allowing users to customize key steps of the pipeline and optimize performance for large-scale datasets.
 
-## Customize SNP to gene linking
+## Customize SNP-to-Gene Linking
 
-By default, `gsMap` uses pre-calculated SNP-to-gene weights based on TSS and snp-to-gene maps. Users can construct their own SNP-by-gene matrix to incorporate custom genomic windows or multi-omics evidence.
+By default, `gsMap` utilizes pre-calculated SNP-to-gene weights based on the **1000 Genomes EUR reference panel** and **protein-coding genes from Gencode v46**. This streamlined mode is ideal for most users.
 
-To use a custom SNP-to-gene weight matrix:
+For more customizable analyses—such as using custom gene BED files, alternative LD reference panels, or population-specific data—you can generate your own SNP-to-gene weight matrix. See the [Computing Custom LD Score Weight Matrix](ldscore_weight_matrix.md) guide for detailed instructions.
+
+**Using a Custom Weight Matrix**
+
+Once you have generated a custom SNP-to-gene weight matrix, provide it to `gsMap` using:
 
 ```bash
 gsmap quick-mode \
@@ -14,73 +18,45 @@ gsmap quick-mode \
     ...
 ```
 
-For detailed instructions on generating this matrix using your own SNP-to-gene BED file and PLINK reference panel, see [Computing Custom LD Score Weight Matrix](ldscore_weight_matrix.md).
-
-## Use your customized GSS
-
-If you have pre-calculated Gene Specificity Scores (GSS) or marker scores from other analytical pipelines, you can provide them directly in the `spatial-ldsc` step to skip the earlier computation steps.
-
-```bash
-gsmap spatial-ldsc \
-    --marker-score-format "h5ad" \
-    --marker-score-h5ad-path "/path/to/custom_marker_scores.h5ad" \
-    ...
-```
-
-The supported formats for GSS include `memmap`, `feather`, and `h5ad`.
 
 ## Use your own embedding
 
-While `gsMap` provides GNN-based embeddings, you can utilize embeddings from other tools (e.g., Scanpy, Seurat, or custom VAEs) by specifying the corresponding keys in `adata.obsm`.
+While `gsMap` provides GNN-based embeddings, you can utilize embeddings from other tools (e.g., Scanpy, Seurat, or custom VAEs) by specifying the corresponding keys in `adata.obsm`. In this case, you should skip the `find_latent` step by setting `--start-step latent2gene`.
 
 ```bash
 gsmap quick-mode \
+    --start-step latent2gene \
     --latent-representation-cell "X_pca" \
     --latent-representation-niche "X_spatial_pca" \
     ...
 ```
 
-This bypasses the internal latent representation finding step and uses your provided embeddings for all downstream calculations.
+```{note}
+When using custom embeddings, ensure that your gene expression data is stored in `adata.X` (the main data matrix). The `latent2gene` step computes Gene Specificity Scores directly from the expression values in `X`.
+```
 
-## Running Scalability
+## Use your customized GSS
 
-`gsMap` is designed to handle large-scale spatial omics data. Here are some tips to optimize performance.
-
-### Running Speed Optimization
-
-The **latent-to-gene** step involves calculating the Gene Specificity Score (GSS) using a rank-based approach. This process requires frequent random access to the gene rank matrix, which can be a bottleneck on slower storage systems (like HDDs or network drives).
-
-To boost performance, use the `--memmap-tmp-dir` option to specify a directory on a high-speed **SSD** (Solid State Drive). `gsMap` will copy the memory-mapped rank matrix to this location for faster random reads.
+If you have pre-calculated Gene Specificity Scores (GSS) or marker scores from other analytical pipelines, you can provide them directly to the `spatial-ldsc` step to skip the earlier computation steps.
 
 ```bash
-gsmap quick-mode \
-    --memmap-tmp-dir /mnt/fast_ssd/tmp \
+gsmap spatial-ldsc \
+    --marker-score-format "h5ad" \
+    --marker-score-h5ad-path "/path/to/custom_marker_scores.h5ad" \
+    --snp-gene-weight-adata-path "/path/to/snp_gene_weights.h5ad" \
     ...
 ```
 
-### GPU/TPU Acceleration
+**Format Requirements**
 
-`gsMap` leverages **JAX** for accelerated computation in the `spatial-ldsc` step.
+The custom GSS file must be in **h5ad format** with:
+- **Rows**: Cells/spots (observations)
+- **Columns**: Genes (variables)
 
-*   **Enable GPU**: Use the `--use-gpu` flag (enabled by default).
-*   **Disable GPU**: Use `--no-gpu` if you encounter memory issues or lack GPU hardware.
-
-#### JAX Memory Management
-JAX attempts to preallocate a significant portion of GPU memory by default. If this causes OOM (Out Of Memory) errors or conflicts with other processes, you can control it via environment variables before running `gsMap`:
-
-```bash
-# Prevent JAX from preallocating all memory
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-
-# Limit JAX to a specific fraction of memory
-export XLA_PYTHON_CLIENT_MEM_FRACTION=.75
+```{note}
+The gene names in your custom GSS (`.var_names`) must overlap with the gene names in the SNP-to-gene weight matrix (`--snp-gene-weight-adata-path`). Only overlapping genes will be used for the spatial-LDSC analysis.
 ```
 
-#### Device Selection
-To restrict `gsMap` to specific GPU devices, use `CUDA_VISIBLE_DEVICES`:
+## Scalability & Performance
 
-```bash
-# Use only GPU 0
-export CUDA_VISIBLE_DEVICES=0
-gsmap quick-mode ...
-```
+For tips on optimizing performance for large-scale datasets—including speed optimization, GPU/TPU acceleration, JAX memory management, and handling million-scale spatial omics data—see the [Scalability](scalability.md) guide.
