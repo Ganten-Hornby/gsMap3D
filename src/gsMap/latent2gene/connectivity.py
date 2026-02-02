@@ -266,73 +266,74 @@ def find_spatial_neighbors_with_slices(
 
 
 @partial(jit, static_argnums=(5, 6))
-def _find_anchors_and_homogeneous_batch_jit(
-        emb_niche_batch_norm: jnp.ndarray,
-        emb_indv_batch_norm: jnp.ndarray,
-        spatial_neighbors: jnp.ndarray,
-        all_emb_niche_norm: jnp.ndarray,
-        all_emb_indv_norm: jnp.ndarray,
+def _find_homogeneous_spot_dual_embedding_batch_jit(
+        emb_niche_batch_norm: jnp.ndarray,  # (batch_size, d1)
+        emb_indv_batch_norm: jnp.ndarray,  # (batch_size, d2)
+        spatial_neighbors: jnp.ndarray,  # (batch_size, k1)
+        all_emb_niche_norm: jnp.ndarray,  # (n_all, d1)
+        all_emb_indv_norm: jnp.ndarray,  # (n_all, d2)
         homogeneous_neighbors: int,
         cell_embedding_similarity_threshold: float = 0.0,
         spatial_domain_similarity_threshold: float = 0.5
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    JIT-compiled function to find anchors and homogeneous neighbors.
-    Uses a 'Bonus' scoring system to prioritize neighbors that satisfy the
-    spatial_domain_similarity_threshold, but falls back to other valid neighbors
-    based on cell similarity if necessary.
+    Finds homogeneous neighbors using a soft priority (Bonus) system.
+
+    Returns:
+        homogeneous_neighbors_array: Indices of selected neighbors (batch, homogeneous_neighbors)
+        selected_cell_sims: Cell similarity scores for selected neighbors (batch, homogeneous_neighbors)
+        selected_niche_sims: Niche/Spatial similarity scores for selected neighbors (batch, homogeneous_neighbors)
     """
     batch_size = emb_indv_batch_norm.shape[0]
 
     # Step 1: Extract spatial neighbors' embeddings
-    # Use 0 for invalid neighbors to prevent index errors, will mask later
+    # Handle padding: map -1 to 0 temporarily for extraction
     safe_neighbors = jnp.where(spatial_neighbors >= 0, spatial_neighbors, 0)
     spatial_emb_indv_norm = all_emb_indv_norm[safe_neighbors]
-
-    # Step 2: Compute Basic Similarities
-    # 2a. Cell Similarity
-    cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, spatial_emb_indv_norm)
-    # Apply cell threshold (set to 0 if below, but keep the value if above)
-    cell_sims = jnp.where(cell_sims >= cell_embedding_similarity_threshold, cell_sims, 0.0)
-
-    # 2b. Spatial/Niche Similarity
     spatial_emb_niche_norm = all_emb_niche_norm[safe_neighbors]
-    anchor_sims = jnp.einsum('bd,bkd->bk', emb_niche_batch_norm, spatial_emb_niche_norm)
 
-    # Step 3: Compute Ranking Score (Soft Priority)
+    # Step 2: Compute Similarities
+    # 2a. Cell Similarity
+    raw_cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, spatial_emb_indv_norm)
+    # Apply cell threshold: values below threshold become 0.0
+    cell_sims = jnp.where(raw_cell_sims >= cell_embedding_similarity_threshold, raw_cell_sims, 0.0)
+
+    # 2b. Niche (Spatial) Similarity
+    niche_sims = jnp.einsum('bd,bkd->bk', emb_niche_batch_norm, spatial_emb_niche_norm)
+
+    # Step 3: Compute Ranking Score with Bonus
     # Logic:
-    #   - If passes spatial threshold: Score = cell_sim + BONUS (Range ~2.0 to 3.0)
-    #   - If fails spatial threshold:  Score = cell_sim         (Range ~0.0 to 1.0)
-    #   BONUS ensures spatial matches always rank higher than non-spatial matches.
+    #   If niche_sim >= threshold: Score = cell_sim + 2.0
+    #   Else:                      Score = cell_sim
+    # This prioritizes niche matches first, then falls back to highest cell sim.
     BONUS = 2.0
-    pass_spatial_mask = anchor_sims >= spatial_domain_similarity_threshold
+    pass_spatial_mask = niche_sims >= spatial_domain_similarity_threshold
     ranking_score = cell_sims + jnp.where(pass_spatial_mask, BONUS, 0.0)
 
-    # Step 4: Handle Invalid (Padding) Neighbors
-    # Ensure invalid neighbors (index < 0) have a score lower than any possible valid score.
-    # A valid neighbor failing both thresholds might have score 0.0.
-    # So we set invalid neighbors to -100.0.
+    # Step 4: Mask Invalid Neighbors in Ranking
+    # Force padding indices (original -1s) to the bottom of the list
     valid_neighbor_mask = spatial_neighbors >= 0
     ranking_score = jnp.where(valid_neighbor_mask, ranking_score, -100.0)
 
-    # Step 5: Sort based on Ranking Score
+    # Step 5: Sort and Select
+    # Get indices of top scores
     top_homo_idx = jnp.argsort(-ranking_score, axis=1)[:, :homogeneous_neighbors]
-
-    # Step 6: Gather Results
     batch_idx = jnp.arange(batch_size)[:, None]
 
-    # Gather Neighbor Indices
+    # Gather the results
     homogeneous_neighbors_array = spatial_neighbors[batch_idx, top_homo_idx]
+    selected_cell_sims = cell_sims[batch_idx, top_homo_idx]
+    selected_niche_sims = niche_sims[batch_idx, top_homo_idx]
 
-    # Gather Weights: IMPORTANT - We return the original cell_sims, not the ranking_score
-    selected_weights = cell_sims[batch_idx, top_homo_idx]
+    # Step 6: Final Masking
+    # If the selected neighbor is invalid (which happens if k1 < homogeneous_neighbors
+    # or all valid neighbors were exhausted), ensure returned similarities are 0.0.
+    final_valid_mask = homogeneous_neighbors_array >= 0
 
-    # Final cleanup: Ensure that if we were forced to pick an invalid neighbor
-    # (because there weren't enough valid ones), its weight is 0.0
-    final_weights = jnp.where(homogeneous_neighbors_array >= 0, selected_weights, 0.0)
+    selected_cell_sims = jnp.where(final_valid_mask, selected_cell_sims, 0.0)
+    selected_niche_sims = jnp.where(final_valid_mask, selected_niche_sims, 0.0)
 
-    return homogeneous_neighbors_array, final_weights
-
+    return homogeneous_neighbors_array, selected_cell_sims, selected_niche_sims
 def _find_homogeneous_3d_memory_efficient(
     emb_niche_masked_jax: jnp.ndarray,
     emb_indv_masked_jax: jnp.ndarray,
@@ -433,7 +434,7 @@ def _find_homogeneous_3d_memory_efficient(
                 spatial_neighbors_slice_batch = spatial_neighbors_slice[batch_indices, :]
 
                 # Process with 2D function
-                homo_neighbors_batch, homo_weights_batch = _find_anchors_and_homogeneous_batch_jit(
+                homo_neighbors_batch, homo_weights_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
                     emb_niche_batch_norm=emb_niche_batch_norm,
                     emb_indv_batch_norm=emb_indv_batch_norm,
                     spatial_neighbors=spatial_neighbors_slice_batch,
@@ -751,7 +752,7 @@ class ConnectivityMatrixBuilder:
                 spatial_neighbors_batch = spatial_neighbors_jax[batch_indices]
 
                 # Process batch with single JIT-compiled function
-                homo_neighbors_batch, homo_weights_batch = _find_anchors_and_homogeneous_batch_jit(
+                homo_neighbors_batch, homo_weights_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
                     emb_niche_batch_norm=emb_niche_batch_norm,
                     emb_indv_batch_norm=emb_indv_batch_norm,
                     spatial_neighbors=spatial_neighbors_batch,
