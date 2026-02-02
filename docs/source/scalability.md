@@ -71,14 +71,6 @@ export CUDA_VISIBLE_DEVICES=1
 
 ```
 
-### Performance Characteristics
-
-The JAX-accelerated Spatial LDSC computation uses:
-
-- **Batched Matrix Operations**: Processes multiple spots simultaneously using efficient einsum operations
-- **JIT Compilation**: Functions are compiled once and reused, reducing overhead
-- **Float32 Precision**: Uses 32-bit floats for speed and memory efficiency (configurable)
-
 ```{note}
 The first run may be slower due to JIT compilation. Subsequent runs will be faster as compiled functions are cached.
 ```
@@ -135,9 +127,9 @@ The number of workers for each stage can be configured:
 
 | Parameter | Description | Default | Range |
 |-----------|-------------|---------|-------|
-| `rank_read_workers` | Parallel reader threads for Stage 1 | 100 | 1-16 |
+| `rank_read_workers` | Parallel reader threads for Stage 1 | 16 | 1-50 |
 | `mkscore_compute_workers` | Parallel compute threads for Stage 2 | 4 | 1-16 |
-| `mkscore_write_workers` | Parallel writer threads for Stage 3 | 4 | 1-16 |
+| `mkscore_write_workers` | Parallel writer threads for Stage 3 | 4 | 1-50 |
 
 ### Queue Configuration
 
@@ -279,7 +271,7 @@ Larger batch sizes can improve throughput but require more memory. Adjust based 
 
 ### For Very Large Datasets (>1M spots)
 
-1. **Use high-end GPU**: NVIDIA A100 or similar recommended
+1. **Use GPU acceleration**: GPU significantly speeds up both latent-to-gene and Spatial LDSC computation. Enabled by default with `--use-gpu`.
 2. **Use NVMe SSD**: Fast local storage is critical. Use `--memmap-tmp-dir` to specify a fast SSD for temporary files to avoid reading becoming a bottleneck. If SSD is not available, increase `rank_read_workers` to compensate. 
 3. **Increase batch sizes**: If memory allows, larger batches improve throughput
 
@@ -288,7 +280,7 @@ Larger batch sizes can improve throughput but require more memory. Adjust based 
 
 1. **Disable GPU**: Use `--no-gpu` to avoid JAX GPU initialization overhead
 2. **Increase CPU cores and compute workers**: The Spatial LDSC step scales near-linearly with the number of available CPU cores. Increase `ldsc_compute_workers` to match available cores.
-3. **Use SSD**: Fast storage becomes even more important without GPU acceleration
+3. **Use NVMe SSD**: Fast storage significantly speeds up latent-to-gene computation. Use `--memmap-tmp-dir` to specify a fast SSD.
 
 ### For Cluster Users
 

@@ -81,6 +81,7 @@ If you use ``gsMap`` in your studies, please cite:
     advanced_usage
     scalability
     ldscore_weight_matrix
+    cli_reference
     release
 
 
