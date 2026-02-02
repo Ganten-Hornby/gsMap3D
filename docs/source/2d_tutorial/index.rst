@@ -1,7 +1,7 @@
 2D mapping
 ========
 
-This section provides tutorials for analyzing 2D spatial transcriptomics datasets using gsMap.
+This section provides tutorials for integrating GWAS with 2D ST datasets using gsMap3D.
 
 .. toctree::
     :maxdepth: 1

@@ -2,15 +2,15 @@
 
 # Key Concepts
 
-This guide explains the core data structures, pipeline stages, and configuration options in `gsMap`.
+This guide explains the core data structures, pipeline stages, and configuration options in `gsMap3D`.
 
 ```{note}
-For step-by-step instructions, please refer to the {doc}`/2d_tutorial/index` or {doc}`/3d_tutorial/index`.
+For usage demonstrations, please refer to the {doc}`/2d_tutorial/index` or {doc}`/3d_tutorial/index`.
 ```
 
 ## Basic Usage
 
-`gsMap` can be used as a Python library or via the command line.
+`gsMap3D` can be used as a Python library or via the command line.
 
 ````{tab} CLI
 ```bash
@@ -47,7 +47,7 @@ run_quick_mode(config)
 
 ## Pipeline Overview
 
-The `gsMap` pipeline integrates spatial transcriptomics with GWAS summary statistics through five key stages:
+The `gsMap3D` pipeline integrates spatial transcriptomics with GWAS summary statistics through five key stages:
 
 ```{mermaid}
 graph TD
@@ -81,19 +81,19 @@ graph TD
     S5 --> Report
 ```
 
-1.  **Dual Embeddings**: gsMap constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context. compress the cell niche information into the cell niche embedding.
+1.  **Dual Embeddings**: gsMap3D constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context. compress the cell niche information into the cell niche embedding.
 
-2. **Identification of Homogeneous cells** Using the dual embeddings, gsMap identifies homogeneous cells for each spot by jointly considering transcriptomic similarity and spatial context. For 2D ST data, homogeneous cells are identified within the same section, whereas for 3D ST data, homogeneous cells span adjacent sections, enabling volumetric identification of homogeneous cells across the tissue.
+2. **Identification of Homogeneous cells** Using the dual embeddings, gsMap3D identifies homogeneous cells for each spot by jointly considering transcriptomic similarity and spatial context. For 2D ST data, homogeneous cells are identified within the same section, whereas for 3D ST data, homogeneous cells span adjacent sections, enabling volumetric identification of homogeneous cells across the tissue.
 
-3.  **Gene Specificity Score**: gsMap computes a Gene Specificity Score (GSS) for each gene in each cell by aggregating normalized gene expression ranks across its homogeneous cells. The GSS quantifies how highly and specifically a gene is expressed in a given cell.
+3.  **Gene Specificity Score**: gsMap3D computes a Gene Specificity Score (GSS) for each gene in each cell by aggregating normalized gene expression ranks across its homogeneous cells. The GSS quantifies how highly and specifically a gene is expressed in a given cell.
 
 4.  **Spatial LDSC**: The cell-level GSS annotations are integrated with GWAS summary statistics using S-LDSC to partition trait heritability. This framework assese trait heritability enrichment of specific cells with in specific spatial context.
 
-5.  **Spatial Region or Cell-Type Association** To assess trait associations at the level of spatial regions or cell types, gsMap aggregates cell-level association p-values using the Cauchy combination test. This yields robust region- or cell-type–level association statistics while accounting for heterogeneous signals across constituent cells.
+5.  **Spatial Region or Cell-Type Association** To assess trait associations at the level of spatial regions or cell types, gsMap3D aggregates cell-level association p-values using the Cauchy combination test. This yields robust region- or cell-type–level association statistics while accounting for heterogeneous signals across constituent cells.
 
 ## Key Configurations
 
-The following options are used in the `gsMap` CLI (`gsmap quick-mode`) and Python API.
+The following options are used in the `gsMap3D` CLI (`gsmap quick-mode`) and Python API.
 
 ### Project Setup
 
@@ -178,7 +178,7 @@ If both cell type and spatial domain are available, using **cell type** is sugge
 
 ### GWAS Summary Statistics
 
-The input GWAS data is a text file containing at least the columns for SNP (rs number), Z (Z-statistics), and N (sample size). Column headers are keywords used by gsMap.
+The input GWAS data is a text file containing at least the columns for SNP (rs number), Z (Z-statistics), and N (sample size). Column headers are keywords used by gsMap3D.
 
 ```shell
 zcat gsMap_example_data/GWAS/IQ_NG_2018.sumstats.gz | head -n 5
@@ -192,7 +192,7 @@ rs116801199 T G 0.300 226626
 
 #### How to Format GWAS Data
 
-You can convert GWAS summary data into the required format using custom code. For convenience, gsMap provides a command to do this. Below is an example of how to use the command.
+You can convert GWAS summary data into the required format using custom code. For convenience, gsMap3D provides a command to do this. Below is an example of how to use the command.
 
 Download the human height GWAS data and decompress it.
 
@@ -272,7 +272,7 @@ These files define how SNPs are linked to genes and the LD structure used for he
 
 #### 3D Specific Options
 
-For `spatial3D` datasets, `gsMap` can search for homogeneous neighbors across aligned adjacent slices.
+For `spatial3D` datasets, `gsMap3D` can search for homogeneous neighbors across aligned adjacent slices.
 
 - **`--n-adjacent-slices`**:
     Number of slices above and below the focal slice to include in the neighbor search (e.g., `1` means focal slice ± 1 slice).

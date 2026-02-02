@@ -5,14 +5,14 @@ By leveraging the continuity of biological domains across adjacent tissue sectio
 
 ## Human Gastrulation (CS8 Human Embryo)
 
-This example demonstrates how to run **gsMap 3D mapping** on a 3D ST dataset from an early-stage human embryo.
+This example demonstrates how to run **gsMap3D** on a 3D ST dataset from an early-stage human embryo.
 
 ### Preparation
 
 First, download the required resources:
 
 ```bash
-# Download gsMap quick mode resources
+# Download gsMap3D quick mode resources
 wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_quick_mode_resource.tar.gz
 tar -xvzf gsMap_quick_mode_resource.tar.gz
 

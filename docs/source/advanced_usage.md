@@ -1,16 +1,16 @@
 # Customization Guide
 
-This section covers advanced configurations for `gsMap`, allowing users to customize key steps of the pipeline and optimize performance for large-scale datasets.
+This section covers advanced configurations for `gsMap3D`, allowing users to customize key steps of the pipeline and optimize performance for large-scale datasets.
 
 ## Customize SNP-to-Gene Linking
 
-By default, `gsMap` utilizes pre-calculated SNP-to-gene weights based on the **1000 Genomes EUR reference panel** and **protein-coding genes from Gencode v46**. This streamlined mode is ideal for most users.
+By default, `gsMap3D` utilizes pre-calculated SNP-to-gene weights based on the **1000 Genomes EUR reference panel** and **protein-coding genes from Gencode v46**. This streamlined mode is ideal for most users.
 
 For more customizable analyses—such as using custom gene BED files, alternative LD reference panels, or population-specific data—you can generate your own SNP-to-gene weight matrix. See the [Computing Custom LD Score Weight Matrix](ldscore_weight_matrix.md) guide for detailed instructions.
 
 **Using a Custom Weight Matrix**
 
-Once you have generated a custom SNP-to-gene weight matrix, provide it to `gsMap` using:
+Once you have generated a custom SNP-to-gene weight matrix, provide it to `gsMap3D` using:
 
 ```bash
 gsmap quick-mode \
@@ -21,7 +21,7 @@ gsmap quick-mode \
 
 ## Use your own embedding
 
-While `gsMap` provides GNN-based embeddings, you can utilize embeddings from other tools (e.g., Scanpy, Seurat, or custom VAEs) by specifying the corresponding keys in `adata.obsm`. In this case, you should skip the `find_latent` step by setting `--start-step latent2gene`.
+While `gsMap3D` provides GNN-based embeddings, you can utilize embeddings from other tools (e.g., Scanpy, Seurat, or custom VAEs) by specifying the corresponding keys in `adata.obsm`. In this case, you should skip the `find_latent` step by setting `--start-step latent2gene`.
 
 ```bash
 gsmap quick-mode \

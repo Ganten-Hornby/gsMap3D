@@ -1,10 +1,10 @@
 # Scalability and Performance
 
-`gsMap` is designed to efficiently process large-scale 3D spatial transcriptomics datasets with millions of cells/spots. This guide covers the key scalability features and how to optimize performance for your hardware.
+`gsMap3D` is designed to efficiently process large-scale 3D spatial transcriptomics datasets with millions of cells/spots. This guide covers the key scalability features and how to optimize performance for your hardware.
 
 ## Overview
 
-gsMap employs multiple strategies to achieve high performance:
+gsMap3D employs multiple strategies to achieve high performance:
 
 - **GPU/TPU Acceleration**: JAX-based computation with JIT compilation
 - **Multi-threaded Pipeline**: Parallel reader, compute, and writer workers
@@ -14,7 +14,7 @@ gsMap employs multiple strategies to achieve high performance:
 
 ## GPU/TPU Acceleration
 
-gsMap uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the Spatial LDSC computation stage. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
+gsMap3D uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the Spatial LDSC computation stage. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
 
 ### Enabling/Disabling GPU
 
@@ -77,7 +77,7 @@ The first run may be slower due to JIT compilation. Subsequent runs will be fast
 
 ## GSS calculation
 
-gsMap implements a three-stage parallel message queue pipeline for the Gene Specificity Score (GSS) calculation:
+gsMap3D implements a three-stage parallel message queue pipeline for the Gene Specificity Score (GSS) calculation:
 
 ```{mermaid}
 graph LR
@@ -146,7 +146,7 @@ Queue sizes balance memory usage and throughput. Larger queues allow better buff
 
 ### Performance Monitoring
 
-After processing each cell type, gsMap displays a pipeline summary table showing throughput metrics for each stage:
+After processing each cell type, gsMap3D displays a pipeline summary table showing throughput metrics for each stage:
 
 ```text
 ╭─────────────────────────────────── Pipeline Summary ───────────────────────────────────╮
@@ -189,11 +189,11 @@ Use this table to identify pipeline bottlenecks:
 
 ## Memory Mapping
 
-`gsMap` uses memory-mapped files to handle data that exceeds available RAM. The `--memmap-tmp-dir` option allows you to specify a fast SSD for temporary files, significantly improving I/O performance.
+`gsMap3D` uses memory-mapped files to handle data that exceeds available RAM. The `--memmap-tmp-dir` option allows you to specify a fast SSD for temporary files, significantly improving I/O performance.
 
 ### Why Use memmap-tmp-dir?
 
-When your working directory is on a slow filesystem (e.g., network storage, HDD), random access to memory-mapped files can become a bottleneck. By specifying a fast local SSD as the temporary directory, gsMap:
+When your working directory is on a slow filesystem (e.g., network storage, HDD), random access to memory-mapped files can become a bottleneck. By specifying a fast local SSD as the temporary directory, gsMap3D:
 
 1. Copies memory-mapped files to the fast storage
 2. Performs all random access operations on the fast storage
@@ -226,7 +226,7 @@ config = QuickModeConfig(
 # Create a dedicated temp directory on your fastest SSD
 mkdir -p /mnt/nvme_ssd/gsmap_tmp
 
-# Run gsMap with the temp directory
+# Run gsMap3D with the temp directory
 gsmap quick-mode \
     --workdir /network/storage/results \
     --memmap-tmp-dir /mnt/nvme_ssd/gsmap_tmp \
@@ -250,12 +250,12 @@ Assuming ~20,000 genes:
 | 10M spots | 10M × 20K × 4 × 2 | ~1.6 TB |
 
 ```{important}
-Ensure your temporary directory has enough free space before running. gsMap will fail if the disk runs out of space during computation.
+Ensure your temporary directory has enough free space before running. gsMap3D will fail if the disk runs out of space during computation.
 ```
 
 ## Batch Processing
 
-gsMap processes data in batches to balance memory usage and computational efficiency:
+gsMap3D processes data in batches to balance memory usage and computational efficiency:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -284,7 +284,7 @@ Larger batch sizes can improve throughput but require more memory. Adjust based 
 
 ### For Cluster Users
 
-When running on HPC clusters, you can parallelize gsMap across multiple nodes:
+When running on HPC clusters, you can parallelize gsMap3D across multiple nodes:
 
 #### 1. Submit Each Trait as a Separate Job
 
