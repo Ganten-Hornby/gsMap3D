@@ -267,53 +267,71 @@ def find_spatial_neighbors_with_slices(
 
 @partial(jit, static_argnums=(5, 6))
 def _find_anchors_and_homogeneous_batch_jit(
-    emb_niche_batch_norm: jnp.ndarray,      # (batch_size, d1) - pre-normalized (always exists, may be dummy ones)
-    emb_indv_batch_norm: jnp.ndarray,      # (batch_size, d2) - pre-normalized
-    spatial_neighbors: jnp.ndarray,   # (batch_size, k1)
-    all_emb_niche_norm: jnp.ndarray,         # (n_all, d1) - pre-normalized (always exists, may be dummy ones)
-    all_emb_indv_norm: jnp.ndarray,        # (n_all, d2) - pre-normalized
-    homogeneous_neighbors: int,
-    cell_embedding_similarity_threshold: float = 0.0,
-    spatial_domain_similarity_threshold: float = 0.5
+        emb_niche_batch_norm: jnp.ndarray,
+        emb_indv_batch_norm: jnp.ndarray,
+        spatial_neighbors: jnp.ndarray,
+        all_emb_niche_norm: jnp.ndarray,
+        all_emb_indv_norm: jnp.ndarray,
+        homogeneous_neighbors: int,
+        cell_embedding_similarity_threshold: float = 0.0,
+        spatial_domain_similarity_threshold: float = 0.5
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     JIT-compiled function to find anchors and homogeneous neighbors.
-    Processes a batch of cells to manage GPU memory.
-    Expects pre-normalized embeddings for efficiency.
-
-    Args:
-        cell_embedding_similarity_threshold: Minimum similarity threshold for cell embedding.
-        spatial_domain_similarity_threshold: Minimum similarity threshold for spatial domain embedding.
+    Uses a 'Bonus' scoring system to prioritize neighbors that satisfy the
+    spatial_domain_similarity_threshold, but falls back to other valid neighbors
+    based on cell similarity if necessary.
     """
     batch_size = emb_indv_batch_norm.shape[0]
 
-    # Step 1: Extract spatial neighbors' embeddings (already normalized)
-    # Use a safe index (0) for invalid neighbors, will mask them later
+    # Step 1: Extract spatial neighbors' embeddings
+    # Use 0 for invalid neighbors to prevent index errors, will mask later
     safe_neighbors = jnp.where(spatial_neighbors >= 0, spatial_neighbors, 0)
-    spatial_emb_indv_norm = all_emb_indv_norm[safe_neighbors]  # (batch_size, k1, d2)
+    spatial_emb_indv_norm = all_emb_indv_norm[safe_neighbors]
 
-    # Step 2: Compute both niche and individual similarities for spatial neighbors
-    # Compute individual/cell similarities (embeddings are already normalized)
+    # Step 2: Compute Basic Similarities
+    # 2a. Cell Similarity
     cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, spatial_emb_indv_norm)
+    # Apply cell threshold (set to 0 if below, but keep the value if above)
     cell_sims = jnp.where(cell_sims >= cell_embedding_similarity_threshold, cell_sims, 0.0)
 
-    # Compute niche/spatial domain similarities (always exists now, may be dummy ones)
-    spatial_emb_niche_norm = all_emb_niche_norm[safe_neighbors]  # (batch_size, k1, d1)
+    # 2b. Spatial/Niche Similarity
+    spatial_emb_niche_norm = all_emb_niche_norm[safe_neighbors]
     anchor_sims = jnp.einsum('bd,bkd->bk', emb_niche_batch_norm, spatial_emb_niche_norm)
-    # If dummy ones, anchor_sims is 1.0. Since 1.0 >= threshold, we always select cell_sims.
-    combined_sims = jnp.where(anchor_sims >= spatial_domain_similarity_threshold, cell_sims, 0.0)
 
-    # Mask out invalid neighbors by setting their similarities to 0
-    combined_sims = jnp.where(spatial_neighbors >= 0, combined_sims, 0)
+    # Step 3: Compute Ranking Score (Soft Priority)
+    # Logic:
+    #   - If passes spatial threshold: Score = cell_sim + BONUS (Range ~2.0 to 3.0)
+    #   - If fails spatial threshold:  Score = cell_sim         (Range ~0.0 to 1.0)
+    #   BONUS ensures spatial matches always rank higher than non-spatial matches.
+    BONUS = 2.0
+    pass_spatial_mask = anchor_sims >= spatial_domain_similarity_threshold
+    ranking_score = cell_sims + jnp.where(pass_spatial_mask, BONUS, 0.0)
 
-    # Select top homogeneous neighbors based on combined similarity
-    top_homo_idx = jnp.argsort(-combined_sims, axis=1)[:, :homogeneous_neighbors]
+    # Step 4: Handle Invalid (Padding) Neighbors
+    # Ensure invalid neighbors (index < 0) have a score lower than any possible valid score.
+    # A valid neighbor failing both thresholds might have score 0.0.
+    # So we set invalid neighbors to -100.0.
+    valid_neighbor_mask = spatial_neighbors >= 0
+    ranking_score = jnp.where(valid_neighbor_mask, ranking_score, -100.0)
+
+    # Step 5: Sort based on Ranking Score
+    top_homo_idx = jnp.argsort(-ranking_score, axis=1)[:, :homogeneous_neighbors]
+
+    # Step 6: Gather Results
     batch_idx = jnp.arange(batch_size)[:, None]
-    homogeneous_neighbors_array = spatial_neighbors[batch_idx, top_homo_idx]  # (batch_size, homogeneous_neighbors)
-    homogeneous_weights = combined_sims[batch_idx, top_homo_idx]
 
-    return homogeneous_neighbors_array, homogeneous_weights
+    # Gather Neighbor Indices
+    homogeneous_neighbors_array = spatial_neighbors[batch_idx, top_homo_idx]
 
+    # Gather Weights: IMPORTANT - We return the original cell_sims, not the ranking_score
+    selected_weights = cell_sims[batch_idx, top_homo_idx]
+
+    # Final cleanup: Ensure that if we were forced to pick an invalid neighbor
+    # (because there weren't enough valid ones), its weight is 0.0
+    final_weights = jnp.where(homogeneous_neighbors_array >= 0, selected_weights, 0.0)
+
+    return homogeneous_neighbors_array, final_weights
 
 def _find_homogeneous_3d_memory_efficient(
     emb_niche_masked_jax: jnp.ndarray,
