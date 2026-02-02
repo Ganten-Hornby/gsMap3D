@@ -23,7 +23,6 @@ from rich.progress import (
     TimeRemainingColumn,
     track,
 )
-from scipy.sparse import csr_matrix
 from scipy.spatial import cKDTree
 
 from gsMap.config import DatasetType, LatentToGeneConfig
@@ -575,7 +574,6 @@ class ConnectivityMatrixBuilder:
         cell_mask: np.ndarray | None = None,
         high_quality_mask: np.ndarray = None,
         slice_ids: np.ndarray | None = None,
-        return_dense: bool = True,
         k_central: int | None = None,
         k_adjacent: int | None = None,
         n_adjacent_slices: int | None = None
@@ -594,7 +592,6 @@ class ConnectivityMatrixBuilder:
             cell_mask: Boolean mask for cells to process
             high_quality_mask: Boolean mask for high quality cells (used for neighbor search in spatial data)
             slice_ids: Optional slice/z-coordinate indices (n_cells,) for spatial3D
-            return_dense: If True, return dense (n_cells, k) array (only dense supported)
             k_central: Number of neighbors on central slice (defaults to config settings)
             k_adjacent: Number of neighbors on adjacent slices for spatial3D
             n_adjacent_slices: Number of slices to search above/below for spatial3D
@@ -645,7 +642,6 @@ class ConnectivityMatrixBuilder:
                 cell_mask=cell_mask,
                 high_quality_mask=high_quality_mask,
                 slice_ids=slice_ids,
-                return_dense=return_dense,
                 k_central=k_central,
                 k_adjacent=k_adjacent,
                 n_adjacent_slices=n_adjacent_slices
@@ -662,11 +658,10 @@ class ConnectivityMatrixBuilder:
         cell_mask: np.ndarray | None = None,
         high_quality_mask: np.ndarray = None,
         slice_ids: np.ndarray | None = None,
-        return_dense: bool = True,
         k_central: int = 101,
         k_adjacent: int = 50,
         n_adjacent_slices: int = 1
-    ) -> csr_matrix | tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Internal method for building spatial connectivity matrix.
 
@@ -677,13 +672,12 @@ class ConnectivityMatrixBuilder:
             cell_mask: Boolean mask for cells to process
             high_quality_mask: Boolean mask for high quality cells (used for neighbor search)
             slice_ids: Optional slice/z-coordinate indices (n_cells,) for 3D data
-            return_dense: If True, return dense (n_cells, k) array
             k_central: Number of neighbors on central slice
             k_adjacent: Number of neighbors on adjacent slices for 3D data
             n_adjacent_slices: Number of slices to search above/below for 3D data
 
         Returns:
-            Connectivity matrix (sparse or dense format)
+            Tuple of (neighbor_indices, cell_sims, niche_sims) arrays
         """
 
         n_cells = len(coords)
@@ -783,17 +777,5 @@ class ConnectivityMatrixBuilder:
             homogeneous_cell_sims = np.vstack(homogeneous_cell_sims_list)
             homogeneous_niche_sims = np.vstack(homogeneous_niche_sims_list)
 
-        if return_dense:
-            # Return dense format: (n_masked, num_homogeneous) arrays
-            return homogeneous_neighbors, homogeneous_cell_sims, homogeneous_niche_sims
-        else:
-            # Build sparse matrix
-            rows = np.repeat(cell_indices, self.config.homogeneous_neighbors)
-            cols = homogeneous_neighbors.flatten()
-            data = homogeneous_cell_sims.flatten()
-
-            connectivity = csr_matrix(
-                (data, (rows, cols)),
-                shape=(n_cells, n_cells)
-            )
-            return connectivity, homogeneous_niche_sims
+        # Return dense format: (n_masked, num_homogeneous) arrays
+        return homogeneous_neighbors, homogeneous_cell_sims, homogeneous_niche_sims

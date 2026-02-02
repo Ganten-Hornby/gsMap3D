@@ -1030,7 +1030,6 @@ class MarkerScoreCalculator:
             cell_mask=cell_mask,
             high_quality_mask=high_quality_mask,
             slice_ids=slice_ids,
-            return_dense=True,
             k_central=self.config.spatial_neighbors,
             k_adjacent=self.config.adjacent_slice_spatial_neighbors,
             n_adjacent_slices=self.config.n_adjacent_slices
