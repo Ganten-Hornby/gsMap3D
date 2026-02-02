@@ -1,17 +1,18 @@
-## gsMap3D
+# gsMap3D
 
 **gsMap3D** integrates 3D spatial transcriptomics (ST) data with genome-wide association study (GWAS) summary statistics to map cells associated with human complex traits and diseases.
 
 ---
 
-## What's New
-    - Support for `3D` ST data mapping  
-    - `Dual-embedding` strategy for more accurate gene specificity scoring  
-    - Full `GPU acceleration` across all analysis steps
+## ✨ What's New
+
+    - Support for 3D ST data mapping  
+    - Dual-embedding strategy for more accurate gene specificity scoring  
+    - Full GPU acceleration across all analysis steps
 ---
 
 
-## Features
+## 🚀 Features
 
 - **Spatially-aware High-Resolution Trait Mapping**  
   Maps trait-associated cells at single-cell resolution, offering insights into their spatial distributions.
@@ -28,7 +29,7 @@
 ---
 
 
-## Overview of `gsMap3D`
+## 🧠 Overview of `gsMap3D`
 
 `gsMap3D` operates on a four-step process:
 
@@ -50,11 +51,12 @@ To evaluate associations between traits and spatial regions, `gsMap3D` aggregate
 
 ---
 
-## Documentation
+## 📚 Documentation
 Please see [URL]
 
 ---
-## How to Cite
+
+## 📝 How to Cite
 
 If you use `gsMap` in your studies, please cite:
 
