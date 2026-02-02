@@ -1001,12 +1001,12 @@ class MarkerScoreCalculator:
         slice_ids: np.ndarray | None,
         rank_shape: tuple[int, int],
         high_quality_mask: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int] | None:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray, int] | None:
         """
         Prepare batch data for a cell type
 
         Returns:
-            Tuple of (neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells)
+            Tuple of (neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells)
             or None if cell type should be skipped
         """
         # Get cells of this type, excluding NaN values
@@ -1023,7 +1023,7 @@ class MarkerScoreCalculator:
 
         # Build connectivity matrix
         logger.info("Building connectivity matrix...")
-        neighbor_indices, neighbor_weights = self.connectivity_builder.build_connectivity_matrix(
+        neighbor_indices, cell_sims, niche_sims = self.connectivity_builder.build_connectivity_matrix(
             coords=coords,
             emb_niche=emb_niche,
             emb_indv=emb_indv,
@@ -1047,31 +1047,40 @@ class MarkerScoreCalculator:
         row_order = optimize_row_order_jax(
             neighbor_indices=neighbor_indices[:,:self.config.homogeneous_neighbors],
             cell_indices=cell_indices,
-            neighbor_weights=neighbor_weights[:,:self.config.homogeneous_neighbors],
+            neighbor_weights=cell_sims[:,:self.config.homogeneous_neighbors],
         )
 
         neighbor_indices = neighbor_indices[row_order]
-        neighbor_weights = neighbor_weights[row_order]
+        cell_sims = cell_sims[row_order]
+        if niche_sims is not None:
+            niche_sims = niche_sims[row_order]
         cell_indices_sorted = cell_indices[row_order]
 
-        # Save neighbor indices and weights to obsm matrices
+        # Save neighbor indices and similarity matrices to obsm
         # Initialize matrices if they don't exist
         if 'gsMap_homo_indices' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_indices'].shape[1] != neighbor_indices.shape[1]):
             adata.obsm['gsMap_homo_indices'] = np.zeros((adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype)
-        if 'gsMap_homo_weights' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_weights'].shape[1] != neighbor_indices.shape[1]):
-            adata.obsm['gsMap_homo_weights'] = np.zeros((adata.n_obs, neighbor_weights.shape[1]), dtype=neighbor_weights.dtype)
+        if 'gsMap_homo_cell_sims' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_cell_sims'].shape[1] != neighbor_indices.shape[1]):
+            adata.obsm['gsMap_homo_cell_sims'] = np.zeros((adata.n_obs, cell_sims.shape[1]), dtype=cell_sims.dtype)
 
-        # Store the neighbor indices and weights for this cell type
+        # Store the neighbor indices and cell_sims for this cell type
         adata.obsm['gsMap_homo_indices'][cell_indices_sorted] = neighbor_indices
-        adata.obsm['gsMap_homo_weights'][cell_indices_sorted] = neighbor_weights
+        adata.obsm['gsMap_homo_cell_sims'][cell_indices_sorted] = cell_sims
+
+        # Only store niche_sims if niche embedding was provided (not dummy)
+        has_real_niche_embedding = self.config.latent_representation_niche is not None
+        if has_real_niche_embedding and niche_sims is not None:
+            if 'gsMap_homo_niche_sims' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_niche_sims'].shape[1] != neighbor_indices.shape[1]):
+                adata.obsm['gsMap_homo_niche_sims'] = np.zeros((adata.n_obs, niche_sims.shape[1]), dtype=niche_sims.dtype)
+            adata.obsm['gsMap_homo_niche_sims'][cell_indices_sorted] = niche_sims
 
         # warning for cells not find homo neighbors
-        homo_neighbor_count = np.count_nonzero(neighbor_weights, axis=1)
+        homo_neighbor_count = np.count_nonzero(cell_sims, axis=1)
         zero_homo_neighbor_mask = (homo_neighbor_count <=5)
         if np.any(zero_homo_neighbor_mask):
             logger.warning(f"Cell type {cell_type}: {zero_homo_neighbor_mask.sum()} cells can't find enough homogeneous neighbors")
 
-        return neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells
+        return neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells
 
     def _calculate_marker_scores_by_cell_type(
         self,
@@ -1087,7 +1096,7 @@ class MarkerScoreCalculator:
         """Process a single cell type with shared pools"""
 
         # Find homogeneous spots
-        neighbor_indices, neighbor_weights, cell_indices_sorted, n_cells  = self._find_homogeneous_spots(
+        neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells = self._find_homogeneous_spots(
             adata, cell_type, annotation_key, coords, emb_niche,
             emb_indv, slice_ids, self.reader.shape, high_quality_mask
         )
@@ -1098,7 +1107,7 @@ class MarkerScoreCalculator:
         # Run the marker_score_queue to compute marker score
         self.marker_score_queue.start(
             neighbor_indices=neighbor_indices,
-            neighbor_weights=neighbor_weights,
+            neighbor_weights=cell_sims,
             cell_indices_sorted=cell_indices_sorted,
             enable_profiling=self.config.enable_profiling
         )

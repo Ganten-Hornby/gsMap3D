@@ -347,7 +347,7 @@ def _find_homogeneous_3d_memory_efficient(
     cell_embedding_similarity_threshold: float,
     spatial_domain_similarity_threshold: float,
     find_homogeneous_batch_size: int
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Memory-efficient version of 3D homogeneous neighbor finding.
     Processes slices separately to avoid large memory allocations.
@@ -368,13 +368,15 @@ def _find_homogeneous_3d_memory_efficient(
 
     Returns:
         homogeneous_neighbors: Selected neighbors
-        homogeneous_weights: Corresponding weights
+        homogeneous_cell_sims: Cell similarity scores for selected neighbors
+        homogeneous_niche_sims: Niche/Spatial similarity scores for selected neighbors
     """
     n_masked = emb_indv_masked_jax.shape[0]
     1 + 2 * n_adjacent_slices
 
     homogeneous_neighbors_all_slices = []
-    homogeneous_weights_all_slices = []
+    homogeneous_cell_sims_all_slices = []
+    homogeneous_niche_sims_all_slices = []
 
     # Process all slices (central + adjacent) in a single loop
     total_slices = 1 + 2 * n_adjacent_slices
@@ -417,7 +419,8 @@ def _find_homogeneous_3d_memory_efficient(
             spatial_neighbors_slice = jnp.asarray(spatial_neighbors[:, slice_start:slice_end])
 
             homogeneous_neighbors_slice_list = []
-            homogeneous_weights_slice_list = []
+            homogeneous_cell_sims_slice_list = []
+            homogeneous_niche_sims_slice_list = []
 
             # Process batches for this slice using simple transient track
             for batch_start in track(range(0, n_masked, find_homogeneous_batch_size),
@@ -434,7 +437,7 @@ def _find_homogeneous_3d_memory_efficient(
                 spatial_neighbors_slice_batch = spatial_neighbors_slice[batch_indices, :]
 
                 # Process with 2D function
-                homo_neighbors_batch, homo_weights_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
+                homo_neighbors_batch, cell_sims_batch, niche_sims_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
                     emb_niche_batch_norm=emb_niche_batch_norm,
                     emb_indv_batch_norm=emb_indv_batch_norm,
                     spatial_neighbors=spatial_neighbors_slice_batch,
@@ -446,22 +449,26 @@ def _find_homogeneous_3d_memory_efficient(
                 )
 
                 homogeneous_neighbors_slice_list.append(np.array(homo_neighbors_batch))
-                homogeneous_weights_slice_list.append(np.array(homo_weights_batch))
+                homogeneous_cell_sims_slice_list.append(np.array(cell_sims_batch))
+                homogeneous_niche_sims_slice_list.append(np.array(niche_sims_batch))
 
             # Concatenate this slice's results
             homogeneous_neighbors_slice = np.vstack(homogeneous_neighbors_slice_list)
-            homogeneous_weights_slice = np.vstack(homogeneous_weights_slice_list)
+            homogeneous_cell_sims_slice = np.vstack(homogeneous_cell_sims_slice_list)
+            homogeneous_niche_sims_slice = np.vstack(homogeneous_niche_sims_slice_list)
             homogeneous_neighbors_all_slices.append(homogeneous_neighbors_slice)
-            homogeneous_weights_all_slices.append(homogeneous_weights_slice)
+            homogeneous_cell_sims_all_slices.append(homogeneous_cell_sims_slice)
+            homogeneous_niche_sims_all_slices.append(homogeneous_niche_sims_slice)
 
             # Update slice progress
             slice_progress.update(slice_task, advance=1)
 
     # Concatenate all slices along axis 1
     homogeneous_neighbors = np.concatenate(homogeneous_neighbors_all_slices, axis=1)
-    homogeneous_weights = np.concatenate(homogeneous_weights_all_slices, axis=1)
+    homogeneous_cell_sims = np.concatenate(homogeneous_cell_sims_all_slices, axis=1)
+    homogeneous_niche_sims = np.concatenate(homogeneous_niche_sims_all_slices, axis=1)
 
-    return homogeneous_neighbors, homogeneous_weights
+    return homogeneous_neighbors, homogeneous_cell_sims, homogeneous_niche_sims
 
 
 def build_scrna_connectivity(
@@ -469,7 +476,7 @@ def build_scrna_connectivity(
     cell_mask: np.ndarray | None = None,
     n_neighbors: int = 21,
     metric: str = 'euclidean'
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, None]:
     """
     Build connectivity for scRNA-seq data using KNN on cell embeddings.
 
@@ -482,6 +489,7 @@ def build_scrna_connectivity(
     Returns:
         neighbor_indices: (n_masked, n_neighbors) array of neighbor indices
         neighbor_weights: (n_masked, n_neighbors) array of weights from KNN graph
+        niche_sims: None (scRNA-seq has no niche embedding)
     """
     n_cells = len(emb_cell)
     if cell_mask is None:
@@ -541,7 +549,7 @@ def build_scrna_connectivity(
 
     logger.info(f"scRNA-seq connectivity built: {n_masked} cells × {n_neighbors} neighbors")
 
-    return neighbor_indices, neighbor_weights
+    return neighbor_indices, neighbor_weights, None
 
 
 class ConnectivityMatrixBuilder:
@@ -571,7 +579,7 @@ class ConnectivityMatrixBuilder:
         k_central: int | None = None,
         k_adjacent: int | None = None,
         n_adjacent_slices: int | None = None
-    ) -> csr_matrix | tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         """
         Build connectivity matrix for a group of cells based on dataset type.
 
@@ -586,13 +594,14 @@ class ConnectivityMatrixBuilder:
             cell_mask: Boolean mask for cells to process
             high_quality_mask: Boolean mask for high quality cells (used for neighbor search in spatial data)
             slice_ids: Optional slice/z-coordinate indices (n_cells,) for spatial3D
-            return_dense: If True, return dense (n_cells, k) array
+            return_dense: If True, return dense (n_cells, k) array (only dense supported)
             k_central: Number of neighbors on central slice (defaults to config settings)
             k_adjacent: Number of neighbors on adjacent slices for spatial3D
             n_adjacent_slices: Number of slices to search above/below for spatial3D
 
         Returns:
-            Connectivity matrix (sparse or dense format)
+            Tuple of (neighbor_indices, cell_sims, niche_sims) arrays.
+            niche_sims is None for scRNA-seq datasets.
         """
         # Check dataset type and call appropriate method
         if self.dataset_type == DatasetType.SCRNA_SEQ:
@@ -719,7 +728,7 @@ class ConnectivityMatrixBuilder:
             logger.info(f"Using 3D constrained selection (ensuring {self.config.homogeneous_neighbors} neighbors per slice)")
 
             # Use memory-efficient version that processes slices separately
-            homogeneous_neighbors, homogeneous_weights = _find_homogeneous_3d_memory_efficient(
+            homogeneous_neighbors, homogeneous_cell_sims, homogeneous_niche_sims = _find_homogeneous_3d_memory_efficient(
                 emb_niche_masked_jax=emb_niche_masked_jax,
                 emb_indv_masked_jax=emb_indv_masked_jax,
                 spatial_neighbors=spatial_neighbors,
@@ -738,7 +747,8 @@ class ConnectivityMatrixBuilder:
             # Convert spatial_neighbors to JAX array for regular processing
             spatial_neighbors_jax = jnp.array(spatial_neighbors, dtype=jnp.int32)
             homogeneous_neighbors_list = []
-            homogeneous_weights_list = []
+            homogeneous_cell_sims_list = []
+            homogeneous_niche_sims_list = []
 
 
             # Use the standard function (2D or 3D without fix_cross_slice_homogenous_neighbors)
@@ -752,7 +762,7 @@ class ConnectivityMatrixBuilder:
                 spatial_neighbors_batch = spatial_neighbors_jax[batch_indices]
 
                 # Process batch with single JIT-compiled function
-                homo_neighbors_batch, homo_weights_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
+                homo_neighbors_batch, cell_sims_batch, niche_sims_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
                     emb_niche_batch_norm=emb_niche_batch_norm,
                     emb_indv_batch_norm=emb_indv_batch_norm,
                     spatial_neighbors=spatial_neighbors_batch,
@@ -765,23 +775,25 @@ class ConnectivityMatrixBuilder:
 
                 # Convert back to numpy and append
                 homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))
-                homogeneous_weights_list.append(np.array(homo_weights_batch))
+                homogeneous_cell_sims_list.append(np.array(cell_sims_batch))
+                homogeneous_niche_sims_list.append(np.array(niche_sims_batch))
 
             # Regular batched processing
             homogeneous_neighbors = np.vstack(homogeneous_neighbors_list)
-            homogeneous_weights = np.vstack(homogeneous_weights_list)
+            homogeneous_cell_sims = np.vstack(homogeneous_cell_sims_list)
+            homogeneous_niche_sims = np.vstack(homogeneous_niche_sims_list)
 
         if return_dense:
             # Return dense format: (n_masked, num_homogeneous) arrays
-            return homogeneous_neighbors, homogeneous_weights
+            return homogeneous_neighbors, homogeneous_cell_sims, homogeneous_niche_sims
         else:
             # Build sparse matrix
             rows = np.repeat(cell_indices, self.config.homogeneous_neighbors)
             cols = homogeneous_neighbors.flatten()
-            data = homogeneous_weights.flatten()
+            data = homogeneous_cell_sims.flatten()
 
             connectivity = csr_matrix(
                 (data, (rows, cols)),
                 shape=(n_cells, n_cells)
             )
-            return connectivity
+            return connectivity, homogeneous_niche_sims
