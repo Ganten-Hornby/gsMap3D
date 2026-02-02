@@ -1,4 +1,4 @@
-gsMap2D
+2D mapping
 ========
 
 This section provides tutorials for analyzing 2D spatial transcriptomics datasets using gsMap.

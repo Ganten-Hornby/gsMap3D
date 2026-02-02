@@ -1,24 +1,11 @@
 # CS8 Human Embryo 3D Tutorial
 
-`gsMap3D` extends the gsMap framework to native 3D tissue architectures. By leveraging the continuity of biological domains across adjacent tissue sections, it integrates GWAS data with 3D-reconstructed spatial transcriptomics (ST) data to map trait-associated spots in three-dimensional space.
+By leveraging the continuity of biological domains across adjacent tissue sections, `gsMap3D` integrates GWAS data with 3D-reconstructed ST data to map trait-associated spots in 3D space.
 
-## Advantages of 3D gsMap
 
-1.  **3D Contextual Mapping**: Captures how genetic risk is embedded within continuous 3D cellular landscapes, bridging the gap between genetic discoveries and spatial cellular manifestations.
-2.  **Dual-Embedding Strategy**: Uses both **Cell Embedding** (transcriptomic identity) and **Spatial-Domain Embedding** (local tissue architecture) to identify homogeneous spots across slices, preventing signal leakage and over-smoothing.
-3.  **Cross-Slice Integration**: Leverages adjacent slices to model 3D niches, revealing spatial gradients and organizational patterns invisible in 2D snapshots.
+## Human Gastrulation (CS8 Human Embryo)
 
-## Methodology Overview
-
-The 3D pipeline follows a four-step process:
-- **Step 1: Dual Embeddings**: Learns latent representations capturing both spot identity and spatial context.
-- **Step 2: 3D Gene Specificity Score (GSS)**: Identifies "homogeneous spots" across adjacent sections and calculates a specificity score for each gene in each 3D niche.
-- **Step 3: Genetic Association**: Uses S-LDSC to test for heritability enrichment of GWAS traits in spots with high GSS.
-- **Step 4: Regional Aggregation**: Uses the Cauchy Combination Test (CCT) to aggregate spot-level p-values into robust associations for anatomical regions or cell types.
-
-## Case Study: Human Gastrulation (CS8 Human Embryo)
-
-This example demonstrates how to run `gsMap` on a 3D dataset comprising multiple slices of a human embryo.
+This example demonstrates how to run **gsMap 3D mapping** on a 3D ST dataset from an early-stage human embryo.
 
 ### Preparation
 

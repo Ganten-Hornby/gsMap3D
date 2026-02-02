@@ -74,7 +74,7 @@ The BED file should have the following columns (tab-separated):
 | 2 | Start | Start position (0-based) |
 | 3 | End | End position |
 | 4 | Name | Feature/gene name |
-| 5 | Score | Mapping score (optional, used when `--strategy score`) |
+| 5 | Score | SNP-to-gene Mapping score (optional, used when `--strategy score`). When provided, the SNP is assigned to the gene with the highest score. |
 | 6 | Strand | Strand (`+` or `-`, optional) |
 
 **Gencode BED example** (gene body regions):
@@ -111,54 +111,7 @@ Standard PLINK binary files with chromosome-specific naming:
 
 Where `{chr}` is replaced by chromosome number (1-22).
 
-## Usage
 
-`````{tab} CLI
-
-```bash
-gsmap ldscore-weight-matrix \
-    --bfile-root "${PLINK_REF}.{chr}" \
-    --hm3-snp-path "${HM3_SNPS}" \
-    --mapping-file "${GENCODE_BED}" \
-    --mapping-type "bed" \
-    --output-dir "./output" \
-    --output-filename "custom_snp_gene_weights" \
-    --feature-window-size 50000 \
-    --strategy "tss" \
-    --ld-wind 1.0 \
-    --ld-unit "CM" \
-    --maf-min 0.01 \
-    --chromosomes "all"
-```
-
-`````
-
-`````{tab} Python
-
-```python
-from gsMap.config import LDScoreConfig
-from gsMap.ldscore.pipeline import LDScorePipeline
-
-config = LDScoreConfig(
-    bfile_root=f"{PLINK_REF}.{{chr}}",
-    hm3_snp_path=HM3_SNPS,
-    mapping_file=GENCODE_BED,
-    mapping_type="bed",
-    output_dir="./output",
-    output_filename="custom_snp_gene_weights",
-    feature_window_size=50000,
-    strategy="tss",
-    ld_wind=1.0,
-    ld_unit="CM",
-    maf_min=0.01,
-    chromosomes="all"
-)
-
-pipeline = LDScorePipeline(config)
-pipeline.run()
-```
-
-`````
 
 ## Parameters
 
@@ -170,7 +123,7 @@ pipeline.run()
 | `--hm3-snp-path` | Path to HapMap3 SNP list file. |
 | `--output-dir` | Directory where output files will be saved. |
 
-### Mapping Parameters
+### Snp-to-Gene Mapping Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -199,7 +152,7 @@ pipeline.run()
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--calculate-w-ld` | `False` | Whether to also calculate LD score weights (w_ld) for heritability partitioning. |
+| `--calculate-w-ld` | `False` | Whether to also calculate LD score weights (w_ld), which is used to account for heteroscedasticity in LDSC. |
 | `--w-ld-dir` | None | Directory to save w_ld output files. Required if `--calculate-w-ld` is enabled. |
 
 ## Output

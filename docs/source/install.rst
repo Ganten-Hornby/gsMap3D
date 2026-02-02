@@ -40,7 +40,7 @@ Method 1: Use uv (Recommended)
 
    **Option B: Using uv tools (For CLI usage only)**
 
-   If you only need the ``gsmap`` command-line tool and don't plan to use it as a library in scripts:
+   If you only need the ``gsMap`` command-line tool and don't plan to use it as a library in scripts:
 
    .. code-block:: bash
 
@@ -77,7 +77,7 @@ To install the latest development version from GitHub:
 
 .. code-block:: bash
 
-    git clone https://github.com/JianYang-Lab/gsMap.git
+    git clone https://github.com/JianYang-Lab/gsMa_dev.git
     cd gsMap
     pip install .
 

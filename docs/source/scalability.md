@@ -1,6 +1,6 @@
 # Scalability and Performance
 
-`gsMap` is designed to efficiently process large-scale spatial transcriptomics datasets with millions of cells/spots. This guide covers the key scalability features and how to optimize performance for your hardware.
+`gsMap` is designed to efficiently process large-scale 3D spatial transcriptomics datasets with millions of cells/spots. This guide covers the key scalability features and how to optimize performance for your hardware.
 
 ## Overview
 
@@ -14,7 +14,7 @@ gsMap employs multiple strategies to achieve high performance:
 
 ## GPU/TPU Acceleration
 
-gsMap uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the Spatial LDSC computation stage. JAX provides Just-In-Time (JIT) compilation and automatic differentiation, enabling efficient execution on accelerators.
+gsMap uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the Spatial LDSC computation stage. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
 
 ### Enabling/Disabling GPU
 

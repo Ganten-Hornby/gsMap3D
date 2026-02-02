@@ -248,3 +248,4 @@ cython_debug/
 
 # vscode
 .vscode
+run_gsmap3d.py

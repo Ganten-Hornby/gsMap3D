@@ -8,11 +8,11 @@ This document transforms the complex methodology of the gsMap3D framework, as de
 
 1.0 Introduction to gsMap3D
 
-The complex functions of human organs rely on intricate 3D architectures where specialized cells are organized into spatially defined circuits and functional domains. Understanding how genetic risk translates into disease therefore requires projecting this risk into the native 3D cellular landscape. Traditional spatial transcriptomics (ST) analyses have been largely restricted to individual 2D sections, offering only a fragmented view of tissue organization. This 2D approach can obscure the continuous spatial gradients and cellular interactions that span across sectioning planes, leaving a fundamental gap in our understanding of the spatial organization of genetic effects.
+The complex functions of human organs rely on intricate 3D architectures, in which specialized cells are organized into spatially defined circuits and functional domains. Understanding how genetic risk translates into disease therefore requires projecting this risk onto the native 3D cellular landscape. Previous gsMap studies (Nature, 2025) have been restricted to individual 2D sections, providing only a fragmented view of tissue organization. This 2D approach can obscure continuous spatial gradients and cellular interactions that extend across sectioning planes, leaving a fundamental gap in our understanding of the spatial organization of genetic effects.
 
 1.1 What Problem Does gsMap3D Solve?
 
-gsMap3D addresses the fundamental knowledge gap of how disease genetic risk is embedded within the native 3D cellular architecture of tissues. It is a comprehensive computational framework designed to integrate genome-wide association studies (GWAS) with 3D-reconstructed spatial transcriptomics data. Its primary purpose is to map trait-associated spots in three-dimensional space, moving beyond the limitations of 2D analysis to reveal how genetic effects are structured by complex tissue organization.
+gsMap3D addresses the fundamental knowledge gap of how disease genetic risk is embedded within the native 3D cellular architecture of tissues. It is a comprehensive computational framework designed to integrate genome-wide association studies (GWAS) with 3D-reconstructed spatial transcriptomics data. Its primary purpose is to map trait-associated spots in 3D space, moving beyond the limitations of 2D analysis to reveal how genetic effects are structured by complex tissue organization.
 
 1.2 Who is This Tutorial For?
 

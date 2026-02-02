@@ -2,7 +2,7 @@
 
 The `Quick Mode` option provides a simplified and efficient way to execute the entire `gsMap` pipeline. It minimizes running time and configuration complexity by utilizing pre-calculated weights based on the 1000G EUR reference panel and protein-coding genes from BED file of Gencode v46. This mode is ideal for users who prefer a streamlined approach. For a more customizable experience, such as using custom BED files, reference panels, and more adjustable parameters, please refer to the {doc}`Customization Guide <../advanced_usage>` guide.
 
-**Note**: This tutorial is designed for 2D spatial transcriptomics data. For 3D spatial data, please refer to the {doc}`3D Tutorial <../3d_tutorial/human_gastrulation>`.
+**Note**: This tutorial is designed for 2D ST data. For 3D ST data, please refer to the {doc}`3D Tutorial <../3d_tutorial/human_gastrulation>`.
 
 .. note::
     

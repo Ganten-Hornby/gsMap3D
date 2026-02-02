@@ -63,7 +63,7 @@ graph TD
     subgraph Integrated Pipeline
         direction TB
         S1[1. Latent Representation<br/><i>Dual Embedding</i>]:::process
-        S2[2. Find Homogeneous Neighbors]:::process
+        S2[2. Find Homogeneous Cells]:::process
         S3[3. Gene Specificity Score<br/><i>GSS Calculation</i>]:::process
         S4[4. Spatial LDSC<br/><i>Cell-Trait Association</i>]:::process
         S5[5. Region Identification<br/><i>Cauchy Combination</i>]:::process
@@ -81,11 +81,15 @@ graph TD
     S5 --> Report
 ```
 
-1.  **Latent Representation**: By capture the underlying cell states and it's cell niche information gsMap use a dual embedding module compress the high-dimensional gene expression into the cell identity embedding and compress the cell niche information into the cell niche embedding.
-2.  **Find Homogeneous Neighbors**: For each cell or spot, we identify "homogeneous neighbors"—other spots with similar molecular profiles and spatial niche—either within the same tissue slice (for 2D data) or across adjacent slices (for 3D data).
-3.  **Gene Specificity Score (GSS)**: We compute a Gene Specificity Score for every gene in every cell by aggregating expression information from its homogeneous neighbors. This robustly quantifies how specific a gene's expression is to that cell and niche context.
-4.  **Spatial LDSC**: These GSS scores are integrated with GWAS summary statistics using Stratified LD Score Regression (S-LDSC) to map trait heritability to specific cells and spatial regions.
-5.  **Spatial Region / Cell Type Identification**: To evaluate the association of a specific spatial region or cell type with traits, gsMap employs the *Cauchy combination test* to aggregate p-values from individual spots within that spatial region or cell type.
+1.  **Dual Embeddings**: gsMap constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context. compress the cell niche information into the cell niche embedding.
+
+2. **Identification of Homogeneous cells** Using the dual embeddings, gsMap identifies homogeneous cells for each spot by jointly considering transcriptomic similarity and spatial context. For 2D ST data, homogeneous cells are identified within the same section, whereas for 3D ST data, homogeneous cells span adjacent sections, enabling volumetric identification of homogeneous cells across the tissue.
+
+3.  **Gene Specificity Score**: gsMap computes a Gene Specificity Score (GSS) for each gene in each cell by aggregating normalized gene expression ranks across its homogeneous cells. The GSS quantifies how highly and specifically a gene is expressed in a given cell.
+
+4.  **Spatial LDSC**: The cell-level GSS annotations are integrated with GWAS summary statistics using S-LDSC to partition trait heritability. This framework assese trait heritability enrichment of specific cells with in specific spatial context.
+
+5.  **Spatial Region or Cell-Type Association** To assess trait associations at the level of spatial regions or cell types, gsMap aggregates cell-level association p-values using the Cauchy combination test. This yields robust region- or cell-type–level association statistics while accounting for heterogeneous signals across constituent cells.
 
 ## Key Configurations
 
@@ -134,7 +138,7 @@ There are three ways to provide input AnnData (.h5ad) files:
    --h5ad-path data/sample2.h5ad
    ```
 
-2. **YAML Configuration** (`--h5ad-yaml`):
+2. **YAML Configuration (recommended)** (`--h5ad-yaml`):
    A YAML file where keys are sample names and values are file paths.
 
    ```yaml
