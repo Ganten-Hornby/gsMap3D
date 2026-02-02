@@ -5,12 +5,11 @@
 ---
 
 ## What's New
-!!! success New features
-    - Support for 3D ST data mapping  
-    - Dual-embedding strategy for more accurate gene specificity scoring  
-    - Full GPU acceleration across all analysis steps
-
+    - Support for `3D` ST data mapping  
+    - `Dual-embedding` strategy for more accurate gene specificity scoring  
+    - Full `GPU acceleration` across all analysis steps
 ---
+
 
 ## Features
 
