@@ -93,9 +93,35 @@ This directory contains the gene specificity scores (GSS) computed for each spot
 | `mean_frac.parquet` | Mean expression fraction per gene |
 | `metadata.yaml` | Configuration and output paths |
 
-### Memory-Mapped Arrays
+### Check GSS
 
-The `.dat` files are memory-mapped NumPy arrays for efficient access:
+If you want to check the GSS values, gsMap provides the `load_marker_scores_memmap_format` Python API, which returns an AnnData object with all spot and gene metadata:
+
+```python
+from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
+from gsMap.config import QuickModeConfig
+
+# Create a minimal config with required paths
+config = QuickModeConfig(
+    workdir="path/to/workdir",
+    project_name="your_project",
+    ...
+)
+
+# Load marker scores as AnnData
+gss_adata = load_marker_scores_memmap_format(config)
+
+# Access marker scores as a matrix (spots × genes)
+print(gss_adata.X.shape)  # (n_spots, n_genes)
+
+# Access spot metadata
+print(gss_adata.obs.head())
+
+# Access gene names
+print(gss_adata.var_names[:10])
+```
+
+Alternatively, you can manually load the raw memory-mapped arrays:
 
 ```python
 import numpy as np
@@ -114,23 +140,29 @@ marker_scores = np.memmap(
 )
 ```
 
-### Metadata YAML
+### Check Homogeneous Spots
 
-The `metadata.yaml` contains:
+The `concatenated_latent_adata.h5ad` file contains three QC metrics in `adata.obs` that help assess the quality of homogeneous neighbor identification for each spot:
 
-```yaml
-config:
-  dataset_type: spatial3D
-  spatial_neighbors: 300
-  homogeneous_neighbors: 21
-  n_adjacent_slices: 1  # 3D only
-  cross_slice_marker_score_strategy: hierarchical_pool  # 3D only
-outputs:
-  concatenated_latent_adata: /path/to/concatenated_latent_adata.h5ad
-  rank_memmap: /path/to/ranks.dat
-  marker_scores: /path/to/marker_scores.dat
-n_sections: 12
+| Column | Description |
+|--------|-------------|
+| `gsMap_homo_neighbor_count` | Number of valid homogeneous neighbors found for the spot |
+| `gsMap_homo_cell_sims_median` | Median cell embedding similarity between the spot and its homogeneous neighbors |
+| `gsMap_homo_niche_sims_median` | Median niche embedding similarity (only present when dual embeddings are used) |
+
+These metrics can be used to identify spots with poor homogeneous neighbor coverage:
+
+```python
+import scanpy as sc
+
+# Load the concatenated latent adata
+adata = sc.read_h5ad('latent_to_gene/concatenated_latent_adata.h5ad')
+
+# Check median cell similarity distribution
+print(adata.obs['gsMap_homo_cell_sims_median'].describe())
 ```
+
+
 
 ---
 
@@ -202,13 +234,6 @@ Same columns as above, plus:
 |--------|------|-------------|
 | `sample_name` | string | Sample identifier |
 
-### Example
-
-```csv
-trait,annotation_name,annotation,p_cauchy,p_median,top_95_quantile,sig_spots,total_spots
-Height,layer_guess,WM,5.93e-08,0.00101,6.897,412,4485
-Height,layer_guess,Layer4,0.000247,0.00762,3.954,2,3541
-```
 
 ---
 
@@ -222,10 +247,9 @@ This directory contains processed data files for downstream analysis and visuali
 
 | File | Description |
 |------|-------------|
-| `spot_metadata.csv` | Spot-level coordinates, annotations, and trait values |
+| `spot_metadata.csv` | Combined spatial LDSC results with -log10(p) values for each trait, plus spot coordinates and annotations |
 | `gene_list.csv` | List of genes used in the analysis |
 | `cauchy_results.csv` | Combined Cauchy results for all traits and annotations |
-| `umap_data.csv` | UMAP coordinates for embedding visualization |
 
 ### Subdirectories
 
@@ -284,7 +308,7 @@ Gene-trait correlation statistics for identifying putative causal genes.
 | `gene` | string | Gene symbol |
 | `PCC` | float | Pearson correlation coefficient between GSS and trait association |
 | `trait` | string | Trait name |
-| `Annotation` | string | Annotation with highest correlation |
+| `Annotation` | string | Annotation (cell type/region) with the highest median GSS for that gene |
 | `Median_GSS` | float | Median gene specificity score in that annotation |
 
 **Example:**
@@ -298,24 +322,8 @@ MAG,0.225,Height,WM,6.688
 
 ### manhattan_data/{trait}_manhattan.csv
 
-Data for generating Manhattan plots.
+Data for generating Manhattan plots in the reports.
 
-**Columns:**
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `SNP` | string | SNP rs identifier |
-| `A1` | string | Effect allele |
-| `A2` | string | Other allele |
-| `Z` | float | Z-score from GWAS |
-| `N` | int | Sample size |
-| `P` | float | P-value |
-| `CHR` | int | Chromosome |
-| `BP` | int | Base pair position |
-| `GENE` | string | Nearest gene |
-| `is_top_pcc` | bool | Whether gene is in top correlated genes |
-| `BP_cum` | int | Cumulative base pair position |
-| `CHR_INDEX` | int | Chromosome index |
 
 ### spatial_3d/ (spatial3D only)
 
@@ -367,7 +375,7 @@ Contains comprehensive metadata about the analysis:
   "project_name": "my_project",
   "dataset_type": "spatial3D",
   "traits": ["Height", "IQ"],
-  "samples": ["sample1", "sample2", ...],
+  "samples": ["sample1", "sample2", ...,],
   "annotations": ["layer_guess"],
   "is_3d": true,
   "has_3d_widget": true,
@@ -408,82 +416,6 @@ Then access the report at `http://your-server:8080` or set up SSH port forwardin
 ssh -L 8080:localhost:8080 user@remote-server
 ```
 
-### Option 3: Python HTTP Server
-
-Alternatively, use Python's built-in HTTP server:
-
-```bash
-cd gsmap_web_report
-python -m http.server 8080
-```
-
----
-
-## Dataset Type Differences
-
-The output structure varies slightly between `spatial2D` and `spatial3D` datasets:
-
-| Feature | spatial2D | spatial3D |
-|---------|-----------|-----------|
-| 3D coordinates in spot_metadata.csv | No | Yes (`3d_x`, `3d_y`, `3d_z`) |
-| `report_data/spatial_3d/` | No | Yes |
-| `gsmap_web_report/spatial_3d/` | No | Yes |
-| Interactive 3D HTML visualizations | No | Yes |
-| Cross-slice neighbor search | No | Yes |
-
----
-
-## Loading Output Files in Python
-
-### Load Spot Metadata
-
-```python
-import pandas as pd
-
-spot_metadata = pd.read_csv('report_data/spot_metadata.csv')
-print(spot_metadata.head())
-```
-
-### Load Cauchy Results
-
-```python
-cauchy_results = pd.read_csv('report_data/cauchy_results.csv')
-
-# Filter for significant associations
-significant = cauchy_results[cauchy_results['p_cauchy'] < 0.05]
-print(significant)
-```
-
-### Load Gene-Trait Correlations
-
-```python
-gene_corr = pd.read_csv('report_data/gss_stats/gene_trait_correlation_Height.csv')
-
-# Top 10 correlated genes
-top_genes = gene_corr.nlargest(10, 'PCC')
-print(top_genes[['gene', 'PCC', 'Annotation']])
-```
-
-### Load Spatial LDSC Results
-
-```python
-import pandas as pd
-
-ldsc_results = pd.read_csv('spatial_ldsc/my_project_Height.csv.gz')
-print(ldsc_results.head())
-```
-
-### Load Latent Embeddings
-
-```python
-import scanpy as sc
-
-adata = sc.read_h5ad('find_latent_representations/sample1_add_latent.h5ad')
-
-# Access embeddings
-cell_emb = adata.obsm['emb_cell']
-niche_emb = adata.obsm['emb_niche']
-```
 
 ---
 
