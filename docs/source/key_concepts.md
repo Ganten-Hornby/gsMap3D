@@ -81,13 +81,13 @@ graph TD
     S5 --> Report
 ```
 
-1.  **Dual Embeddings**: gsMap3D constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context. compress the cell niche information into the cell niche embedding.
+1.  **Dual Embeddings**: gsMap3D constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context.
 
 2. **Identification of Homogeneous cells** Using the dual embeddings, gsMap3D identifies homogeneous cells for each spot by jointly considering transcriptomic similarity and spatial context. For 2D ST data, homogeneous cells are identified within the same section, whereas for 3D ST data, homogeneous cells span adjacent sections, enabling volumetric identification of homogeneous cells across the tissue.
 
 3.  **Gene Specificity Score**: gsMap3D computes a Gene Specificity Score (GSS) for each gene in each cell by aggregating normalized gene expression ranks across its homogeneous cells. The GSS quantifies how highly and specifically a gene is expressed in a given cell.
 
-4.  **Spatial LDSC**: The cell-level GSS annotations are integrated with GWAS summary statistics using S-LDSC to partition trait heritability. This framework assese trait heritability enrichment of specific cells with in specific spatial context.
+4.  **Spatial LDSC**: The cell-level GSS annotations are integrated with GWAS summary statistics using S-LDSC to partition trait heritability. This framework assesses trait heritability enrichment of specific cells within specific spatial context.
 
 5.  **Spatial Region or Cell-Type Association** To assess trait associations at the level of spatial regions or cell types, gsMap3D aggregates cell-level association p-values using the Cauchy combination test. This yields robust region- or cell-type–level association statistics while accounting for heterogeneous signals across constituent cells.
 

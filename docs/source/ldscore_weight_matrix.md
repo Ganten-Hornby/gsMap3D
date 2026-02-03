@@ -155,6 +155,17 @@ Where `{chr}` is replaced by chromosome number (1-22).
 | `--calculate-w-ld` | `False` | Whether to also calculate LD score weights (w_ld), which is used to account for heteroscedasticity in LDSC. |
 | `--w-ld-dir` | None | Directory to save w_ld output files. Required if `--calculate-w-ld` is enabled. |
 
+## Mapping Strategies
+
+When a SNP falls within multiple features, the `--strategy` parameter determines how to resolve the conflict:
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `score` | Keep the mapping with the highest score (from column 5 of BED file). | When you have confidence scores (e.g., eQTL effect sizes). |
+| `tss` | Keep the mapping closest to the transcription start site. | Gene-based analysis using Gencode/RefSeq annotations. |
+| `center` | Keep the mapping closest to the feature center. | Enhancer-based analysis where the center is most relevant. |
+| `allow_repeat` | Allow the SNP to map to multiple features (no filtering). | When you want to preserve all possible mappings. |
+
 ## Output
 
 The command produces an AnnData file (`{output_filename}.h5ad`) with the following structure:
@@ -329,16 +340,6 @@ gsmap quick-mode \
     ...
 ```
 
-## Mapping Strategies
-
-When a SNP falls within multiple features, the `--strategy` parameter determines how to resolve the conflict:
-
-| Strategy | Description | Use Case |
-|----------|-------------|----------|
-| `score` | Keep the mapping with the highest score (from column 5 of BED file). | When you have confidence scores (e.g., eQTL effect sizes). |
-| `tss` | Keep the mapping closest to the transcription start site. | Gene-based analysis using Gencode/RefSeq annotations. |
-| `center` | Keep the mapping closest to the feature center. | Enhancer-based analysis where the center is most relevant. |
-| `allow_repeat` | Allow the SNP to map to multiple features (no filtering). | When you want to preserve all possible mappings. |
 
 ## Available Enhancer Annotations
 
@@ -363,11 +364,8 @@ Each tissue folder contains:
 - `roadmap.bed`: Roadmap Epigenomics enhancers
 - `ABC_roadmap_merged.bed`: Combined ABC and Roadmap annotations
 
-## Computational Considerations
 
-- **Memory**: Memory usage scales with the number of SNPs and features. For genome-wide analysis, expect 8-16 GB RAM.
-- **Storage**: The example data requires approximately 2 GB of disk space.
-- **Parallelization**: The command processes chromosomes sequentially. For faster execution, you can run separate jobs for different chromosomes using `--chromosomes "1"`, `--chromosomes "2"`, etc., then merge the results.
+
 
 ## Troubleshooting
 
@@ -376,14 +374,21 @@ Each tissue folder contains:
 If you see an error about missing PLINK files, ensure:
 1. The `--bfile-root` path template is correct
 2. The `{chr}` placeholder is included in the path
-3. All chromosome files exist (1-22)
+3. All chromosome files exist for the specified chromosomes
+
+The `--chromosomes` parameter controls which chromosomes to process:
+- `--chromosomes "all"` (default): Processes autosomes 1-22
+- `--chromosomes "1,2,3"`: Processes only the specified chromosomes (comma-separated list)
+
 
 ### Memory errors
 
 If you encounter out-of-memory errors:
 1. Reduce `--batch-size-hm3` (e.g., from 50 to 25)
-2. Process fewer chromosomes at a time
-3. Use a machine with more RAM
+2. Use a machine with more RAM
+
+- **Memory**: Memory usage scales linearly with the number of SNPs in the reference panel and the number of features. For example, using 1000 Genomes Phase 3 as the reference panel with Gencode v46 protein-coding genes (~20,000 genes) costs approximately 25 GB memory.
+
 
 ### No SNPs mapped
 

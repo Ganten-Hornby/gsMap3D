@@ -91,3 +91,15 @@ In the generated 3D report, you can observe how different traits map to specific
 - **Intelligence (IQ)**: Specifically mapped to the **ectoderm**, the progenitor of the nervous system.
 - **MCHC (Mean Corpuscular Hemoglobin Concentration)**: Mapped to the **endoderm**, the progenitor of blood-forming organs like the liver.
 - **Height**: Mapped across multiple germ layers, reflecting its highly polygenic and widespread biological influence.
+
+### Output Description
+
+- **Web Report**: Generated in the `report` folder. Open the HTML file in a browser to explore interactive 3D maps and diagnostic plots.
+- **Results**: Spot-level p-values and enrichment results are stored in `spatial_ldsc` and `cauchy_combination`.
+- **Intermediate Files**: Latent representations and marker scores are cached to speed up subsequent analyses on the same dataset.
+
+## See Also
+
+- {doc}`2D Tutorial <../2d_tutorial/mouse_embryo>`: For 2D spatial transcriptomics analysis
+- {doc}`Customization Guide <../advanced_usage>`: For custom SNP-to-gene weights and embeddings
+- {doc}`Scalability <../scalability>`: For performance optimization tips

@@ -50,7 +50,7 @@ Method 1: Use uv (Recommended)
 
    .. code-block:: bash
 
-      git clone https://github.com/JianYang-Lab/gsMap3D.git
+      git clone https://github.com/Ganten-Hornby/gsMap3D.git
       cd gsMap3D
       uv pip install .
 
@@ -77,7 +77,7 @@ To install the latest development version from GitHub:
 
 .. code-block:: bash
 
-    git clone https://github.com/JianYang-Lab/gsMa_dev.git
+    git clone https://github.com/Ganten-Hornby/gsMap3D.git
     cd gsMap3D
     pip install .
 

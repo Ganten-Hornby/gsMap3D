@@ -2,12 +2,6 @@
 
 The `Quick Mode` option provides a simplified and efficient way to execute the entire `gsMap3D` pipeline. It minimizes running time and configuration complexity by utilizing pre-calculated weights based on the 1000G EUR reference panel and protein-coding genes from BED file of Gencode v46. This mode is ideal for users who prefer a streamlined approach. For a more customizable experience, such as using custom BED files, reference panels, and more adjustable parameters, please refer to the {doc}`Customization Guide <../advanced_usage>` guide.
 
-**Note**: This tutorial is designed for 2D ST data. For 3D ST data, please refer to the {doc}`3D Tutorial <../3d_tutorial/human_gastrulation>`.
-
-.. note::
-    
-    Before starting, ensure you have downloaded the necessary reference resources (SNP-gene weights, LD scores, etc.). 
-    `Download gsMap Resources <https://github.com/JianYang-Lab/gsMap>`_
 
 ## Preparation
 
@@ -199,3 +193,9 @@ run_quick_mode(config)
 - **Web Report**: Generated in the `report` folder. Close-up the HTML file in a browser to explore interactive 2D maps and diagnostic plots.
 - **Results**: Spot-level p-values and enrichment results are stored in `spatial_ldsc` and `cauchy_combination`.
 - **Intermediate Files**: Latent representations and marker scores are cached to speed up subsequent analyses on the same dataset.
+
+## See Also
+
+- {doc}`3D Tutorial <../3d_tutorial/human_gastrulation>`: For 3D spatial transcriptomics analysis
+- {doc}`Customization Guide <../advanced_usage>`: For custom SNP-to-gene weights and embeddings
+- {doc}`Scalability <../scalability>`: For performance optimization tips
