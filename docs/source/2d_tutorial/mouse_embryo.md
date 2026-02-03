@@ -106,13 +106,13 @@ gsmap quick-mode \
 
 ````{tab} Python
 ```python
-from gsMap.config import QuickModeConfig
+from gsMap.config import QuickModeConfig, DatasetType
 from gsMap.pipeline import run_quick_mode
 
 config = QuickModeConfig(
     workdir="./gsmap_2d_tutorial/mouse_embryo",
     project_name="E16.5_E1S1",
-    dataset_type="spatial2D",
+    dataset_type=DatasetType.SPATIAL_2D,
     h5ad_path="./mouse_embryo_E16_example_data/ST/E16.5_E1S1.MOSTA.h5ad",
     homolog_file="./gsMap_homologs/mouse_human_homologs.txt",
     w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
@@ -166,13 +166,13 @@ gsmap quick-mode \
 
 ````{tab} Python
 ```python
-from gsMap.config import QuickModeConfig
+from gsMap.config import QuickModeConfig, DatasetType
 from gsMap.pipeline import run_quick_mode
 
 config = QuickModeConfig(
     workdir="./gsmap_2d_tutorial/mouse_embryo",
     project_name="E16.5_E1S1",
-    dataset_type="spatial2D",
+    dataset_type=DatasetType.SPATIAL_2D,
     h5ad_path="./mouse_embryo_E16_example_data/ST/E16.5_E1S1.MOSTA.h5ad",
     homolog_file="./gsMap_homologs/mouse_human_homologs.txt",
     w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",

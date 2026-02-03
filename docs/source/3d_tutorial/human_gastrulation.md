@@ -55,13 +55,13 @@ gsmap quick-mode \
 
 ````{tab} Python
 ```python
-from gsMap.config import QuickModeConfig
+from gsMap.config import QuickModeConfig, DatasetType
 from gsMap.pipeline import run_quick_mode
 
 config = QuickModeConfig(
     workdir="./gsmap_3d_tutorial",
     project_name="human_gastrulation_3d",
-    dataset_type="spatial3D",
+    dataset_type=DatasetType.SPATIAL_3D,
     h5ad_list_file="./Human_Gastrulation_3D/sample_path_list.txt",
     w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
     snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",

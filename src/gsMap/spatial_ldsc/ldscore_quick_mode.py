@@ -654,12 +654,11 @@ class SpatialLDSCProcessor:
             # print('starting jax profiler...')
             # print('starting jax profiler...')
             # jax.profiler.start_trace("/tmp/jax-trace-ldsc")
-            # Auto-detect terminal vs redirected output
-            # When output is redirected, Console will disable progress bar animations
-            is_terminal = sys.stdout.isatty()
+
+            # Rich Console auto-detects terminal/Jupyter environments
             console = Console(soft_wrap=True)
 
-            # Log interval for non-terminal mode (every 10% or at least every 60 seconds)
+            # Log interval for non-interactive mode (every 10% or at least every 60 seconds)
             log_interval_pct = 10
             last_log_pct = 0
             last_log_time = 0
@@ -676,7 +675,6 @@ class SpatialLDSCProcessor:
                 TimeRemainingColumn(),
                 console=console,
                 refresh_per_second=2,
-                disable=not is_terminal  # Disable rich progress bar when not in terminal
             ) as progress:
                 task = progress.add_task(
                     description,
@@ -730,15 +728,15 @@ class SpatialLDSCProcessor:
                             r_to_c_queue=f"{r_to_c}"
                         )
 
-                        # Log progress when output is redirected
-                        if not is_terminal:
+                        # Log progress when output is not interactive (redirected to file)
+                        if not console.is_interactive:
                             current_pct = (n_cells_processed / self.total_cells_to_process) * 100 if self.total_cells_to_process > 0 else 0
                             time_since_last_log = current_time - last_log_time
 
                             # Log every 10% or every 60 seconds
                             if current_pct >= last_log_pct + log_interval_pct or time_since_last_log >= 60:
                                 elapsed = current_time - start_time
-                                logger.info(
+                                console.log(
                                     f"Progress: {n_cells_processed:,}/{self.total_cells_to_process:,} cells "
                                     f"({current_pct:.1f}%) | {n_chunks_processed}/{self.total_chunks} chunks | "
                                     f"Speed: {speed_10s:,.0f} cells/s | Elapsed: {elapsed:.1f}s"

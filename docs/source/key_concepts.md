@@ -28,14 +28,14 @@ gsmap quick-mode \
 
 ````{tab} Python
 ```python
-from gsMap.config import QuickModeConfig
+from gsMap.config import QuickModeConfig, DatasetType
 from gsMap.pipeline import run_quick_mode
 
 config = QuickModeConfig(
     workdir="./output",
     project_name="my_project",
     h5ad_path="sample1.h5ad",
-    dataset_type="spatial2D",
+    dataset_type=DatasetType.SPATIAL_2D,
     trait_name="Trait1",
     sumstats_file="trait1.sumstats.gz",
     snp_gene_weight_adata_path="./resources/snp_gene_weights.h5ad",
