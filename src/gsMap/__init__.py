@@ -4,7 +4,7 @@ import logging
 from importlib.metadata import version
 
 # Package name and version
-package_name = "gsMap"
+package_name = "gsMap3D"
 __version__ = version(package_name)
 
 # Set up logging
