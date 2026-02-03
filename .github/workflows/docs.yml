@@ -2,14 +2,24 @@ name: docs
 
 on:
   push:
+    branches:
+      - gsMap3D
     paths:
       - "docs/**"
-      - "visualization_web_docs/**"
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
-  deploy_docs:
-    runs-on: self-hosted
-
+  build:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,37 +32,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      # --- Build 'docs' documentation ---
-      - name: Install 'docs' dependencies
+      - name: Install dependencies
         run: |
           uv pip install --system '.[doc]'
 
-      - name: Build 'docs' documentation
+      - name: Build documentation
         working-directory: ./docs
         run: |
           make html
 
-      - name: Deploy 'docs' to website_docs
-        run: |
-          DOCS_OUTPUT_DIR="/mnt/website_docs/gsmap"  # Adjust if you want a different subfolder
-          mkdir -p "$DOCS_OUTPUT_DIR"
-          rsync -avz ./docs/build/html/ "$DOCS_OUTPUT_DIR/"
-          echo "Documentation for 'docs' deployed to: $DOCS_OUTPUT_DIR"
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
 
-#      # --- Build 'visualization_web_docs' documentation ---
-#      - name: Install 'visualization_web_docs' dependencies
-#        working-directory: ./visualization_web_docs
-#        run: |
-#          python -m pip install -r requirements.txt
-#
-#      - name: Build 'visualization_web_docs' documentation
-#        working-directory: ./visualization_web_docs
-#        run: |
-#          make html
-#
-#      - name: Deploy 'visualization_web_docs' to website_docs
-#        run: |
-#          DOCS_OUTPUT_DIR="/mnt/website_docs/visualization_web_docs" # Deploy to a separate folder
-#          mkdir -p "$DOCS_OUTPUT_DIR"
-#          rsync -avz ./visualization_web_docs/build/html/ "$DOCS_OUTPUT_DIR/"
-#          echo "Documentation for 'visualization_web_docs' deployed to: $DOCS_OUTPUT_DIR"
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './docs/build/html'
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
