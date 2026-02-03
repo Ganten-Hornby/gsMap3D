@@ -94,12 +94,36 @@ In the generated 3D report, you can observe how different traits map to specific
 
 ### Output Description
 
-- **Web Report**: Generated in the `report` folder. Open the HTML file in a browser to explore interactive 3D maps and diagnostic plots.
-- **Results**: Spot-level p-values and enrichment results are stored in `spatial_ldsc` and `cauchy_combination`.
-- **Intermediate Files**: Latent representations and marker scores are cached to speed up subsequent analyses on the same dataset.
+The pipeline generates two main directories:
+
+**`report_data/`** - Data files for downstream analysis:
+- `spot_metadata.csv` - Spot-level coordinates and annotations
+- `cauchy_results.csv` - Cauchy combination test results
+- `umap_data.csv` - UMAP coordinates for visualization
+- `gene_list.csv` - List of genes used in analysis
+- `gss_stats/` - Gene-trait correlation statistics
+- `manhattan_data/` - Manhattan plot data per trait
+- `spatial_3d/` - 3D spatial data (for `spatial3D` datasets)
+
+**`gsmap_web_report/`** - Self-contained interactive web report:
+- `index.html` - Main report entry point
+- `spatial_plots/` - Static LDSC spatial plots
+- `gene_diagnostic_plots/` - Gene expression diagnostics
+- `annotation_plots/` - Annotation-based plots
+- `spatial_3d/` - Interactive 3D HTML visualizations
+
+**Viewing the Report:**
+
+1. **Remote Server**: Start a temporary web server:
+   ```bash
+   gsmap report-view ./gsmap_web_report --port 8080 --no-browser
+   ```
+
+2. **Local PC**: Copy the `gsmap_web_report` folder to your machine and open `index.html` in a browser.
 
 ## See Also
 
+- {doc}`Output Files Reference <../output_files>`: Detailed documentation of all output files
 - {doc}`2D Tutorial <../2d_tutorial/mouse_embryo>`: For 2D spatial transcriptomics analysis
 - {doc}`Customization Guide <../advanced_usage>`: For custom SNP-to-gene weights and embeddings
 - {doc}`Scalability <../scalability>`: For performance optimization tips

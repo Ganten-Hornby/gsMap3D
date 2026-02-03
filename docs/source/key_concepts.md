@@ -290,3 +290,10 @@ For `spatial3D` datasets, `gsMap3D` can search for homogeneous neighbors across 
     Key in `adata.obsm` for spatial niche embedding (default: `emb_niche`).
 - **`--use-gpu` / `--no-gpu`**:
     Enable or disable JAX GPU acceleration.
+
+## See Also
+
+- {doc}`Output Files Reference <output_files>`: Detailed documentation of all output files and their formats
+- {doc}`2D Tutorial <2d_tutorial/index>`: Step-by-step guide for 2D spatial transcriptomics
+- {doc}`3D Tutorial <3d_tutorial/index>`: Step-by-step guide for 3D spatial transcriptomics
+- {doc}`CLI Reference <cli_reference>`: Complete command-line reference

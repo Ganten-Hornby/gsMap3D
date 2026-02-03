@@ -44,15 +44,26 @@ Explore gsMap3D
        :doc:`Go to Key Concepts <key_concepts>`
 
    * - **Tutorials**
-       
+
        Step-by-step guides for 2D and 3D spatial data.
-       
+
        :doc:`2D Tutorial <2d_tutorial/index>` | :doc:`3D Tutorial <3d_tutorial/index>`
-     - **Customization Guide**
-       
+     - **Output Files**
+
+       Understand the output directory structure and file formats.
+
+       :doc:`Go to Output Files Reference <output_files>`
+
+   * - **Customization Guide**
+
        Customize SNP-to-gene linking, use custom embeddings, and optimize performance.
-       
+
        :doc:`Go to Customization Guide <advanced_usage>`
+     - **Scalability**
+
+       Optimize performance for large-scale datasets.
+
+       :doc:`Go to Scalability Guide <scalability>`
 
 Overview of ``gsMap3D`` Method
 -----------------------------
@@ -105,6 +116,7 @@ If you use ``gsMap`` in your studies, please cite:
     key_concepts
     2D Mapping <2d_tutorial/index>
     3D Mapping <3d_tutorial/index>
+    output_files
     advanced_usage
     scalability
     ldscore_weight_matrix
