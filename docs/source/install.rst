@@ -89,3 +89,59 @@ Verify the installation by checking the version:
 .. code-block:: bash
 
     gsmap --version
+
+GPU Support (Optional)
+----------------------
+
+**gsMap3D** leverages GPU acceleration through JAX and PyTorch for significantly faster computations. If you want to enable GPU support, follow these steps.
+
+1. **Check your CUDA version**:
+
+   First, verify your CUDA installation and version:
+
+   .. code-block:: bash
+
+       nvcc --version
+
+   This will display output like ``Cuda compilation tools, release 12.x`` or ``release 13.x``.
+
+2. **Install JAX with GPU support**:
+
+   Based on your CUDA version, install the appropriate JAX GPU package:
+
+   **For CUDA 12.x:**
+
+   .. code-block:: bash
+
+       uv pip install gsMap3D "jax[cuda12]"
+
+   **For CUDA 13.x:**
+
+   .. code-block:: bash
+
+       uv pip install gsMap3D "jax[cuda13]"
+
+   .. note::
+
+       - The JAX team recommends migrating to CUDA 13 wheels for future compatibility
+       - For more details, see the `JAX Installation Guide <https://docs.jax.dev/en/latest/installation.html>`_
+
+3. **Verify GPU support**:
+
+   After installation, verify that both JAX and PyTorch can detect your GPU:
+
+   **Verify JAX GPU:**
+
+   .. code-block:: bash
+
+       python -c "import jax; print('JAX devices:', jax.devices())"
+
+   Expected output should show your GPU device(s), e.g., ``[CudaDevice(id=0)]``.
+
+   **Verify PyTorch GPU:**
+
+   .. code-block:: bash
+
+       python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
+
+   Expected output should show ``CUDA available: True`` and your GPU name.
