@@ -120,7 +120,8 @@ config = QuickModeConfig(
     annotation="annotation",
     spatial_key="spatial",
     data_layer="count",
-    sumstats_config_dict={"IQ": "./mouse_embryo_E16_example_data/GWAS/IQ_NG_2018.sumstats.gz"},
+    trait_name="IQ",
+    sumstats_file="./mouse_embryo_E16_example_data/GWAS/IQ_NG_2018.sumstats.gz",
     plot_origin="lower"
 )
 
@@ -177,11 +178,7 @@ config = QuickModeConfig(
     w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
     snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
     annotation="annotation",
-    sumstats_config_dict={
-        "IQ": "./mouse_embryo_E16_example_data/GWAS/IQ_NG_2018.sumstats.gz",
-        "Height": "./mouse_embryo_E16_example_data/GWAS/GIANT_EUR_Height_2022_Nature.sumstats.gz",
-        "MCHC": "./mouse_embryo_E16_example_data/GWAS/BCX2_MCHC_EA_GWAMA.sumstats.gz"
-    }
+    sumstats_config_file="./mouse_embryo_E16_example_data/GWAS/gwas_config.yaml"
 )
 
 run_quick_mode(config)

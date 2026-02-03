@@ -234,6 +234,10 @@ def process_h5ad_inputs(config, input_options):
                     sample_h5ad_dict[sample_name] = h5ad_path
 
         elif processing_type == 'list':
+            # Handle single string or Path input by wrapping in a list
+            if isinstance(field_value, (str, Path)):
+                field_value = [field_value]
+
             logger.info(f"Using {option_name} with {len(field_value)} files")
             for h5ad_path in field_value:
                 h5ad_path = Path(h5ad_path)

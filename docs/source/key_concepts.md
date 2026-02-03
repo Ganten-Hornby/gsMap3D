@@ -36,7 +36,8 @@ config = QuickModeConfig(
     project_name="my_project",
     h5ad_path="sample1.h5ad",
     dataset_type="spatial2D",
-    sumstats_config_dict={"Trait1": "trait1.sumstats.gz"},
+    trait_name="Trait1",
+    sumstats_file="trait1.sumstats.gz",
     snp_gene_weight_adata_path="./resources/snp_gene_weights.h5ad",
     w_ld_dir="./resources/w_ld"
 )
