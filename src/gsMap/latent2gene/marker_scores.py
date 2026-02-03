@@ -1055,8 +1055,46 @@ class MarkerScoreCalculator:
             niche_sims = niche_sims[row_order]
         cell_indices_sorted = cell_indices[row_order]
 
-        # Save neighbor indices and similarity matrices to obsm
-        # Initialize matrices if they don't exist
+        # Save homogeneous neighbor data to adata
+        has_real_niche_embedding = self.config.latent_representation_niche is not None
+        self._save_homogeneous_data_to_adata(
+            adata=adata,
+            neighbor_indices=neighbor_indices,
+            cell_sims=cell_sims,
+            niche_sims=niche_sims,
+            cell_indices_sorted=cell_indices_sorted,
+            has_real_niche_embedding=has_real_niche_embedding
+        )
+
+        # warning for cells not find homo neighbors
+        homo_neighbor_count = np.count_nonzero(cell_sims > 0, axis=1)
+        zero_homo_neighbor_mask = (homo_neighbor_count <= 5)
+        if np.any(zero_homo_neighbor_mask):
+            logger.warning(f"Cell type {cell_type}: {zero_homo_neighbor_mask.sum()} cells can't find enough homogeneous neighbors")
+
+        return neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells
+
+    def _save_homogeneous_data_to_adata(
+        self,
+        adata: ad.AnnData,
+        neighbor_indices: np.ndarray,
+        cell_sims: np.ndarray,
+        niche_sims: np.ndarray | None,
+        cell_indices_sorted: np.ndarray,
+        has_real_niche_embedding: bool
+    ):
+        """
+        Save homogeneous neighbor data to adata obsm and obs.
+
+        Args:
+            adata: AnnData object to save data to
+            neighbor_indices: (n_cells, k) array of neighbor indices
+            cell_sims: (n_cells, k) array of cell similarity scores
+            niche_sims: (n_cells, k) array of niche similarity scores or None
+            cell_indices_sorted: (n_cells,) array of cell indices in sorted order
+            has_real_niche_embedding: Whether real niche embedding was provided
+        """
+        # Initialize obsm matrices if they don't exist
         if 'gsMap_homo_indices' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_indices'].shape[1] != neighbor_indices.shape[1]):
             adata.obsm['gsMap_homo_indices'] = np.zeros((adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype)
         if 'gsMap_homo_cell_sims' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_cell_sims'].shape[1] != neighbor_indices.shape[1]):
@@ -1067,19 +1105,36 @@ class MarkerScoreCalculator:
         adata.obsm['gsMap_homo_cell_sims'][cell_indices_sorted] = cell_sims
 
         # Only store niche_sims if niche embedding was provided (not dummy)
-        has_real_niche_embedding = self.config.latent_representation_niche is not None
         if has_real_niche_embedding and niche_sims is not None:
             if 'gsMap_homo_niche_sims' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_niche_sims'].shape[1] != neighbor_indices.shape[1]):
                 adata.obsm['gsMap_homo_niche_sims'] = np.zeros((adata.n_obs, niche_sims.shape[1]), dtype=niche_sims.dtype)
             adata.obsm['gsMap_homo_niche_sims'][cell_indices_sorted] = niche_sims
 
-        # warning for cells not find homo neighbors
-        homo_neighbor_count = np.count_nonzero(cell_sims, axis=1)
-        zero_homo_neighbor_mask = (homo_neighbor_count <=5)
-        if np.any(zero_homo_neighbor_mask):
-            logger.warning(f"Cell type {cell_type}: {zero_homo_neighbor_mask.sum()} cells can't find enough homogeneous neighbors")
+        # Initialize obs columns if they don't exist
+        if 'gsMap_homo_neighbor_count' not in adata.obs.columns:
+            adata.obs['gsMap_homo_neighbor_count'] = 0
+        if 'gsMap_homo_cell_sims_median' not in adata.obs.columns:
+            adata.obs['gsMap_homo_cell_sims_median'] = np.nan
+        if has_real_niche_embedding and 'gsMap_homo_niche_sims_median' not in adata.obs.columns:
+            adata.obs['gsMap_homo_niche_sims_median'] = np.nan
 
-        return neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells
+        # Calculate statistics for each cell (only consider valid neighbors where cell_sims > 0)
+        valid_mask = cell_sims > 0  # (n_cells, k) boolean mask
+
+        # Count of valid homogeneous neighbors
+        homo_neighbor_count = valid_mask.sum(axis=1)
+        adata.obs.loc[adata.obs.index[cell_indices_sorted], 'gsMap_homo_neighbor_count'] = homo_neighbor_count
+
+        # Median of cell similarity (only for valid neighbors)
+        cell_sims_masked = np.where(valid_mask, cell_sims, np.nan)
+        cell_sims_median = np.nanmedian(cell_sims_masked, axis=1)
+        adata.obs.loc[adata.obs.index[cell_indices_sorted], 'gsMap_homo_cell_sims_median'] = cell_sims_median
+
+        # Median of niche similarity (only for valid neighbors, only if niche embedding provided)
+        if has_real_niche_embedding and niche_sims is not None:
+            niche_sims_masked = np.where(valid_mask, niche_sims, np.nan)
+            niche_sims_median = np.nanmedian(niche_sims_masked, axis=1)
+            adata.obs.loc[adata.obs.index[cell_indices_sorted], 'gsMap_homo_niche_sims_median'] = niche_sims_median
 
     def _calculate_marker_scores_by_cell_type(
         self,
