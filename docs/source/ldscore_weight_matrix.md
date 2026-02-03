@@ -249,7 +249,7 @@ pipeline.run()
 
 `````
 
-### Use in gsMap
+### Use in gsMap3D
 
 After generating the weight matrix, use it in `gsmap quick-mode`:
 
@@ -331,7 +331,7 @@ pipeline.run()
 
 `````
 
-### Use in gsMap
+### Use in gsMap3D
 
 ```bash
 gsmap quick-mode \

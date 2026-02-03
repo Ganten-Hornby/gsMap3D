@@ -5,7 +5,7 @@ The `Quick Mode` option provides a simplified and efficient way to execute the e
 
 ## Preparation
 
-Make sure you have {doc}`installed <../install>` the `gsMap` package before proceeding.
+Make sure you have {doc}`installed <../install>` the `gsMap3D` package before proceeding.
 
 ### 1. Download Dependencies
 
@@ -66,7 +66,7 @@ mouse_embryo_E16_example_data/
     └── E16.5_E1S1.MOSTA.h5ad
 ```
 
-## Running `gsMap` in Quick Mode
+## Running `gsMap3D` in Quick Mode
 
 <span style="color:#31a354"> Required memory: ~80G (for ~120K spots) </span>
 
@@ -86,7 +86,7 @@ Now run the analysis using `gsmap quick-mode`:
 # Create output directory
 mkdir -p ./gsmap_2d_tutorial/mouse_embryo
 
-# Run gsMap in quick mode
+# Run gsMap3D in quick mode
 gsmap quick-mode \
     --workdir "./gsmap_2d_tutorial/mouse_embryo" \
     --project-name "E16.5_E1S1" \

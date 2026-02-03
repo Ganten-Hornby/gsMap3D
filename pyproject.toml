@@ -3,7 +3,7 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "gsMap"
+name = "gsMap3D"
 authors = [{ name = "liyang", email = "songliyang@westlake.edu.cn" },
     { name = "wenhao", email = "chenwenhao@westlake.edu.cn" }]
 readme = "README.md"
@@ -94,9 +94,9 @@ cuda = [
 ]
 
 [project.urls]
-Home = "https://github.com/JianYang-Lab/gsMap"
-Documentation = "https://yanglab.westlake.edu.cn/gsmap/document/software"
-Website = "https://yanglab.westlake.edu.cn/gsmap/home"
+Home = "https://github.com/Ganten-Hornby/gsMap3D"
+Documentation = "https://yanglab.westlake.edu.cn/gsmap3d/docs"
+Website = "https://yanglab.westlake.edu.cn/gsmap3d"
 
 [project.scripts]
 gsmap = "gsMap.cli:app"

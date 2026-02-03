@@ -346,7 +346,7 @@ def main(
        gsmap spatial-ldsc ...
        gsmap report ...
 
-    For detailed documentation, visit: https://github.com/JianYang-Lab/gsMap
+    For detailed documentation, visit: https://yanglab.westlake.edu.cn/gsmap3d/docs
     """
     pass
 

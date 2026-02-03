@@ -95,7 +95,7 @@ This directory contains the gene specificity scores (GSS) computed for each spot
 
 ### Check GSS
 
-If you want to check the GSS values, gsMap provides the `load_marker_scores_memmap_format` Python API, which returns an AnnData object with all spot and gene metadata:
+If you want to check the GSS values, gsMap3D provides the `load_marker_scores_memmap_format` Python API, which returns an AnnData object with all spot and gene metadata:
 
 ```python
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
@@ -375,7 +375,7 @@ Contains comprehensive metadata about the analysis:
   "project_name": "my_project",
   "dataset_type": "spatial3D",
   "traits": ["Height", "IQ"],
-  "samples": ["sample1", "sample2", ...,],
+  "samples": ["sample1", "sample2", ...],
   "annotations": ["layer_guess"],
   "is_3d": true,
   "has_3d_widget": true,
