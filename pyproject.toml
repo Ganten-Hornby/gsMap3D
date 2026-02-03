@@ -17,7 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
 ]
-version = "0.1.0.a2"
+version = "0.1.0a3"
 description = "Genetically informed spatial mapping of cells for complex traits"
 dependencies = [
     "numpy ~= 2.2",
