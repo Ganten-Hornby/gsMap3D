@@ -416,6 +416,8 @@ Then access the report at `http://your-server:8080` or set up SSH port forwardin
 ssh -L 8080:localhost:8080 user@remote-server
 ```
 
+### Demonstration
+A demonstration report can be found [here](https://yanglab.westlake.edu.cn/gsmap3d-report).
 
 ---
 
