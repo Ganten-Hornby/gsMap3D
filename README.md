@@ -58,7 +58,7 @@ Please see our [Documentation](https://yanglab.westlake.edu.cn/gsmap3d/docs) and
 
 ## 📝 How to Cite
 
-If you use `gsMap` in your studies, please cite:
+If you use `gsMap3D` in your studies, please cite:
 
 - **gsMap3D**: *to be updated.*
 
