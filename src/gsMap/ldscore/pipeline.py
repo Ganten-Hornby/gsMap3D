@@ -141,7 +141,7 @@ class LDScorePipeline:
         if self.config.mapping_type == 'bed':
             # Use pyranges to read standard BED file
             try:
-                bed_pr = pr.read_bed(self.config.mapping_file)
+                bed_pr = pr.read_bed(str(self.config.mapping_file))
                 bed_df = bed_pr.df
 
                 # Convert pyranges BED format to expected format
