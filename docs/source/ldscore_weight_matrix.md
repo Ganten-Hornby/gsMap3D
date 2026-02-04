@@ -22,46 +22,6 @@ Before running this command, you need:
 
 3. **SNP-to-Gene Mapping File**: A BED file defining which SNPs map to which genes/features.
 
-## Preparation
-
-### Download Example Data
-
-To follow this tutorial, download the example data:
-
-```bash
-wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_ldscore_weight_matrix_example_data.tar.gz
-tar -xvzf gsMap_ldscore_weight_matrix_example_data.tar.gz
-```
-
-Directory structure:
-
-```bash
-tree -L 2 gsMap_ldscore_weight_matrix_example_data/
-
-gsMap_ldscore_weight_matrix_example_data/
-├── genome_annotation
-│   ├── enhancer
-│   └── gencode
-├── hapmap3_snps
-│   ├── hm3.snp
-│   └── hm.{chr}.snp
-└── LD_Reference_Panel
-    └── 1000G_EUR_Phase3_plink
-```
-
-### Set Up Environment Variables
-
-```bash
-# Define the data directory
-LDSCORE_DATA_DIR="./gsMap_ldscore_weight_matrix_example_data"
-
-# Define paths
-PLINK_REF="${LDSCORE_DATA_DIR}/LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
-HM3_SNPS="${LDSCORE_DATA_DIR}/hapmap3_snps/hm3.snp"
-GENCODE_BED="${LDSCORE_DATA_DIR}/genome_annotation/gencode/gencode_v46lift37_protein_coding.bed"
-ENHANCER_BED="${LDSCORE_DATA_DIR}/genome_annotation/enhancer/by_tissue/BRN/ABC_roadmap_merged.bed"
-```
-
 ## Input File Formats
 
 ### SNP-to-Gene BED File
@@ -110,8 +70,6 @@ Standard PLINK binary files with chromosome-specific naming:
 - `1000G.EUR.QC.{chr}.fam`
 
 Where `{chr}` is replaced by chromosome number (1-22).
-
-
 
 ## Parameters
 
@@ -178,7 +136,34 @@ The command produces an AnnData file (`{output_filename}.h5ad`) with the followi
 - **var**: Feature metadata
   - Index: Feature/gene names
 
-## Example 1: TSS-based Mapping with Gencode Annotation
+## Examples
+
+### Download Example Data
+
+To follow the examples below, first download the example data:
+
+```bash
+wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_ldscore_weight_matrix_example_data.tar.gz
+tar -xvzf gsMap_ldscore_weight_matrix_example_data.tar.gz
+```
+
+Directory structure:
+
+```bash
+tree -L 2 gsMap_ldscore_weight_matrix_example_data/
+
+gsMap_ldscore_weight_matrix_example_data/
+├── genome_annotation
+│   ├── enhancer
+│   └── gencode
+├── hapmap3_snps
+│   ├── hm3.snp
+│   └── hm.{chr}.snp
+└── LD_Reference_Panel
+    └── 1000G_EUR_Phase3_plink
+```
+
+### Example 1: TSS-based Mapping with Gencode Annotation
 
 This example creates weights based on proximity to transcription start sites (TSS) using Gencode protein-coding genes with a 50kb window.
 
@@ -249,9 +234,7 @@ pipeline.run()
 
 `````
 
-### Use in gsMap3D
-
-After generating the weight matrix, use it in `gsmap quick-mode`:
+**Use in gsMap3D:**
 
 ```bash
 gsmap quick-mode \
@@ -260,7 +243,7 @@ gsmap quick-mode \
     ...
 ```
 
-## Example 2: Enhancer-based Mapping with Center Strategy
+### Example 2: Enhancer-based Mapping with Center Strategy
 
 This example creates weights using brain-specific enhancer-gene links from the ABC model, mapping SNPs to the closest enhancer center.
 
@@ -331,7 +314,7 @@ pipeline.run()
 
 `````
 
-### Use in gsMap3D
+**Use in gsMap3D:**
 
 ```bash
 gsmap quick-mode \
@@ -339,7 +322,6 @@ gsmap quick-mode \
     --w-ld-dir "/path/to/w_ld" \
     ...
 ```
-
 
 ## Available Enhancer Annotations
 
@@ -363,9 +345,6 @@ Each tissue folder contains:
 - `ABC.bed`: Activity-by-Contact model predictions
 - `roadmap.bed`: Roadmap Epigenomics enhancers
 - `ABC_roadmap_merged.bed`: Combined ABC and Roadmap annotations
-
-
-
 
 ## Troubleshooting
 
