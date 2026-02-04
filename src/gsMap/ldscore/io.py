@@ -6,6 +6,7 @@ leveraging pandas-plink for efficient I/O and standardizing data with NumPy.
 """
 
 import logging
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -80,7 +81,10 @@ class PlinkBEDReader:
         # Load using pandas-plink
         # This returns an xarray DataArray with dask backing (lazy loading)
         # Shape is (sample, variant)
-        self.G = read_plink1_bin(bed_path, bim_path, fam_path, verbose=False)
+        # Suppress FutureWarning about delim_whitespace deprecation (from pandas-plink internals)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*delim_whitespace.*", category=FutureWarning)
+            self.G = read_plink1_bin(bed_path, bim_path, fam_path, verbose=False)
 
         # Initial dimensions
         self.n_original = self.G.sizes['sample']
