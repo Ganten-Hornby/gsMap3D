@@ -797,7 +797,7 @@ wheels = [
 
 [[package]]
 name = "gsmap3d"
-version = "0.1.0a1"
+version = "0.1.0a3"
 source = { editable = "." }
 dependencies = [
     { name = "anndata" },
