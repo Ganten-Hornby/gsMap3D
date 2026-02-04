@@ -52,7 +52,7 @@ To evaluate associations between traits and spatial regions, `gsMap3D` aggregate
 ---
 
 ## 📚 Documentation
-Please see our [Documentation](https://yanglab.westlake.edu.cn/gsmap3d/docs) and [Website](https://yanglab.westlake.edu.cn/gsmap3d).
+Please see our [Documentation](https://yanglab.westlake.edu.cn/gsmap3d-portal/docs) and [Website](https://yanglab.westlake.edu.cn/gsmap3d-portal).
 
 ---
 

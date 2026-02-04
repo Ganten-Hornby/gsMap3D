@@ -372,3 +372,6 @@ $ gsmap report-view [OPTIONS] REPORT_PATH
 * `--port INTEGER`: Port to serve the report on  [default: 8080]
 * `--no-browser`: Don&#x27;t automatically open browser
 * `--help`: Show this message and exit.
+
+**Demonstration**:  
+A demonstration report can be found [here](https://yanglab.westlake.edu.cn/gsmap3d-report).

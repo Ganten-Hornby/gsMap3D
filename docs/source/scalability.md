@@ -78,40 +78,7 @@ The first run may be slower due to JIT compilation. Subsequent runs will be fast
 ## GSS calculation
 
 gsMap3D implements a three-stage parallel message queue pipeline for the Gene Specificity Score (GSS) calculation:
-
-```{mermaid}
-graph LR
-    subgraph "Stage 1: Gene Rank Reading"
-        R1[Reader 1]
-        R2[Reader 2]
-        R3[Reader ...]
-    end
-
-    subgraph "Stage 2: GSS Calculation"
-        C1[Compute 1]
-        C2[Compute 2]
-        C3[Compute ...]
-    end
-
-    subgraph "Stage 3: Write GSS"
-        W1[Writer 1]
-        W2[Writer 2]
-        W3[Writer ...]
-    end
-
-    R1 --> Q1[Rank→Compute Queue]
-    R2 --> Q1
-    R3 --> Q1
-    Q1 --> C1
-    Q1 --> C2
-    Q1 --> C3
-    C1 --> Q2[Compute→Write Queue]
-    C2 --> Q2
-    C3 --> Q2
-    Q2 --> W1
-    Q2 --> W2
-    Q2 --> W3
-```
+![jax](./_static/jax.png)
 
 ### Pipeline Stages
 
