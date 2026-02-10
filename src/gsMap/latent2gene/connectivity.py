@@ -40,7 +40,7 @@ def find_spatial_neighbors_with_slices(
     high_quality_cell_mask: np.ndarray = None,
     k_central: int = 101,
     k_adjacent: int = 50,
-    n_adjacent_slices: int = 1
+    n_adjacent_slices: int = 1,
 ) -> tuple[np.ndarray, dict[int, np.ndarray]]:
     """
     Find spatial neighbors with slice-aware search for 3D data.
@@ -74,7 +74,9 @@ def find_spatial_neighbors_with_slices(
     if high_quality_cell_mask is None:
         high_quality_cell_mask = np.ones(n_cells, dtype=bool)
 
-    logger.debug(f"Finding neighbors: {high_quality_cell_mask.sum()}/{n_cells} cells are high quality")
+    logger.debug(
+        f"Finding neighbors: {high_quality_cell_mask.sum()}/{n_cells} cells are high quality"
+    )
 
     query_cell_indices = np.where(query_cell_mask)[0]
     n_query_cells = len(query_cell_indices)
@@ -93,15 +95,17 @@ def find_spatial_neighbors_with_slices(
         _, neighbor_local_indices = kdtree.query(
             coords[query_cell_mask],
             k=min(k_central, len(neighbor_pool_indices)),
-            workers=-1  # Use all available cores
+            workers=-1,  # Use all available cores
         )
         # Convert local indices to global indices
         spatial_neighbors = neighbor_pool_indices[neighbor_local_indices]
         return spatial_neighbors, {}
 
     # Slice-aware neighbor search with fixed-size arrays
-    logger.info(f"Performing slice-aware neighbor search: k_central={k_central}, "
-                f"k_adjacent={k_adjacent}, n_adjacent_slices={n_adjacent_slices}")
+    logger.info(
+        f"Performing slice-aware neighbor search: k_central={k_central}, "
+        f"k_adjacent={k_adjacent}, n_adjacent_slices={n_adjacent_slices}"
+    )
 
     query_cell_slice_ids = slice_ids[query_cell_mask]
     query_cell_coords = coords[query_cell_mask]
@@ -114,7 +118,9 @@ def find_spatial_neighbors_with_slices(
 
     # Get unique slices and create mapping for all query cells
     unique_slice_ids = np.unique(query_cell_slice_ids)
-    slice_to_query_cell_indices = {s: np.where(query_cell_slice_ids == s)[0] for s in unique_slice_ids}
+    slice_to_query_cell_indices = {
+        s: np.where(query_cell_slice_ids == s)[0] for s in unique_slice_ids
+    }
 
     # Create mapping for neighbor pool cells per slice (for building KDTrees)
     neighbor_pool_per_slice = {}
@@ -128,7 +134,9 @@ def find_spatial_neighbors_with_slices(
         slice_neighbor_pool_mask = neighbor_pool_slice_ids == slice_id
         slice_neighbor_pool_local_indices = np.where(slice_neighbor_pool_mask)[0]
         neighbor_pool_per_slice[slice_id] = slice_neighbor_pool_local_indices
-        logger.debug(f"Slice {slice_id}: {len(slice_neighbor_pool_local_indices)} high quality cells")
+        logger.debug(
+            f"Slice {slice_id}: {len(slice_neighbor_pool_local_indices)} high quality cells"
+        )
 
     # Pre-compute KDTree for each slice using neighbor pool cells only
     # Note: KDTree can handle cases where k > number of points in tree
@@ -145,10 +153,11 @@ def find_spatial_neighbors_with_slices(
             slice_kdtrees[slice_id] = (kdtree, neighbor_pool_indices[slice_neighbor_pool_local])
 
             if len(slice_neighbor_pool_local) < max(k_central, k_adjacent):
-                logger.warning(f"Slice {slice_id} has only {len(slice_neighbor_pool_local)} high quality cells, "
-                             f"which is less than required k={max(k_central, k_adjacent)}. "
-                             # f"Some neighbors will be invalid (-1)."
-                               )
+                logger.warning(
+                    f"Slice {slice_id} has only {len(slice_neighbor_pool_local)} high quality cells, "
+                    f"which is less than required k={max(k_central, k_adjacent)}. "
+                    # f"Some neighbors will be invalid (-1)."
+                )
 
     # Build a mapping of slice_id -> list of adjacent slice_ids to search
     # This ensures all slices search the same total number of adjacent slices
@@ -173,7 +182,9 @@ def find_spatial_neighbors_with_slices(
         if len(adjacent_slices) < target_count:
             # Search deeper in available directions
             extra_offset = n_adjacent_slices + 1
-            while len(adjacent_slices) < target_count and extra_offset <= max(max_slice_id - min_slice_id, 10):
+            while len(adjacent_slices) < target_count and extra_offset <= max(
+                max_slice_id - min_slice_id, 10
+            ):
                 neg_slice = slice_id - extra_offset
                 pos_slice = slice_id + extra_offset
 
@@ -193,13 +204,17 @@ def find_spatial_neighbors_with_slices(
 
         # Sort adjacent slices: first by offset (closer slices first), then by direction
         # This maintains consistency: [offset=1,dir=-1], [offset=1,dir=1], [offset=2,dir=-1], [offset=2,dir=1], ...
-        adjacent_slices.sort(key=lambda x: (x[1], -x[2]))  # Sort by offset, then direction (-1 before 1)
+        adjacent_slices.sort(
+            key=lambda x: (x[1], -x[2])
+        )  # Sort by offset, then direction (-1 before 1)
 
         slice_adjacent_mapping[slice_id] = adjacent_slices
 
         if len(adjacent_slices) < target_count:
-            logger.warning(f"Slice {slice_id} only has {len(adjacent_slices)} adjacent slices available "
-                         f"(target: {target_count}). Some neighbor slots will remain empty.")
+            logger.warning(
+                f"Slice {slice_id} only has {len(adjacent_slices)} adjacent slices available "
+                f"(target: {target_count}). Some neighbor slots will remain empty."
+            )
 
     # Log the adjacent slice mapping for verification
     for slice_id in sorted(slice_adjacent_mapping.keys()):
@@ -215,19 +230,25 @@ def find_spatial_neighbors_with_slices(
 
             # Central slice neighbors (fixed k_central)
             central_kdtree, central_neighbor_pool_global_indices = slice_kdtrees[slice_id]
-            _, central_neighbor_local_indices = central_kdtree.query(query_coords, k=k_central, workers=-1)
+            _, central_neighbor_local_indices = central_kdtree.query(
+                query_coords, k=k_central, workers=-1
+            )
 
             # Handle invalid indices returned by KDTree when k > number of points in tree
             # KDTree returns index >= tree_size for invalid slots
             n_central_pool_cells = len(central_neighbor_pool_global_indices)
             # Initialize with -1 (invalid)
-            central_neighbor_global_indices = np.full_like(central_neighbor_local_indices, -1, dtype=np.int32)
+            central_neighbor_global_indices = np.full_like(
+                central_neighbor_local_indices, -1, dtype=np.int32
+            )
             # Create mask for valid indices (< tree size)
             central_valid_mask = central_neighbor_local_indices < n_central_pool_cells
             # Map valid local indices to global indices
-            central_neighbor_global_indices[central_valid_mask] = central_neighbor_pool_global_indices[
-                central_neighbor_local_indices[central_valid_mask]
-            ]
+            central_neighbor_global_indices[central_valid_mask] = (
+                central_neighbor_pool_global_indices[
+                    central_neighbor_local_indices[central_valid_mask]
+                ]
+            )
             spatial_neighbors[query_cells_on_slice, :k_central] = central_neighbor_global_indices
 
             # Adjacent slices - use the pre-computed mapping
@@ -243,17 +264,28 @@ def find_spatial_neighbors_with_slices(
                     # We have a slice to search for this slot
                     adjacent_slice_id, _, _ = adjacent_slices_to_search[slot_idx]
 
-                    adjacent_kdtree, adjacent_neighbor_pool_global_indices = slice_kdtrees[adjacent_slice_id]
-                    _, adjacent_neighbor_local_indices = adjacent_kdtree.query(query_coords, k=k_adjacent, workers=-1)
+                    adjacent_kdtree, adjacent_neighbor_pool_global_indices = slice_kdtrees[
+                        adjacent_slice_id
+                    ]
+                    _, adjacent_neighbor_local_indices = adjacent_kdtree.query(
+                        query_coords, k=k_adjacent, workers=-1
+                    )
 
                     # Handle invalid indices for adjacent slices
                     n_adjacent_pool_cells = len(adjacent_neighbor_pool_global_indices)
-                    adjacent_neighbor_global_indices = np.full_like(adjacent_neighbor_local_indices, -1, dtype=np.int32)
+                    adjacent_neighbor_global_indices = np.full_like(
+                        adjacent_neighbor_local_indices, -1, dtype=np.int32
+                    )
                     adjacent_valid_mask = adjacent_neighbor_local_indices < n_adjacent_pool_cells
-                    adjacent_neighbor_global_indices[adjacent_valid_mask] = adjacent_neighbor_pool_global_indices[
-                        adjacent_neighbor_local_indices[adjacent_valid_mask]
-                    ]
-                    spatial_neighbors[query_cells_on_slice, neighbor_column_offset:neighbor_column_offset+k_adjacent] = adjacent_neighbor_global_indices
+                    adjacent_neighbor_global_indices[adjacent_valid_mask] = (
+                        adjacent_neighbor_pool_global_indices[
+                            adjacent_neighbor_local_indices[adjacent_valid_mask]
+                        ]
+                    )
+                    spatial_neighbors[
+                        query_cells_on_slice,
+                        neighbor_column_offset : neighbor_column_offset + k_adjacent,
+                    ] = adjacent_neighbor_global_indices
                 # else: slot remains as -1 (already initialized) if no slice available
 
                 neighbor_column_offset += k_adjacent
@@ -266,14 +298,14 @@ def find_spatial_neighbors_with_slices(
 
 @partial(jit, static_argnums=(5, 6))
 def _find_homogeneous_spot_dual_embedding_batch_jit(
-        emb_niche_batch_norm: jnp.ndarray,  # (batch_size, d1)
-        emb_indv_batch_norm: jnp.ndarray,  # (batch_size, d2)
-        spatial_neighbors: jnp.ndarray,  # (batch_size, k1)
-        all_emb_niche_norm: jnp.ndarray,  # (n_all, d1)
-        all_emb_indv_norm: jnp.ndarray,  # (n_all, d2)
-        homogeneous_neighbors: int,
-        cell_embedding_similarity_threshold: float = 0.0,
-        spatial_domain_similarity_threshold: float = 0.5
+    emb_niche_batch_norm: jnp.ndarray,  # (batch_size, d1)
+    emb_indv_batch_norm: jnp.ndarray,  # (batch_size, d2)
+    spatial_neighbors: jnp.ndarray,  # (batch_size, k1)
+    all_emb_niche_norm: jnp.ndarray,  # (n_all, d1)
+    all_emb_indv_norm: jnp.ndarray,  # (n_all, d2)
+    homogeneous_neighbors: int,
+    cell_embedding_similarity_threshold: float = 0.0,
+    spatial_domain_similarity_threshold: float = 0.5,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Finds homogeneous neighbors using a soft priority (Bonus) system.
@@ -293,12 +325,12 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
 
     # Step 2: Compute Similarities
     # 2a. Cell Similarity
-    raw_cell_sims = jnp.einsum('bd,bkd->bk', emb_indv_batch_norm, spatial_emb_indv_norm)
+    raw_cell_sims = jnp.einsum("bd,bkd->bk", emb_indv_batch_norm, spatial_emb_indv_norm)
     # Apply cell threshold: values below threshold become 0.0
     cell_sims = jnp.where(raw_cell_sims >= cell_embedding_similarity_threshold, raw_cell_sims, 0.0)
 
     # 2b. Niche (Spatial) Similarity
-    niche_sims = jnp.einsum('bd,bkd->bk', emb_niche_batch_norm, spatial_emb_niche_norm)
+    niche_sims = jnp.einsum("bd,bkd->bk", emb_niche_batch_norm, spatial_emb_niche_norm)
 
     # Step 3: Compute Ranking Score with Bonus
     # Logic:
@@ -333,6 +365,8 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
     selected_niche_sims = jnp.where(final_valid_mask, selected_niche_sims, 0.0)
 
     return homogeneous_neighbors_array, selected_cell_sims, selected_niche_sims
+
+
 def _find_homogeneous_3d_memory_efficient(
     emb_niche_masked_jax: jnp.ndarray,
     emb_indv_masked_jax: jnp.ndarray,
@@ -345,7 +379,7 @@ def _find_homogeneous_3d_memory_efficient(
     n_adjacent_slices: int,
     cell_embedding_similarity_threshold: float,
     spatial_domain_similarity_threshold: float,
-    find_homogeneous_batch_size: int
+    find_homogeneous_batch_size: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Memory-efficient version of 3D homogeneous neighbor finding.
@@ -389,12 +423,11 @@ def _find_homogeneous_3d_memory_efficient(
         TaskProgressColumn(),
         TimeRemainingColumn(),
         TimeElapsedColumn(),
-        refresh_per_second=1
+        refresh_per_second=1,
     ) as slice_progress:
         # Overall slice progress task
         slice_task = slice_progress.add_task(
-            "Finding homogeneous neighbors (3D cross-slice)...",
-            total=total_slices
+            "Finding homogeneous neighbors (3D cross-slice)...", total=total_slices
         )
 
         for slice_num in range(total_slices):
@@ -422,9 +455,11 @@ def _find_homogeneous_3d_memory_efficient(
             homogeneous_niche_sims_slice_list = []
 
             # Process batches for this slice using simple transient track
-            for batch_start in track(range(0, n_masked, find_homogeneous_batch_size),
-                                    description=f"Finding homogeneous neighbors ({slice_name})",
-                                    transient=True):
+            for batch_start in track(
+                range(0, n_masked, find_homogeneous_batch_size),
+                description=f"Finding homogeneous neighbors ({slice_name})",
+                transient=True,
+            ):
                 batch_end = min(batch_start + find_homogeneous_batch_size, n_masked)
                 batch_indices = slice(batch_start, batch_end)
 
@@ -436,15 +471,17 @@ def _find_homogeneous_3d_memory_efficient(
                 spatial_neighbors_slice_batch = spatial_neighbors_slice[batch_indices, :]
 
                 # Process with 2D function
-                homo_neighbors_batch, cell_sims_batch, niche_sims_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
-                    emb_niche_batch_norm=emb_niche_batch_norm,
-                    emb_indv_batch_norm=emb_indv_batch_norm,
-                    spatial_neighbors=spatial_neighbors_slice_batch,
-                    all_emb_niche_norm=all_emb_niche_norm_jax,
-                    all_emb_indv_norm=all_emb_indv_norm_jax,
-                    homogeneous_neighbors=num_homogeneous_per_slice,
-                    cell_embedding_similarity_threshold=cell_embedding_similarity_threshold,
-                    spatial_domain_similarity_threshold=spatial_domain_similarity_threshold
+                homo_neighbors_batch, cell_sims_batch, niche_sims_batch = (
+                    _find_homogeneous_spot_dual_embedding_batch_jit(
+                        emb_niche_batch_norm=emb_niche_batch_norm,
+                        emb_indv_batch_norm=emb_indv_batch_norm,
+                        spatial_neighbors=spatial_neighbors_slice_batch,
+                        all_emb_niche_norm=all_emb_niche_norm_jax,
+                        all_emb_indv_norm=all_emb_indv_norm_jax,
+                        homogeneous_neighbors=num_homogeneous_per_slice,
+                        cell_embedding_similarity_threshold=cell_embedding_similarity_threshold,
+                        spatial_domain_similarity_threshold=spatial_domain_similarity_threshold,
+                    )
                 )
 
                 homogeneous_neighbors_slice_list.append(np.array(homo_neighbors_batch))
@@ -474,7 +511,7 @@ def build_scrna_connectivity(
     emb_cell: np.ndarray,
     cell_mask: np.ndarray | None = None,
     n_neighbors: int = 21,
-    metric: str = 'euclidean'
+    metric: str = "euclidean",
 ) -> tuple[np.ndarray, np.ndarray, None]:
     """
     Build connectivity for scRNA-seq data using KNN on cell embeddings.
@@ -501,19 +538,15 @@ def build_scrna_connectivity(
 
     # Create temporary AnnData for using scanpy's neighbors function
     adata_temp = ad.AnnData(X=emb_cell[cell_mask])
-    adata_temp.obsm['X_emb'] = emb_cell[cell_mask]
+    adata_temp.obsm["X_emb"] = emb_cell[cell_mask]
 
     # Compute neighbors using scanpy
     sc.pp.neighbors(
-        adata_temp,
-        n_neighbors=n_neighbors,
-        use_rep='X_emb',
-        metric=metric,
-        method='umap'
+        adata_temp, n_neighbors=n_neighbors, use_rep="X_emb", metric=metric, method="umap"
     )
 
     # Extract connectivity matrix
-    connectivities = adata_temp.obsp['connectivities'].tocsr()
+    connectivities = adata_temp.obsp["connectivities"].tocsr()
 
     # Convert to dense format for consistency with spatial methods
     # Check the actual max cell index value to determine dtype
@@ -576,7 +609,7 @@ class ConnectivityMatrixBuilder:
         slice_ids: np.ndarray | None = None,
         k_central: int | None = None,
         k_adjacent: int | None = None,
-        n_adjacent_slices: int | None = None
+        n_adjacent_slices: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         """
         Build connectivity matrix for a group of cells based on dataset type.
@@ -610,10 +643,10 @@ class ConnectivityMatrixBuilder:
                 emb_cell=emb_indv,
                 cell_mask=cell_mask,
                 n_neighbors=self.config.homogeneous_neighbors,
-                metric='euclidean'
+                metric="euclidean",
             )
 
-        elif self.dataset_type in ['spatial2D', 'spatial3D']:
+        elif self.dataset_type in ["spatial2D", "spatial3D"]:
             logger.info(f"Building connectivity for {self.dataset_type} dataset")
 
             # Validate required inputs for spatial datasets
@@ -644,7 +677,7 @@ class ConnectivityMatrixBuilder:
                 slice_ids=slice_ids,
                 k_central=k_central,
                 k_adjacent=k_adjacent,
-                n_adjacent_slices=n_adjacent_slices
+                n_adjacent_slices=n_adjacent_slices,
             )
 
         else:
@@ -660,7 +693,7 @@ class ConnectivityMatrixBuilder:
         slice_ids: np.ndarray | None = None,
         k_central: int = 101,
         k_adjacent: int = 50,
-        n_adjacent_slices: int = 1
+        n_adjacent_slices: int = 1,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Internal method for building spatial connectivity matrix.
@@ -695,16 +728,20 @@ class ConnectivityMatrixBuilder:
             high_quality_cell_mask=high_quality_mask,
             k_central=k_central,
             k_adjacent=k_adjacent,
-            n_adjacent_slices=n_adjacent_slices
+            n_adjacent_slices=n_adjacent_slices,
         )
 
         # Log statistics about neighbor pool cells per slice if available
         if neighbor_pool_per_slice:
             for slice_id, neighbor_pool_indices in neighbor_pool_per_slice.items():
-                logger.debug(f"Slice {slice_id}: {len(neighbor_pool_indices)} high quality cells available for neighbor search")
+                logger.debug(
+                    f"Slice {slice_id}: {len(neighbor_pool_indices)} high quality cells available for neighbor search"
+                )
 
         # Step 2 & 3: Find anchors and homogeneous neighbors in batches
-        logger.info(f"Finding anchors and homogeneous neighbors (batch size: {self.find_homogeneous_batch_size})...")
+        logger.info(
+            f"Finding anchors and homogeneous neighbors (batch size: {self.find_homogeneous_batch_size})..."
+        )
 
         # Convert embeddings to JAX arrays once (shared for both paths)
         # Note: float16 provides sufficient precision for normalized embeddings
@@ -717,24 +754,27 @@ class ConnectivityMatrixBuilder:
         emb_niche_masked_jax = all_emb_niche_norm_jax[masked_cell_indices]
         emb_indv_masked_jax = all_emb_indv_norm_jax[masked_cell_indices]
 
-
         if self.config.fix_cross_slice_homogenous_neighbors:
-            logger.info(f"Using 3D constrained selection (ensuring {self.config.homogeneous_neighbors} neighbors per slice)")
+            logger.info(
+                f"Using 3D constrained selection (ensuring {self.config.homogeneous_neighbors} neighbors per slice)"
+            )
 
             # Use memory-efficient version that processes slices separately
-            homogeneous_neighbors, homogeneous_cell_sims, homogeneous_niche_sims = _find_homogeneous_3d_memory_efficient(
-                emb_niche_masked_jax=emb_niche_masked_jax,
-                emb_indv_masked_jax=emb_indv_masked_jax,
-                spatial_neighbors=spatial_neighbors,
-                all_emb_niche_norm_jax=all_emb_niche_norm_jax,
-                all_emb_indv_norm_jax=all_emb_indv_norm_jax,
-                num_homogeneous_per_slice=self.config.homogeneous_neighbors,
-                k_central=k_central,
-                k_adjacent=k_adjacent,
-                n_adjacent_slices=n_adjacent_slices,
-                cell_embedding_similarity_threshold=self.config.cell_embedding_similarity_threshold,
-                spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold,
-                find_homogeneous_batch_size=self.find_homogeneous_batch_size
+            homogeneous_neighbors, homogeneous_cell_sims, homogeneous_niche_sims = (
+                _find_homogeneous_3d_memory_efficient(
+                    emb_niche_masked_jax=emb_niche_masked_jax,
+                    emb_indv_masked_jax=emb_indv_masked_jax,
+                    spatial_neighbors=spatial_neighbors,
+                    all_emb_niche_norm_jax=all_emb_niche_norm_jax,
+                    all_emb_indv_norm_jax=all_emb_indv_norm_jax,
+                    num_homogeneous_per_slice=self.config.homogeneous_neighbors,
+                    k_central=k_central,
+                    k_adjacent=k_adjacent,
+                    n_adjacent_slices=n_adjacent_slices,
+                    cell_embedding_similarity_threshold=self.config.cell_embedding_similarity_threshold,
+                    spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold,
+                    find_homogeneous_batch_size=self.find_homogeneous_batch_size,
+                )
             )
 
         else:
@@ -744,9 +784,12 @@ class ConnectivityMatrixBuilder:
             homogeneous_cell_sims_list = []
             homogeneous_niche_sims_list = []
 
-
             # Use the standard function (2D or 3D without fix_cross_slice_homogenous_neighbors)
-            for batch_start in track(range(0, n_masked, self.find_homogeneous_batch_size), description="Finding homogeneous neighbors", transient=True):
+            for batch_start in track(
+                range(0, n_masked, self.find_homogeneous_batch_size),
+                description="Finding homogeneous neighbors",
+                transient=True,
+            ):
                 batch_end = min(batch_start + self.find_homogeneous_batch_size, n_masked)
                 batch_indices = slice(batch_start, batch_end)
 
@@ -756,16 +799,18 @@ class ConnectivityMatrixBuilder:
                 spatial_neighbors_batch = spatial_neighbors_jax[batch_indices]
 
                 # Process batch with single JIT-compiled function
-                homo_neighbors_batch, cell_sims_batch, niche_sims_batch = _find_homogeneous_spot_dual_embedding_batch_jit(
-                    emb_niche_batch_norm=emb_niche_batch_norm,
-                    emb_indv_batch_norm=emb_indv_batch_norm,
-                    spatial_neighbors=spatial_neighbors_batch,
-                    all_emb_niche_norm=all_emb_niche_norm_jax,
-                    all_emb_indv_norm=all_emb_indv_norm_jax,
-                    homogeneous_neighbors=self.config.total_homogeneous_neighbor_per_cell,
-                    cell_embedding_similarity_threshold=self.config.cell_embedding_similarity_threshold,
-                    spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold
-            )
+                homo_neighbors_batch, cell_sims_batch, niche_sims_batch = (
+                    _find_homogeneous_spot_dual_embedding_batch_jit(
+                        emb_niche_batch_norm=emb_niche_batch_norm,
+                        emb_indv_batch_norm=emb_indv_batch_norm,
+                        spatial_neighbors=spatial_neighbors_batch,
+                        all_emb_niche_norm=all_emb_niche_norm_jax,
+                        all_emb_indv_norm=all_emb_indv_norm_jax,
+                        homogeneous_neighbors=self.config.total_homogeneous_neighbor_per_cell,
+                        cell_embedding_similarity_threshold=self.config.cell_embedding_similarity_threshold,
+                        spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold,
+                    )
+                )
 
                 # Convert back to numpy and append
                 homogeneous_neighbors_list.append(np.array(homo_neighbors_batch))

@@ -20,7 +20,9 @@ from gsMap.config import (
 )
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s | %(name)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="[%(asctime)s] %(levelname)s | %(name)s - %(message)s"
+)
 logger = logging.getLogger("gsMap")
 
 # Create the Typer app
@@ -35,6 +37,7 @@ app = typer.Typer(
 # ============================================================================
 # CLI Commands using dataclass_typer decorator
 # ============================================================================
+
 
 @app.command(name="quick-mode")
 @dataclass_typer
@@ -57,6 +60,7 @@ def quick_mode(config: QuickModeConfig):
 
     try:
         from gsMap.pipeline.quick_mode import run_quick_mode
+
         run_quick_mode(config)
         logger.info("✓ Pipeline completed successfully!")
     except (ImportError, AttributeError) as e:
@@ -94,6 +98,7 @@ def find_latent_representations(config: FindLatentRepresentationsConfig):
 
     try:
         from gsMap.find_latent import run_find_latent_representation
+
         run_find_latent_representation(config)
         logger.info("✓ Latent representations computed successfully!")
     except ImportError:
@@ -123,6 +128,7 @@ def latent_to_gene(config: LatentToGeneConfig):
 
     try:
         from gsMap.latent2gene import run_latent_to_gene
+
         run_latent_to_gene(config)
         logger.info("✓ Gene marker scores computed successfully!")
     except ImportError:
@@ -158,9 +164,11 @@ def spatial_ldsc(config: SpatialLDSCConfig):
     try:
         if config.use_gpu:
             from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
+
             run_spatial_ldsc_jax(config)
         else:
             from gsMap.spatial_ldsc.spatial_ldsc_multiple_sumstats import run_spatial_ldsc
+
             run_spatial_ldsc(config)
         logger.info("✓ Spatial LDSC completed successfully!")
     except ImportError:
@@ -186,6 +194,7 @@ def cauchy_combination(config: CauchyCombinationConfig):
 
     try:
         from gsMap.cauchy_combination_test import run_Cauchy_combination
+
         run_Cauchy_combination(config)
         logger.info("✓ Cauchy combination test completed successfully!")
     except (ImportError, AttributeError) as e:
@@ -214,6 +223,7 @@ def ldscore_weight_matrix(config: LDScoreConfig):
 
     try:
         from gsMap.ldscore.pipeline import LDScorePipeline
+
         pipeline = LDScorePipeline(config)
         pipeline.run()
         logger.info("✓ LDScore Pipeline completed successfully!")
@@ -238,6 +248,7 @@ def format_sumstats(config: FormatSumstatsConfig):
     """
     try:
         from gsMap.format_sumstats import gwas_format
+
         gwas_format(config)
         logger.info("✓ Summary statistics formatted successfully!")
     except Exception as e:
@@ -247,16 +258,13 @@ def format_sumstats(config: FormatSumstatsConfig):
 
 @app.command(name="report-view")
 def report_view(
-    report_path: Annotated[str, typer.Argument(
-        help="Path to gsmap_web_report directory containing index.html"
-    )],
-    port: Annotated[int, typer.Option(
-        help="Port to serve the report on"
-    )] = 8080,
-    no_browser: Annotated[bool, typer.Option(
-        "--no-browser",
-        help="Don't automatically open browser"
-    )] = False,
+    report_path: Annotated[
+        str, typer.Argument(help="Path to gsmap_web_report directory containing index.html")
+    ],
+    port: Annotated[int, typer.Option(help="Port to serve the report on")] = 8080,
+    no_browser: Annotated[
+        bool, typer.Option("--no-browser", help="Don't automatically open browser")
+    ] = False,
 ):
     """
     Launch a local web server to view the gsMap report.
@@ -304,10 +312,12 @@ def report_view(
         logger.info("Server stopped.")
     except OSError as e:
         if "Address already in use" in str(e):
-            logger.error(f"Port {port} is already in use. Try a different port with --port <number>")
+            logger.error(
+                f"Port {port} is already in use. Try a different port with --port <number>"
+            )
         else:
             logger.error(f"Failed to start server: {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 def version_callback(value: bool):
@@ -315,6 +325,7 @@ def version_callback(value: bool):
     if value:
         try:
             from gsMap import __version__
+
             typer.echo(f"gsMap version {__version__}")
         except ImportError:
             typer.echo("gsMap version: development")
@@ -323,12 +334,16 @@ def version_callback(value: bool):
 
 @app.callback()
 def main(
-    version: Annotated[bool | None, typer.Option(
-        "--version", "-v",
-        callback=version_callback,
-        is_eager=True,
-        help="Show version and exit"
-    )] = None,
+    version: Annotated[
+        bool | None,
+        typer.Option(
+            "--version",
+            "-v",
+            callback=version_callback,
+            is_eager=True,
+            help="Show version and exit",
+        ),
+    ] = None,
 ):
     """
     gsMap: genetically informed spatial mapping of cells for complex traits.

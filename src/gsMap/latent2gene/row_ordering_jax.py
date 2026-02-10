@@ -11,10 +11,7 @@ logger = logging.getLogger(__name__)
 
 # @partial(jit, static_argnames=['k'])
 def _optimize_weighted_scan(
-        neighbor_indices: jnp.ndarray,
-        neighbor_weights: jnp.ndarray,
-        cell_indices: jnp.ndarray,
-        k: int
+    neighbor_indices: jnp.ndarray, neighbor_weights: jnp.ndarray, cell_indices: jnp.ndarray, k: int
 ) -> jnp.ndarray:
     """
     JIT-compiled weighted row ordering using jax.lax.scan for optimal performance.
@@ -46,7 +43,7 @@ def _optimize_weighted_scan(
     local_indices_flat = jnp.where(
         neighbor_indices_flat >= 0,
         inverse_map[jnp.where(neighbor_indices_flat >= 0, neighbor_indices_flat, 0)],
-        -1
+        -1,
     )
     local_neighbor_indices = local_indices_flat.reshape(n_cells, k)
 
@@ -63,7 +60,7 @@ def _optimize_weighted_scan(
         "ordered": jnp.full(n_cells, -1, dtype=jnp.int32).at[0].set(start_node),
         "max_weights": max_weights,
         "local_neighbor_indices": local_neighbor_indices,
-        "neighbor_weights": neighbor_weights
+        "neighbor_weights": neighbor_weights,
     }
 
     def scan_step(state, t):
@@ -101,7 +98,7 @@ def _optimize_weighted_scan(
             "ordered": state["ordered"].at[t].set(next_cell),
             "max_weights": state["max_weights"],
             "local_neighbor_indices": state["local_neighbor_indices"],
-            "neighbor_weights": state["neighbor_weights"]
+            "neighbor_weights": state["neighbor_weights"],
         }
 
         return new_state, None
@@ -113,10 +110,10 @@ def _optimize_weighted_scan(
 
 
 def optimize_row_order_jax(
-        neighbor_indices: np.ndarray,
-        cell_indices: np.ndarray,
-        neighbor_weights: np.ndarray | None,
-        device: jax.Device | None = None
+    neighbor_indices: np.ndarray,
+    cell_indices: np.ndarray,
+    neighbor_weights: np.ndarray | None,
+    device: jax.Device | None = None,
 ) -> np.ndarray:
     """
     High-performance JAX-based row ordering for cache efficiency.
@@ -135,13 +132,17 @@ def optimize_row_order_jax(
         device = jax.devices()[0]
 
     # Skip if on CPU - scanning is extremely slow on CPU
-    if device.platform == 'cpu':
+    if device.platform == "cpu":
         n_cells = len(neighbor_indices)
-        logger.info(f"Skipping JAX-based row ordering optimization on CPU for {n_cells} cells (too slow).")
+        logger.info(
+            f"Skipping JAX-based row ordering optimization on CPU for {n_cells} cells (too slow)."
+        )
         return np.arange(n_cells)
 
     n_cells, k = neighbor_indices.shape
-    logger.debug(f"Running JAX scan-based weighted ordering for {n_cells} cells on {device.platform}")
+    logger.debug(
+        f"Running JAX scan-based weighted ordering for {n_cells} cells on {device.platform}"
+    )
 
     with jax.default_device(device):
         neighbor_indices_jax = jnp.asarray(neighbor_indices)
@@ -150,10 +151,7 @@ def optimize_row_order_jax(
 
         # Run optimized weighted ordering
         ordered_jax = _optimize_weighted_scan(
-            neighbor_indices_jax,
-            neighbor_weights_jax,
-            cell_indices_jax,
-            k
+            neighbor_indices_jax, neighbor_weights_jax, cell_indices_jax, k
         )
 
     return np.array(ordered_jax)

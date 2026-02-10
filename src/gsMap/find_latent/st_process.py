@@ -57,6 +57,7 @@ def convert_to_human_genes(adata, gene_homolog_dict: dict, species: str = None):
 
     return adata
 
+
 def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     """
     Identifies common highly variable genes (HVGs) across multiple ST datasets and calculates
@@ -84,16 +85,20 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             # sc.pp.filter_genes(adata_temp, min_counts=1)
 
             # Filter out mitochondrial and hemoglobin genes
-            gene_keep = ~adata_temp.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
+            gene_keep = ~adata_temp.var_names.str.match(re.compile(r"^(HB.-|MT-)", re.IGNORECASE))
             if removed_genes := adata_temp.n_vars - gene_keep.sum():
-                progress.console.log(f"Removed {removed_genes} mitochondrial and hemoglobin genes in {sample_name}.")
+                progress.console.log(
+                    f"Removed {removed_genes} mitochondrial and hemoglobin genes in {sample_name}."
+                )
 
-            adata_temp = adata_temp[:,gene_keep].copy()
+            adata_temp = adata_temp[:, gene_keep].copy()
 
             # Make gene names unique to avoid issues with HVG calculation
             adata_temp.var_names_make_unique()
 
-            is_count_data, actual_data_layer = setup_data_layer(adata_temp, params.data_layer, verbose=False)
+            is_count_data, actual_data_layer = setup_data_layer(
+                adata_temp, params.data_layer, verbose=False
+            )
             cell_number.append(adata_temp.n_obs)
 
             try:
@@ -104,27 +109,27 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
                     )
                 else:
                     sc.pp.highly_variable_genes(
-                        adata_temp, n_top_genes=params.feat_cell, subset=False, flavor='seurat'
+                        adata_temp, n_top_genes=params.feat_cell, subset=False, flavor="seurat"
                     )
 
                 var_df = adata_temp.var.copy()
                 var_df["gene"] = var_df.index.tolist()
                 variances_list.append(var_df)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"[HVG skipped] {e}")
                 continue
-
 
             progress.update(task, advance=1)
 
     # Check if we have any valid variance results
     if len(variances_list) == 0:
-        raise ValueError("No valid HVG results obtained from any sample. Please check your data and parameters.")
+        raise ValueError(
+            "No valid HVG results obtained from any sample. Please check your data and parameters."
+        )
 
     # Find the common genes across all samples
     common_genes = np.array(
-        list(set.intersection(
-            *map(set, [st.index.to_list() for st in variances_list])))
+        list(set.intersection(*map(set, [st.index.to_list() for st in variances_list])))
     )
 
     # Error when gene number is too small
@@ -172,29 +177,35 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     total_cell = np.sum(cell_number)
     total_cell_training = np.minimum(total_cell, params.n_cell_training)
     cell_proportion = cell_number / total_cell
-    n_cell_used = [
-        int(cell) for cell in (total_cell_training * cell_proportion).tolist()
-    ]
+    n_cell_used = [int(cell) for cell in (total_cell_training * cell_proportion).tolist()]
 
     # Only use the common genes that can be transformed to human genes
     if params.species is not None:
-        homologs = pd.read_csv(params.homolog_file, sep='\t')
+        homologs = pd.read_csv(params.homolog_file, sep="\t")
         if homologs.shape[1] < 2:
-            raise ValueError("Homologs file must have at least two columns: one for the species and one for the human gene symbol.")
-        homologs.columns = [params.species, 'HUMAN_GENE_SYM']
+            raise ValueError(
+                "Homologs file must have at least two columns: one for the species and one for the human gene symbol."
+            )
+        homologs.columns = [params.species, "HUMAN_GENE_SYM"]
         homologs.set_index(params.species, inplace=True)
         common_genes = np.intersect1d(common_genes, homologs.index)
-        gene_homolog_dict = dict(zip(common_genes,homologs.loc[common_genes].HUMAN_GENE_SYM.values, strict=False))
+        gene_homolog_dict = dict(
+            zip(common_genes, homologs.loc[common_genes].HUMAN_GENE_SYM.values, strict=False)
+        )
     else:
-        gene_homolog_dict = dict(zip(common_genes,common_genes, strict=False))
+        gene_homolog_dict = dict(zip(common_genes, common_genes, strict=False))
 
     if len(gene_homolog_dict) < 300:
-        raise ValueError(f"Only {len(gene_homolog_dict)} genes could be mapped to human symbols. Please check the homolog file.")
+        raise ValueError(
+            f"Only {len(gene_homolog_dict)} genes could be mapped to human symbols. Please check the homolog file."
+        )
 
     return hvg, n_cell_used, gene_homolog_dict
 
 
-def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRepresentationsConfig):
+def create_subsampled_adata(
+    sample_h5ad_dict, n_cell_used, params: FindLatentRepresentationsConfig
+):
     """
     Create subsampled adata for each sample with sample-specific stratified sampling,
     add batch and label information, and return concatenated adata.
@@ -218,8 +229,8 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
         adata = sc.read_h5ad(st_file)
 
         # Filter out mitochondrial and hemoglobin genes
-        gene_keep = ~adata.var_names.str.match(re.compile(r'^(HB.-|MT-)', re.IGNORECASE))
-        adata = adata[:,gene_keep].copy()
+        gene_keep = ~adata.var_names.str.match(re.compile(r"^(HB.-|MT-)", re.IGNORECASE))
+        adata = adata[:, gene_keep].copy()
 
         # Make gene names unique to avoid issues with concatenation
         adata.var_names_make_unique()
@@ -249,7 +260,9 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
                 sample_annotation_proportions = sample_annotation_counts / sample_total_cells
 
                 # Calculate target cells for each annotation in this sample
-                target_cells_per_annotation = (sample_annotation_proportions * target_total_cells).astype(int)
+                target_cells_per_annotation = (
+                    sample_annotation_proportions * target_total_cells
+                ).astype(int)
 
                 logger.info(f"Downsampling {sample_name} to {target_total_cells} cells...")
                 logger.debug("---Sample-specific annotation distribution-----")
@@ -260,11 +273,11 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
                 sampled_cells = (
                     adata.obs.groupby(params.annotation, group_keys=False, observed=True)
                     .apply(
-                        lambda x: x.sample(
-                            max(min(target_cells_per_annotation.get(x.name, 0), len(x)), 1),
+                        lambda x, _t=target_cells_per_annotation: x.sample(
+                            max(min(_t.get(x.name, 0), len(x)), 1),
                             replace=False,
                         ),
-                        include_groups=False
+                        include_groups=False,
                     )
                     .index
                 )
@@ -273,29 +286,33 @@ def create_subsampled_adata(sample_h5ad_dict, n_cell_used, params: FindLatentRep
                 adata = adata[sampled_cells].copy()
 
         # Add batch information to obs
-        adata.obs['batch_id'] = f"S{st_id}"
-        adata.obs['sample_name'] = sample_name
+        adata.obs["batch_id"] = f"S{st_id}"
+        adata.obs["sample_name"] = sample_name
 
         # Add label information to obs (ensure it's properly set)
         if params.annotation is not None:
             # The annotation column already exists, just ensure it's called 'label'
-            if 'label' not in adata.obs.columns:
-                adata.obs['label'] = adata.obs[params.annotation]
+            if "label" not in adata.obs.columns:
+                adata.obs["label"] = adata.obs[params.annotation]
         else:
             # Create dummy labels
-            adata.obs['label'] = 'unknown'
+            adata.obs["label"] = "unknown"
 
         subsampled_adatas.append(adata)
         logger.info(f"Processed {sample_name}: {adata.n_obs} cells, {adata.n_vars} genes")
 
     # Concatenate all samples
     logger.info("Concatenating all processed data...")
-    concatenated_adata = sc.concat(subsampled_adatas, axis=0, join='inner',
-                                   index_unique='_', fill_value=0)
+    concatenated_adata = sc.concat(
+        subsampled_adatas, axis=0, join="inner", index_unique="_", fill_value=0
+    )
 
-    logger.info(f"Final concatenated adata: {concatenated_adata.n_obs} cells, {concatenated_adata.n_vars} genes")
+    logger.info(
+        f"Final concatenated adata: {concatenated_adata.n_obs} cells, {concatenated_adata.n_vars} genes"
+    )
 
     return concatenated_adata
+
 
 def _looks_like_count_matrix(X, max_check=100, tol=1e-8):
     """
@@ -339,7 +356,7 @@ def setup_data_layer(adata, data_layer, verbose=True):
             - actual_data_layer: The actual layer name to use ("X" if using adata.X)
     """
     # Check if the requested data layer exists in layers
-    if  data_layer in adata.layers:
+    if data_layer in adata.layers:
         # Use the specified layer
         adata.X = adata.layers[data_layer]
         actual_data_layer = data_layer
@@ -351,9 +368,11 @@ def setup_data_layer(adata, data_layer, verbose=True):
         raise ValueError(f"Data layer '{data_layer}' not found in adata.layers.")
 
     # Determine if this is count data
-    is_count_data = actual_data_layer in ["count", "counts", "raw_counts","impute_count"] or \
-                   (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer)) or \
-                     _looks_like_count_matrix(adata.X)
+    is_count_data = (
+        actual_data_layer in ["count", "counts", "raw_counts", "impute_count"]
+        or (adata.X is not None and np.issubdtype(adata.X.dtype, np.integer))
+        or _looks_like_count_matrix(adata.X)
+    )
 
     if verbose:
         if is_count_data:
@@ -396,7 +415,9 @@ def normalize_for_analysis(adata, is_count_data, preserve_raw=True):
     return adata
 
 
-def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=0.05, lfc_threshold=0.25, max_genes=100):
+def filter_significant_degs(
+    deg_results, annotation, adata=None, pval_threshold=0.05, lfc_threshold=0.25, max_genes=100
+):
     """
     Filter DEGs based on statistical significance and fold change criteria.
 
@@ -411,9 +432,9 @@ def filter_significant_degs(deg_results, annotation, adata=None, pval_threshold=
     Returns:
         list: Filtered list of significant DEG gene names
     """
-    gene_names = deg_results['names'][annotation]
-    pvals_adj = deg_results['pvals_adj'][annotation]
-    logfoldchanges = deg_results['logfoldchanges'][annotation]
+    gene_names = deg_results["names"][annotation]
+    pvals_adj = deg_results["pvals_adj"][annotation]
+    logfoldchanges = deg_results["logfoldchanges"][annotation]
 
     # Filter genes based on significance and fold change
     annotation_genes = []
@@ -453,27 +474,29 @@ def calculate_module_scores_from_degs(adata, deg_results, annotation_key):
 
     # Ensure annotation is categorical if it exists
     if annotation_key in adata.obs.columns:
-        adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
+        adata.obs[annotation_key] = adata.obs[annotation_key].astype("category")
         available_annotations = adata.obs[annotation_key].cat.categories
     else:
         # If annotation doesn't exist, use all annotations from DEG results
-        available_annotations = list(deg_results['names'].dtype.names)
+        available_annotations = list(deg_results["names"].dtype.names)
 
     # Calculate module score for each annotation
     for annotation in available_annotations:
-        if annotation in deg_results['names'].dtype.names:
+        if annotation in deg_results["names"].dtype.names:
             # Get significant DEGs for this annotation
             annotation_genes = filter_significant_degs(deg_results, annotation, adata)
 
             if len(annotation_genes) > 0:
-                logger.info(f"Calculating module score for {annotation} using {len(annotation_genes)} genes")
+                logger.info(
+                    f"Calculating module score for {annotation} using {len(annotation_genes)} genes"
+                )
 
                 # Calculate module score
                 sc.tl.score_genes(
                     adata,
                     gene_list=annotation_genes,
                     score_name=f"{annotation}_module_score",
-                    use_raw=False
+                    use_raw=False,
                 )
             else:
                 logger.warning(f"No valid DEGs found for {annotation}")
@@ -503,7 +526,7 @@ def calculate_module_score(training_adata, annotation_key):
     adata = training_adata.copy()
 
     # Ensure annotation is categorical
-    adata.obs[annotation_key] = adata.obs[annotation_key].astype('category')
+    adata.obs[annotation_key] = adata.obs[annotation_key].astype("category")
 
     # Detect count data and normalize if needed
     is_count_data = _looks_like_count_matrix(adata.X)
@@ -512,37 +535,38 @@ def calculate_module_score(training_adata, annotation_key):
     # Perform DEG analysis with DataFrame fragmentation warnings suppressed
     # These warnings are harmless and come from Scanpy's internal implementation
     import warnings
+
     with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', category=pd.errors.PerformanceWarning,
-                              message='DataFrame is highly fragmented')
+        warnings.filterwarnings(
+            "ignore",
+            category=pd.errors.PerformanceWarning,
+            message="DataFrame is highly fragmented",
+        )
         sc.tl.rank_genes_groups(
-            adata,
-            groupby=annotation_key,
-            method='wilcoxon',
-            use_raw=False,
-            n_genes=100
+            adata, groupby=annotation_key, method="wilcoxon", use_raw=False, n_genes=100
         )
 
     logger.info("Calculating module scores for each annotation...")
 
     # Get DEG results
-    deg_results = adata.uns['rank_genes_groups']
+    deg_results = adata.uns["rank_genes_groups"]
 
     # Calculate module score for each annotation
     for annotation in adata.obs[annotation_key].cat.categories:
-
         # Get significant DEGs for this annotation
         annotation_genes = filter_significant_degs(deg_results, annotation, adata)
 
         if len(annotation_genes) > 0:
-            logger.info(f"Calculating module score for {annotation} using {len(annotation_genes)} genes")
+            logger.info(
+                f"Calculating module score for {annotation} using {len(annotation_genes)} genes"
+            )
 
             # Calculate module score
             sc.tl.score_genes(
                 adata,
                 gene_list=annotation_genes,
                 score_name=f"{annotation}_module_score",
-                use_raw=False
+                use_raw=False,
             )
         else:
             logger.warning(f"No valid DEGs found for {annotation}")
@@ -567,11 +591,13 @@ def apply_module_score_qc(adata, annotation_key, module_score_threshold_dict):
     logger.info("Applying module score-based quality control...")
 
     # Initialize High_quality column as boolean (True = high quality)
-    adata.obs['High_quality'] = True
+    adata.obs["High_quality"] = True
 
     # Check if we have the annotation key
     if annotation_key not in adata.obs.columns:
-        logger.warning(f"Annotation key '{annotation_key}' not found in adata.obs. Skipping module score QC.")
+        logger.warning(
+            f"Annotation key '{annotation_key}' not found in adata.obs. Skipping module score QC."
+        )
         return adata
 
     # Apply QC for each annotation
@@ -585,17 +611,19 @@ def apply_module_score_qc(adata, annotation_key, module_score_threshold_dict):
 
             # Set High_quality to False for cells that match both conditions (low quality)
             low_quality_mask = annotation_mask & low_score_mask
-            adata.obs.loc[low_quality_mask, 'High_quality'] = False
+            adata.obs.loc[low_quality_mask, "High_quality"] = False
 
             n_low_quality = low_quality_mask.sum()
             n_annotation_cells = annotation_mask.sum()
 
-            logger.info(f"{annotation}: {n_low_quality}/{n_annotation_cells} cells marked as low quality "
-                       f"(threshold: {threshold:.3f})")
+            logger.info(
+                f"{annotation}: {n_low_quality}/{n_annotation_cells} cells marked as low quality "
+                f"(threshold: {threshold:.3f})"
+            )
         else:
             logger.warning(f"Module score column '{module_score_col}' not found in adata.obs")
 
-    total_low_quality = (~adata.obs['High_quality']).sum()
+    total_low_quality = (~adata.obs["High_quality"]).sum()
     logger.info(f"Total low quality cells: {total_low_quality}/{adata.n_obs}")
 
     return adata
@@ -620,18 +648,17 @@ class TrainingData:
         self.batch_size = None
         self.label_name = None
 
-
     def prepare(self, concatenated_adata, hvg):
         logger.info("Processing concatenated subsampled data...")
 
         # Get labels from obs
         if self.params.annotation is not None:
-            label = concatenated_adata.obs['label'].values
+            label = concatenated_adata.obs["label"].values
         else:
             label = np.zeros(concatenated_adata.n_obs)
 
         # Get batch information from obs
-        batch_labels = concatenated_adata.obs['batch_id'].values
+        batch_labels = concatenated_adata.obs["batch_id"].values
 
         # Get expression array for HVG genes
         expression_array = torch.Tensor(concatenated_adata[:, hvg].X.toarray())
@@ -640,8 +667,8 @@ class TrainingData:
         # Process each batch separately for GCN (since spatial graphs are sample-specific)
         expression_array_gcn_list = []
 
-        for batch_id in concatenated_adata.obs['batch_id'].unique():
-            batch_mask = concatenated_adata.obs['batch_id'] == batch_id
+        for batch_id in concatenated_adata.obs["batch_id"].unique():
+            batch_mask = concatenated_adata.obs["batch_id"] == batch_id
             batch_adata = concatenated_adata[batch_mask]
             batch_expression = expression_array[batch_mask.values]
 
@@ -658,7 +685,9 @@ class TrainingData:
             batch_expression_gcn = self.gcov(batch_expression, edge)
             expression_array_gcn_list.append(batch_expression_gcn)
 
-            logger.info(f"Graph for {batch_id} has {edge.size(1)} edges, {batch_adata.n_obs} cells.")
+            logger.info(
+                f"Graph for {batch_id} has {edge.size(1)} edges, {batch_adata.n_obs} cells."
+            )
 
         # Concatenate GCN results in the same order as the original data
         expression_array_gcn = torch.cat(expression_array_gcn_list, dim=0)
@@ -704,8 +733,7 @@ class InferenceData:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = model.to(self.device)
         self.label_name = label_name
-        self.processed_list_path = self.params.latent_dir / 'processed.list'
-
+        self.processed_list_path = self.params.latent_dir / "processed.list"
 
     def infer_embedding_single(self, st_id, st_file) -> Path:
         st_name = (Path(st_file).name).split(".h5ad")[0]
@@ -738,7 +766,7 @@ class InferenceData:
         batch_indices = torch.full((n_cell,), st_id, dtype=torch.long)
 
         # Prepare the evaluation DataLoader
-        dataset = TensorDataset(expression_array_gcn,expression_array, batch_indices)
+        dataset = TensorDataset(expression_array_gcn, expression_array, batch_indices)
         Inference_loader = DataLoader(dataset=dataset, batch_size=512, shuffle=False)
 
         # Inference process
@@ -758,7 +786,7 @@ class InferenceData:
                 mu_focal = self.model.encode(
                     [expression_focal, expression_gcn_focal], batch_indices_fcocal
                 )
-                _,x_class, _, _ = self.model(
+                _, x_class, _, _ = self.model(
                     [expression_focal, expression_gcn_focal], batch_indices_fcocal
                 )
 

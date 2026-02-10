@@ -41,32 +41,29 @@ subcommand = namedtuple("subcommand", ["name", "func", "add_args_function", "des
 
 __all__ = [
     # Base classes
-    'BaseConfig',
-    'ConfigWithAutoPaths',
-    'ensure_path_exists',
-
+    "BaseConfig",
+    "ConfigWithAutoPaths",
+    "ensure_path_exists",
     # Decorators
-    'dataclass_typer',
-    'track_resource_usage',
-    'show_banner',
-
+    "dataclass_typer",
+    "track_resource_usage",
+    "show_banner",
     # Legacy compatibility
-    'cli_function_registry',
-
+    "cli_function_registry",
     # Configurations
-    'QuickModeConfig',
-    'FindLatentRepresentationsConfig',
-    'LatentToGeneConfig',
-    'DatasetType',
-    'MarkerScoreCrossSliceStrategy',
-    'SpatialLDSCConfig',
-    'ReportConfig',
-    'GenerateLDScoreConfig',
-    'CauchyCombinationConfig',
-    'CreateSliceMeanConfig',
-    'FormatSumstatsConfig',
-    'DiagnosisConfig',
-    'VisualizeConfig',
-    'ThreeDCombineConfig',
-    'RunLinkModeConfig',
+    "QuickModeConfig",
+    "FindLatentRepresentationsConfig",
+    "LatentToGeneConfig",
+    "DatasetType",
+    "MarkerScoreCrossSliceStrategy",
+    "SpatialLDSCConfig",
+    "ReportConfig",
+    "GenerateLDScoreConfig",
+    "CauchyCombinationConfig",
+    "CreateSliceMeanConfig",
+    "FormatSumstatsConfig",
+    "DiagnosisConfig",
+    "VisualizeConfig",
+    "ThreeDCombineConfig",
+    "RunLinkModeConfig",
 ]

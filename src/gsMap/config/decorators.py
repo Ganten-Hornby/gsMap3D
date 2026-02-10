@@ -33,6 +33,7 @@ def track_resource_usage(func):
     Decorator to track resource usage during function execution.
     Logs memory usage, CPU time, and wall clock time at the end of the function.
     """
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         # Get the current process
@@ -58,7 +59,7 @@ def track_resource_usage(func):
                         cpu_percent_samples.append(cpu_percent)
 
                     time.sleep(0.5)
-                except Exception:
+                except OSError:
                     pass
 
         # Start resource monitoring in a separate thread
@@ -94,6 +95,7 @@ def track_resource_usage(func):
             # Adjust for macOS if needed
             if sys.platform == "darwin":
                 from gsMap.utils import macos_timebase_factor
+
                 factor = macos_timebase_factor()
                 cpu_time *= factor
                 avg_cpu_percent *= factor
@@ -166,6 +168,7 @@ def dataclass_typer(func):
         # Show banner
         try:
             from gsMap import __version__
+
             version = __version__
         except ImportError:
             version = "development"
@@ -183,6 +186,7 @@ def dataclass_typer(func):
 
     # Build new parameters from dataclass fields
     from dataclasses import MISSING
+
     params = []
 
     core_only = getattr(config_class, "__core_only__", False)
@@ -247,13 +251,13 @@ def dataclass_typer(func):
                 field.name,
                 inspect.Parameter.KEYWORD_ONLY,
                 annotation=field.type,  # Keep the full Annotated type
-                default=default_value
+                default=default_value,
             )
         else:
             param = inspect.Parameter(
                 field.name,
                 inspect.Parameter.KEYWORD_ONLY,
-                annotation=field.type  # Keep the full Annotated type
+                annotation=field.type,  # Keep the full Annotated type
             )
         params.append(param)
 

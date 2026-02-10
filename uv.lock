@@ -817,18 +817,18 @@ dependencies = [
     { name = "psutil" },
     { name = "pyarrow" },
     { name = "pyfiglet" },
-    { name = "pyranges" },
+    { name = "pyranges1" },
     { name = "pyvista" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "scanpy" },
-    { name = "scikit-learn" },
     { name = "scipy" },
     { name = "statsmodels" },
     { name = "torch" },
     { name = "torch-geometric" },
     { name = "tqdm" },
     { name = "typer" },
+    { name = "xarray" },
     { name = "zarr" },
 ]
 
@@ -890,23 +890,22 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "myst-parser", marker = "extra == 'doc'" },
     { name = "nbsphinx", marker = "extra == 'doc'" },
-    { name = "numba" },
+    { name = "numba", specifier = ">=0.60" },
     { name = "numpy", specifier = "~=2.2" },
-    { name = "pandas" },
+    { name = "pandas", specifier = ">=2.0" },
     { name = "pandas-plink" },
     { name = "plotly" },
     { name = "psutil", specifier = ">=5.8.0" },
     { name = "pyarrow" },
     { name = "pyfiglet" },
-    { name = "pyranges" },
+    { name = "pyranges1", specifier = ">=1.0" },
     { name = "pytest", marker = "extra == 'tests'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'tests'", specifier = ">=4.0.0" },
     { name = "pyvista", specifier = ">=0.35.0" },
     { name = "pyyaml" },
     { name = "rich", specifier = ">=14.1.0" },
     { name = "scanpy", specifier = ">=1.11.0" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
+    { name = "scipy", specifier = ">=1.11" },
     { name = "sphinx", marker = "extra == 'doc'" },
     { name = "sphinx-argparse", marker = "extra == 'doc'" },
     { name = "sphinx-autobuild", marker = "extra == 'doc'" },
@@ -930,6 +929,7 @@ requires-dist = [
     { name = "torch-geometric", specifier = "~=2.7" },
     { name = "tqdm" },
     { name = "typer", specifier = "~=0.20.0" },
+    { name = "xarray" },
     { name = "zarr", specifier = ">=2.18.0" },
 ]
 provides-extras = ["doc", "tests", "cuda", "tpu"]
@@ -1681,22 +1681,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1e/84/b1856b7651ac34e965aa567a158714c7f3bd42a1b1ce76bf423ffb99872c/nbsphinx-0.9.7.tar.gz", hash = "sha256:abd298a686d55fa894ef697c51d44f24e53aa312dadae38e82920f250a5456fe", size = 180479, upload-time = "2025-03-03T19:46:08.069Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/2d/8c8e635bcc6757573d311bb3c5445426382f280da32b8cd6d82d501ef4a4/nbsphinx-0.9.7-py3-none-any.whl", hash = "sha256:7292c3767fea29e405c60743eee5393682a83982ab202ff98f5eb2db02629da8", size = 31660, upload-time = "2025-03-03T19:46:06.581Z" },
-]
-
-[[package]]
-name = "ncls"
-version = "0.0.70"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5f/dd/0c6a5a36ec132665f85e5e33f0480b58cf5aa8af8fbe1d5971410d789558/ncls-0.0.70.tar.gz", hash = "sha256:7d16634a8f57fa79659e9ae7e5cc6edd1e02d5acb0eb57128dbed03e9f4fdd9c", size = 592442, upload-time = "2025-07-04T15:01:37.39Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/76/9af85bb0d7b0b68c45367cba6cda7e21e0caa30a891d6b42624e84c3779d/ncls-0.0.70-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:3df775f4274a8b9d3e6be778e9df122d14b64bb4c3dd3511b714c9e7e9d0b347", size = 925479, upload-time = "2025-07-04T15:01:23.638Z" },
-    { url = "https://files.pythonhosted.org/packages/93/96/0dc27f298c688f1ce175e018906dd36b8fc0d27a000bc07a7feeb3a1010d/ncls-0.0.70-cp312-cp312-manylinux_2_12_i686.manylinux2010_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:68bc795a49a1caeb6efc7a7982b5549b2620266028cd015b70b8e9217f858d2a", size = 2597567, upload-time = "2025-07-04T15:01:25.071Z" },
-    { url = "https://files.pythonhosted.org/packages/40/03/f5d0b979c6a1f8a8a11ba115a7c5b145671f092372a4ede164dc2597c466/ncls-0.0.70-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:205779656889931338a7fa4c58a1466643a61dd5593c843f55cc7018b33a0331", size = 2699042, upload-time = "2025-07-04T15:01:26.299Z" },
-    { url = "https://files.pythonhosted.org/packages/01/5d/cde06f1b58c637afd81751f1d082782b593cf83ac5abefa56acae86dd01f/ncls-0.0.70-cp312-cp312-musllinux_1_1_i686.whl", hash = "sha256:6923443d8d3e25c7cbc7e2ac3b375230cffbecdfc413512c570734e547e3e35d", size = 2578977, upload-time = "2025-07-04T15:01:27.789Z" },
-    { url = "https://files.pythonhosted.org/packages/27/3c/531f23c817f3aaa8500bbafd84aed4e0314aec17f5fb38c39915a9189dde/ncls-0.0.70-cp312-cp312-musllinux_1_1_x86_64.whl", hash = "sha256:fd2050a150153b35a00a6be62bf4f10e5efcb5d7b4fe2a09ecb38f2f95ee1f09", size = 2697446, upload-time = "2025-07-04T15:01:29.32Z" },
 ]
 
 [[package]]
@@ -2497,19 +2481,18 @@ wheels = [
 ]
 
 [[package]]
-name = "pyranges"
-version = "0.1.4"
+name = "pyranges1"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "natsort" },
-    { name = "ncls" },
     { name = "pandas" },
-    { name = "sorted-nearest" },
+    { name = "ruranges" },
     { name = "tabulate" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/b4/c90491bd784dc51a54a04ff188d5694563cdce5c1258816ff5d7cf332c70/pyranges-0.1.4.tar.gz", hash = "sha256:ca99cb70ff41c5da86ebc337f057877d293643b69e8e9937ccc738f98c32dbeb", size = 1494730, upload-time = "2025-03-14T14:22:27.995Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7b/bf/76f10c721cec325ed41c861304fef794b6859ebbf58f71e18f497753bf77/pyranges1-1.2.0.tar.gz", hash = "sha256:36228b1b1f28727331b53ed8923283f117040c080053499e3c16c078d5d2efdf", size = 910034, upload-time = "2026-01-29T14:04:23.637Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/89/35ea267fb12e608529f0df315aff200171e555623cb38b2e4444592ce872/pyranges-0.1.4-py3-none-any.whl", hash = "sha256:2bcf7de43137ee42ab009cedf40eff12ced26f7889c35c34dd3c848a7bf7fed7", size = 1511919, upload-time = "2025-03-14T14:22:22.213Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/fc/7c8e640e88e584b512c5b924545ccea3a42c57b56caa6afd844d0ffdebb3/pyranges1-1.2.0-py3-none-any.whl", hash = "sha256:110eeee1b8be50c37ae9185d5425f1127e4a547527d9a1a0db74002bb843b61b", size = 939261, upload-time = "2026-01-29T14:04:20.753Z" },
 ]
 
 [[package]]
@@ -2802,6 +2785,21 @@ wheels = [
 ]
 
 [[package]]
+name = "ruranges"
+version = "0.0.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/0e/795fade3a937f41f84da9c63ba4181c45a8910d774489f0088c93732c259/ruranges-0.0.15.tar.gz", hash = "sha256:0f349684ff4b6771437a6a2f1c266f4f104bedaf4be811620b0aab2abff6d156", size = 54514, upload-time = "2025-12-17T15:37:10.196Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/aa/46/4baf30e339408eaae21b533c0fabf1640e7798e9076d15212c1b913d090c/ruranges-0.0.15-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:260d8c07e0194db1c224460b272ff9e71e2695ed1fb997dc6486eb0b0943126e", size = 639917, upload-time = "2025-12-17T15:37:05.638Z" },
+    { url = "https://files.pythonhosted.org/packages/62/f3/1f4a413f9cd1daf60fece5eb7755650c29d502cdd14544f1d10204227740/ruranges-0.0.15-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:800cfb09a81035bc85022570875bef4bc507714474685a2aec1586a7714b0cbd", size = 732831, upload-time = "2025-12-17T15:37:06.936Z" },
+    { url = "https://files.pythonhosted.org/packages/68/0c/e153c9578151c5779ad7dc09c97a976cdabdd678e99462c012b366b95353/ruranges-0.0.15-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:24ac23d67ab01bca063c90df42b271ffc6b005c328f6a0964b0a87e4bb3b32f0", size = 639468, upload-time = "2025-12-17T15:37:08.005Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/2d/18190b33be36e2e1ca10416b8350a4040c3b6e0bf755d7c93d937e076d80/ruranges-0.0.15-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:e6d56bf021850028ba5660a6aca346d080bcdeb1c6ce3ed29540756d4a62cc1b", size = 732057, upload-time = "2025-12-17T15:37:09.229Z" },
+]
+
+[[package]]
 name = "scanpy"
 version = "1.11.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3039,15 +3037,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/75/a7/9810d872919697c9d
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/78/3565d011c61f5a43488987ee32b6f3f656e7f107ac2782dd57bdd7d91d9a/snowballstemmer-3.0.1-py3-none-any.whl", hash = "sha256:6cd7b3897da8d6c9ffb968a6781fa6532dce9c3618a4b127d920dab764a19064", size = 103274, upload-time = "2025-05-09T16:34:50.371Z" },
 ]
-
-[[package]]
-name = "sorted-nearest"
-version = "0.0.39"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/5b/c94b5c454664cf3588e9c61f9a2057a3328ab3f53f7bd971fb7b6429ab59/sorted_nearest-0.0.39.tar.gz", hash = "sha256:16a51d5db87ae226b47ace43c176bb672477a1b7ba8052ea9291a6356c9c69b1", size = 1233782, upload-time = "2023-05-19T14:38:08.856Z" }
 
 [[package]]
 name = "soupsieve"

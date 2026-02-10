@@ -12,7 +12,7 @@ import bitarray as ba
 import numba
 import numpy as np
 import pandas as pd
-import pyranges as pr
+import pyranges1 as pr
 import torch
 from tqdm import tqdm
 

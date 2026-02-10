@@ -1,6 +1,7 @@
 """
 Base configuration classes and utilities for gsMap.
 """
+
 import inspect
 import logging
 from dataclasses import asdict, dataclass
@@ -33,12 +34,10 @@ def config_logger():
         show_time=True,
         show_path=False,
         rich_tracebacks=True,
-        tracebacks_show_locals=True
+        tracebacks_show_locals=True,
     )
     rich_handler.setLevel(logging.INFO)
-    rich_handler.setFormatter(
-        logging.Formatter("{levelname:.5s} | {name} - {message}", style="{")
-    )
+    rich_handler.setFormatter(logging.Formatter("{levelname:.5s} | {name} - {message}", style="{"))
     logger.addHandler(rich_handler)
 
     # # Create file handler for DEBUG level messages with timestamp
@@ -62,10 +61,13 @@ def config_logger():
     #
     return logger
 
+
 config_logger()
+
 
 def ensure_path_exists(func):
     """Decorator to ensure path exists when accessing properties."""
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         result = func(*args, **kwargs)
@@ -75,7 +77,9 @@ def ensure_path_exists(func):
             else:  # It's a directory path
                 result.mkdir(parents=True, exist_ok=True, mode=0o755)
         return result
+
     return wrapper
+
 
 @dataclass
 class BaseConfig:
@@ -121,14 +125,16 @@ class BaseConfig:
 
         # Get title from docstring (first line)
         doc = inspect.getdoc(type(self))
-        title = doc.split('\n')[0] if doc else "Configuration"
+        title = doc.split("\n")[0] if doc else "Configuration"
 
         console = Console()
-        console.print(Panel(
-            Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
-            title=f"[bold]{title}[/bold]",
-            expand=False
-        ))
+        console.print(
+            Panel(
+                Syntax(config_yaml, "yaml", theme="monokai", line_numbers=True),
+                title=f"[bold]{title}[/bold]",
+                expand=False,
+            )
+        )
 
 
 @dataclass
@@ -136,17 +142,18 @@ class ConfigWithAutoPaths(BaseConfig):
     """Base configuration class with automatic path generation."""
 
     # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
+    workdir: Annotated[
+        Path,
+        typer.Option(
+            help="Path to the working directory",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ]
 
-    project_name: Annotated[str, typer.Option(
-        help="Name of the project"
-    )]
+    project_name: Annotated[str, typer.Option(help="Name of the project")]
 
     @property
     @ensure_path_exists
@@ -156,7 +163,7 @@ class ConfigWithAutoPaths(BaseConfig):
 
     def __post_init__(self):
         if self.workdir is None:
-            raise ValueError('workdir must be provided.')
+            raise ValueError("workdir must be provided.")
 
     ## ---- Find latent representation paths
     @property
@@ -167,11 +174,11 @@ class ConfigWithAutoPaths(BaseConfig):
     @property
     @ensure_path_exists
     def model_path(self) -> Path:
-        return self.latent_dir / 'LGCN_model' / 'gsMap_LGCN_.pt'
+        return self.latent_dir / "LGCN_model" / "gsMap_LGCN_.pt"
 
     @property
     def find_latent_metadata_path(self) -> Path:
-        return self.latent_dir / 'find_latent_metadata.yaml'
+        return self.latent_dir / "find_latent_metadata.yaml"
 
     ## ---- Latent to gene paths
 
@@ -205,7 +212,6 @@ class ConfigWithAutoPaths(BaseConfig):
     def latent2gene_metadata_path(self) -> Path:
         """Path to latent2gene metadata YAML"""
         return self.latent2gene_dir / "metadata.yaml"
-
 
     ## ---- Spatial LDSC paths
 
@@ -273,13 +279,20 @@ class ConfigWithAutoPaths(BaseConfig):
     def ldsc_combined_parquet_path(self) -> Path:
         return self.cauchy_save_dir / f"{self.project_name}_combined_ldsc.parquet"
 
-    def get_cauchy_result_file(self, trait_name: str, annotation: str | None = None, all_samples: bool = False) -> Path:
+    def get_cauchy_result_file(
+        self, trait_name: str, annotation: str | None = None, all_samples: bool = False
+    ) -> Path:
         if annotation is None:
-            annotation = getattr(self, 'annotation', 'unknown')
+            annotation = getattr(self, "annotation", "unknown")
         if all_samples:
-            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.{annotation}.cauchy.csv"
+            return (
+                self.cauchy_save_dir / f"{self.project_name}_{trait_name}.{annotation}.cauchy.csv"
+            )
         else:
-            return self.cauchy_save_dir / f"{self.project_name}_{trait_name}.{annotation}.sample_cauchy.csv"
+            return (
+                self.cauchy_save_dir
+                / f"{self.project_name}_{trait_name}.{annotation}.sample_cauchy.csv"
+            )
 
     @ensure_path_exists
     def get_gene_diagnostic_info_save_path(self, trait_name: str) -> Path:

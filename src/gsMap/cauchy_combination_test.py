@@ -11,24 +11,27 @@ from gsMap.config.cauchy_config import CauchyCombinationConfig
 
 logger = logging.getLogger(__name__)
 
+
 def load_ldsc(path):
-    logger.debug(f'Loading {path}')
+    logger.debug(f"Loading {path}")
     df = pd.read_csv(path)
-    df['log10_p'] = -np.log10(df['p'])
+    df["log10_p"] = -np.log10(df["p"])
     # Clean up spot index
-    df['spot'] = df['spot'].astype(str)
-    df.set_index('spot', inplace=True)
+    df["spot"] = df["spot"].astype(str)
+    df.set_index("spot", inplace=True)
     # drop nan
     df = df.dropna()
     return df
+
 
 def load_ldsc_with_key(key_path_tuple):
     """Helper function to load LDSC and return with its key"""
     key, path = key_path_tuple
     df = load_ldsc(path)
     # Select log10_p and rename with the key
-    df_subset = df[['log10_p']].rename(columns={'log10_p': key})
+    df_subset = df[["log10_p"]].rename(columns={"log10_p": key})
     return key, df_subset
+
 
 def join_ldsc_results(paths_dict, columns_to_keep=None, max_workers=None):
     """
@@ -36,7 +39,7 @@ def join_ldsc_results(paths_dict, columns_to_keep=None, max_workers=None):
     Each log10_p column is renamed with the dictionary key.
     """
     if columns_to_keep is None:
-        columns_to_keep = ['log10_p']
+        columns_to_keep = ["log10_p"]
     dfs_dict = {}
 
     # Use ProcessPoolExecutor for parallel loading
@@ -56,9 +59,10 @@ def join_ldsc_results(paths_dict, columns_to_keep=None, max_workers=None):
     dfs_to_join = [dfs_dict[key] for key in paths_dict.keys()]
 
     # OPTIMIZED JOIN: Use pd.concat which is much faster than sequential joins
-    df_merged = pd.concat(dfs_to_join, axis=1, join='inner', sort=False)
+    df_merged = pd.concat(dfs_to_join, axis=1, join="inner", sort=False)
 
     return df_merged
+
 
 def _acat_test(pvalues: np.ndarray, weights=None):
     """
@@ -95,7 +99,7 @@ def _acat_test(pvalues: np.ndarray, weights=None):
 
     cct_stat = 0.0
     if np.any(is_small):
-         cct_stat += np.sum((weights[is_small] / pvalues[is_small]) / np.pi)
+        cct_stat += np.sum((weights[is_small] / pvalues[is_small]) / np.pi)
 
     if np.any(is_large):
         cct_stat += np.sum(weights[is_large] * np.tan((0.5 - pvalues[is_large]) * np.pi))
@@ -106,6 +110,7 @@ def _acat_test(pvalues: np.ndarray, weights=None):
         pval = 1 - sp.stats.cauchy.cdf(cct_stat)
 
     return pval
+
 
 def remove_outliers_IQR(data, threshold_factor=3.0):
     """
@@ -126,6 +131,7 @@ def remove_outliers_IQR(data, threshold_factor=3.0):
     data_passed = data[mask]
 
     return data_passed, mask
+
 
 def process_trait(trait, anno_data, all_data, annotation, annotation_col):
     """
@@ -163,15 +169,16 @@ def process_trait(trait, anno_data, all_data, annotation, annotation_col):
     total_spots_in_anno = len(p_values)
 
     return {
-        'trait': trait,
-        'annotation_name': annotation_col,
-        'annotation': annotation,
-        'p_cauchy': p_cauchy_val,
-        'p_median': p_median_val,
-        'top_95_quantile': top_95_quantile,
-        'sig_spots': sig_spots_in_anno,
-        'total_spots': total_spots_in_anno,
+        "trait": trait,
+        "annotation_name": annotation_col,
+        "annotation": annotation,
+        "p_cauchy": p_cauchy_val,
+        "p_median": p_median_val,
+        "top_95_quantile": top_95_quantile,
+        "sig_spots": sig_spots_in_anno,
+        "total_spots": total_spots_in_anno,
     }
+
 
 def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col=None):
     """
@@ -187,7 +194,9 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
         DataFrame with results.
     """
     if trait_cols is None:
-        trait_cols = [c for c in df.columns if c not in [annotation_col, extra_group_col] and c != 'spot']
+        trait_cols = [
+            c for c in df.columns if c not in [annotation_col, extra_group_col] and c != "spot"
+        ]
 
     all_results = []
 
@@ -200,6 +209,7 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
     grouped = df.groupby(group_cols, observed=True)
 
     for trait in trait_cols:
+
         def process_one_group(group_key, trait=trait):
             df_group = grouped.get_group(group_key)
 
@@ -241,14 +251,13 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
         return pd.DataFrame()
 
     combined_results = pd.DataFrame(all_results)
-    sort_cols = ['trait', 'p_median']
+    sort_cols = ["trait", "p_median"]
     if extra_group_col:
         sort_cols = [extra_group_col] + sort_cols
 
     combined_results.sort_values(by=sort_cols, ascending=True, inplace=True)
 
     return combined_results
-
 
 
 def run_Cauchy_combination(config: CauchyCombinationConfig):
@@ -273,9 +282,11 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
             raise ValueError(f"Annotation column '{anno}' not found in adata.obs.")
 
     # Check for sample_name column
-    sample_col = 'sample_name'
+    sample_col = "sample_name"
     if sample_col not in adata.obs.columns:
-        logger.warning("'sample_name' column not found in adata.obs. Sample-level Cauchy will be skipped.")
+        logger.warning(
+            "'sample_name' column not found in adata.obs. Sample-level Cauchy will be skipped."
+        )
         sample_col = None
 
     # Filter to common spots
@@ -297,18 +308,18 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
         if isinstance(series.dtype, pd.CategoricalDtype):
             # Efficiently handle NaNs in categorical data by adding a 'NaN' category
             if series.isna().any():
-                if 'NaN' not in series.cat.categories:
-                    series = series.cat.add_categories('NaN')
-                df_combined[col] = series.fillna('NaN')
+                if "NaN" not in series.cat.categories:
+                    series = series.cat.add_categories("NaN")
+                df_combined[col] = series.fillna("NaN")
             else:
                 df_combined[col] = series
         else:
             # For non-categorical, fillna and ensure string type for consistency
-            df_combined[col] = series.fillna('NaN').astype(str).replace(['nan', 'None'], 'NaN')
+            df_combined[col] = series.fillna("NaN").astype(str).replace(["nan", "None"], "NaN")
 
     # 3. Save combined data to parquet
     logger.info(f"Saving combined data to {config.ldsc_combined_parquet_path}")
-    df_to_save = df_combined.reset_index().rename(columns={'index': 'spot'})
+    df_to_save = df_combined.reset_index().rename(columns={"index": "spot"})
     df_to_save.to_parquet(config.ldsc_combined_parquet_path)
 
     # 4. Process each annotation and each trait
@@ -317,26 +328,32 @@ def run_Cauchy_combination(config: CauchyCombinationConfig):
         logger.info(f"=== Processing Cauchy combination for annotation: {annotation_col} ===")
 
         # Run Cauchy Combination (Annotation Level)
-        result_df = run_cauchy_on_dataframe(df_combined,
-                                          annotation_col=annotation_col,
-                                          trait_cols=trait_cols)
+        result_df = run_cauchy_on_dataframe(
+            df_combined, annotation_col=annotation_col, trait_cols=trait_cols
+        )
 
         # Save results per trait
         for trait_name in trait_cols:
-            trait_result = result_df[result_df['trait'] == trait_name]
-            output_file = config.get_cauchy_result_file(trait_name, annotation=annotation_col, all_samples=True)
+            trait_result = result_df[result_df["trait"] == trait_name]
+            output_file = config.get_cauchy_result_file(
+                trait_name, annotation=annotation_col, all_samples=True
+            )
             trait_result.to_csv(output_file, index=False)
 
         # Run Cauchy Combination (Sample-Annotation level)
         if sample_col:
-            sample_result_df = run_cauchy_on_dataframe(df_combined,
-                                                      annotation_col=annotation_col,
-                                                      trait_cols=trait_cols,
-                                                      extra_group_col=sample_col)
+            sample_result_df = run_cauchy_on_dataframe(
+                df_combined,
+                annotation_col=annotation_col,
+                trait_cols=trait_cols,
+                extra_group_col=sample_col,
+            )
 
             for trait_name in trait_cols:
-                trait_sample_result = sample_result_df[sample_result_df['trait'] == trait_name]
-                sample_output_file = config.get_cauchy_result_file(trait_name, annotation=annotation_col, all_samples=False)
+                trait_sample_result = sample_result_df[sample_result_df["trait"] == trait_name]
+                sample_output_file = config.get_cauchy_result_file(
+                    trait_name, annotation=annotation_col, all_samples=False
+                )
                 trait_sample_result.to_csv(sample_output_file, index=False)
 
     logger.info("Cauchy combination processing completed.")

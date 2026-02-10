@@ -200,7 +200,9 @@ def generate_GSS_distribution(config: DiagnosisConfig, adata: ad.AnnData):
 
     plot_genes = (
         config.selected_genes
-        or load_gene_diagnostic_info(config, adata=adata).Gene.iloc[: config.top_corr_genes].tolist()
+        or load_gene_diagnostic_info(config, adata=adata)
+        .Gene.iloc[: config.top_corr_genes]
+        .tolist()
     )
     if config.selected_genes is not None:
         logger.info(
@@ -218,9 +220,7 @@ def generate_GSS_distribution(config: DiagnosisConfig, adata: ad.AnnData):
             config.point_size,
         )
     else:
-        (pixel_width, pixel_height), point_size = estimate_plotly_point_size(
-            adata.obsm["spatial"]
-        )
+        (pixel_width, pixel_height), point_size = estimate_plotly_point_size(adata.obsm["spatial"])
     sub_fig_save_dir = config.get_GSS_plot_dir(config.trait_name)
 
     # save plot gene list
@@ -237,7 +237,7 @@ def generate_GSS_distribution(config: DiagnosisConfig, adata: ad.AnnData):
         paralleized_params.append(
             (
                 adata,
-                mk_score[[selected_gene]], # Pass only needed gene to save memory
+                mk_score[[selected_gene]],  # Pass only needed gene to save memory
                 expression_series,
                 selected_gene,
                 point_size,
@@ -324,9 +324,7 @@ def generate_gsMap_plot(config: DiagnosisConfig, adata: ad.AnnData):
             config.point_size,
         )
     else:
-        (pixel_width, pixel_height), point_size = estimate_plotly_point_size(
-            adata.obsm["spatial"]
-        )
+        (pixel_width, pixel_height), point_size = estimate_plotly_point_size(adata.obsm["spatial"])
     fig = draw_scatter(
         space_coord_concat,
         title=f"{config.trait_name} (gsMap)",
@@ -354,14 +352,14 @@ def run_Diagnosis(config: DiagnosisConfig):
     adata = ad.read_h5ad(config.hdf5_with_latent_path)
     if "pcc" not in adata.var.columns:
         # Manual normalization and log1p to avoid scanpy dependency/warnings
-        if hasattr(adata.X, 'toarray'):
+        if hasattr(adata.X, "toarray"):
             x_dense = adata.X.toarray()
         else:
             x_dense = adata.X
 
         # Normalize to target sum 1e4
         row_sums = x_dense.sum(axis=1)
-        row_sums[row_sums == 0] = 1 # Avoid division by zero
+        row_sums[row_sums == 0] = 1  # Avoid division by zero
         x_norm = (x_dense / row_sums.reshape(-1, 1)) * 1e4
 
         # Log transformation

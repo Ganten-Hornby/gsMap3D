@@ -21,24 +21,34 @@ from .spatial_ldsc_config import SpatialLDSCConfig
 
 logger = logging.getLogger("gsMap.config")
 
+
 @dataclass
-class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindLatentRepresentationsConfig, ConfigWithAutoPaths):
+class QuickModeConfig(
+    ReportConfig,
+    SpatialLDSCConfig,
+    LatentToGeneConfig,
+    FindLatentRepresentationsConfig,
+    ConfigWithAutoPaths,
+):
     """Quick Mode Pipeline Configuration"""
+
     __core_only__ = True
 
     # ------------------------------------------------------------------------
     # Pipeline Control
     # ------------------------------------------------------------------------
-    start_step: Annotated[str, typer.Option(
-        help="Step to start execution from (find_latent, latent2gene, spatial_ldsc, cauchy, report)",
-        case_sensitive=False
-    )] = "find_latent"
+    start_step: Annotated[
+        str,
+        typer.Option(
+            help="Step to start execution from (find_latent, latent2gene, spatial_ldsc, cauchy, report)",
+            case_sensitive=False,
+        ),
+    ] = "find_latent"
 
-    stop_step: Annotated[str | None, typer.Option(
-        help="Step to stop execution at (inclusive)",
-        case_sensitive=False
-    )] = None
-
+    stop_step: Annotated[
+        str | None,
+        typer.Option(help="Step to stop execution at (inclusive)", case_sensitive=False),
+    ] = None
 
     def __post_init__(self):
         ConfigWithAutoPaths.__post_init__(self)
@@ -69,9 +79,13 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
 
     @property
     def find_latent_config(self) -> FindLatentRepresentationsConfig:
-        return FindLatentRepresentationsConfig(**{
-            f.name: getattr(self, f.name) for f in fields(FindLatentRepresentationsConfig) if f.init
-        })
+        return FindLatentRepresentationsConfig(
+            **{
+                f.name: getattr(self, f.name)
+                for f in fields(FindLatentRepresentationsConfig)
+                if f.init
+            }
+        )
 
     @property
     def latent2gene_config(self) -> LatentToGeneConfig:
@@ -80,26 +94,32 @@ class QuickModeConfig(ReportConfig, SpatialLDSCConfig, LatentToGeneConfig, FindL
 
     @property
     def spatial_ldsc_config(self) -> SpatialLDSCConfig:
-        return SpatialLDSCConfig(**{
-            f.name: getattr(self, f.name) for f in fields(SpatialLDSCConfig) if f.init
-        })
+        return SpatialLDSCConfig(
+            **{f.name: getattr(self, f.name) for f in fields(SpatialLDSCConfig) if f.init}
+        )
 
     @property
     def report_config(self) -> ReportConfig:
-        return ReportConfig(**{
-            f.name: getattr(self, f.name) for f in fields(ReportConfig) if f.init and hasattr(self, f.name)
-        })
+        return ReportConfig(
+            **{
+                f.name: getattr(self, f.name)
+                for f in fields(ReportConfig)
+                if f.init and hasattr(self, f.name)
+            }
+        )
 
     @property
     def cauchy_config(self) -> CauchyCombinationConfig:
-        return CauchyCombinationConfig(**{
-            f.name: getattr(self, f.name) for f in fields(CauchyCombinationConfig) if f.init and hasattr(self, f.name)
-        })
-
+        return CauchyCombinationConfig(
+            **{
+                f.name: getattr(self, f.name)
+                for f in fields(CauchyCombinationConfig)
+                if f.init and hasattr(self, f.name)
+            }
+        )
 
 
 def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
-
     missing_data_files, missing_web_files = get_report_missing_files(config)
     missing_files = missing_data_files + missing_web_files
 

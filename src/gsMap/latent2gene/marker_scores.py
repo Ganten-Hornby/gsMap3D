@@ -39,12 +39,15 @@ from rich.table import Table
 from gsMap.config import DatasetType, MarkerScoreCrossSliceStrategy
 
 from .connectivity import ConnectivityMatrixBuilder
-from .memmap_io import MemMapDense
+from .memmap_io import (
+    ComponentThroughput,
+    MemMapDense,
+    ParallelMarkerScoreWriter,
+    ParallelRankReader,
+)
 from .row_ordering_jax import optimize_row_order_jax
 
 logger = logging.getLogger(__name__)
-
-from .memmap_io import ComponentThroughput, ParallelMarkerScoreWriter, ParallelRankReader
 
 
 class ParallelMarkerScoreComputer:
@@ -61,7 +64,7 @@ class ParallelMarkerScoreComputer:
         cross_slice_strategy: str = None,
         n_slices: int = 1,
         num_homogeneous_per_slice: int = None,
-        no_expression_fraction: bool = False
+        no_expression_fraction: bool = False,
     ):
         """
         Initialize computer pool
@@ -116,11 +119,7 @@ class ParallelMarkerScoreComputer:
     def _start_workers(self):
         """Start compute worker threads"""
         for i in range(self.num_workers):
-            worker = threading.Thread(
-                target=self._compute_worker,
-                args=(i,),
-                daemon=True
-            )
+            worker = threading.Thread(target=self._compute_worker, args=(i,), daemon=True)
             worker.start()
             self.workers.append(worker)
         logger.info(f"Started {self.num_workers} compute workers")
@@ -148,13 +147,17 @@ class ParallelMarkerScoreComputer:
                     logger.error(f"Compute worker {worker_id}: batch context not set")
                     raise RuntimeError("Batch context must be set before processing")
 
-                batch_start = batch_metadata['batch_start']
-                batch_end = batch_metadata['batch_end']
+                batch_start = batch_metadata["batch_start"]
+                batch_end = batch_metadata["batch_end"]
                 actual_batch_size = batch_end - batch_start
 
                 # Verify shape
-                assert original_shape == (actual_batch_size, self.homogeneous_neighbors * self.n_slices), \
+                assert original_shape == (
+                    actual_batch_size,
+                    self.homogeneous_neighbors * self.n_slices,
+                ), (
                     f"Unexpected rank data shape: {original_shape}, expected ({actual_batch_size}, {self.homogeneous_neighbors * self.n_slices})"
+                )
 
                 # Get batch-specific data
                 batch_weights = self.neighbor_weights[batch_start:batch_end]
@@ -168,7 +171,7 @@ class ParallelMarkerScoreComputer:
                 batch_ranks = rank_data_jax[rank_indices_jax]
 
                 # Compute marker scores using appropriate strategy
-                if self.cross_slice_strategy == 'hierarchical_pool':
+                if self.cross_slice_strategy == "hierarchical_pool":
                     # Use hierarchical pooling (per-slice marker score average) for 3D data
                     marker_scores = compute_marker_scores_3d_hierarchical_pool_jax(
                         batch_ranks,
@@ -178,7 +181,7 @@ class ParallelMarkerScoreComputer:
                         self.num_homogeneous_per_slice,
                         self.global_log_gmean,
                         self.global_expr_frac,
-                        self.no_expression_fraction
+                        self.no_expression_fraction,
                     )
                 else:
                     # Use standard computation (includes mean pooling via weights)
@@ -189,7 +192,7 @@ class ParallelMarkerScoreComputer:
                         self.homogeneous_neighbors * self.n_slices,
                         self.global_log_gmean,
                         self.global_expr_frac,
-                        self.no_expression_fraction
+                        self.no_expression_fraction,
                     )
 
                 # Convert back to numpy as float16 for memory efficiency
@@ -206,7 +209,7 @@ class ParallelMarkerScoreComputer:
 
             except queue.Empty:
                 continue
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 error_trace = traceback.format_exc()
                 logger.error(f"Compute worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
                 self.exception_queue.put((worker_id, e, error_trace))
@@ -216,10 +219,15 @@ class ParallelMarkerScoreComputer:
 
         logger.info(f"Compute worker {worker_id} stopped")
 
-    def set_batch_context(self, neighbor_weights: np.ndarray, cell_indices_sorted: np.ndarray,
-                         batch_size: int, n_cells: int):
+    def set_batch_context(
+        self,
+        neighbor_weights: np.ndarray,
+        cell_indices_sorted: np.ndarray,
+        batch_size: int,
+        n_cells: int,
+    ):
         """Set context for processing batches of current cell type"""
-        self.neighbor_weights = jnp.asarray(neighbor_weights) # transfer to jax array only once
+        self.neighbor_weights = jnp.asarray(neighbor_weights)  # transfer to jax array only once
         self.cell_indices_sorted = cell_indices_sorted
         self.batch_size = batch_size
         self.n_cells = n_cells
@@ -244,9 +252,11 @@ class ParallelMarkerScoreComputer:
         if self.has_error.is_set():
             try:
                 worker_id, exception, error_trace = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Compute worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}") from exception
+                raise RuntimeError(
+                    f"Compute worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
+                ) from exception
             except queue.Empty:
-                raise RuntimeError("Compute worker failed with unknown error")
+                raise RuntimeError("Compute worker failed with unknown error") from None
 
     def close(self):
         """Close compute pool"""
@@ -258,12 +268,10 @@ class ParallelMarkerScoreComputer:
         logger.info("Compute pool closed")
 
 
-
-
-
 @dataclass
 class PipelineStats:
     """Statistics for pipeline monitoring"""
+
     total_batches: int
     completed_reads: int = 0
     completed_computes: int = 0
@@ -341,13 +349,15 @@ class MarkerScoreMessageQueue:
         self.n_cells = n_cells
         self.n_batches = (n_cells + self.batch_size - 1) // self.batch_size
         self.stats = PipelineStats(total_batches=self.n_batches)
-        logger.debug(f"Reset MarkerScoreMessageQueue for {cell_type}: {self.n_batches} batches, {n_cells} cells")
+        logger.debug(
+            f"Reset MarkerScoreMessageQueue for {cell_type}: {self.n_batches} batches, {n_cells} cells"
+        )
 
     def _submit_batches(
         self,
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
-        cell_indices_sorted: np.ndarray
+        cell_indices_sorted: np.ndarray,
     ):
         """Submit all batches to the reader"""
         # Set context for computer
@@ -355,7 +365,7 @@ class MarkerScoreMessageQueue:
             neighbor_weights=neighbor_weights,
             cell_indices_sorted=cell_indices_sorted,
             batch_size=self.batch_size,
-            n_cells=self.n_cells
+            n_cells=self.n_cells,
         )
 
         # Submit all batches with metadata
@@ -366,9 +376,9 @@ class MarkerScoreMessageQueue:
 
             # Include metadata for computer
             batch_metadata = {
-                'batch_start': batch_start,
-                'batch_end': batch_end,
-                'batch_idx': batch_idx
+                "batch_start": batch_start,
+                "batch_end": batch_end,
+                "batch_idx": batch_idx,
             }
 
             self.reader.submit_batch(batch_idx, batch_neighbors, batch_metadata)
@@ -401,7 +411,7 @@ class MarkerScoreMessageQueue:
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
         cell_indices_sorted: np.ndarray,
-        enable_profiling: bool = False
+        enable_profiling: bool = False,
     ):
         """Run pipeline with rich progress display
 
@@ -414,12 +424,15 @@ class MarkerScoreMessageQueue:
 
         # Ensure the queue has been reset for this cell type
         if self.active_cell_type is None or self.stats is None:
-            raise RuntimeError("MarkerScoreMessageQueue must be reset before starting. Call reset_for_cell_type first.")
+            raise RuntimeError(
+                "MarkerScoreMessageQueue must be reset before starting. Call reset_for_cell_type first."
+            )
 
         # Optional profiling
         tracer = None
         if enable_profiling:
-            import viztracer
+            import viztracer  # type: ignore[import-untyped]
+
             tracer = viztracer.VizTracer(
                 output_file=f"marker_score_{self.active_cell_type}_{self.n_batches}.json",
                 max_stack_depth=10,
@@ -453,9 +466,8 @@ class MarkerScoreMessageQueue:
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
                 console=console,
-                refresh_per_second=10
+                refresh_per_second=10,
             ) as progress:
-
                 # Add single task for pipeline
                 pipeline_task = progress.add_task(
                     f"[bold]{self.active_cell_type}[/bold]", total=self.n_batches
@@ -487,7 +499,7 @@ class MarkerScoreMessageQueue:
                             f"[bold]{self.active_cell_type}[/bold] | "
                             f"Queues: [{compute_color}]R→C:{self.stats.pending_compute}[/{compute_color}] "
                             f"[{write_color}]C→W:{self.stats.pending_write}[/{write_color}]"
-                        )
+                        ),
                     )
 
                     time.sleep(0.1)
@@ -506,51 +518,96 @@ class MarkerScoreMessageQueue:
             if tracer is not None:
                 tracer.stop()
                 tracer.save()
-                logger.info(f"Profiling saved to marker_score_{self.active_cell_type}_{self.n_batches}.json")
+                logger.info(
+                    f"Profiling saved to marker_score_{self.active_cell_type}_{self.n_batches}.json"
+                )
 
         # No threads to wait for - processing happens in component worker threads
 
         # Print summary with component throughputs
         # Calculate effective pipeline throughput (limited by bottleneck)
         min(
-            self.stats.reader_throughput.throughput * self.reader.num_workers if self.stats.reader_throughput.throughput > 0 else float('inf'),
-            self.stats.computer_throughput.throughput * self.computer.num_workers if self.stats.computer_throughput.throughput > 0 else float('inf'),
-            self.stats.writer_throughput.throughput * self.writer.num_workers if self.stats.writer_throughput.throughput > 0 else float('inf')
+            self.stats.reader_throughput.throughput * self.reader.num_workers
+            if self.stats.reader_throughput.throughput > 0
+            else float("inf"),
+            self.stats.computer_throughput.throughput * self.computer.num_workers
+            if self.stats.computer_throughput.throughput > 0
+            else float("inf"),
+            self.stats.writer_throughput.throughput * self.writer.num_workers
+            if self.stats.writer_throughput.throughput > 0
+            else float("inf"),
         )
 
         # Calculate cells per second for each component and pipeline
-        pipeline_cells_per_sec = self.stats.throughput * self.batch_size if self.stats.throughput > 0 else 0
-        reader_cells_per_sec = self.stats.reader_throughput.throughput * self.batch_size * self.reader.num_workers if self.stats.reader_throughput.throughput > 0 else 0
-        computer_cells_per_sec = self.stats.computer_throughput.throughput * self.batch_size * self.computer.num_workers if self.stats.computer_throughput.throughput > 0 else 0
-        writer_cells_per_sec = self.stats.writer_throughput.throughput * self.batch_size * self.writer.num_workers if self.stats.writer_throughput.throughput > 0 else 0
+        pipeline_cells_per_sec = (
+            self.stats.throughput * self.batch_size if self.stats.throughput > 0 else 0
+        )
+        reader_cells_per_sec = (
+            self.stats.reader_throughput.throughput * self.batch_size * self.reader.num_workers
+            if self.stats.reader_throughput.throughput > 0
+            else 0
+        )
+        computer_cells_per_sec = (
+            self.stats.computer_throughput.throughput * self.batch_size * self.computer.num_workers
+            if self.stats.computer_throughput.throughput > 0
+            else 0
+        )
+        writer_cells_per_sec = (
+            self.stats.writer_throughput.throughput * self.batch_size * self.writer.num_workers
+            if self.stats.writer_throughput.throughput > 0
+            else 0
+        )
 
         # Create summary table
-        summary_table = Table(title=f"[bold green]✓ Completed {self.active_cell_type}[/bold green]", box=None)
+        summary_table = Table(
+            title=f"[bold green]✓ Completed {self.active_cell_type}[/bold green]", box=None
+        )
         summary_table.add_column("Property", style="dim")
         summary_table.add_column("Value", style="green", justify="right")
 
         summary_table.add_row("Total Batches", str(self.n_batches))
         summary_table.add_row("Time Elapsed", f"{self.stats.elapsed_time:.2f}s")
-        summary_table.add_row("Pipeline Throughput", f"{self.stats.throughput:.2f} batches/s ({pipeline_cells_per_sec:.0f} cells/s)")
+        summary_table.add_row(
+            "Pipeline Throughput",
+            f"{self.stats.throughput:.2f} batches/s ({pipeline_cells_per_sec:.0f} cells/s)",
+        )
 
-        perf_table = Table(title="[bold]Component Performance (per worker)[/bold]", show_header=True, header_style="bold blue")
+        perf_table = Table(
+            title="[bold]Component Performance (per worker)[/bold]",
+            show_header=True,
+            header_style="bold blue",
+        )
         perf_table.add_column("Component")
         perf_table.add_column("Throughput", justify="right")
         perf_table.add_column("Workers", justify="right")
         perf_table.add_column("Total Throughput", justify="right", style="green")
 
-        perf_table.add_row("Reader", f"{self.stats.reader_throughput.throughput:.2f} b/s", str(self.reader.num_workers), f"{reader_cells_per_sec:.0f} c/s")
-        perf_table.add_row("Computer", f"{self.stats.computer_throughput.throughput:.2f} b/s", str(self.computer.num_workers), f"{computer_cells_per_sec:.0f} c/s")
-        perf_table.add_row("Writer", f"{self.stats.writer_throughput.throughput:.2f} b/s", str(self.writer.num_workers), f"{writer_cells_per_sec:.0f} c/s")
+        perf_table.add_row(
+            "Reader",
+            f"{self.stats.reader_throughput.throughput:.2f} b/s",
+            str(self.reader.num_workers),
+            f"{reader_cells_per_sec:.0f} c/s",
+        )
+        perf_table.add_row(
+            "Computer",
+            f"{self.stats.computer_throughput.throughput:.2f} b/s",
+            str(self.computer.num_workers),
+            f"{computer_cells_per_sec:.0f} c/s",
+        )
+        perf_table.add_row(
+            "Writer",
+            f"{self.stats.writer_throughput.throughput:.2f} b/s",
+            str(self.writer.num_workers),
+            f"{writer_cells_per_sec:.0f} c/s",
+        )
 
-        console.print(Panel(
-            Group(summary_table, perf_table),
-            title="Pipeline Summary",
-            border_style="green"
-        ))
+        console.print(
+            Panel(Group(summary_table, perf_table), title="Pipeline Summary", border_style="green")
+        )
 
         # Final garbage collection
         import gc
+
         gc.collect()
 
         logger.info(f"✓ Completed processing {self.active_cell_type}")
@@ -564,7 +621,6 @@ class MarkerScoreMessageQueue:
         logger.info("MarkerScoreMessageQueue workers stopped")
 
 
-
 @partial(jit, static_argnums=(2, 3, 6))
 def compute_marker_scores_jax(
     log_ranks: jnp.ndarray,  # (B*N) × G matrix
@@ -573,7 +629,7 @@ def compute_marker_scores_jax(
     num_neighbors: int,
     global_log_gmean: jnp.ndarray,  # G-dimensional vector
     global_expr_frac: jnp.ndarray,  # G-dimensional vector
-    no_expression_fraction: bool = False  # Skip expression fraction filtering if True
+    no_expression_fraction: bool = False,  # Skip expression fraction filtering if True
 ) -> jnp.ndarray:
     """
     JAX-accelerated marker score computation
@@ -588,7 +644,7 @@ def compute_marker_scores_jax(
 
     # Compute weighted geometric mean in log space
     weights = weights / weights.sum(axis=1, keepdims=True)  # Normalize weights
-    weighted_log_mean = jnp.einsum('bn,bng->bg', weights, log_ranks_3d)
+    weighted_log_mean = jnp.einsum("bn,bng->bg", weights, log_ranks_3d)
 
     # Calculate marker score
     marker_score = jnp.exp(weighted_log_mean - global_log_gmean)
@@ -598,7 +654,7 @@ def compute_marker_scores_jax(
     if not no_expression_fraction:
         # Compute expression fraction (mean of is_expressed across neighbors)
         # Treat min log rank as non-expressed
-        is_expressed = (log_ranks_3d != log_ranks_3d.min(axis=-1, keepdims=True))
+        is_expressed = log_ranks_3d != log_ranks_3d.min(axis=-1, keepdims=True)
 
         # Create mask for valid neighbors (where weights > 0)
         valid_mask = weights > 0  # Shape: (batch_size, num_neighbors)
@@ -611,13 +667,13 @@ def compute_marker_scores_jax(
         expr_frac = jnp.where(
             valid_counts > 0,
             is_expressed_masked.astype(jnp.float16).sum(axis=1) / valid_counts,
-            0.0
+            0.0,
         )
 
         frac_mask = expr_frac > global_expr_frac
         marker_score = jnp.where(frac_mask, marker_score, 0.0)
 
-    marker_score = jnp.exp(marker_score ** 1.5) - 1.0
+    marker_score = jnp.exp(marker_score**1.5) - 1.0
 
     # Return as float16 for memory efficiency
     return marker_score.astype(jnp.float16)
@@ -632,7 +688,7 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
     num_homogeneous_per_slice: int,
     global_log_gmean: jnp.ndarray,  # G-dimensional vector
     global_expr_frac: jnp.ndarray,  # G-dimensional vector
-    no_expression_fraction: bool = False  # Skip expression fraction filtering if True
+    no_expression_fraction: bool = False,  # Skip expression fraction filtering if True
 ) -> jnp.ndarray:
     """
     JAX-accelerated marker score computation with hierarchical pooling for 3D spatial data.
@@ -660,12 +716,12 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
     weights_3d = weights.reshape(batch_size, n_slices, num_homogeneous_per_slice)
 
     # Normalize weights within each slice (sum to 1 along num_homogeneous_per_slice axis)
-    weights_sum = weights_3d.sum(axis=2, keepdims=True) # Shape: (batch_size, n_slices, 1)
+    weights_sum = weights_3d.sum(axis=2, keepdims=True)  # Shape: (batch_size, n_slices, 1)
     weights_normalized = weights_3d / jnp.where(weights_sum > 0, weights_sum, 1.0)
 
     # Compute weighted geometric mean in log space for each slice
     # Result: (batch_size, n_slices, n_genes)
-    weighted_log_mean = jnp.einsum('bsn,bsng->bsg', weights_normalized, log_ranks_4d)
+    weighted_log_mean = jnp.einsum("bsn,bsng->bsg", weights_normalized, log_ranks_4d)
 
     # Calculate marker score for each slice
     marker_score_per_slice = jnp.exp(weighted_log_mean - global_log_gmean[None, None, :])
@@ -676,7 +732,7 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
         # Compute expression fraction for each slice
         # Treat min log rank as non-expressed
         min_log_rank = log_ranks_4d.min(axis=-1, keepdims=True)
-        is_expressed = (log_ranks_4d != min_log_rank)
+        is_expressed = log_ranks_4d != min_log_rank
 
         # Create mask for valid neighbors within each slice (where weights > 0)
         valid_mask = weights_3d > 0  # Shape: (batch_size, n_slices, num_homogeneous_per_slice)
@@ -691,13 +747,13 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
         expr_frac = jnp.where(
             valid_counts > 0,
             is_expressed_masked.astype(jnp.float16).sum(axis=2) / valid_counts,
-            0.0
+            0.0,
         )
 
         frac_mask = expr_frac > global_expr_frac[None, None, :]
         marker_score_per_slice = jnp.where(frac_mask, marker_score_per_slice, 0.0)
 
-    marker_score_per_slice = jnp.exp(marker_score_per_slice ** 1.5) - 1.0
+    marker_score_per_slice = jnp.exp(marker_score_per_slice**1.5) - 1.0
 
     # Calculate median across slices instead of max pooling to reduce noise
     # Result: (batch_size, n_genes)
@@ -713,7 +769,7 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
     marker_score_per_slice = jnp.where(
         invalid_slice_mask[:, :, None],  # Broadcast to (batch_size, n_slices, n_genes)
         jnp.nan,
-        marker_score_per_slice
+        marker_score_per_slice,
     )
 
     # Calculate median across slices (axis=1), ignoring NaN values
@@ -753,8 +809,8 @@ class MarkerScoreCalculator:
         mean_frac_df = pd.read_parquet(parquet_path)
 
         # Extract global log geometric mean and expression fraction
-        global_log_gmean = mean_frac_df['G_Mean'].values.astype(np.float32)
-        global_expr_frac = mean_frac_df['frac'].values.astype(np.float32)
+        global_log_gmean = mean_frac_df["G_Mean"].values.astype(np.float32)
+        global_expr_frac = mean_frac_df["frac"].values.astype(np.float32)
 
         logger.info(f"Loaded global stats for {len(global_log_gmean)} genes")
 
@@ -762,7 +818,11 @@ class MarkerScoreCalculator:
 
     def _display_input_summary(self, adata, cell_types, n_cells, n_genes):
         """Display summary of input data and cell types"""
-        table = Table(title="[bold cyan]Marker Score Input Summary[/bold cyan]", show_header=True, header_style="bold magenta")
+        table = Table(
+            title="[bold cyan]Marker Score Input Summary[/bold cyan]",
+            show_header=True,
+            header_style="bold magenta",
+        )
         table.add_column("Property", style="dim")
         table.add_column("Value", style="green")
 
@@ -775,7 +835,11 @@ class MarkerScoreCalculator:
         self.console.print(table)
 
         # Display cell type breakdown
-        ct_table = Table(title="[bold cyan]Cell Type Breakdown[/bold cyan]", show_header=True, header_style="bold blue")
+        ct_table = Table(
+            title="[bold cyan]Cell Type Breakdown[/bold cyan]",
+            show_header=True,
+            header_style="bold blue",
+        )
         ct_table.add_column("Cell Type", style="dim")
         ct_table.add_column("Count", justify="right")
 
@@ -788,10 +852,7 @@ class MarkerScoreCalculator:
         self.console.print(ct_table)
 
     def _load_input_data(
-        self,
-        adata_path: str,
-        rank_memmap_path: str,
-        mean_frac_path: str
+        self, adata_path: str, rank_memmap_path: str, mean_frac_path: str
     ) -> tuple[ad.AnnData, MemMapDense, np.ndarray, np.ndarray, int, int, np.ndarray]:
         """Load input data: AnnData, rank memory map, global statistics, and high quality mask
 
@@ -809,16 +870,16 @@ class MarkerScoreCalculator:
 
         # Open rank memory map and get dimensions
         rank_memmap_path = Path(rank_memmap_path)
-        meta_path = rank_memmap_path.with_suffix('.meta.json')
+        meta_path = rank_memmap_path.with_suffix(".meta.json")
         with open(meta_path) as f:
             meta = json.load(f)
 
         rank_memmap = MemMapDense(
             path=rank_memmap_path,
-            shape=tuple(meta['shape']),
-            dtype=np.dtype(meta['dtype']),
-            mode='r',
-            tmp_dir=self.config.memmap_tmp_dir
+            shape=tuple(meta["shape"]),
+            dtype=np.dtype(meta["dtype"]),
+            mode="r",
+            tmp_dir=self.config.memmap_tmp_dir,
         )
 
         logger.info(f"Opened rank memory map from {rank_memmap_path}")
@@ -830,26 +891,38 @@ class MarkerScoreCalculator:
         logger.info(f"Rank MemMap dimensions: {n_cells_rank} cells × {n_genes} genes")
 
         # Cells should match exactly since filtering is done before rank memmap creation
-        assert n_cells == n_cells_rank, \
-            f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has {n_cells_rank} cells. " \
+        assert n_cells == n_cells_rank, (
+            f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has {n_cells_rank} cells. "
             f"This indicates the filtering was not applied consistently during rank calculation."
+        )
 
         # Load high quality mask based on configuration
         if self.config.high_quality_neighbor_filter:
-            if 'High_quality' not in adata.obs.columns:
-                raise ValueError("High_quality column not found in AnnData obs. Please ensure QC was applied during find_latent_representation step.")
-            high_quality_mask = adata.obs['High_quality'].values.astype(bool)
-            logger.info(f"Loaded high quality mask: {high_quality_mask.sum()}/{len(high_quality_mask)} cells marked as high quality")
+            if "High_quality" not in adata.obs.columns:
+                raise ValueError(
+                    "High_quality column not found in AnnData obs. Please ensure QC was applied during find_latent_representation step."
+                )
+            high_quality_mask = adata.obs["High_quality"].values.astype(bool)
+            logger.info(
+                f"Loaded high quality mask: {high_quality_mask.sum()}/{len(high_quality_mask)} cells marked as high quality"
+            )
         else:
             # Create all-True mask when high quality filtering is disabled
             high_quality_mask = np.ones(n_cells, dtype=bool)
             logger.info("High quality filtering disabled - using all cells")
 
-        return adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes, high_quality_mask
+        return (
+            adata,
+            rank_memmap,
+            global_log_gmean,
+            global_expr_frac,
+            n_cells,
+            n_genes,
+            high_quality_mask,
+        )
 
     def _prepare_embeddings(
-        self,
-        adata: ad.AnnData
+        self, adata: ad.AnnData
     ) -> tuple[np.ndarray | None, np.ndarray, np.ndarray, np.ndarray | None]:
         """Prepare and normalize embeddings based on dataset type
 
@@ -862,13 +935,13 @@ class MarkerScoreCalculator:
         emb_niche = None
         slice_ids = None
 
-        if self.config.dataset_type in ['spatial2D', 'spatial3D']:
+        if self.config.dataset_type in ["spatial2D", "spatial3D"]:
             # Load spatial coordinates for spatial datasets
             coords = adata.obsm[self.config.spatial_key]
 
             # Load slice IDs if provided (for both spatial2D and spatial3D)
-            assert 'slice_id' in adata.obs.columns
-            slice_ids = adata.obs['slice_id'].values.astype(np.int32)
+            assert "slice_id" in adata.obs.columns
+            slice_ids = adata.obs["slice_id"].values.astype(np.int32)
 
             # Try to load niche embeddings if they exist
             if self.config.latent_representation_niche in adata.obsm:
@@ -908,16 +981,22 @@ class MarkerScoreCalculator:
         annotation_key = self.config.annotation
 
         if annotation_key is not None:
-            assert annotation_key in adata.obs.columns, f"Annotation key '{annotation_key}' not found in adata.obs"
+            assert annotation_key in adata.obs.columns, (
+                f"Annotation key '{annotation_key}' not found in adata.obs"
+            )
             # Get unique cell types, excluding NaN values
             cell_types = adata.obs[annotation_key].dropna().unique()
 
             # Check if there are any NaN values and handle them
             nan_count = adata.obs[annotation_key].isna().sum()
             if nan_count > 0:
-                logger.warning(f"Found {nan_count} cells with NaN annotation in '{annotation_key}', these will be skipped")
+                logger.warning(
+                    f"Found {nan_count} cells with NaN annotation in '{annotation_key}', these will be skipped"
+                )
         else:
-            logger.warning(f"Annotation {annotation_key} not found, processing all cells as one type")
+            logger.warning(
+                f"Annotation {annotation_key} not found, processing all cells as one type"
+            )
             cell_types = ["all"]
             adata.obs[annotation_key] = "all"
 
@@ -929,19 +1008,21 @@ class MarkerScoreCalculator:
         rank_memmap: MemMapDense,
         output_memmap: MemMapDense,
         global_log_gmean: np.ndarray,
-        global_expr_frac: np.ndarray
+        global_expr_frac: np.ndarray,
     ):
         """Initialize the processing pipeline with shared pools and queues"""
         logger.info("Initializing shared processing pools with direct queue connections...")
 
         # Create shared queues to connect components with configured sizes
-        reader_to_computer_queue = queue.Queue(maxsize=self.config.mkscore_compute_workers * self.config.compute_input_queue_size)
+        reader_to_computer_queue = queue.Queue(
+            maxsize=self.config.mkscore_compute_workers * self.config.compute_input_queue_size
+        )
         computer_to_writer_queue = queue.Queue(maxsize=self.config.writer_queue_size)
 
         self.reader = ParallelRankReader(
             rank_memmap,
             num_workers=self.config.rank_read_workers,
-            output_queue=reader_to_computer_queue  # Direct connection to computer
+            output_queue=reader_to_computer_queue,  # Direct connection to computer
         )
 
         # Determine 3D strategy parameters
@@ -949,12 +1030,14 @@ class MarkerScoreCalculator:
         n_slices = 1
         num_homogeneous_per_slice = self.config.homogeneous_neighbors
 
-        if (self.config.dataset_type == DatasetType.SPATIAL_3D and
-            self.config.cross_slice_marker_score_strategy in [
+        if (
+            self.config.dataset_type == DatasetType.SPATIAL_3D
+            and self.config.cross_slice_marker_score_strategy
+            in [
                 MarkerScoreCrossSliceStrategy.PER_SLICE_POOL,
-                MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
-            ]):
-
+                MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL,
+            ]
+        ):
             cross_slice_strategy = self.config.cross_slice_marker_score_strategy
             n_slices = 1 + 2 * self.config.n_adjacent_slices
             # For pooling strategies, num_homogeneous is per slice
@@ -970,24 +1053,26 @@ class MarkerScoreCalculator:
             cross_slice_strategy=cross_slice_strategy,
             n_slices=n_slices,
             num_homogeneous_per_slice=num_homogeneous_per_slice,
-            no_expression_fraction=self.config.no_expression_fraction
+            no_expression_fraction=self.config.no_expression_fraction,
         )
 
         self.writer = ParallelMarkerScoreWriter(
             output_memmap,
             num_workers=self.config.mkscore_write_workers,
-            input_queue=computer_to_writer_queue  # Input from computer
+            input_queue=computer_to_writer_queue,  # Input from computer
         )
 
-        logger.info(f"Processing pools initialized: {self.config.rank_read_workers} readers, "
-                   f"{self.config.mkscore_compute_workers} computers, "
-                   f"{self.config.mkscore_write_workers} writers")
+        logger.info(
+            f"Processing pools initialized: {self.config.rank_read_workers} readers, "
+            f"{self.config.mkscore_compute_workers} computers, "
+            f"{self.config.mkscore_write_workers} writers"
+        )
 
         self.marker_score_queue = MarkerScoreMessageQueue(
             reader=self.reader,
             computer=self.computer,
             writer=self.writer,
-            batch_size=self.config.mkscore_batch_size
+            batch_size=self.config.mkscore_batch_size,
         )
 
     def _find_homogeneous_spots(
@@ -1000,7 +1085,7 @@ class MarkerScoreCalculator:
         emb_indv: np.ndarray,
         slice_ids: np.ndarray | None,
         rank_shape: tuple[int, int],
-        high_quality_mask: np.ndarray
+        high_quality_mask: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray, int] | None:
         """
         Prepare batch data for a cell type
@@ -1023,30 +1108,33 @@ class MarkerScoreCalculator:
 
         # Build connectivity matrix
         logger.info("Building connectivity matrix...")
-        neighbor_indices, cell_sims, niche_sims = self.connectivity_builder.build_connectivity_matrix(
-            coords=coords,
-            emb_niche=emb_niche,
-            emb_indv=emb_indv,
-            cell_mask=cell_mask,
-            high_quality_mask=high_quality_mask,
-            slice_ids=slice_ids,
-            k_central=self.config.spatial_neighbors,
-            k_adjacent=self.config.adjacent_slice_spatial_neighbors,
-            n_adjacent_slices=self.config.n_adjacent_slices
+        neighbor_indices, cell_sims, niche_sims = (
+            self.connectivity_builder.build_connectivity_matrix(
+                coords=coords,
+                emb_niche=emb_niche,
+                emb_indv=emb_indv,
+                cell_mask=cell_mask,
+                high_quality_mask=high_quality_mask,
+                slice_ids=slice_ids,
+                k_central=self.config.spatial_neighbors,
+                k_adjacent=self.config.adjacent_slice_spatial_neighbors,
+                n_adjacent_slices=self.config.n_adjacent_slices,
+            )
         )
         gc.collect()
 
         # Validate neighbor indices
         max_valid_idx = rank_shape[0] - 1
-        assert neighbor_indices.max() <= max_valid_idx, \
+        assert neighbor_indices.max() <= max_valid_idx, (
             f"Neighbor indices exceed bounds (max: {neighbor_indices.max()}, limit: {max_valid_idx})"
+        )
 
         # Optimize row order using JAX implementation
         logger.info("Optimizing row order for cache efficiency...")
         row_order = optimize_row_order_jax(
-            neighbor_indices=neighbor_indices[:,:self.config.homogeneous_neighbors],
+            neighbor_indices=neighbor_indices[:, : self.config.homogeneous_neighbors],
             cell_indices=cell_indices,
-            neighbor_weights=cell_sims[:,:self.config.homogeneous_neighbors],
+            neighbor_weights=cell_sims[:, : self.config.homogeneous_neighbors],
         )
 
         neighbor_indices = neighbor_indices[row_order]
@@ -1063,14 +1151,16 @@ class MarkerScoreCalculator:
             cell_sims=cell_sims,
             niche_sims=niche_sims,
             cell_indices_sorted=cell_indices_sorted,
-            has_real_niche_embedding=has_real_niche_embedding
+            has_real_niche_embedding=has_real_niche_embedding,
         )
 
         # warning for cells not find homo neighbors
         homo_neighbor_count = np.count_nonzero(cell_sims > 0, axis=1)
-        zero_homo_neighbor_mask = (homo_neighbor_count <= 5)
+        zero_homo_neighbor_mask = homo_neighbor_count <= 5
         if np.any(zero_homo_neighbor_mask):
-            logger.warning(f"Cell type {cell_type}: {zero_homo_neighbor_mask.sum()} cells can't find enough homogeneous neighbors")
+            logger.warning(
+                f"Cell type {cell_type}: {zero_homo_neighbor_mask.sum()} cells can't find enough homogeneous neighbors"
+            )
 
         return neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells
 
@@ -1081,7 +1171,7 @@ class MarkerScoreCalculator:
         cell_sims: np.ndarray,
         niche_sims: np.ndarray | None,
         cell_indices_sorted: np.ndarray,
-        has_real_niche_embedding: bool
+        has_real_niche_embedding: bool,
     ):
         """
         Save homogeneous neighbor data to adata obsm and obs.
@@ -1095,46 +1185,64 @@ class MarkerScoreCalculator:
             has_real_niche_embedding: Whether real niche embedding was provided
         """
         # Initialize obsm matrices if they don't exist
-        if 'gsMap_homo_indices' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_indices'].shape[1] != neighbor_indices.shape[1]):
-            adata.obsm['gsMap_homo_indices'] = np.zeros((adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype)
-        if 'gsMap_homo_cell_sims' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_cell_sims'].shape[1] != neighbor_indices.shape[1]):
-            adata.obsm['gsMap_homo_cell_sims'] = np.zeros((adata.n_obs, cell_sims.shape[1]), dtype=cell_sims.dtype)
+        if "gsMap_homo_indices" not in adata.obsm.keys() or (
+            adata.obsm["gsMap_homo_indices"].shape[1] != neighbor_indices.shape[1]
+        ):
+            adata.obsm["gsMap_homo_indices"] = np.zeros(
+                (adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype
+            )
+        if "gsMap_homo_cell_sims" not in adata.obsm.keys() or (
+            adata.obsm["gsMap_homo_cell_sims"].shape[1] != neighbor_indices.shape[1]
+        ):
+            adata.obsm["gsMap_homo_cell_sims"] = np.zeros(
+                (adata.n_obs, cell_sims.shape[1]), dtype=cell_sims.dtype
+            )
 
         # Store the neighbor indices and cell_sims for this cell type
-        adata.obsm['gsMap_homo_indices'][cell_indices_sorted] = neighbor_indices
-        adata.obsm['gsMap_homo_cell_sims'][cell_indices_sorted] = cell_sims
+        adata.obsm["gsMap_homo_indices"][cell_indices_sorted] = neighbor_indices
+        adata.obsm["gsMap_homo_cell_sims"][cell_indices_sorted] = cell_sims
 
         # Only store niche_sims if niche embedding was provided (not dummy)
         if has_real_niche_embedding and niche_sims is not None:
-            if 'gsMap_homo_niche_sims' not in adata.obsm.keys() or (adata.obsm['gsMap_homo_niche_sims'].shape[1] != neighbor_indices.shape[1]):
-                adata.obsm['gsMap_homo_niche_sims'] = np.zeros((adata.n_obs, niche_sims.shape[1]), dtype=niche_sims.dtype)
-            adata.obsm['gsMap_homo_niche_sims'][cell_indices_sorted] = niche_sims
+            if "gsMap_homo_niche_sims" not in adata.obsm.keys() or (
+                adata.obsm["gsMap_homo_niche_sims"].shape[1] != neighbor_indices.shape[1]
+            ):
+                adata.obsm["gsMap_homo_niche_sims"] = np.zeros(
+                    (adata.n_obs, niche_sims.shape[1]), dtype=niche_sims.dtype
+                )
+            adata.obsm["gsMap_homo_niche_sims"][cell_indices_sorted] = niche_sims
 
         # Initialize obs columns if they don't exist
-        if 'gsMap_homo_neighbor_count' not in adata.obs.columns:
-            adata.obs['gsMap_homo_neighbor_count'] = 0
-        if 'gsMap_homo_cell_sims_median' not in adata.obs.columns:
-            adata.obs['gsMap_homo_cell_sims_median'] = np.nan
-        if has_real_niche_embedding and 'gsMap_homo_niche_sims_median' not in adata.obs.columns:
-            adata.obs['gsMap_homo_niche_sims_median'] = np.nan
+        if "gsMap_homo_neighbor_count" not in adata.obs.columns:
+            adata.obs["gsMap_homo_neighbor_count"] = 0
+        if "gsMap_homo_cell_sims_median" not in adata.obs.columns:
+            adata.obs["gsMap_homo_cell_sims_median"] = np.nan
+        if has_real_niche_embedding and "gsMap_homo_niche_sims_median" not in adata.obs.columns:
+            adata.obs["gsMap_homo_niche_sims_median"] = np.nan
 
         # Calculate statistics for each cell (only consider valid neighbors where cell_sims > 0)
         valid_mask = cell_sims > 0  # (n_cells, k) boolean mask
 
         # Count of valid homogeneous neighbors
         homo_neighbor_count = valid_mask.sum(axis=1)
-        adata.obs.loc[adata.obs.index[cell_indices_sorted], 'gsMap_homo_neighbor_count'] = homo_neighbor_count
+        adata.obs.loc[adata.obs.index[cell_indices_sorted], "gsMap_homo_neighbor_count"] = (
+            homo_neighbor_count
+        )
 
         # Median of cell similarity (only for valid neighbors)
         cell_sims_masked = np.where(valid_mask, cell_sims, np.nan)
         cell_sims_median = np.nanmedian(cell_sims_masked, axis=1)
-        adata.obs.loc[adata.obs.index[cell_indices_sorted], 'gsMap_homo_cell_sims_median'] = cell_sims_median
+        adata.obs.loc[adata.obs.index[cell_indices_sorted], "gsMap_homo_cell_sims_median"] = (
+            cell_sims_median
+        )
 
         # Median of niche similarity (only for valid neighbors, only if niche embedding provided)
         if has_real_niche_embedding and niche_sims is not None:
             niche_sims_masked = np.where(valid_mask, niche_sims, np.nan)
             niche_sims_median = np.nanmedian(niche_sims_masked, axis=1)
-            adata.obs.loc[adata.obs.index[cell_indices_sorted], 'gsMap_homo_niche_sims_median'] = niche_sims_median
+            adata.obs.loc[adata.obs.index[cell_indices_sorted], "gsMap_homo_niche_sims_median"] = (
+                niche_sims_median
+            )
 
     def _calculate_marker_scores_by_cell_type(
         self,
@@ -1145,14 +1253,23 @@ class MarkerScoreCalculator:
         emb_indv: np.ndarray,
         annotation_key: str,
         slice_ids: np.ndarray | None = None,
-        high_quality_mask: np.ndarray = None
+        high_quality_mask: np.ndarray = None,
     ):
         """Process a single cell type with shared pools"""
 
         # Find homogeneous spots
-        neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells = self._find_homogeneous_spots(
-            adata, cell_type, annotation_key, coords, emb_niche,
-            emb_indv, slice_ids, self.reader.shape, high_quality_mask
+        neighbor_indices, cell_sims, niche_sims, cell_indices_sorted, n_cells = (
+            self._find_homogeneous_spots(
+                adata,
+                cell_type,
+                annotation_key,
+                coords,
+                emb_niche,
+                emb_indv,
+                slice_ids,
+                self.reader.shape,
+                high_quality_mask,
+            )
         )
 
         # Reset the message queue for this cell type
@@ -1163,7 +1280,7 @@ class MarkerScoreCalculator:
             neighbor_indices=neighbor_indices,
             neighbor_weights=cell_sims,
             cell_indices_sorted=cell_indices_sorted,
-            enable_profiling=self.config.enable_profiling
+            enable_profiling=self.config.enable_profiling,
         )
 
     def calculate_marker_scores(
@@ -1171,7 +1288,7 @@ class MarkerScoreCalculator:
         adata_path: str,
         rank_memmap_path: str,
         mean_frac_path: str,
-        output_path: str | Path | None = None
+        output_path: str | Path | None = None,
     ) -> str | Path:
         """
         Main execution function for marker score calculation
@@ -1188,11 +1305,13 @@ class MarkerScoreCalculator:
         logger.info("Starting marker score calculation...")
         self.console = Console()
 
-        self.console.print(Panel.fit(
-            "[bold cyan]Marker Score Calculation Stage[/bold cyan]",
-            subtitle="gsMap Stage 2",
-            border_style="cyan"
-        ))
+        self.console.print(
+            Panel.fit(
+                "[bold cyan]Marker Score Calculation Stage[/bold cyan]",
+                subtitle="gsMap Stage 2",
+                border_style="cyan",
+            )
+        )
 
         # Use config path if not specified
         if output_path is None:
@@ -1201,18 +1320,24 @@ class MarkerScoreCalculator:
             output_path = Path(output_path)
 
         # Load all input data
-        adata, rank_memmap, global_log_gmean, global_expr_frac, n_cells, n_genes, high_quality_mask = self._load_input_data(
-            adata_path, rank_memmap_path, mean_frac_path
-        )
+        (
+            adata,
+            rank_memmap,
+            global_log_gmean,
+            global_expr_frac,
+            n_cells,
+            n_genes,
+            high_quality_mask,
+        ) = self._load_input_data(adata_path, rank_memmap_path, mean_frac_path)
 
         # Initialize output memory map
         output_memmap = MemMapDense(
             output_path,
             shape=(n_cells, n_genes),
             dtype=np.float16,  # Use float16 to save memory
-            mode='w',
+            mode="w",
             num_write_workers=self.config.mkscore_write_workers,
-            tmp_dir=self.config.memmap_tmp_dir
+            tmp_dir=self.config.memmap_tmp_dir,
         )
 
         # Get cell types to process
@@ -1238,7 +1363,7 @@ class MarkerScoreCalculator:
                 emb_indv,
                 annotation_key,
                 slice_ids,
-                high_quality_mask
+                high_quality_mask,
             )
 
         # Save updated AnnData with neighbor matrices
@@ -1255,10 +1380,12 @@ class MarkerScoreCalculator:
         rank_memmap.close()
         output_memmap.close()
 
-        self.console.print(Panel.fit(
-            "[bold green]✓ Marker score calculation complete![/bold green]",
-            border_style="green"
-        ))
+        self.console.print(
+            Panel.fit(
+                "[bold green]✓ Marker score calculation complete![/bold green]",
+                border_style="green",
+            )
+        )
 
         logger.info(f"Results saved to {output_path}")
 

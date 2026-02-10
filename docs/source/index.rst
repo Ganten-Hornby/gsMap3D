@@ -103,7 +103,7 @@ Overview of ``gsMap3D`` Method
 How to Cite
 ------------
 If you use ``gsMap`` in your studies, please cite:
-   gsMap3D: to be update.   
+   gsMap3D: to be update.
 
    gsMap: Song, L., Chen, W., Hou, J., Guo, M. & Yang, J. "**Spatially resolved mapping of cells associated with human complex traits.**" *Nature* (2025). `doi:10.1038/s41586-025-08757-x <https://doi.org/10.1038/s41586-025-08757-x>`_
 
@@ -122,5 +122,3 @@ If you use ``gsMap`` in your studies, please cite:
     ldscore_weight_matrix
     cli_reference
     release
-
-

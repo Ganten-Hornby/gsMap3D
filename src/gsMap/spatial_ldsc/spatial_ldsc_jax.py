@@ -26,7 +26,7 @@ from .ldscore_quick_mode import SpatialLDSCProcessor
 logger = logging.getLogger("gsMap.spatial_ldsc_jax")
 
 # Configure JAX for optimal performance and memory efficiency
-jax.config.update('jax_enable_x64', False)  # Use float32 for speed and memory efficiency
+jax.config.update("jax_enable_x64", False)  # Use float32 for speed and memory efficiency
 
 # Platform selection - comment/uncomment as needed
 # jax.config.update('jax_platform_name', 'cpu')  # Force CPU usage
@@ -41,22 +41,24 @@ jax.config.update('jax_enable_x64', False)  # Use float32 for speed and memory e
 # ============================================================================
 
 
-
 @jax.profiler.annotate_function
 @partial(jit, static_argnums=(0, 1))
-def process_chunk_jit(n_blocks: int,
-                      batch_size: int,
-                      spatial_ld: jnp.ndarray,
-                      baseline_ld_sum: jnp.ndarray,
-                      chisq: jnp.ndarray,
-                      N: jnp.ndarray,
-                      baseline_ann: jnp.ndarray,
-                      w_ld: jnp.ndarray,
-                      Nbar: float) -> tuple[jnp.ndarray, jnp.ndarray]:
+def process_chunk_jit(
+    n_blocks: int,
+    batch_size: int,
+    spatial_ld: jnp.ndarray,
+    baseline_ld_sum: jnp.ndarray,
+    chisq: jnp.ndarray,
+    N: jnp.ndarray,
+    baseline_ann: jnp.ndarray,
+    w_ld: jnp.ndarray,
+    Nbar: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Process an entire chunk of spots with JIT compilation and batch processing.
     Processes spots in batches to reduce memory usage.
     """
+
     def process_single_spot(spot_ld):
         """Process a single spot."""
         # Compute initial weights
@@ -79,10 +81,10 @@ def process_chunk_jit(n_blocks: int,
 
         # Apply weights and combine features
         with jax.profiler.StepTraceAnnotation("feature_preparation"):
-            x_focal = jnp.concatenate([
-                (spot_ld.reshape(-1, 1) * weights_scaled),
-                (baseline_ann * weights_scaled)
-            ], axis=1)
+            x_focal = jnp.concatenate(
+                [(spot_ld.reshape(-1, 1) * weights_scaled), (baseline_ann * weights_scaled)],
+                axis=1,
+            )
             y_weighted = chisq.reshape(-1, 1) * weights_scaled
 
             # Reshape for block computation
@@ -94,8 +96,8 @@ def process_chunk_jit(n_blocks: int,
 
         # Compute block values
         with jax.profiler.StepTraceAnnotation("block_computation"):
-            xty_blocks = jnp.einsum('nbp,nb->np', x_blocks, y_blocks.squeeze())
-            xtx_blocks = jnp.einsum('nbp,nbq->npq', x_blocks, x_blocks)
+            xty_blocks = jnp.einsum("nbp,nb->np", x_blocks, y_blocks.squeeze())
+            xtx_blocks = jnp.einsum("nbp,nbq->npq", x_blocks, x_blocks)
 
         # Jackknife regression
         with jax.profiler.StepTraceAnnotation("jackknife_regression"):
@@ -135,7 +137,9 @@ def process_chunk_jit(n_blocks: int,
                 batch_ld = spatial_ld[:, start_idx:end_idx]
 
                 with jax.profiler.StepTraceAnnotation(f"vmap_batch_{start_idx}_{end_idx}"):
-                    batch_betas, batch_ses = vmap(process_single_spot, in_axes=1, out_axes=0)(batch_ld)
+                    batch_betas, batch_ses = vmap(process_single_spot, in_axes=1, out_axes=0)(
+                        batch_ld
+                    )
                 betas_list.append(batch_betas)
                 ses_list.append(batch_ses)
 
@@ -147,14 +151,16 @@ def process_chunk_jit(n_blocks: int,
 
 
 @partial(jit, static_argnums=(0,))
-def process_chunk_batched_jit(n_blocks: int,
-                               spatial_ld: jnp.ndarray,
-                               baseline_ld_sum: jnp.ndarray,
-                               chisq: jnp.ndarray,
-                               N: jnp.ndarray,
-                               baseline_ann: jnp.ndarray,
-                               w_ld: jnp.ndarray,
-                               Nbar: float) -> tuple[jnp.ndarray, jnp.ndarray]:
+def process_chunk_batched_jit(
+    n_blocks: int,
+    spatial_ld: jnp.ndarray,
+    baseline_ld_sum: jnp.ndarray,
+    chisq: jnp.ndarray,
+    N: jnp.ndarray,
+    baseline_ann: jnp.ndarray,
+    w_ld: jnp.ndarray,
+    Nbar: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Process an entire chunk of spots with JIT compilation and BATCHED matrix operations.
 
@@ -203,7 +209,9 @@ def process_chunk_batched_jit(n_blocks: int,
     # Prepare features for all spots
     # x_focal shape: (n_snps, n_spots, 1 + n_baseline_features)
     spatial_weighted = (spatial_ld * weights_scaled)[..., None]  # (n_snps, n_spots, 1)
-    baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]  # (n_snps, n_spots, n_baseline)
+    baseline_weighted = (
+        baseline_ann[:, None, :] * weights_scaled[..., None]
+    )  # (n_snps, n_spots, n_baseline)
     x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
 
     # y_weighted: (n_snps, n_spots, 1)
@@ -223,10 +231,10 @@ def process_chunk_batched_jit(n_blocks: int,
 
     # Compute block XtY and XtX for all spots simultaneously
     # xty_blocks: (n_blocks, n_spots, n_features)
-    xty_blocks = jnp.einsum('nbsf,nbs->nsf', x_blocks, y_blocks.squeeze(-1))
+    xty_blocks = jnp.einsum("nbsf,nbs->nsf", x_blocks, y_blocks.squeeze(-1))
 
     # xtx_blocks: (n_blocks, n_spots, n_features, n_features)
-    xtx_blocks = jnp.einsum('nbsf,nbsg->nsfg', x_blocks, x_blocks)
+    xtx_blocks = jnp.einsum("nbsf,nbsg->nsfg", x_blocks, x_blocks)
 
     # Total across blocks
     xty_total = jnp.sum(xty_blocks, axis=0)  # (n_spots, n_features)
@@ -251,14 +259,15 @@ def process_chunk_batched_jit(n_blocks: int,
     pseudo_centered = pseudovalues - jknife_est  # broadcast (n_blocks, n_spots, n_features)
 
     # Covariance: (n_spots, n_features, n_features)
-    jknife_cov = jnp.einsum('nsf,nsg->sfg', pseudo_centered, pseudo_centered) / (n_blocks * (n_blocks - 1))
+    jknife_cov = jnp.einsum("nsf,nsg->sfg", pseudo_centered, pseudo_centered) / (
+        n_blocks * (n_blocks - 1)
+    )
 
     # Extract diagonal for SE: (n_spots, n_features)
     jknife_se = jnp.sqrt(jnp.diagonal(jknife_cov, axis1=1, axis2=2))
 
     # Return spatial coefficient (first feature) for all spots
     return jknife_est[:, 0] / Nbar, jknife_se[:, 0] / Nbar
-
 
 
 def wrapper_of_process_chunk_jit(*args, **kwargs):
@@ -271,12 +280,15 @@ def wrapper_of_process_chunk_jit(*args, **kwargs):
 # Main entry point
 # ============================================================================
 
+
 def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     """
     Run spatial LDSC for all traits in config.sumstats_config_dict.
     """
     if config.marker_score_format not in ["memmap", "h5ad", "feather"]:
-        raise NotImplementedError(f"Marker score format '{config.marker_score_format}' is not supported. Only 'memmap', 'h5ad', and 'feather' are supported.")
+        raise NotImplementedError(
+            f"Marker score format '{config.marker_score_format}' is not supported. Only 'memmap', 'h5ad', and 'feather' are supported."
+        )
 
     traits_to_process = list(config.sumstats_config_dict.items())
     if not traits_to_process:
@@ -287,7 +299,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine number of loader threads based on platform
-    n_loader_threads = 10 if jax.default_backend() == 'gpu' else 2
+    n_loader_threads = 10 if jax.default_backend() == "gpu" else 2
 
     # Load marker scores once (format-agnostic)
     logger.info(f"Loading marker scores (format: {config.marker_score_format})...")
@@ -298,22 +310,25 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             marker_score_adata = load_marker_scores_memmap_format(config)
 
         elif config.marker_score_format == "feather":
-
             feather_path = Path(config.marker_score_feather_path)
             logger.info(f"Loading marker scores from Feather: {feather_path}")
             # Use the specialized FeatherAnnData wrapper
-            marker_score_adata = FeatherAnnData(feather_path, index_col='HUMAN_GENE_SYM', transpose=True)
+            marker_score_adata = FeatherAnnData(
+                feather_path, index_col="HUMAN_GENE_SYM", transpose=True
+            )
 
         elif config.marker_score_format == "h5ad":
             if not config.marker_score_h5ad_path:
-                raise ValueError("marker_score_h5ad_path must be provided when marker_score_format is 'h5ad'")
+                raise ValueError(
+                    "marker_score_h5ad_path must be provided when marker_score_format is 'h5ad'"
+                )
 
             h5ad_path = Path(config.marker_score_h5ad_path)
             if not h5ad_path.exists():
                 raise FileNotFoundError(f"Marker score H5AD file not found: {h5ad_path}")
 
             logger.info(f"Loading marker scores from H5AD: {h5ad_path}")
-            marker_score_adata = ad.read_h5ad(h5ad_path, backed='r')
+            marker_score_adata = ad.read_h5ad(h5ad_path, backed="r")
 
         # Load common resources once (baseline, weights, snp_gene_weights)
         baseline_ld, w_ld, snp_gene_weight_adata = load_common_resources(config)
@@ -327,14 +342,16 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             snp_gene_weight_adata=snp_gene_weight_adata,
             baseline_ld=baseline_ld,
             w_ld=w_ld,
-            n_loader_threads=n_loader_threads
+            n_loader_threads=n_loader_threads,
         )
 
         try:
             for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
                 logger.info("=" * 70)
                 logger.info("Running Spatial LDSC (JAX Implementation)")
-                logger.info(f"Project: {config.project_name}, Trait: {trait_name} ({idx+1}/{len(traits_to_process)})")
+                logger.info(
+                    f"Project: {config.project_name}, Trait: {trait_name} ({idx + 1}/{len(traits_to_process)})"
+                )
                 if config.sample_filter:
                     logger.info(f"Sample filter: {config.sample_filter}")
                 if config.cell_indices_range:
@@ -347,7 +364,9 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     expected_output_path = output_dir / expected_filename
                     if expected_output_path.exists():
                         logger.info(f"Output file already exists: {expected_output_path}")
-                        logger.info(f"Skipping trait {trait_name} ({idx+1}/{len(traits_to_process)})")
+                        logger.info(
+                            f"Skipping trait {trait_name} ({idx + 1}/{len(traits_to_process)})"
+                        )
 
                         # Log statistics from existing result
                         log_existing_result_statistics(expected_output_path, trait_name)
@@ -370,8 +389,11 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             if marker_score_adata is not None:
                 logger.info("Closing marker score resources...")
                 # If it's our MemMap wrapper, close it explicitly
-                if config.marker_score_format == "memmap" and 'memmap_manager' in marker_score_adata.uns:
-                    marker_score_adata.uns['memmap_manager'].close()
+                if (
+                    config.marker_score_format == "memmap"
+                    and "memmap_manager" in marker_score_adata.uns
+                ):
+                    marker_score_adata.uns["memmap_manager"].close()
                 # If it's backed AnnData, close the file
                 if config.marker_score_format == "h5ad" and marker_score_adata.isbacked:
                     marker_score_adata.file.close()
@@ -379,4 +401,3 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     except Exception as e:
         logger.error(f"An error occurred during execution: {e}")
         raise
-

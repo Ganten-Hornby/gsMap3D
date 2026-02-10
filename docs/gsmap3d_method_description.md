@@ -2,9 +2,7 @@ gsMap3D: A Tutorial for Mapping Complex Traits in 3D Tissue Architecture
 
 This document transforms the complex methodology of the gsMap3D framework, as detailed in the original research paper, into a practical guide for researchers. The objective of this tutorial is to empower users to leverage gsMap3D for mapping the genetic basis of complex traits within the native 3D context of tissues, bridging the gap between genetic discoveries and their spatial cellular manifestations.
 
-
---------------------------------------------------------------------------------
-
+______________________________________________________________________
 
 1.0 Introduction to gsMap3D
 
@@ -22,10 +20,10 @@ This tutorial is intended for computational biologists, geneticists, and neurosc
 
 The gsMap3D framework offers a powerful suite of capabilities for spatial genetic analysis:
 
-* GWAS and 3D ST Integration: Systematically links GWAS summary statistics with high-resolution, 3D-reconstructed ST data to identify spots associated with complex human traits.
-* High-Accuracy Dual-Embedding Strategy: Employs a novel dual-embedding approach that captures both the transcriptomic identity of spots and their local spatial context, preventing signal leakage and improving the accuracy of association mapping.
-* Scalability and Performance: Utilizes full GPU acceleration and efficient training strategies to handle modern, large-scale ST datasets containing millions of spots.
-* Interactive 3D Visualization: Generates a comprehensive, interactive web report and standalone visualization tools to explore trait-association maps, gene specificity scores, and learned embeddings in 3D.
+- GWAS and 3D ST Integration: Systematically links GWAS summary statistics with high-resolution, 3D-reconstructed ST data to identify spots associated with complex human traits.
+- High-Accuracy Dual-Embedding Strategy: Employs a novel dual-embedding approach that captures both the transcriptomic identity of spots and their local spatial context, preventing signal leakage and improving the accuracy of association mapping.
+- Scalability and Performance: Utilizes full GPU acceleration and efficient training strategies to handle modern, large-scale ST datasets containing millions of spots.
+- Interactive 3D Visualization: Generates a comprehensive, interactive web report and standalone visualization tools to explore trait-association maps, gene specificity scores, and learned embeddings in 3D.
 
 This tutorial will now delve into the core principles that underpin the framework's ability to perform these advanced analyses.
 
@@ -41,9 +39,9 @@ The fundamental principle of gsMap3D is that adjacent ST sections sampled from t
 
 A core innovation of gsMap3D is its dual-embedding representation, which models both a spot's intrinsic identity and its spatial environment. This approach is strategically designed to prevent the over-smoothing and "signal leakage" that can occur when relying solely on spatial context. A single-embedding strategy suffers from this issue, as spatially adjacent but transcriptionally distinct spots can be incorrectly grouped, blurring biological signals. The dual-embedding strategy avoids this by treating identity and context as separate but complementary features. In a simulation using hepatocyte-specific genes, the dual-embedding strategy correctly enriched for hepatocytes (Odds Ratio = 3.3), whereas the single-embedding approach showed weak, non-specific enrichment (OR = 1.2) due to signal leakage to adjacent non-hepatocyte cells.
 
-Cell Embedding	Spatial-Domain Embedding
-Captures the spot identity based solely on gene expression.	Captures the local tissue architecture by integrating gene expression with spatial coordinates.
-Distinguishes transcriptionally distinct spots, even if they are located in the same spatial neighborhood.	Identifies spots that share a similar local spatial context, revealing spatially coherent domains across adjacent sections.
+Cell Embedding Spatial-Domain Embedding
+Captures the spot identity based solely on gene expression. Captures the local tissue architecture by integrating gene expression with spatial coordinates.
+Distinguishes transcriptionally distinct spots, even if they are located in the same spatial neighborhood. Identifies spots that share a similar local spatial context, revealing spatially coherent domains across adjacent sections.
 
 2.3 The 3D Gene Specificity Score (GSS)
 
@@ -63,8 +61,8 @@ Setting up the gsMap3D environment requires attention to its computational deman
 
 gsMap3D is a computationally intensive framework designed to process and analyze modern 3D spatial transcriptomics datasets that can contain millions of spots.
 
-* GPU Acceleration: All major steps of the pipeline are GPU-accelerated to ensure computational efficiency. A system with a compatible NVIDIA GPU (e.g., NVIDIA A100) is strongly recommended for optimal performance.
-* High-Performance Computing: Due to the scale of the data and the computational complexity, running gsMap3D within a high-performance computing (HPC) environment is beneficial.
+- GPU Acceleration: All major steps of the pipeline are GPU-accelerated to ensure computational efficiency. A system with a compatible NVIDIA GPU (e.g., NVIDIA A100) is strongly recommended for optimal performance.
+- High-Performance Computing: Due to the scale of the data and the computational complexity, running gsMap3D within a high-performance computing (HPC) environment is beneficial.
 
 3.2 Installation Guide
 
@@ -79,9 +77,9 @@ With the software environment configured, the next critical step is preparing th
 The quality and correct formatting of input data are critical for a successful gsMap3D analysis. Inaccurate or misaligned data can lead to spurious results. This section provides a detailed breakdown of each required input file, ensuring your data is properly structured for the pipeline.
 
 1. Provide a series of consecutive ST sections, each with transcriptome-wide gene expression profiles and their corresponding spatial coordinates. Ensure that the sections are properly aligned to form a coherent 3D reconstruction, as the framework's core principle relies on the continuity between adjacent slices.
-2. Prepare standard GWAS summary statistics for the trait or disease of interest. Use traits with a heritability estimate yielding a χ² > 25. (This threshold ensures the GWAS has sufficient polygenicity and statistical power for the S-LDSC heritability partitioning analysis to yield robust results).
-3. Provide an LD reference panel that is ancestrally matched to the GWAS summary statistics for the S-LDSC analysis. A common choice is the reference panel from the 1000 Genomes Project Phase 3.
-4. By default, gsMap3D maps SNPs to genes within a ±50 kb window. You can optionally provide external epigenomic maps, such as enhancer-gene links from projects like ENCODE or Roadmap Epigenomics. This allows the framework to capture potential long-range regulatory interactions, extending the SNP-to-gene mapping beyond the default genomic window.
+1. Prepare standard GWAS summary statistics for the trait or disease of interest. Use traits with a heritability estimate yielding a χ² > 25. (This threshold ensures the GWAS has sufficient polygenicity and statistical power for the S-LDSC heritability partitioning analysis to yield robust results).
+1. Provide an LD reference panel that is ancestrally matched to the GWAS summary statistics for the S-LDSC analysis. A common choice is the reference panel from the 1000 Genomes Project Phase 3.
+1. By default, gsMap3D maps SNPs to genes within a ±50 kb window. You can optionally provide external epigenomic maps, such as enhancer-gene links from projects like ENCODE or Roadmap Epigenomics. This allows the framework to capture potential long-range regulatory interactions, extending the SNP-to-gene mapping beyond the default genomic window.
 
 Once these inputs are prepared, you are ready to execute the main analysis pipeline.
 
@@ -98,7 +96,7 @@ The analysis begins by processing the raw ST data to create the core data repres
 Using the learned embeddings, the framework calculates the 3D GSS for every gene in every spot. This is achieved through a two-stage process to identify a set of "homogeneous spots" for each focal spot:
 
 1. Identify Spatially Coherent Spots: Using cosine similarity on the spatial-domain embeddings, the algorithm first selects a set of spots from adjacent sections that share a similar local tissue architecture.
-2. Refine by Transcriptional Similarity: Within this spatially coherent set, the algorithm then uses cosine similarity on the cell embeddings to select the subset of spots that are most transcriptionally similar to the focal spot.
+1. Refine by Transcriptional Similarity: Within this spatially coherent set, the algorithm then uses cosine similarity on the cell embeddings to select the subset of spots that are most transcriptionally similar to the focal spot.
 
 The 3D GSS is then calculated by comparing each gene's expression rank within this refined 3D neighborhood of homogeneous spots to its baseline rank across all spots.
 
@@ -120,12 +118,12 @@ The final output of gsMap3D is a rich, multi-layered dataset that provides deep 
 
 Upon completion, gsMap3D generates a comprehensive and user-friendly web report that allows for interactive exploration of the results. Key features of this report include:
 
-* 3D Interactive Spatial View: Explore trait-association p-values across the entire reconstructed tissue, allowing you to rotate, zoom, and inspect signals from any angle.
-* 2D Gallery View: Systematically inspect the association maps for individual 2D sections.
-* Gene Expression and GSS Plots: Investigate the specific genes driving an association signal by visualizing their expression levels and 3D GSS values in space.
-* UMAP Visualizations: Assess the quality and structure of the learned cell and spatial-domain embeddings.
-* GWAS Manhattan Plot: For reviewing the input genetic data.
-* Region-Trait Association Summary: Get a high-level overview of the results with a summary of the aggregated p-values for predefined anatomical regions.
+- 3D Interactive Spatial View: Explore trait-association p-values across the entire reconstructed tissue, allowing you to rotate, zoom, and inspect signals from any angle.
+- 2D Gallery View: Systematically inspect the association maps for individual 2D sections.
+- Gene Expression and GSS Plots: Investigate the specific genes driving an association signal by visualizing their expression levels and 3D GSS values in space.
+- UMAP Visualizations: Assess the quality and structure of the learned cell and spatial-domain embeddings.
+- GWAS Manhattan Plot: For reviewing the input genetic data.
+- Region-Trait Association Summary: Get a high-level overview of the results with a summary of the aggregated p-values for predefined anatomical regions.
 
 6.2 Standalone Visualization Tools
 
@@ -141,8 +139,8 @@ Robust scientific conclusions depend not only on running the software correctly 
 
 Relying on a single representative 2D section can lead to false negatives and misinterpretation of organ-level associations—a limitation gsMap3D is designed to overcome. A joint 3D analysis provides a more complete and powerful view of tissue biology, as clearly demonstrated by several key findings in the original study that would have been missed in a 2D-only analysis:
 
-* Discovery of Novel Tissue Associations: In the mouse embryo, 3D mapping pinpointed the thymus as the most strongly associated tissue for allergic diseases and rheumatoid arthritis. This association was not detected when analyzing only the representative middle section.
-* Improved Accuracy: For atrial fibrillation, a single-section analysis failed to prioritize the heart as the most relevant organ. In contrast, the more complete tissue coverage provided by the 3D analysis correctly and robustly identified the heart as the primary site of genetic association.
+- Discovery of Novel Tissue Associations: In the mouse embryo, 3D mapping pinpointed the thymus as the most strongly associated tissue for allergic diseases and rheumatoid arthritis. This association was not detected when analyzing only the representative middle section.
+- Improved Accuracy: For atrial fibrillation, a single-section analysis failed to prioritize the heart as the most relevant organ. In contrast, the more complete tissue coverage provided by the 3D analysis correctly and robustly identified the heart as the primary site of genetic association.
 
 These examples underscore that the 3D context is indispensable for accurately detecting and interpreting tissue-trait associations.
 
@@ -154,8 +152,8 @@ For mapping inherited genetic risk, use normal (non-diseased) tissue. Using dise
 
 gsMap3D is engineered to handle the scale of modern spatial omics. The framework employs several strategies for computational efficiency:
 
-* Down-Sampled Training: The model is trained efficiently on a representative subset of spots, allowing it to learn robust embeddings without processing the entire dataset during the training phase.
-* Full GPU Acceleration: All major steps, including the computationally demanding S-LDSC analysis, are fully GPU-accelerated.
+- Down-Sampled Training: The model is trained efficiently on a representative subset of spots, allowing it to learn robust embeddings without processing the entire dataset during the training phase.
+- Full GPU Acceleration: All major steps, including the computationally demanding S-LDSC analysis, are fully GPU-accelerated.
 
 These optimizations ensure that gsMap3D can efficiently analyze large-scale ST datasets containing millions of spots, making it a practical tool for current and future research.
 
@@ -167,7 +165,7 @@ gsMap3D provides a foundational framework for uncovering how human genetic effec
 
 Key Resources
 
-* Original Publication: "Mapping the cellular etiology of complex traits in 3D tissue architecture"
-* Source Code on GitHub: The source code for gsMap3D is available on GitHub. [Link to GitHub Repository]
-* Online 3D Results Portal: An interactive portal to explore all 3D mapping results from the study is available at https://yanglab.westlake.edu.cn/gsmap/home.
-* Data Availability: The study utilized several key public ST datasets, including the mouse embryo (E11.5, E16.5) and adult mouse brain (MERFISH). For specific accession numbers and links, please refer to the "Data availability" section of the original publication.
+- Original Publication: "Mapping the cellular etiology of complex traits in 3D tissue architecture"
+- Source Code on GitHub: The source code for gsMap3D is available on GitHub. [Link to GitHub Repository]
+- Online 3D Results Portal: An interactive portal to explore all 3D mapping results from the study is available at <https://yanglab.westlake.edu.cn/gsmap/home>.
+- Data Availability: The study utilized several key public ST datasets, including the mouse embryo (E11.5, E16.5) and adult mouse brain (MERFISH). For specific accession numbers and links, please refer to the "Data availability" section of the original publication.

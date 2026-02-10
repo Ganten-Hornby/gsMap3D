@@ -20,10 +20,9 @@ def wrap_to_plotter(
     model: PolyData | MultiBlock,
     key: str | None = None,
     colormap: str | list | None = None,
-
     # parameters for model settings
     ambient: float = 0.2,
-    opacity: [float,list] = 1,
+    opacity: [float, list] = 1,
     point_size: float = 1,
     model_style: Literal["points", "surface", "wireframe"] = "surface",
     font_family: Literal["times", "courier", "arial"] = "arial",
@@ -37,7 +36,7 @@ def wrap_to_plotter(
     text_kwargs: dict | None = None,
     show_outline: bool = False,
     show_text: bool = True,
-    show_legend: bool = True
+    show_legend: bool = True,
 ):
     """
     Wrap the model and its settings to a plotter.
@@ -79,7 +78,7 @@ def wrap_to_plotter(
         opacity=opacity,
         point_size=point_size,
         model_style=model_style,
-        clim = clim
+        clim=clim,
     )
 
     # Add legends to the plotter.
@@ -99,10 +98,17 @@ def wrap_to_plotter(
         )
         if legend_kwargs is not None:
             lg_kwargs.update(
-                (k, legend_kwargs[k]) for k in lg_kwargs.keys() & legend_kwargs.keys())
+                (k, legend_kwargs[k]) for k in lg_kwargs.keys() & legend_kwargs.keys()
+            )
 
-        add_legend(plotter=plotter, model=model, key=key,
-                   colormap=colormap, scalar_bar_title=scalar_bar_title, **lg_kwargs)
+        add_legend(
+            plotter=plotter,
+            model=model,
+            key=key,
+            colormap=colormap,
+            scalar_bar_title=scalar_bar_title,
+            **lg_kwargs,
+        )
 
     # Add an outline to the plotter.
     if show_outline:
@@ -113,7 +119,8 @@ def wrap_to_plotter(
 
         if outline_kwargs is not None:
             ol_kwargs.update(
-                (k, outline_kwargs[k]) for k in ol_kwargs.keys() & outline_kwargs.keys())
+                (k, outline_kwargs[k]) for k in ol_kwargs.keys() & outline_kwargs.keys()
+            )
 
         add_outline(plotter=plotter, model=model, **ol_kwargs)
 
@@ -127,8 +134,7 @@ def wrap_to_plotter(
         )
 
         if text_kwargs is not None:
-            t_kwargs.update((k, text_kwargs[k])
-                            for k in t_kwargs.keys() & text_kwargs.keys())
+            t_kwargs.update((k, text_kwargs[k]) for k in t_kwargs.keys() & text_kwargs.keys())
 
         add_text(plotter=plotter, text=text, **t_kwargs)
 
@@ -138,17 +144,15 @@ def three_d_plot(
     adata,
     spatial_key: str,
     keys: list,
-    cmaps: str | list | dict | None = 'default_cmap',
+    cmaps: str | list | dict | None = "default_cmap",
     scalar_bar_titles: str | list | None = None,
-    texts:  str | list | None = None,
-
+    texts: str | list | None = None,
     window_size: tuple[int, int] | None = None,
     off_screen: bool = False,
     shape: tuple | None = None,
     show_camera_orientation: bool = True,
     show_axis_orientation: bool = False,
     jupyter: bool = True,
-
     # parameters for model settings
     ambient: float = 0.2,
     opacity: float | list[float] = 1,
@@ -158,16 +162,14 @@ def three_d_plot(
     font_family: Literal["times", "courier", "arial"] = "arial",
     background: str = "black",
     cpo: str | list = "iso",
-
     # parameters for show decoration
     show_outline: bool = False,
     show_text: bool = True,
     show_legend: bool = True,
-
     # parameters for legends, outline, and text
     legend_kwargs: dict | None = None,
     outline_kwargs: dict | None = None,
-    text_kwargs: dict | None = None
+    text_kwargs: dict | None = None,
 ):
     """
     Generate a 3D plot using pyvista for spatial data visualization.
@@ -242,18 +244,19 @@ def three_d_plot(
     models = pv.MultiBlock()
     plot_cmaps = []
     for i, key in enumerate(keys):
-        _model, _plot_cmap = construct_pc(adata=adata.copy(),
-                                          spatial_key=spatial_key,
-                                          groupby=key,
-                                          key_added=key,
-                                          colormap=cmaps[i])
+        _model, _plot_cmap = construct_pc(
+            adata=adata.copy(),
+            spatial_key=spatial_key,
+            groupby=key,
+            key_added=key,
+            colormap=cmaps[i],
+        )
         models[f"model_{i}"] = _model
         plot_cmaps.append(_plot_cmap)
 
     # Set the shape and window size of the plot
     n_window = len(keys)
-    shape = (math.ceil(n_window / 3), n_window if n_window <
-             3 else 3) if shape is None else shape
+    shape = (math.ceil(n_window / 3), n_window if n_window < 3 else 3) if shape is None else shape
     if isinstance(shape, tuple | list):
         n_subplots = shape[0] * shape[1]
         subplots = []
@@ -263,8 +266,11 @@ def three_d_plot(
             subplots.append([col, ind])
 
     win_x, win_y = shape[1], shape[0]
-    window_size = ((1500 * win_x, 1500 * win_y)
-                   if window_size is None else (window_size[0] * win_x, window_size[1] * win_y))
+    window_size = (
+        (1500 * win_x, 1500 * win_y)
+        if window_size is None
+        else (window_size[0] * win_x, window_size[1] * win_y)
+    )
 
     # Create the plotter
     plotter = create_plotter(
@@ -274,11 +280,13 @@ def three_d_plot(
         show_camera_orientation=show_camera_orientation,
         show_axis_orientation=show_axis_orientation,
         window_size=window_size,
-        jupyter=jupyter
+        jupyter=jupyter,
     )
 
     # Set the plotter
-    for (model, key, plot_cmap, subplot_index, scalar_bar_title, text) in zip(models, keys, plot_cmaps, subplots, scalar_bar_titles, texts, strict=False):
+    for model, key, plot_cmap, subplot_index, scalar_bar_title, text in zip(
+        models, keys, plot_cmaps, subplots, scalar_bar_titles, texts, strict=False
+    ):
         plotter.subplot(subplot_index[0], subplot_index[1])
 
         wrap_to_plotter(
@@ -287,7 +295,6 @@ def three_d_plot(
             model=model,
             key=key,
             colormap=plot_cmap,
-
             # parameters for model settings
             clim=clim,
             ambient=ambient,
@@ -297,18 +304,16 @@ def three_d_plot(
             font_family=font_family,
             background=background,
             cpo=cpo,
-
             # parameters for legends, outline, and text
             legend_kwargs=legend_kwargs,
             scalar_bar_title=scalar_bar_title,
             outline_kwargs=outline_kwargs,
             text_kwargs=text_kwargs,
             text=text,
-
             # parameters for show decoration
             show_outline=show_outline,
             show_text=show_text,
-            show_legend=show_legend
+            show_legend=show_legend,
         )
 
     plotter.link_views()
@@ -328,8 +333,8 @@ def three_d_plot_save(
     step: int = 1,
     quality: int = 9,
     framerate: int = 10,
-    save_mp4 : bool = False,
-    save_gif : bool = False
+    save_mp4: bool = False,
+    save_gif: bool = False,
 ):
     """
     Saves a 3D plot as an HTML, GIF, and MP4 file.
@@ -347,39 +352,37 @@ def three_d_plot_save(
         framerate (int, optional): The framerate of the MP4 file. Defaults to 15.
     """
     # save html
-    logger.info('saving 3d plot as html...')
+    logger.info("saving 3d plot as html...")
 
     # Workaround for asyncio conflict: use 'static' backend for export
-    pv.set_jupyter_backend('static')
+    pv.set_jupyter_backend("static")
     try:
-        plotter.export_html(f'{filename}.html')
+        plotter.export_html(f"{filename}.html")
     finally:
         pv.set_jupyter_backend(pv.global_theme.jupyter_backend)
 
     # save gif
     if save_gif:
-        logger.info('saving 3d plot as gif...')
-        path = plotter.generate_orbital_path(factor=factor, shift=shift, viewup=view_up_1, n_points=n_points)
-        plotter.open_gif(filename=f'{filename}.gif')
+        logger.info("saving 3d plot as gif...")
+        path = plotter.generate_orbital_path(
+            factor=factor, shift=shift, viewup=view_up_1, n_points=n_points
+        )
+        plotter.open_gif(filename=f"{filename}.gif")
         plotter.orbit_on_path(path, write_frames=True, viewup=view_up_2, step=step)
         plotter.close()
 
     # save mp4
     if save_mp4:
-        logger.info('saving 3d plot as mp4...')
-        path = plotter.generate_orbital_path(factor=factor, shift=shift, viewup=view_up_1, n_points=n_points)
-        plotter.open_movie(filename=f'{filename}.mp4', framerate=framerate, quality=quality)
+        logger.info("saving 3d plot as mp4...")
+        path = plotter.generate_orbital_path(
+            factor=factor, shift=shift, viewup=view_up_1, n_points=n_points
+        )
+        plotter.open_movie(filename=f"{filename}.mp4", framerate=framerate, quality=quality)
         plotter.orbit_on_path(path, write_frames=True, viewup=view_up_2, step=step)
         plotter.close()
 
 
-
-def rotate_around_xyz(
-    camera_coordinates,
-    angle_x=0,
-    angle_y=0,
-    angle_z=0
-):
+def rotate_around_xyz(camera_coordinates, angle_x=0, angle_y=0, angle_z=0):
     """
     Rotate a point around the x, y, and z axes.
 
@@ -397,25 +400,31 @@ def rotate_around_xyz(
     angle_z_rad = np.radians(angle_z)
 
     # Rotation matrix for x-axis
-    rotation_matrix_x = np.array([
-        [1, 0, 0],
-        [0, np.cos(angle_x_rad), -np.sin(angle_x_rad)],
-        [0, np.sin(angle_x_rad), np.cos(angle_x_rad)]
-    ])
+    rotation_matrix_x = np.array(
+        [
+            [1, 0, 0],
+            [0, np.cos(angle_x_rad), -np.sin(angle_x_rad)],
+            [0, np.sin(angle_x_rad), np.cos(angle_x_rad)],
+        ]
+    )
 
     # Rotation matrix for y-axis
-    rotation_matrix_y = np.array([
-        [np.cos(angle_y_rad), 0, np.sin(angle_y_rad)],
-        [0, 1, 0],
-        [-np.sin(angle_y_rad), 0, np.cos(angle_y_rad)]
-    ])
+    rotation_matrix_y = np.array(
+        [
+            [np.cos(angle_y_rad), 0, np.sin(angle_y_rad)],
+            [0, 1, 0],
+            [-np.sin(angle_y_rad), 0, np.cos(angle_y_rad)],
+        ]
+    )
 
     # Rotation matrix for z-axis
-    rotation_matrix_z = np.array([
-        [np.cos(angle_z_rad), -np.sin(angle_z_rad), 0],
-        [np.sin(angle_z_rad), np.cos(angle_z_rad), 0],
-        [0, 0, 1]
-    ])
+    rotation_matrix_z = np.array(
+        [
+            [np.cos(angle_z_rad), -np.sin(angle_z_rad), 0],
+            [np.sin(angle_z_rad), np.cos(angle_z_rad), 0],
+            [0, 0, 1],
+        ]
+    )
 
     # Apply rotations
     camera_rotated = np.dot(rotation_matrix_x, camera_coordinates)

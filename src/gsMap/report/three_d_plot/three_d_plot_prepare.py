@@ -4,8 +4,7 @@ import pyvista as pv
 from matplotlib.colors import LinearSegmentedColormap
 from pandas.core.frame import DataFrame
 
-p_color = ['#313695', '#4575b4', '#74add1','#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
-
+p_color = ["#313695", "#4575b4", "#74add1", "#fee090", "#fdae61", "#f46d43", "#d73027", "#a50026"]
 
 
 def _get_default_cmap():
@@ -13,8 +12,11 @@ def _get_default_cmap():
         colors = p_color
         nodes = np.linspace(0, 1, len(p_color))
 
-        mpl.colormaps.register(LinearSegmentedColormap.from_list(
-            "default_cmap", list(zip(nodes, colors, strict=False))))
+        mpl.colormaps.register(
+            LinearSegmentedColormap.from_list(
+                "default_cmap", list(zip(nodes, colors, strict=False))
+            )
+        )
     return "default_cmap"
 
 
@@ -25,9 +27,8 @@ def create_plotter(
     background="white",
     shape=(1, 1),
     show_camera_orientation=True,
-    show_axis_orientation=False
+    show_axis_orientation=False,
 ):
-
     # Create an initial plotting object.
     _get_default_cmap()
     plotter = pv.Plotter(
@@ -61,7 +62,6 @@ def add_point_labels(
     mask_alpha=0.0,
     inplace=False,
 ):
-
     model = model.copy() if not inplace else model
     labels = np.asarray(labels).flatten()
 
@@ -71,28 +71,34 @@ def add_point_labels(
 
         raw_labels_hex = labels.copy().astype(object)
         raw_labels_alpha = labels.copy().astype(object)
-        raw_labels_hex[raw_labels_hex =="mask"] = mpl.colors.to_hex(mask_color)
+        raw_labels_hex[raw_labels_hex == "mask"] = mpl.colors.to_hex(mask_color)
         raw_labels_alpha[raw_labels_alpha == "mask"] = mask_alpha
 
         # Set raw hex.
         if isinstance(colormap, str):
             if colormap in list(mpl.colormaps()):
                 lscmap = mpl.colormaps[colormap]
-                raw_hex_list = [mpl.colors.to_hex(lscmap(i)) for i in np.linspace(0, 1, len(cu_arr))]
+                raw_hex_list = [
+                    mpl.colors.to_hex(lscmap(i)) for i in np.linspace(0, 1, len(cu_arr))
+                ]
                 for label, color in zip(cu_arr, raw_hex_list, strict=False):
                     raw_labels_hex[raw_labels_hex == label] = color
             else:
-                raw_labels_hex[raw_labels_hex !="mask"] = mpl.colors.to_hex(colormap)
+                raw_labels_hex[raw_labels_hex != "mask"] = mpl.colors.to_hex(colormap)
         elif isinstance(colormap, dict):
             for label, color in colormap.items():
-                raw_labels_hex[raw_labels_hex ==label] = mpl.colors.to_hex(color)
+                raw_labels_hex[raw_labels_hex == label] = mpl.colors.to_hex(color)
         elif isinstance(colormap, list) or isinstance(colormap, np.ndarray):
-            raw_hex_list = np.array([mpl.colors.to_hex(color)for color in colormap]).astype(object)
+            raw_hex_list = np.array([mpl.colors.to_hex(color) for color in colormap]).astype(
+                object
+            )
             for label, color in zip(cu_arr, raw_hex_list, strict=False):
                 raw_labels_hex[raw_labels_hex == label] = color
         else:
             raise ValueError(
-                "`colormap` value is wrong." "\nAvailable `colormap` types are: `str`, `list` and `dict`.")
+                "`colormap` value is wrong."
+                "\nAvailable `colormap` types are: `str`, `list` and `dict`."
+            )
 
         # Set raw alpha.
         if isinstance(alphamap, float) or isinstance(alphamap, int):
@@ -104,11 +110,15 @@ def add_point_labels(
             raw_labels_alpha = np.asarray(alphamap).astype(object)
         else:
             raise ValueError(
-                "`alphamap` value is wrong." "\nAvailable `alphamap` types are: `float`, `list` and `dict`."
+                "`alphamap` value is wrong."
+                "\nAvailable `alphamap` types are: `float`, `list` and `dict`."
             )
 
         # Set rgba.
-        labels_rgba = [mpl.colors.to_rgba(c, alpha=a) for c, a in zip(raw_labels_hex, raw_labels_alpha, strict=False)]
+        labels_rgba = [
+            mpl.colors.to_rgba(c, alpha=a)
+            for c, a in zip(raw_labels_hex, raw_labels_alpha, strict=False)
+        ]
         labels_rgba = np.array(labels_rgba).astype(np.float32)
 
         # Added rgba of the labels.
@@ -138,9 +148,8 @@ def construct_pc(
     key_added="groups",
     mask=None,
     colormap="default_cmap",
-    alphamap=1.0
+    alphamap=1.0,
 ):
-
     # Ensure mask is a list
     mask_list = mask if isinstance(mask, list) else [mask] if mask is not None else []
 
@@ -148,9 +157,11 @@ def construct_pc(
     if isinstance(adata, DataFrame):
         cell_names = np.array(adata.index.tolist())
         try:
-            bucket_xyz = adata[['sx','sy','sz']].values
+            bucket_xyz = adata[["sx", "sy", "sz"]].values
         except KeyError:
-            raise ValueError("Spatial coordinates ('sx','sy','sz') not found in meta data.")
+            raise ValueError(
+                "Spatial coordinates ('sx','sy','sz') not found in meta data."
+            ) from None
     else:
         cell_names = np.array(adata.obs_names.tolist())
         if spatial_key not in adata.obsm:

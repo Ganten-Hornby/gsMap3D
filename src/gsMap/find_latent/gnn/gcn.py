@@ -6,9 +6,7 @@ from torch_geometric.utils import add_remaining_self_loops, degree
 
 
 def build_spatial_graph(
-        coords: np.ndarray,
-        n_neighbors: int,
-        undirected: bool = True
+    coords: np.ndarray, n_neighbors: int, undirected: bool = True
 ) -> np.ndarray:
     """
 
@@ -41,10 +39,9 @@ def build_spatial_graph(
         target = indices.flatten()
 
         # Combine forward and reverse edges
-        all_edges = np.column_stack([
-            np.concatenate([source, target]),
-            np.concatenate([target, source])
-        ])
+        all_edges = np.column_stack(
+            [np.concatenate([source, target]), np.concatenate([target, source])]
+        )
 
         # Remove duplicates using set
         edge_set = {tuple(sorted([i, j])) for i, j in all_edges}
@@ -54,6 +51,7 @@ def build_spatial_graph(
         source = np.repeat(np.arange(n_nodes), n_neighbors)
         target = indices.flatten()
         return np.column_stack([source, target]).astype(np.int32)
+
 
 class GCN(MessagePassing):
     """

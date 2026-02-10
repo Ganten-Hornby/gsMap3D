@@ -2,7 +2,6 @@
 
 By leveraging the continuity of biological domains across adjacent tissue sections, `gsMap3D` integrates GWAS data with 3D-reconstructed ST data to map trait-associated spots in 3D space.
 
-
 ## Human Gastrulation (CS8 Human Embryo)
 
 This example demonstrates how to run **gsMap3D** on a 3D ST dataset from an early-stage human embryo.
@@ -70,7 +69,7 @@ config = QuickModeConfig(
     spatial_key="spatial_3d",
     data_layer="counts",
     high_quality_cell_qc=False,
-    memmap_tmp_dir="/data/tmp"
+    memmap_tmp_dir="/data/tmp",
 )
 
 run_quick_mode(config)
@@ -88,6 +87,7 @@ run_quick_mode(config)
 ### Interpreting the Results
 
 In the generated 3D report, you can observe how different traits map to specific germ layers:
+
 - **Intelligence (IQ)**: Specifically mapped to the **ectoderm**, the progenitor of the nervous system.
 - **MCHC (Mean Corpuscular Hemoglobin Concentration)**: Mapped to the **endoderm**, the progenitor of blood-forming organs like the liver.
 - **Height**: Mapped across multiple germ layers, reflecting its highly polygenic and widespread biological influence.
@@ -97,6 +97,7 @@ In the generated 3D report, you can observe how different traits map to specific
 The pipeline generates two main directories:
 
 **`report_data/`** - Data files for downstream analysis:
+
 - `spot_metadata.csv` - Spot-level coordinates and annotations
 - `cauchy_results.csv` - Cauchy combination test results
 - `umap_data.csv` - UMAP coordinates for visualization
@@ -106,6 +107,7 @@ The pipeline generates two main directories:
 - `spatial_3d/` - 3D spatial data (for `spatial3D` datasets)
 
 **`gsmap_web_report/`** - Self-contained interactive web report:
+
 - `index.html` - Main report entry point
 - `spatial_plots/` - Static LDSC spatial plots
 - `gene_diagnostic_plots/` - Gene expression diagnostics
@@ -115,11 +117,12 @@ The pipeline generates two main directories:
 **Viewing the Report:**
 
 1. **Remote Server**: Start a temporary web server:
-   ```bash
-   gsmap report-view ./gsmap_web_report --port 8080 --no-browser
-   ```
 
-2. **Local PC**: Copy the `gsmap_web_report` folder to your machine and open `index.html` in a browser.
+    ```bash
+    gsmap report-view ./gsmap_web_report --port 8080 --no-browser
+    ```
+
+1. **Local PC**: Copy the `gsmap_web_report` folder to your machine and open `index.html` in a browser.
 
 ## See Also
 

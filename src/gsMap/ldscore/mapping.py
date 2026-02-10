@@ -2,18 +2,18 @@ import logging
 
 import numpy as np
 import pandas as pd
-import pyranges as pr
+import pyranges1 as pr
 import scipy.sparse
 
 logger = logging.getLogger(__name__)
 
 
 def create_snp_feature_map(
-        bim_df: pd.DataFrame,
-        mapping_type: str,
-        mapping_data: pd.DataFrame | dict[str, str],
-        feature_window_size: int = 0,
-        strategy: str = "score",
+    bim_df: pd.DataFrame,
+    mapping_type: str,
+    mapping_data: pd.DataFrame | dict[str, str],
+    feature_window_size: int = 0,
+    strategy: str = "score",
 ) -> tuple[scipy.sparse.csr_matrix, list[str], pd.DataFrame | None]:
     """
     Create a sparse mapping matrix assigning each SNP in the BIM file to feature indices.
@@ -72,7 +72,7 @@ def create_snp_feature_map(
     # Prepare basic SNP info for joining
     # We assign an integer index to every SNP in BIM to construct the sparse matrix later
     bim_df = bim_df.copy()
-    bim_df['snp_row_idx'] = np.arange(m_ref)
+    bim_df["snp_row_idx"] = np.arange(m_ref)
 
     # Intermediate storage for sparse construction
     row_indices = []
@@ -80,7 +80,7 @@ def create_snp_feature_map(
     data_values = []
 
     # === STRATEGY A: Dictionary Mapping ===
-    if mapping_type == 'dict':
+    if mapping_type == "dict":
         if not isinstance(mapping_data, dict):
             raise ValueError("mapping_data must be a dictionary when mapping_type='dict'")
 
@@ -91,7 +91,7 @@ def create_snp_feature_map(
 
         # 2. Map Dictionary Values to Indices
         # Filter mapping data to only include SNPs present in BIM to save memory/time
-        bim_snps = set(bim_df['SNP'])
+        bim_snps = set(bim_df["SNP"])
         valid_mapping = {k: v for k, v in mapping_data.items() if k in bim_snps}
 
         # 3. Create Sparse Entries
@@ -99,58 +99,59 @@ def create_snp_feature_map(
         snp_to_feat_idx = pd.Series(valid_mapping).map(feature_to_idx)
 
         # Map BIM SNPs to feature indices
-        mapped_feat_indices = bim_df['SNP'].map(snp_to_feat_idx)
+        mapped_feat_indices = bim_df["SNP"].map(snp_to_feat_idx)
 
         # Drop NaNs (Unmapped)
         valid_mask = mapped_feat_indices.notna()
 
         if valid_mask.any():
-            row_indices = bim_df.loc[valid_mask, 'snp_row_idx'].values
+            row_indices = bim_df.loc[valid_mask, "snp_row_idx"].values
             col_indices = mapped_feat_indices[valid_mask].values.astype(int)
             data_values = np.ones(len(row_indices), dtype=np.float32)
 
     # === STRATEGY B: BED/Genomic Interval Mapping ===
-    elif mapping_type == 'bed':
+    elif mapping_type == "bed":
         if not isinstance(mapping_data, pd.DataFrame):
             raise ValueError("mapping_data must be a DataFrame when mapping_type='bed'")
 
         df_features = mapping_data.copy()
-        required_cols = ['Feature', 'Chromosome', 'Start', 'End']
+        required_cols = ["Feature", "Chromosome", "Start", "End"]
         if not all(c in df_features.columns for c in required_cols):
             raise ValueError(f"BED DataFrame missing required columns: {required_cols}")
 
         # 1. Identify all unique features
-        unique_feature_names = sorted(df_features['Feature'].unique())
+        unique_feature_names = sorted(df_features["Feature"].unique())
         feature_to_idx = {f: i for i, f in enumerate(unique_feature_names)}
         n_features = len(unique_feature_names)
 
         # 2. Prepare BIM for PyRanges
-        bim_pr_df = bim_df[['CHR', 'BP', 'SNP', 'snp_row_idx']].rename(columns={
-            'CHR': 'Chromosome',
-            'BP': 'Start'
-        })
-        bim_pr_df['End'] = bim_pr_df['Start'] + 1
+        bim_pr_df = bim_df[["CHR", "BP", "SNP", "snp_row_idx"]].rename(
+            columns={"CHR": "Chromosome", "BP": "Start"}
+        )
+        bim_pr_df["End"] = bim_pr_df["Start"] + 1
 
         # Clean chromosome names (remove 'chr' prefix if present)
         # PLINK BIM files typically use numeric chromosome identifiers
-        bim_pr_df['Chromosome'] = bim_pr_df['Chromosome'].astype(str).str.replace('chr', '', case=False)
-        df_features['Chromosome'] = df_features['Chromosome'].astype(str).str.replace('chr', '', case=False)
+        bim_pr_df["Chromosome"] = (
+            bim_pr_df["Chromosome"].astype(str).str.replace("chr", "", case=False)
+        )
+        df_features["Chromosome"] = (
+            df_features["Chromosome"].astype(str).str.replace("chr", "", case=False)
+        )
 
         pr_bim = pr.PyRanges(bim_pr_df)
 
         # 3. Pre-calculate TSS
-        if strategy == 'tss':
-            if 'Strand' not in df_features.columns:
+        if strategy == "tss":
+            if "Strand" not in df_features.columns:
                 raise ValueError("Strategy 'tss' requires 'Strand' column in mapping data.")
-            df_features['RefTSS'] = np.where(
-                df_features['Strand'] == '+',
-                df_features['Start'],
-                df_features['End']
+            df_features["RefTSS"] = np.where(
+                df_features["Strand"] == "+", df_features["Start"], df_features["End"]
             )
 
         # 4. Apply Window Size
-        df_features['Start'] = np.maximum(0, df_features['Start'] - feature_window_size)
-        df_features['End'] = df_features['End'] + feature_window_size
+        df_features["Start"] = np.maximum(0, df_features["Start"] - feature_window_size)
+        df_features["End"] = df_features["End"] + feature_window_size
 
         pr_features = pr.PyRanges(df_features)
 
@@ -158,65 +159,72 @@ def create_snp_feature_map(
         # Columns from pr_features (Right) that overlap with pr_bim (Left) get suffix '_b'
         # Overlapping cols usually: Start, End.
         # pr_bim (SNP) Start is 'Start'. pr_features (Window) Start is 'Start_b'.
-        joined = pr_bim.join(pr_features, apply_strand_suffix=False).df
+        joined = pr_bim.join_overlaps(pr_features, suffix="_b").copy()
 
         logger.info(f"Initial SNP-feature overlaps: {len(joined)} pairs")
         if not joined.empty:
-            logger.info(f"  Unique SNPs in overlaps: {joined['SNP'].nunique()} | Unique Features in overlaps: {joined['Feature'].nunique()}")
+            logger.info(
+                f"  Unique SNPs in overlaps: {joined['SNP'].nunique()} | Unique Features in overlaps: {joined['Feature'].nunique()}"
+            )
 
         if not joined.empty:
             # 6. Resolve Conflicts / Filter
-            if strategy == 'score':
-                if 'Score' not in joined.columns:
+            if strategy == "score":
+                if "Score" not in joined.columns:
                     raise ValueError("Strategy 'score' requires 'Score' column in mapping data.")
-                joined = joined.sort_values(by=['SNP', 'Score'], ascending=[True, False])
-                joined = joined.drop_duplicates(subset=['SNP'], keep='first')
+                joined = joined.sort_values(by=["SNP", "Score"], ascending=[True, False])
+                joined = joined.drop_duplicates(subset=["SNP"], keep="first")
 
-            elif strategy == 'tss':
-                joined['distance_to_tss'] = np.abs(joined['Start'] - joined['RefTSS'])
-                joined = joined.sort_values(by=['SNP', 'distance_to_tss'], ascending=[True, True])
-                joined = joined.drop_duplicates(subset=['SNP'], keep='first')
+            elif strategy == "tss":
+                joined["distance_to_tss"] = np.abs(joined["Start"] - joined["RefTSS"])
+                joined = joined.sort_values(by=["SNP", "distance_to_tss"], ascending=[True, True])
+                joined = joined.drop_duplicates(subset=["SNP"], keep="first")
 
-            elif strategy == 'center':
+            elif strategy == "center":
                 # Calculate center of the feature interval (the window around feature)
                 # 'Start_b' and 'End_b' are the feature window coordinates from PyRanges join
-                joined['feature_center'] = (joined['Start_b'] + joined['End_b']) / 2.0
+                joined["feature_center"] = (joined["Start_b"] + joined["End_b"]) / 2.0
                 # Calculate distance from SNP position ('Start') to center
-                joined['distance_to_center'] = np.abs(joined['Start'] - joined['feature_center'])
+                joined["distance_to_center"] = np.abs(joined["Start"] - joined["feature_center"])
                 # Sort and pick closest
-                joined = joined.sort_values(by=['SNP', 'distance_to_center'], ascending=[True, True])
-                joined = joined.drop_duplicates(subset=['SNP'], keep='first')
+                joined = joined.sort_values(
+                    by=["SNP", "distance_to_center"], ascending=[True, True]
+                )
+                joined = joined.drop_duplicates(subset=["SNP"], keep="first")
 
-            elif strategy == 'allow_repeat':
+            elif strategy == "allow_repeat":
                 # No de-duplication. One SNP can map to multiple features.
                 pass
 
             # 7. Prepare Sparse Data
             # Row indices come from BIM 'snp_row_idx' which is preserved in join
-            row_indices = joined['snp_row_idx'].values
-            col_indices = joined['Feature'].map(feature_to_idx).values
+            row_indices = joined["snp_row_idx"].values
+            col_indices = joined["Feature"].map(feature_to_idx).values
 
             logger.info(f"Final SNP-feature pairs after strategy '{strategy}': {len(row_indices)}")
 
             # Data values: Use Score if available and requested, otherwise 1.0
-            if 'Score' in joined.columns and strategy in ['score', 'allow_repeat']:
+            if "Score" in joined.columns and strategy in ["score", "allow_repeat"]:
                 # Use provided score
-                data_values = joined['Score'].values.astype(np.float32)
+                data_values = joined["Score"].values.astype(np.float32)
             else:
                 # Default to 1.0 for geometric strategies (tss, center) or missing score
                 data_values = np.ones(len(row_indices), dtype=np.float32)
 
             # Save the result for output
             # We filter columns to make it cleaner
-            output_cols = ['SNP', 'Chromosome', 'Start', 'Feature']
-            if 'Score' in joined.columns: output_cols.append('Score')
-            if 'distance_to_tss' in joined.columns: output_cols.append('distance_to_tss')
-            if 'distance_to_center' in joined.columns: output_cols.append('distance_to_center')
+            output_cols = ["SNP", "Chromosome", "Start", "Feature"]
+            if "Score" in joined.columns:
+                output_cols.append("Score")
+            if "distance_to_tss" in joined.columns:
+                output_cols.append("distance_to_tss")
+            if "distance_to_center" in joined.columns:
+                output_cols.append("distance_to_center")
 
             # Ensure columns exist before selecting
             output_cols = [c for c in output_cols if c in joined.columns]
             curated_mapping_df = joined[output_cols].copy()
-            curated_mapping_df.rename(columns={'Start': 'SNP_BP'}, inplace=True)
+            curated_mapping_df.rename(columns={"Start": "SNP_BP"}, inplace=True)
 
     else:
         raise ValueError(f"Unknown mapping_type: {mapping_type}")
@@ -254,9 +262,7 @@ def create_snp_feature_map(
     # Construct CSR Matrix
     # Shape: (m_ref, n_features + 1)
     mapping_matrix = scipy.sparse.csr_matrix(
-        (data_values, (row_indices, col_indices)),
-        shape=(m_ref, n_features + 1),
-        dtype=np.float32
+        (data_values, (row_indices, col_indices)), shape=(m_ref, n_features + 1), dtype=np.float32
     )
 
     return mapping_matrix, unique_feature_names, curated_mapping_df

@@ -20,24 +20,27 @@ class StEmbeding(nn.Module):
         distribution (str): Output distribution type ('nb', 'zinb', 'gaussian', etc.).
         Other GNN-related args passed to Encoder.
     """
-    def __init__(self,
-                 input_size,
-                 hidden_size,
-                 embedding_size,
-                 batch_embedding_size,
-                 out_put_size,
-                 batch_size,
-                 class_size,
-                 distribution,
-                 module_dim,
-                 hidden_gmf,
-                 n_modules,
-                 nhead,
-                 n_enc_layer,
-                 use_tf=True,
-                 variational=True,
-                 batch_representation='embedding',
-                 dispersion='gene'):
+
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        embedding_size,
+        batch_embedding_size,
+        out_put_size,
+        batch_size,
+        class_size,
+        distribution,
+        module_dim,
+        hidden_gmf,
+        n_modules,
+        nhead,
+        n_enc_layer,
+        use_tf=True,
+        variational=True,
+        batch_representation="embedding",
+        dispersion="gene",
+    ):
         super().__init__()
 
         self.input_size = input_size
@@ -49,7 +52,7 @@ class StEmbeding(nn.Module):
         self.logtheta = nn.Parameter(torch.randn(batch_size, out_put_size))
 
         # Handle batch embedding
-        if batch_representation == 'embedding':
+        if batch_representation == "embedding":
             self.batch_embedding = nn.Embedding(batch_size, batch_embedding_size)
             self.batch_embedding_size = batch_embedding_size
         else:
@@ -59,32 +62,36 @@ class StEmbeding(nn.Module):
         self.encoder = nn.ModuleList()
         for eid in range(self.z_num):
             self.encoder.append(
-                Encoder(self.input_size[eid],
-                        hidden_size,
-                        embedding_size,
-                        self.batch_embedding_size,
-                        module_dim,
-                        hidden_gmf,
-                        n_modules,
-                        nhead,
-                        n_enc_layer,
-                        use_tf,
-                        variational)
+                Encoder(
+                    self.input_size[eid],
+                    hidden_size,
+                    embedding_size,
+                    self.batch_embedding_size,
+                    module_dim,
+                    hidden_gmf,
+                    n_modules,
+                    nhead,
+                    n_enc_layer,
+                    use_tf,
+                    variational,
+                )
             )
 
         # Build decoders for reconstruction and classification
         self.decoder = nn.ModuleDict()
-        for decoder_type in ['reconstruction', 'classification']:
-            self.decoder[decoder_type] = Decoder(out_put_size,
-                                                 hidden_size,
-                                                 embedding_size,
-                                                 self.batch_embedding_size,
-                                                 class_size,
-                                                 decoder_type,
-                                                 self.distribution)
+        for decoder_type in ["reconstruction", "classification"]:
+            self.decoder[decoder_type] = Decoder(
+                out_put_size,
+                hidden_size,
+                embedding_size,
+                self.batch_embedding_size,
+                class_size,
+                decoder_type,
+                self.distribution,
+            )
 
     def _process_batch(self, batch):
-        if self.batch_representation == 'embedding':
+        if self.batch_representation == "embedding":
             return self.batch_embedding(batch)
         else:
             return F.one_hot(batch, num_classes=self.num_batches).float()
@@ -92,7 +99,7 @@ class StEmbeding(nn.Module):
     def forward(self, x_list, batch):
         batch = self._process_batch(batch)
 
-        if self.distribution in ['nb', 'zinb']:
+        if self.distribution in ["nb", "zinb"]:
             library_size = x_list[0].sum(-1, keepdim=True)
         else:
             n = x_list[0].shape[0]
@@ -102,7 +109,7 @@ class StEmbeding(nn.Module):
         x_rec_list, zi_logit_list, z_list = [], [], []
         for eid in range(self.z_num):
             z = self.encoder[eid](x_list[eid], batch)
-            x_rec, zi_logit = self.decoder['reconstruction'](z, batch)
+            x_rec, zi_logit = self.decoder["reconstruction"](z, batch)
             x_rec = x_rec * library_size
 
             x_rec_list.append(x_rec)
@@ -114,7 +121,7 @@ class StEmbeding(nn.Module):
 
     def _classification(self, z_list, batch):
         z = torch.cat(z_list, dim=1)
-        return self.decoder['classification'](z, batch)
+        return self.decoder["classification"](z, batch)
 
     def encode(self, x_list, batch):
         batch = self._process_batch(batch)

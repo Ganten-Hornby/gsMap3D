@@ -39,7 +39,7 @@ config = QuickModeConfig(
     trait_name="Trait1",
     sumstats_file="trait1.sumstats.gz",
     snp_gene_weight_adata_path="./resources/snp_gene_weights.h5ad",
-    w_ld_dir="./resources/w_ld"
+    w_ld_dir="./resources/w_ld",
 )
 
 run_quick_mode(config)
@@ -82,15 +82,15 @@ graph TD
     S5 --> Report
 ```
 
-1.  **Dual Embeddings**: gsMap3D constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context.
+1. **Dual Embeddings**: gsMap3D constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context.
 
-2. **Identification of Homogeneous cells** Using the dual embeddings, gsMap3D identifies homogeneous cells for each spot by jointly considering transcriptomic similarity and spatial context. For 2D ST data, homogeneous cells are identified within the same section, whereas for 3D ST data, homogeneous cells span adjacent sections, enabling volumetric identification of homogeneous cells across the tissue.
+1. **Identification of Homogeneous cells** Using the dual embeddings, gsMap3D identifies homogeneous cells for each spot by jointly considering transcriptomic similarity and spatial context. For 2D ST data, homogeneous cells are identified within the same section, whereas for 3D ST data, homogeneous cells span adjacent sections, enabling volumetric identification of homogeneous cells across the tissue.
 
-3.  **Gene Specificity Score**: gsMap3D computes a Gene Specificity Score (GSS) for each gene in each cell by aggregating normalized gene expression ranks across its homogeneous cells. The GSS quantifies how highly and specifically a gene is expressed in a given cell.
+1. **Gene Specificity Score**: gsMap3D computes a Gene Specificity Score (GSS) for each gene in each cell by aggregating normalized gene expression ranks across its homogeneous cells. The GSS quantifies how highly and specifically a gene is expressed in a given cell.
 
-4.  **Spatial LDSC**: The cell-level GSS annotations are integrated with GWAS summary statistics using S-LDSC to partition trait heritability. This framework assesses trait heritability enrichment of specific cells within specific spatial context.
+1. **Spatial LDSC**: The cell-level GSS annotations are integrated with GWAS summary statistics using S-LDSC to partition trait heritability. This framework assesses trait heritability enrichment of specific cells within specific spatial context.
 
-5.  **Spatial Region or Cell-Type Association** To assess trait associations at the level of spatial regions or cell types, gsMap3D aggregates cell-level association p-values using the Cauchy combination test. This yields robust region- or cell-type–level association statistics while accounting for heterogeneous signals across constituent cells.
+1. **Spatial Region or Cell-Type Association** To assess trait associations at the level of spatial regions or cell types, gsMap3D aggregates cell-level association p-values using the Cauchy combination test. This yields robust region- or cell-type–level association statistics while accounting for heterogeneous signals across constituent cells.
 
 ## Key Configurations
 
@@ -132,28 +132,28 @@ print(adata.obs["annotation"].value_counts().head())
 There are three ways to provide input AnnData (.h5ad) files:
 
 1. **Single or Multiple Files** (`--h5ad-path`):
-   Specify each file with its own flag. Sample names are derived from filenames (e.g., `sample1.h5ad` -> `sample1`).
+    Specify each file with its own flag. Sample names are derived from filenames (e.g., `sample1.h5ad` -> `sample1`).
 
-   ```bash
-   --h5ad-path data/sample1.h5ad \
-   --h5ad-path data/sample2.h5ad
-   ```
+    ```bash
+    --h5ad-path data/sample1.h5ad \
+    --h5ad-path data/sample2.h5ad
+    ```
 
-2. **YAML Configuration (recommended)** (`--h5ad-yaml`):
-   A YAML file where keys are sample names and values are file paths.
+1. **YAML Configuration (recommended)** (`--h5ad-yaml`):
+    A YAML file where keys are sample names and values are file paths.
 
-   ```yaml
-   sample1: /path/to/sample1.h5ad
-   sample2: /path/to/sample2.h5ad
-   ```
+    ```yaml
+    sample1: /path/to/sample1.h5ad
+    sample2: /path/to/sample2.h5ad
+    ```
 
-3. **List File** (`--h5ad-list-file`):
-   A text file where each line is a file path. Sample names are derived from filenames.
+1. **List File** (`--h5ad-list-file`):
+    A text file where each line is a file path. Sample names are derived from filenames.
 
-   ```text
-   /path/to/sample1.h5ad
-   /path/to/sample2.h5ad
-   ```
+    ```text
+    /path/to/sample1.h5ad
+    /path/to/sample2.h5ad
+    ```
 
 ```{important}
 For `spatial3D` datasets, the order of file paths defines the Z-axis order of slices. Ensure files are listed in the same order as they appear along the Z-axis (e.g., from bottom to top or vice versa).
@@ -234,25 +234,25 @@ gsMap format_sumstats -h
 There are two ways to provide GWAS summary statistics:
 
 1. **Single Trait** (`--trait-name` + `--sumstats-file`):
-   Provide a single trait name and its corresponding summary statistics file.
+    Provide a single trait name and its corresponding summary statistics file.
 
-   ```bash
-   --trait-name "IQ" --sumstats-file "./GWAS/IQ_NG_2018.sumstats.gz"
-   ```
+    ```bash
+    --trait-name "IQ" --sumstats-file "./GWAS/IQ_NG_2018.sumstats.gz"
+    ```
 
-2. **Multiple Traits** (`--sumstats-config-file`):
-   Provide a YAML configuration file mapping trait names to file paths.
+1. **Multiple Traits** (`--sumstats-config-file`):
+    Provide a YAML configuration file mapping trait names to file paths.
 
-   ```yaml
-   # gwas_config.yaml
-   IQ: ./GWAS/IQ_NG_2018.sumstats.gz
-   Height: ./GWAS/GIANT_EUR_Height_2022_Nature.sumstats.gz
-   MCHC: ./GWAS/BCX2_MCHC_EA_GWAMA.sumstats.gz
-   ```
+    ```yaml
+    # gwas_config.yaml
+    IQ: ./GWAS/IQ_NG_2018.sumstats.gz
+    Height: ./GWAS/GIANT_EUR_Height_2022_Nature.sumstats.gz
+    MCHC: ./GWAS/BCX2_MCHC_EA_GWAMA.sumstats.gz
+    ```
 
-   ```bash
-   --sumstats-config-file "./GWAS/gwas_config.yaml"
-   ```
+    ```bash
+    --sumstats-config-file "./GWAS/gwas_config.yaml"
+    ```
 
 ### SNP to Gene & LD Weights
 

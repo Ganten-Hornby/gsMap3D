@@ -33,16 +33,10 @@ gsmap quick-mode --no-gpu ...
 from gsMap.config import QuickModeConfig
 
 # Enable GPU (default)
-config = QuickModeConfig(
-    use_gpu=True,
-    ...
-)
+config = QuickModeConfig(use_gpu=True, ...)
 
 # Disable GPU
-config = QuickModeConfig(
-    use_gpu=False,
-    ...
-)
+config = QuickModeConfig(use_gpu=False, ...)
 ```
 ````
 
@@ -84,28 +78,28 @@ gsMap3D implements a three-stage parallel message queue pipeline for the Gene Sp
 
 1. **Stage 1 - Gene Rank Reading**: Reader workers load pre-computed gene rank data from memory-mapped files in parallel. Each reader fetches batch data containing neighbor indices for homogeneous spots.
 
-2. **Stage 2 - GSS Calculation**: Compute workers receive rank data via the **Rank→Compute Queue** and calculate marker scores using JAX-accelerated weighted geometric mean operations. The computation transforms gene ranks into Gene Specificity Scores (GSS).
+1. **Stage 2 - GSS Calculation**: Compute workers receive rank data via the **Rank→Compute Queue** and calculate marker scores using JAX-accelerated weighted geometric mean operations. The computation transforms gene ranks into Gene Specificity Scores (GSS).
 
-3. **Stage 3 - Write GSS**: Writer workers receive computed GSS results via the **Compute→Write Queue** and write them back to memory-mapped files for downstream Spatial LDSC analysis.
+1. **Stage 3 - Write GSS**: Writer workers receive computed GSS results via the **Compute→Write Queue** and write them back to memory-mapped files for downstream Spatial LDSC analysis.
 
 ### Worker Configuration
 
 The number of workers for each stage can be configured:
 
-| Parameter | Description | Default | Range |
-|-----------|-------------|---------|-------|
-| `rank_read_workers` | Parallel reader threads for Stage 1 | 16 | 1-50 |
-| `mkscore_compute_workers` | Parallel compute threads for Stage 2 | 4 | 1-16 |
-| `mkscore_write_workers` | Parallel writer threads for Stage 3 | 4 | 1-50 |
+| Parameter                 | Description                          | Default | Range |
+| ------------------------- | ------------------------------------ | ------- | ----- |
+| `rank_read_workers`       | Parallel reader threads for Stage 1  | 16      | 1-50  |
+| `mkscore_compute_workers` | Parallel compute threads for Stage 2 | 4       | 1-16  |
+| `mkscore_write_workers`   | Parallel writer threads for Stage 3  | 4       | 1-50  |
 
 ### Queue Configuration
 
 The message queues between stages control data flow and backpressure:
 
-| Parameter | Description | Default | Range |
-|-----------|-------------|---------|-------|
-| `compute_input_queue_size` | Maximum size of **Rank→Compute Queue** (multiplier of `mkscore_compute_workers`). Controls how many batches can be buffered between reading and computing stages. | 5 | 1-10 |
-| `writer_queue_size` | Maximum size of **Compute→Write Queue**. Controls how many computed batches can be buffered before being written to disk. | 100 | 10-500 |
+| Parameter                  | Description                                                                                                                                                       | Default | Range  |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------ |
+| `compute_input_queue_size` | Maximum size of **Rank→Compute Queue** (multiplier of `mkscore_compute_workers`). Controls how many batches can be buffered between reading and computing stages. | 5       | 1-10   |
+| `writer_queue_size`        | Maximum size of **Compute→Write Queue**. Controls how many computed batches can be buffered before being written to disk.                                         | 100     | 10-500 |
 
 ```{tip}
 Queue sizes balance memory usage and throughput. Larger queues allow better buffering when stage speeds vary, but consume more memory. The default values work well for most systems.
@@ -142,10 +136,10 @@ Use this table to identify pipeline bottlenecks:
 ```{tip}
 **Identifying Bottlenecks**: The stage with the lowest **Total Throughput** is the bottleneck limiting overall performance.
 
-- **Reader is the bottleneck** (Reader throughput < Computer throughput): 
+- **Reader is the bottleneck** (Reader throughput < Computer throughput):
   - Increase `rank_read_workers` to add more parallel readers
   - Use [`--memmap-tmp-dir`](#memory-mapping) to copy memory-mapped files to a fast SSD
-  
+
 - **Computer is the bottleneck** (Computer throughput < Reader/Writer throughput):
   - Ensure GPU acceleration is enabled (`--use-gpu`)
   - Increase available CPU cores or `mkscore_compute_workers` if using CPU-only mode
@@ -163,8 +157,8 @@ Use this table to identify pipeline bottlenecks:
 When your working directory is on a slow filesystem (e.g., network storage, HDD), random access to memory-mapped files can become a bottleneck. By specifying a fast local SSD as the temporary directory, gsMap3D:
 
 1. Copies memory-mapped files to the fast storage
-2. Performs all random access operations on the fast storage
-3. Syncs results back to the original location when complete
+1. Performs all random access operations on the fast storage
+1. Syncs results back to the original location when complete
 
 ### Usage
 
@@ -180,10 +174,7 @@ gsmap quick-mode \
 ```python
 from gsMap.config import QuickModeConfig
 
-config = QuickModeConfig(
-    memmap_tmp_dir="/path/to/fast/ssd/tmp",
-    ...
-)
+config = QuickModeConfig(memmap_tmp_dir="/path/to/fast/ssd/tmp", ...)
 ```
 ````
 
@@ -210,11 +201,11 @@ The temporary directory needs sufficient space for intermediate memory-mapped fi
 
 Assuming ~20,000 genes:
 
-| Dataset Size | Calculation | Approximate Temp Space |
-|--------------|-------------|------------------------|
-| 100K spots | 100K × 20K × 4 × 2 | ~16 GB |
-| 1M spots | 1M × 20K × 4 × 2 | ~160 GB |
-| 10M spots | 10M × 20K × 4 × 2 | ~1.6 TB |
+| Dataset Size | Calculation        | Approximate Temp Space |
+| ------------ | ------------------ | ---------------------- |
+| 100K spots   | 100K × 20K × 4 × 2 | ~16 GB                 |
+| 1M spots     | 1M × 20K × 4 × 2   | ~160 GB                |
+| 10M spots    | 10M × 20K × 4 × 2  | ~1.6 TB                |
 
 ```{important}
 Ensure your temporary directory has enough free space before running. gsMap3D will fail if the disk runs out of space during computation.
@@ -224,30 +215,27 @@ Ensure your temporary directory has enough free space before running. gsMap3D wi
 
 gsMap3D processes data in batches to balance memory usage and computational efficiency:
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `rank_batch_size` | Spots per batch for rank calculation | 500 |
-| `mkscore_batch_size` | Spots per batch for marker score | 500 |
-| `spots_per_chunk_quick_mode` | Spots per chunk for Spatial LDSC | 50 |
+| Parameter                    | Description                          | Default |
+| ---------------------------- | ------------------------------------ | ------- |
+| `rank_batch_size`            | Spots per batch for rank calculation | 500     |
+| `mkscore_batch_size`         | Spots per batch for marker score     | 500     |
+| `spots_per_chunk_quick_mode` | Spots per chunk for Spatial LDSC     | 50      |
 
 Larger batch sizes can improve throughput but require more memory. Adjust based on your available RAM and GPU memory.
 
-
 ## Performance Recommendations
-
 
 ### For Very Large Datasets (>1M spots)
 
 1. **Use GPU acceleration**: GPU significantly speeds up both latent-to-gene and Spatial LDSC computation. Enabled by default with `--use-gpu`.
-2. **Use NVMe SSD**: Fast local storage is critical. Use `--memmap-tmp-dir` to specify a fast SSD for temporary files to avoid reading becoming a bottleneck. If SSD is not available, increase `rank_read_workers` to compensate. 
-3. **Increase batch sizes**: If memory allows, larger batches improve throughput
-
+1. **Use NVMe SSD**: Fast local storage is critical. Use `--memmap-tmp-dir` to specify a fast SSD for temporary files to avoid reading becoming a bottleneck. If SSD is not available, increase `rank_read_workers` to compensate.
+1. **Increase batch sizes**: If memory allows, larger batches improve throughput
 
 ### For CPU-Only Systems
 
 1. **Disable GPU**: Use `--no-gpu` to avoid JAX GPU initialization overhead
-2. **Increase CPU cores and compute workers**: The Spatial LDSC step scales near-linearly with the number of available CPU cores. Increase `ldsc_compute_workers` to match available cores.
-3. **Use NVMe SSD**: Fast storage significantly speeds up latent-to-gene computation. Use `--memmap-tmp-dir` to specify a fast SSD.
+1. **Increase CPU cores and compute workers**: The Spatial LDSC step scales near-linearly with the number of available CPU cores. Increase `ldsc_compute_workers` to match available cores.
+1. **Use NVMe SSD**: Fast storage significantly speeds up latent-to-gene computation. Use `--memmap-tmp-dir` to specify a fast SSD.
 
 ### For Cluster Users
 
@@ -264,7 +252,7 @@ gsmap quick-mode \
     --trait-name trait1 --sumstats-file /path/to/trait1.sumstats.gz \
     ...
 
-# Job 2: Process trait2  
+# Job 2: Process trait2
 gsmap quick-mode \
     --start-step spatial_ldsc --stop-step spatial_ldsc \
     --trait-name trait2 --sumstats-file /path/to/trait2.sumstats.gz \
@@ -305,7 +293,7 @@ config = QuickModeConfig(
     cell_indices_range=(0, 1000000),
     trait_name="trait1",
     sumstats_file="/path/to/trait1.sumstats.gz",
-    ...
+    ...,
 )
 run_quick_mode(config)
 
@@ -316,7 +304,7 @@ config = QuickModeConfig(
     cell_indices_range=(1000000, 2000000),
     trait_name="trait1",
     sumstats_file="/path/to/trait1.sumstats.gz",
-    ...
+    ...,
 )
 run_quick_mode(config)
 ```
@@ -345,24 +333,24 @@ Use pandas to concatenate the partial results:
 import pandas as pd
 from pathlib import Path
 
-workdir = Path('/path/to/workdir')
-project = 'my_project'
-trait = 'trait1'
+workdir = Path("/path/to/workdir")
+project = "my_project"
+trait = "trait1"
 
 # Find all partial result files
-result_dir = workdir / project / 'spatial_ldsc'
-partial_files = sorted(result_dir.glob(f'{project}_{trait}_cells_*.csv.gz'))
+result_dir = workdir / project / "spatial_ldsc"
+partial_files = sorted(result_dir.glob(f"{project}_{trait}_cells_*.csv.gz"))
 
 print(f"Found {len(partial_files)} partial result files")
 
 # Concatenate and save
 results = pd.concat([pd.read_csv(f) for f in partial_files], ignore_index=True)
-results.to_csv(result_dir / f'{project}_{trait}.csv.gz', index=False, compression='gzip')
+results.to_csv(
+    result_dir / f"{project}_{trait}.csv.gz", index=False, compression="gzip"
+)
 
 print(f"Merged {len(results)} spots to {result_dir / f'{project}_{trait}.csv.gz'}")
 ```
-
-
 
 ## Troubleshooting
 

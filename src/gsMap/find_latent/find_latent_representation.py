@@ -32,7 +32,6 @@ from .st_process import (
 logger = logging.getLogger(__name__)
 
 
-
 def set_seed(seed_value):
     """
     Set seed for reproducibility in PyTorch and other libraries.
@@ -69,7 +68,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         Dictionary containing metadata about the run including config, model info,
         training info, outputs, and annotation info
     """
-    logger.info(f'Project dir: {config.project_dir}')
+    logger.info(f"Project dir: {config.project_dir}")
     set_seed(2024)
 
     # Find the hvg
@@ -130,15 +129,11 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
 
     # Configure the optimizer
     optimizer = torch.optim.Adam(gsmap_lgcn_model.parameters(), lr=1e-3)
-    logger.info(
-        f"gsMap-LGCN parameters: {sum(p.numel() for p in gsmap_lgcn_model.parameters())}."
-    )
+    logger.info(f"gsMap-LGCN parameters: {sum(p.numel() for p in gsmap_lgcn_model.parameters())}.")
     logger.info(f"Number of cells used in trainning: {cell_size}.")
 
     # Split the data to trainning (80%) and validation (20%).
-    train_idx, val_idx = index_splitter(
-        get_trainning_data.expression_gcn_merge.size(0), [80, 20]
-    )
+    train_idx, val_idx = index_splitter(get_trainning_data.expression_gcn_merge.size(0), [80, 20])
     train_sampler = SubsetRandomSampler(train_idx)
     val_sampler = SubsetRandomSampler(val_idx)
 
@@ -149,12 +144,8 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         get_trainning_data.expression_merge,
         get_trainning_data.label_merge,
     )
-    train_loader = DataLoader(
-        dataset=dataset, batch_size=config.batch_size, sampler=train_sampler
-    )
-    val_loader = DataLoader(
-        dataset=dataset, batch_size=config.batch_size, sampler=val_sampler
-    )
+    train_loader = DataLoader(dataset=dataset, batch_size=config.batch_size, sampler=train_sampler)
+    val_loader = DataLoader(dataset=dataset, batch_size=config.batch_size, sampler=val_sampler)
 
     # Model trainning
     gsMap_embedding_finder = ModelTrain(
@@ -187,10 +178,11 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     # Configure the inference
     infer = InferenceData(hvg, batch_size, gsmap_embedding_model, label_name, config)
 
-
     output_h5ad_path_dict = OrderedDict(
-        {sample_name: config.latent_dir / f"{sample_name}_add_latent.h5ad"
-            for sample_name in config.sample_h5ad_dict.keys()}
+        {
+            sample_name: config.latent_dir / f"{sample_name}_add_latent.h5ad"
+            for sample_name in config.sample_h5ad_dict.keys()
+        }
     )
     # Do the DEG in the training adata if annotation is provided and high quality cell QC is enabled
     module_score_threshold_dict = {}
@@ -200,7 +192,9 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
 
         # Calculate thresholds for each annotation
         for label in training_adata.obs[config.annotation].cat.categories:
-            scores = training_adata.obs.loc[training_adata.obs[config.annotation] == label, f"{label}_module_score"]
+            scores = training_adata.obs.loc[
+                training_adata.obs[config.annotation] == label, f"{label}_module_score"
+            ]
             Q1 = np.percentile(scores, 25)
             Q2 = np.median(scores)
             Q3 = np.percentile(scores, 75)
@@ -209,10 +203,12 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             module_score_threshold_dict[label] = threshold
             logger.info(f"High quality module score threshold for {label}: {threshold:.3f}")
 
-        training_adata.uns['module_score_thresholds'] = module_score_threshold_dict
+        training_adata.uns["module_score_thresholds"] = module_score_threshold_dict
 
         # Apply QC to training data as well
-        training_adata = apply_module_score_qc(training_adata, config.annotation, module_score_threshold_dict)
+        training_adata = apply_module_score_qc(
+            training_adata, config.annotation, module_score_threshold_dict
+        )
 
     # save the training adata
     training_adata_path = config.find_latent_metadata_path.parent / "training_adata.h5ad"
@@ -220,7 +216,6 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     logger.info(f"Saved training adata to {training_adata_path}")
 
     for st_id, (sample_name, st_file) in enumerate(config.sample_h5ad_dict.items()):
-
         output_path = output_h5ad_path_dict[sample_name]
 
         # Infer the embedding
@@ -232,7 +227,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             logger.info(f"Calculating module scores for {sample_name}...")
 
             # Get DEG results from training data
-            deg_results = training_adata.uns['rank_genes_groups']
+            deg_results = training_adata.uns["rank_genes_groups"]
 
             # Keep the same gene list as training data, because the module score is based on the training data.
             # This is critical for proper normalization: without this filter, normalize_total()
@@ -244,17 +239,20 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
 
             # Apply QC based on module score thresholds
             if config.annotation in adata.obs.columns:
-                adata = apply_module_score_qc(adata, config.annotation, module_score_threshold_dict)
+                adata = apply_module_score_qc(
+                    adata, config.annotation, module_score_threshold_dict
+                )
             else:
-                logger.warning(f"Annotation '{config.annotation}' not found in {sample_name}, skipping QC")
+                logger.warning(
+                    f"Annotation '{config.annotation}' not found in {sample_name}, skipping QC"
+                )
 
         # Transfer to human gene names
         adata = convert_to_human_genes(adata, gene_homolog_dict, species=config.species)
 
-
         # Compute the depth
         if config.data_layer in ["count", "counts"]:
-            adata.obs['depth'] = np.array(adata.layers[config.data_layer].sum(axis=1)).flatten()
+            adata.obs["depth"] = np.array(adata.layers[config.data_layer].sum(axis=1)).flatten()
 
         # Save the ST data with embeddings
         adata.write_h5ad(output_path)
@@ -280,7 +278,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "class_size": int(class_size),
             "distribution": distribution,
             "variational": variational,
-            "use_tf": use_tf
+            "use_tf": use_tf,
         },
         "training_info": {
             "n_cells_used": int(cell_size),
@@ -289,22 +287,26 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "batch_size": int(config.batch_size),
             "n_epochs": int(config.itermax),
             "patience": int(config.patience),
-            "two_stage": config.two_stage
+            "two_stage": config.two_stage,
         },
         "outputs": {
             "latent_files": output_h5ad_path_dict_str,
-            "n_sections": len(config.sample_h5ad_dict)
+            "n_sections": len(config.sample_h5ad_dict),
         },
         "annotation_info": {
             "annotation_key": config.annotation,
             "n_classes": int(class_size),
-            "label_names": label_name if isinstance(label_name, list) else label_name.tolist() if hasattr(label_name, 'tolist') else list(label_name),
-        }
+            "label_names": label_name
+            if isinstance(label_name, list)
+            else label_name.tolist()
+            if hasattr(label_name, "tolist")
+            else list(label_name),
+        },
     }
 
     # Save metadata to YAML file
     metadata_path = config.find_latent_metadata_path
-    with open(metadata_path, 'w') as f:
+    with open(metadata_path, "w") as f:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
 
     logger.info(f"Saved metadata to {metadata_path}")

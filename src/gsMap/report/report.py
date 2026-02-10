@@ -2,12 +2,15 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from jinja2 import Template
+
 import gsMap
 from gsMap.config import QuickModeConfig
 
 from .report_data import ReportDataManager
 
 logger = logging.getLogger(__name__)
+
 
 def run_report(config: QuickModeConfig, run_parameters: dict = None):
     """
@@ -54,6 +57,7 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
     # 2. Save run_parameters for future reference
     if run_parameters:
         import yaml
+
         with open(web_report_dir / "execution_summary.yaml", "w") as f:
             yaml.dump(run_parameters, f)
 
@@ -63,38 +67,36 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         logger.error(f"Template file not found at {template_path}")
         return
 
-    try:
-        from jinja2 import Template
-        with open(template_path, encoding="utf-8") as f:
-            template = Template(f.read())
+    with open(template_path, encoding="utf-8") as f:
+        template = Template(f.read())
 
-        # Prepare context
-        context = {
-            "title": f"gsMap Report - {config.project_name}",
-            "project_name": config.project_name,
-            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "gsmap_version": getattr(gsMap, "__version__", "unknown"),
-        }
+    # Prepare context
+    context = {
+        "title": f"gsMap Report - {config.project_name}",
+        "project_name": config.project_name,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "gsmap_version": getattr(gsMap, "__version__", "unknown"),
+    }
 
-        rendered_html = template.render(**context)
+    rendered_html = template.render(**context)
 
-        report_file = web_report_dir / "index.html"
-        with open(report_file, "w", encoding="utf-8") as f:
-            f.write(rendered_html)
+    report_file = web_report_dir / "index.html"
+    with open(report_file, "w", encoding="utf-8") as f:
+        f.write(rendered_html)
 
-        from rich import print as rprint
-        rprint("\n[bold green]Report generated successfully![/bold green]")
-        rprint(f"Web report directory: [cyan]{web_report_dir}[/cyan]")
-        rprint(f"Data files directory: [cyan]{config.report_data_dir}[/cyan]\n")
+    from rich import print as rprint
 
-        rprint("[bold]Ways to view the interactive report:[/bold]")
-        rprint("1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:")
-        rprint(f"   [bold cyan]gsmap report-view {web_report_dir} --port 8080 --no-browser[/bold cyan]")
-        rprint(f"\n2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n")
+    rprint("\n[bold green]Report generated successfully![/bold green]")
+    rprint(f"Web report directory: [cyan]{web_report_dir}[/cyan]")
+    rprint(f"Data files directory: [cyan]{config.report_data_dir}[/cyan]\n")
 
-    except ImportError:
-        logger.error("Jinja2 not found. Please install it with 'pip install jinja2'.")
-    except Exception as e:
-        logger.error(f"Failed to render report: {e}")
-        import traceback
-        traceback.print_exc()
+    rprint("[bold]Ways to view the interactive report:[/bold]")
+    rprint(
+        "1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:"
+    )
+    rprint(
+        f"   [bold cyan]gsmap report-view {web_report_dir} --port 8080 --no-browser[/bold cyan]"
+    )
+    rprint(
+        f"\n2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n"
+    )

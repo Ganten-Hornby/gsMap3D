@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyranges as pr
+import pyranges1 as pr
 from scipy.sparse import csr_matrix
 from tqdm import trange
 
@@ -49,7 +49,7 @@ def load_gtf(
     logger.info("Loading GTF data from %s", gtf_file)
 
     # Load GTF file
-    gtf = pr.read_gtf(gtf_file, as_df=True)
+    gtf = pr.read_gtf(gtf_file).copy()
 
     # Filter for gene features
     gtf = gtf[gtf["Feature"] == "gene"]
@@ -128,8 +128,7 @@ def overlaps_gtf_bim(gtf_pr: pr.PyRanges, bim_pr: pr.PyRanges) -> pd.DataFrame:
         DataFrame with SNP-gene pairs where each SNP is matched to its closest gene
     """
     # Join the PyRanges objects to find overlaps
-    overlaps = gtf_pr.join(bim_pr)
-    overlaps = overlaps.df
+    overlaps = gtf_pr.join_overlaps(bim_pr).copy()
 
     # Calculate distance to TSS
     overlaps["Distance"] = np.abs(overlaps["Start_b"] - overlaps["TSS"])
@@ -191,7 +190,7 @@ class LDScoreCalculator:
             PyRanges object with enhancer data
         """
         # Load enhancer data
-        enhancer_df = pr.read_bed(self.config.enhancer_annotation_file, as_df=True)
+        enhancer_df = pr.read_bed(self.config.enhancer_annotation_file).copy()
         enhancer_df.set_index("Name", inplace=True)
         enhancer_df.index.name = "gene_name"
 
@@ -204,9 +203,9 @@ class LDScoreCalculator:
         )
 
         # Add TSS information
-        enhancer_df["TSS"] = self.gtf_pr.df.set_index("gene_name").reindex(enhancer_df.index)[
-            "TSS"
-        ]
+        enhancer_df["TSS"] = (
+            self.gtf_pr.copy().set_index("gene_name").reindex(enhancer_df.index)["TSS"]
+        )
 
         # Convert to PyRanges
         return pr.PyRanges(enhancer_df.reset_index())
@@ -903,7 +902,7 @@ class LDScoreCalculator:
             raise ValueError("Enhancer annotation file is required but not provided")
 
         # Find overlaps between SNPs and enhancers
-        overlaps = self.enhancer_pr.join(bim_pr).df
+        overlaps = self.enhancer_pr.join_overlaps(bim_pr).copy()
 
         # Get SNP information
         annot = bim[["CHR", "BP", "SNP", "CM"]]

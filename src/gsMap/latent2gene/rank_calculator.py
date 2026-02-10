@@ -39,7 +39,14 @@ from .memmap_io import MemMapDense
 logger = logging.getLogger(__name__)
 
 
-def filter_cells(obs_df, X=None, annotation_key=None, min_cells_per_type=None, min_genes=20, precomputed_gene_counts=None):
+def filter_cells(
+    obs_df,
+    X=None,
+    annotation_key=None,
+    min_cells_per_type=None,
+    min_genes=20,
+    precomputed_gene_counts=None,
+):
     """
     Apply cell filtering based on annotation and gene expression criteria.
 
@@ -60,7 +67,7 @@ def filter_cells(obs_df, X=None, annotation_key=None, min_cells_per_type=None, m
         "nan_removed": 0,
         "small_group_removed": 0,
         "low_gene_count_removed": 0,
-        "final_cells": 0
+        "final_cells": 0,
     }
 
     # Create a mask for cells to keep (start with all True)
@@ -73,7 +80,11 @@ def filter_cells(obs_df, X=None, annotation_key=None, min_cells_per_type=None, m
         keep_mask &= nan_mask
 
     # Filter 2: Remove cells from small annotation groups
-    if annotation_key is not None and annotation_key in obs_df.columns and min_cells_per_type is not None:
+    if (
+        annotation_key is not None
+        and annotation_key in obs_df.columns
+        and min_cells_per_type is not None
+    ):
         # Apply on the current filtered data
         temp_obs = obs_df[keep_mask]
         annotation_counts = temp_obs[annotation_key].value_counts()
@@ -92,9 +103,7 @@ def filter_cells(obs_df, X=None, annotation_key=None, min_cells_per_type=None, m
             nfeature_mask = pd.Series(nfeature_mask, index=obs_df.index)
         elif X is not None:
             nfeature_mask, n_genes_per_cell = sc.pp.filter_cells(
-                X,
-                min_genes=min_genes,
-                inplace=False
+                X, min_genes=min_genes, inplace=False
             )
             # Convert to pandas Series for consistent indexing
             nfeature_mask = pd.Series(nfeature_mask, index=obs_df.index)
@@ -114,10 +123,9 @@ def filter_cells(obs_df, X=None, annotation_key=None, min_cells_per_type=None, m
 
 @jit
 def jax_process_chunk(dense_matrix, n_genes):
-
     nonzero_mask = dense_matrix != 0
 
-    ranks = jax.scipy.stats.rankdata(dense_matrix, method='average', axis=1)
+    ranks = jax.scipy.stats.rankdata(dense_matrix, method="average", axis=1)
     log_ranks = jnp.log(ranks)
     # Sum log ranks (with fill_zero)
     sum_log_ranks = log_ranks.sum(axis=0)
@@ -127,15 +135,17 @@ def jax_process_chunk(dense_matrix, n_genes):
     return log_ranks, sum_log_ranks, sum_frac
 
 
-def rank_data_jax(X: csr_matrix, n_genes,
-                  memmap_dense=None,
-                  metadata: dict[str, Any] | None = None,
-                  chunk_size: int = 1000,
-                  write_interval: int = 10,
-                  current_row_offset: int = 0,
-                  progress=None,
-                  progress_task=None
-                  ):
+def rank_data_jax(
+    X: csr_matrix,
+    n_genes,
+    memmap_dense=None,
+    metadata: dict[str, Any] | None = None,
+    chunk_size: int = 1000,
+    write_interval: int = 10,
+    current_row_offset: int = 0,
+    progress=None,
+    progress_task=None,
+):
     """JAX-optimized rank calculation with batched writing to memory-mapped storage.
 
     Args:
@@ -179,7 +189,9 @@ def rank_data_jax(X: csr_matrix, n_genes,
         chunk_jax = jnp.asarray(chunk_dense)  # Use asarray for zero-copy conversion
 
         # Process chunk with JIT-compiled function (ranking + accumulators)
-        chunk_log_ranks, chunk_sum_log_ranks, chunk_sum_frac = jax_process_chunk(chunk_jax, n_genes)
+        chunk_log_ranks, chunk_sum_log_ranks, chunk_sum_frac = jax_process_chunk(
+            chunk_jax, n_genes
+        )
 
         # Update global accumulators
         sum_log_ranks += chunk_sum_log_ranks
@@ -245,7 +257,7 @@ class RankCalculator:
         self,
         sample_h5ad_dict: dict[str, Path] | None = None,
         annotation_key: str | None = None,
-        data_layer: str = "counts"
+        data_layer: str = "counts",
     ) -> dict[str, Any]:
         """
         Calculate expression ranks and create concatenated latent representation
@@ -278,12 +290,16 @@ class RankCalculator:
         mean_frac_path = Path(self.config.mean_frac_path)
 
         # Check if outputs already exist
-        if concat_adata_path.exists() and mean_frac_path.exists() and MemMapDense.check_complete(rank_memmap_path)[0]:
+        if (
+            concat_adata_path.exists()
+            and mean_frac_path.exists()
+            and MemMapDense.check_complete(rank_memmap_path)[0]
+        ):
             logger.info(f"Rank outputs already exist in {self.output_dir}")
             return {
                 "concatenated_latent_adata": str(concat_adata_path),
                 "rank_memmap": str(rank_memmap_path),
-                "mean_frac": str(mean_frac_path)
+                "mean_frac": str(mean_frac_path),
             }
 
         logger.info("Starting rank calculation and concatenation...")
@@ -309,15 +325,18 @@ class RankCalculator:
 
         for sample_name, h5ad_path in sample_h5ad_dict.items():
             # Apply same filtering logic as in main loop
-            with h5py.File(h5ad_path, 'r') as f:
-                adata_temp_obs = read_elem(f['obs'])
+            with h5py.File(h5ad_path, "r") as f:
+                adata_temp_obs = read_elem(f["obs"])
 
                 # Efficiently read gene counts per cell without loading full expression matrix
                 # For CSR format, we only need indptr to calculate non-zero counts
-                X_group = f['X']
-                if 'encoding-type' in X_group.attrs and X_group.attrs['encoding-type'] == 'csr_matrix':
+                X_group = f["X"]
+                if (
+                    "encoding-type" in X_group.attrs
+                    and X_group.attrs["encoding-type"] == "csr_matrix"
+                ):
                     # CSR format: number of non-zero genes = indptr[i+1] - indptr[i]
-                    indptr = X_group['indptr'][:]
+                    indptr = X_group["indptr"][:]
                     n_genes_per_cell = np.diff(indptr)
                     # Pass precomputed counts to filter function
                     X_temp = None
@@ -329,8 +348,10 @@ class RankCalculator:
                     use_precomputed_counts = False
 
                 if annotation_key is not None:
-                    assert annotation_key and annotation_key in adata_temp_obs.columns, \
+                    assert annotation_key
+                    assert annotation_key in adata_temp_obs.columns, (
                         f"Annotation key '{annotation_key}' not found in the obs of {sample_name}"
+                    )
 
                 # Apply unified filtering function
                 if use_precomputed_counts:
@@ -340,7 +361,7 @@ class RankCalculator:
                         annotation_key=annotation_key,
                         min_cells_per_type=self.config.min_cells_per_type,
                         min_genes=20,
-                        precomputed_gene_counts=n_genes_per_cell
+                        precomputed_gene_counts=n_genes_per_cell,
                     )
                 else:
                     filtered_obs, stats, keep_mask = filter_cells(
@@ -348,7 +369,7 @@ class RankCalculator:
                         X=X_temp,
                         annotation_key=annotation_key,
                         min_cells_per_type=self.config.min_cells_per_type,
-                        min_genes=20
+                        min_genes=20,
                     )
 
                 # Store the indices of cells to keep for this sample
@@ -356,13 +377,14 @@ class RankCalculator:
 
                 total_cells_expected += stats["final_cells"]
 
-                filtering_stats.append({
-                    "Sample": sample_name,
-                    **stats
-                })
+                filtering_stats.append({"Sample": sample_name, **stats})
 
         # Display filtering summary table
-        table = Table(title="[bold]Cell Filtering Summary[/bold]", show_header=True, header_style="bold magenta")
+        table = Table(
+            title="[bold]Cell Filtering Summary[/bold]",
+            show_header=True,
+            header_style="bold magenta",
+        )
         table.add_column("Sample", style="dim")
         table.add_column("Input Cells", justify="right")
         table.add_column("NaN Removed", justify="right", style="red")
@@ -377,7 +399,7 @@ class RankCalculator:
                 str(stat["nan_removed"]),
                 str(stat["small_group_removed"]),
                 str(stat["low_gene_count_removed"]),
-                str(stat["final_cells"])
+                str(stat["final_cells"]),
             )
 
         # Add a total row
@@ -388,7 +410,7 @@ class RankCalculator:
             str(sum(s["nan_removed"] for s in filtering_stats)),
             str(sum(s["small_group_removed"] for s in filtering_stats)),
             str(sum(s["low_gene_count_removed"] for s in filtering_stats)),
-            f"[bold green]{total_cells_expected}[/bold green]"
+            f"[bold green]{total_cells_expected}[/bold green]",
         )
 
         self.console.print(table)
@@ -402,31 +424,33 @@ class RankCalculator:
             MofNCompleteColumn(),
             TaskProgressColumn(),
             TimeRemainingColumn(),
-            refresh_per_second=1
+            refresh_per_second=1,
         ) as section_progress:
             # Overall section progress task
             section_task = section_progress.add_task(
-                "Processing sections",
-                total=len(sample_h5ad_dict)
+                "Processing sections", total=len(sample_h5ad_dict)
             )
 
             processed_cells_total = 0
 
             for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items()):
-
-                section_progress.console.log(f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})...")
+                section_progress.console.log(
+                    f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})..."
+                )
 
                 # Load the h5ad file (which should already contain latent representations)
                 adata = sc.read_h5ad(h5ad_path)
 
                 # Add slice information
-                adata.obs['slice_id'] = st_id
-                adata.obs['slice_name'] = sample_name
-                adata.obs['sample_name'] = sample_name
+                adata.obs["slice_id"] = st_id
+                adata.obs["slice_name"] = sample_name
+                adata.obs["sample_name"] = sample_name
 
                 # make unique index
                 adata.obs_names_make_unique()
-                adata.obs_names = adata.obs_names.astype(str) +'|'+ adata.obs['slice_name'].astype(str)
+                adata.obs_names = (
+                    adata.obs_names.astype(str) + "|" + adata.obs["slice_name"].astype(str)
+                )
 
                 # Apply the pre-computed filter mask from first pass
                 keep_mask = sample_keep_indices[sample_name]
@@ -442,16 +466,17 @@ class RankCalculator:
                         str(rank_memmap_path),
                         shape=(total_cells_expected, n_genes),
                         dtype=np.float16,  # Use float16 to save space
-                        mode='w',
-                        num_write_workers=self.config.mkscore_write_workers
+                        mode="w",
+                        num_write_workers=self.config.mkscore_write_workers,
                     )
                     # Initialize global accumulators
                     sum_log_ranks = np.zeros(n_genes, dtype=np.float64)
                     sum_frac = np.zeros(n_genes, dtype=np.float64)
                 else:
                     # Verify gene list consistency
-                    assert adata.var_names.tolist() == gene_list, \
+                    assert adata.var_names.tolist() == gene_list, (
                         f"Gene list mismatch in section {st_id}"
+                    )
 
                 # Get expression data for ranking
                 if data_layer in adata.layers:
@@ -460,7 +485,7 @@ class RankCalculator:
                     X = adata.X
 
                 # Efficient sparse matrix conversion
-                if not hasattr(X, 'tocsr'):
+                if not hasattr(X, "tocsr"):
                     X = csr_matrix(X, dtype=np.float32)
                 else:
                     X = X.tocsr()
@@ -483,18 +508,15 @@ class RankCalculator:
                     TextColumn("[bold green]{task.fields[speed]} cells/s"),
                     TimeRemainingColumn(),
                     refresh_per_second=2,
-                    transient=True
+                    transient=True,
                 ) as chunk_progress:
                     # Detailed chunk progress task
                     chunk_task = chunk_progress.add_task(
-                        "Processing chunks",
-                        total=n_cells,
-                        cells=n_cells,
-                        speed="0"
+                        "Processing chunks", total=n_cells, cells=n_cells, speed="0"
                     )
 
                     # Use JAX rank calculation with nested progress
-                    metadata = {'name': sample_name, 'cells': n_cells, 'study_id': st_id}
+                    metadata = {"name": sample_name, "cells": n_cells, "study_id": st_id}
 
                     batch_sum_log_ranks, batch_frac = rank_data_jax(
                         X,
@@ -505,7 +527,7 @@ class RankCalculator:
                         write_interval=self.config.rank_write_interval,
                         current_row_offset=current_row_offset,
                         progress=chunk_progress,
-                        progress_task=chunk_task
+                        progress_task=chunk_task,
                     )
 
                 # Update global sums
@@ -523,7 +545,7 @@ class RankCalculator:
                     X=csr_matrix((adata.n_obs, n_genes), dtype=np.float32),
                     obs=adata.obs.copy(),
                     var=pd.DataFrame(index=gene_list),
-                    obsm=adata.obsm.copy()  # Keep all latent representations
+                    obsm=adata.obsm.copy(),  # Keep all latent representations
                 )
 
                 adata_list.append(minimal_adata)
@@ -561,8 +583,10 @@ class RankCalculator:
 
         # Concatenate all sections
         if adata_list:
-            with self.console.status("[bold blue]Concatenating and saving latent representations..."):
-                concatenated_adata = ad.concat(adata_list, axis=0, join='outer', merge='same')
+            with self.console.status(
+                "[bold blue]Concatenating and saving latent representations..."
+            ):
+                concatenated_adata = ad.concat(adata_list, axis=0, join="outer", merge="same")
 
                 # Ensure the var_names are the common genes
                 concatenated_adata.var_names = gene_list
@@ -572,9 +596,13 @@ class RankCalculator:
                 logger.info(f"Saved concatenated latent representations to {concat_adata_path}")
                 logger.info(f"  - Total cells: {concatenated_adata.n_obs}")
                 logger.info(f"  - Total genes: {concatenated_adata.n_vars}")
-                logger.info(f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}")
-                if 'slice_id' in concatenated_adata.obs.columns:
-                    logger.info(f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}")
+                logger.info(
+                    f"  - Latent representations in obsm: {list(concatenated_adata.obsm.keys())}"
+                )
+                if "slice_id" in concatenated_adata.obs.columns:
+                    logger.info(
+                        f"  - Number of slices: {concatenated_adata.obs['slice_id'].nunique()}"
+                    )
 
                 # Clean up
                 del adata_list, concatenated_adata
@@ -586,5 +614,5 @@ class RankCalculator:
         return {
             "concatenated_latent_adata": str(concat_adata_path),
             "rank_memmap": str(rank_memmap_path),
-            "mean_frac": str(mean_frac_path)
+            "mean_frac": str(mean_frac_path),
         }

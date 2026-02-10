@@ -7,10 +7,10 @@ This guide explains how to compute a custom SNP-to-gene LD score weight matrix u
 The `ldscore-weight-matrix` command computes LD-based weights between SNPs and genomic features (e.g., genes). It:
 
 1. Loads genotype data from PLINK binary files (reference panel)
-2. Loads SNP-to-feature mappings from a BED file or dictionary
-3. Computes LD scores between HapMap3 (HM3) SNPs and reference SNPs
-4. Generates a weight matrix that accounts for LD structure
-5. Outputs an AnnData (.h5ad) file for use in `gsmap quick-mode`
+1. Loads SNP-to-feature mappings from a BED file or dictionary
+1. Computes LD scores between HapMap3 (HM3) SNPs and reference SNPs
+1. Generates a weight matrix that accounts for LD structure
+1. Outputs an AnnData (.h5ad) file for use in `gsmap quick-mode`
 
 ## Prerequisites
 
@@ -18,9 +18,9 @@ Before running this command, you need:
 
 1. **PLINK Reference Panel**: Genotype data in PLINK binary format (.bed/.bim/.fam) for each chromosome. We recommend using the 1000 Genomes Project European samples.
 
-2. **HapMap3 SNP List**: A file containing HapMap3 SNP IDs (one per line). These are the SNPs used in LD score regression.
+1. **HapMap3 SNP List**: A file containing HapMap3 SNP IDs (one per line). These are the SNPs used in LD score regression.
 
-3. **SNP-to-Gene Mapping File**: A BED file defining which SNPs map to which genes/features.
+1. **SNP-to-Gene Mapping File**: A BED file defining which SNPs map to which genes/features.
 
 ## Input File Formats
 
@@ -28,24 +28,26 @@ Before running this command, you need:
 
 The BED file should have the following columns (tab-separated):
 
-| Column | Name | Description |
-|--------|------|-------------|
-| 1 | Chromosome | Chromosome (e.g., `chr1` or `1`) |
-| 2 | Start | Start position (0-based) |
-| 3 | End | End position |
-| 4 | Name | Feature/gene name |
-| 5 | Score | SNP-to-gene Mapping score (optional, used when `--strategy score`). When provided, the SNP is assigned to the gene with the highest score. |
-| 6 | Strand | Strand (`+` or `-`, optional) |
+| Column | Name       | Description                                                                                                                                |
+| ------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1      | Chromosome | Chromosome (e.g., `chr1` or `1`)                                                                                                           |
+| 2      | Start      | Start position (0-based)                                                                                                                   |
+| 3      | End        | End position                                                                                                                               |
+| 4      | Name       | Feature/gene name                                                                                                                          |
+| 5      | Score      | SNP-to-gene Mapping score (optional, used when `--strategy score`). When provided, the SNP is assigned to the gene with the highest score. |
+| 6      | Strand     | Strand (`+` or `-`, optional)                                                                                                              |
 
 **Gencode BED example** (gene body regions):
-```
+
+```text
 chr1    65418    71585    OR4F5    1    +
 chr1    367639   368634   OR4F29   1    +
 chr1    859302   879955   SAMD11   1    +
 ```
 
 **Enhancer BED example** (enhancer-gene links):
-```
+
+```text
 chr1    33454352    33455149    A3GALT2
 chr1    33564939    33565256    A3GALT2
 chr1    33592784    33593190    A3GALT2
@@ -55,7 +57,7 @@ chr1    33592784    33593190    A3GALT2
 
 A plain text file with one SNP ID per line:
 
-```
+```text
 rs12345
 rs67890
 rs11111
@@ -65,6 +67,7 @@ rs11111
 ### PLINK Reference Panel
 
 Standard PLINK binary files with chromosome-specific naming:
+
 - `1000G.EUR.QC.{chr}.bed`
 - `1000G.EUR.QC.{chr}.bim`
 - `1000G.EUR.QC.{chr}.fam`
@@ -75,54 +78,54 @@ Where `{chr}` is replaced by chromosome number (1-22).
 
 ### Required Parameters
 
-| Parameter | Description |
-|-----------|-------------|
-| `--bfile-root` | Path template for PLINK binary files. Must contain `{chr}` placeholder (e.g., `data/1000G.EUR.QC.{chr}`). |
-| `--hm3-snp-path` | Path to HapMap3 SNP list file. |
-| `--output-dir` | Directory where output files will be saved. |
+| Parameter        | Description                                                                                               |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| `--bfile-root`   | Path template for PLINK binary files. Must contain `{chr}` placeholder (e.g., `data/1000G.EUR.QC.{chr}`). |
+| `--hm3-snp-path` | Path to HapMap3 SNP list file.                                                                            |
+| `--output-dir`   | Directory where output files will be saved.                                                               |
 
 ### Snp-to-Gene Mapping Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--mapping-file` | None | Path to the SNP-to-gene mapping file (BED or dictionary format). |
-| `--mapping-type` | `"bed"` | Type of mapping file: `"bed"` for BED format or `"dict"` for dictionary format. |
-| `--feature-window-size` | `0` | Window size (in bp) to extend around features. For example, `50000` extends 50kb around each feature. |
-| `--strategy` | `"score"` | Strategy for resolving SNPs mapping to multiple features. Options: `"score"` (highest score), `"tss"` (closest to TSS), `"center"` (closest to feature center), `"allow_repeat"` (allow multiple mappings). |
+| Parameter               | Default   | Description                                                                                                                                                                                                 |
+| ----------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--mapping-file`        | None      | Path to the SNP-to-gene mapping file (BED or dictionary format).                                                                                                                                            |
+| `--mapping-type`        | `"bed"`   | Type of mapping file: `"bed"` for BED format or `"dict"` for dictionary format.                                                                                                                             |
+| `--feature-window-size` | `0`       | Window size (in bp) to extend around features. For example, `50000` extends 50kb around each feature.                                                                                                       |
+| `--strategy`            | `"score"` | Strategy for resolving SNPs mapping to multiple features. Options: `"score"` (highest score), `"tss"` (closest to TSS), `"center"` (closest to feature center), `"allow_repeat"` (allow multiple mappings). |
 
 ### LD Calculation Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--ld-wind` | `1.0` | LD window size for computing LD scores. |
-| `--ld-unit` | `"CM"` | Unit for LD window: `"CM"` (centiMorgans), `"KB"` (kilobases), or `"SNP"` (number of SNPs). |
-| `--maf-min` | `0.01` | Minimum minor allele frequency filter. SNPs with MAF below this threshold are excluded. |
+| Parameter   | Default | Description                                                                                 |
+| ----------- | ------- | ------------------------------------------------------------------------------------------- |
+| `--ld-wind` | `1.0`   | LD window size for computing LD scores.                                                     |
+| `--ld-unit` | `"CM"`  | Unit for LD window: `"CM"` (centiMorgans), `"KB"` (kilobases), or `"SNP"` (number of SNPs). |
+| `--maf-min` | `0.01`  | Minimum minor allele frequency filter. SNPs with MAF below this threshold are excluded.     |
 
 ### Computation Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--chromosomes` | `"all"` | Chromosomes to process. Use `"all"` for autosomes 1-22, or specify a comma-separated list (e.g., `"1,2,3"`). |
-| `--batch-size-hm3` | `50` | Number of HM3 SNPs to process per batch. Larger values use more memory but may be faster. |
-| `--output-filename` | `"ld_score_weights"` | Prefix for output files. |
+| Parameter           | Default              | Description                                                                                                  |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `--chromosomes`     | `"all"`              | Chromosomes to process. Use `"all"` for autosomes 1-22, or specify a comma-separated list (e.g., `"1,2,3"`). |
+| `--batch-size-hm3`  | `50`                 | Number of HM3 SNPs to process per batch. Larger values use more memory but may be faster.                    |
+| `--output-filename` | `"ld_score_weights"` | Prefix for output files.                                                                                     |
 
 ### Optional w_ld Calculation
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
+| Parameter          | Default | Description                                                                                                 |
+| ------------------ | ------- | ----------------------------------------------------------------------------------------------------------- |
 | `--calculate-w-ld` | `False` | Whether to also calculate LD score weights (w_ld), which is used to account for heteroscedasticity in LDSC. |
-| `--w-ld-dir` | None | Directory to save w_ld output files. Required if `--calculate-w-ld` is enabled. |
+| `--w-ld-dir`       | None    | Directory to save w_ld output files. Required if `--calculate-w-ld` is enabled.                             |
 
 ## Mapping Strategies
 
 When a SNP falls within multiple features, the `--strategy` parameter determines how to resolve the conflict:
 
-| Strategy | Description | Use Case |
-|----------|-------------|----------|
-| `score` | Keep the mapping with the highest score (from column 5 of BED file). | When you have confidence scores (e.g., eQTL effect sizes). |
-| `tss` | Keep the mapping closest to the transcription start site. | Gene-based analysis using Gencode/RefSeq annotations. |
-| `center` | Keep the mapping closest to the feature center. | Enhancer-based analysis where the center is most relevant. |
-| `allow_repeat` | Allow the SNP to map to multiple features (no filtering). | When you want to preserve all possible mappings. |
+| Strategy       | Description                                                          | Use Case                                                   |
+| -------------- | -------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `score`        | Keep the mapping with the highest score (from column 5 of BED file). | When you have confidence scores (e.g., eQTL effect sizes). |
+| `tss`          | Keep the mapping closest to the transcription start site.            | Gene-based analysis using Gencode/RefSeq annotations.      |
+| `center`       | Keep the mapping closest to the feature center.                      | Enhancer-based analysis where the center is most relevant. |
+| `allow_repeat` | Allow the SNP to map to multiple features (no filtering).            | When you want to preserve all possible mappings.           |
 
 ## Output
 
@@ -130,11 +133,11 @@ The command produces an AnnData file (`{output_filename}.h5ad`) with the followi
 
 - **X**: Sparse weight matrix (rows = HM3 SNPs, columns = features/genes)
 - **obs**: SNP metadata
-  - Index: SNP names
-  - `CHR`: Chromosome number
-  - `BP`: Base pair position
+    - Index: SNP names
+    - `CHR`: Chromosome number
+    - `BP`: Base pair position
 - **var**: Feature metadata
-  - Index: Feature/gene names
+    - Index: Feature/gene names
 
 ## Examples
 
@@ -167,7 +170,7 @@ gsMap_ldscore_weight_matrix_example_data/
 
 This example creates weights based on proximity to transcription start sites (TSS) using Gencode protein-coding genes with a 50kb window.
 
-`````{tab} CLI
+````{tab} CLI
 
 ```bash
 # Set up environment variables
@@ -194,9 +197,9 @@ gsmap ldscore-weight-matrix \
     --chromosomes "all"
 ```
 
-`````
+````
 
-`````{tab} Python
+````{tab} Python
 
 ```python
 from gsMap.config import LDScoreConfig
@@ -207,7 +210,9 @@ from pathlib import Path
 ldscore_data_dir = Path("./gsMap_ldscore_weight_matrix_example_data")
 plink_ref = ldscore_data_dir / "LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
 hm3_snps = ldscore_data_dir / "hapmap3_snps/hm3.snp"
-gencode_bed = ldscore_data_dir / "genome_annotation/gencode/gencode_v46lift37_protein_coding.bed"
+gencode_bed = (
+    ldscore_data_dir / "genome_annotation/gencode/gencode_v46lift37_protein_coding.bed"
+)
 
 # Create output directory
 output_dir = Path("./output/gencode_tss")
@@ -225,14 +230,14 @@ config = LDScoreConfig(
     strategy="tss",
     ld_wind=1.0,
     ld_unit="CM",
-    chromosomes="all"
+    chromosomes="all",
 )
 
 pipeline = LDScorePipeline(config)
 pipeline.run()
 ```
 
-`````
+````
 
 **Use in gsMap3D:**
 
@@ -247,7 +252,7 @@ gsmap quick-mode \
 
 This example creates weights using brain-specific enhancer-gene links from the ABC model, mapping SNPs to the closest enhancer center.
 
-`````{tab} CLI
+````{tab} CLI
 
 ```bash
 # Set up environment variables
@@ -274,9 +279,9 @@ gsmap ldscore-weight-matrix \
     --chromosomes "all"
 ```
 
-`````
+````
 
-`````{tab} Python
+````{tab} Python
 
 ```python
 from gsMap.config import LDScoreConfig
@@ -287,7 +292,9 @@ from pathlib import Path
 ldscore_data_dir = Path("./gsMap_ldscore_weight_matrix_example_data")
 plink_ref = ldscore_data_dir / "LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
 hm3_snps = ldscore_data_dir / "hapmap3_snps/hm3.snp"
-enhancer_bed = ldscore_data_dir / "genome_annotation/enhancer/by_tissue/BRN/ABC_roadmap_merged.bed"
+enhancer_bed = (
+    ldscore_data_dir / "genome_annotation/enhancer/by_tissue/BRN/ABC_roadmap_merged.bed"
+)
 
 # Create output directory
 output_dir = Path("./output/enhancer_brain")
@@ -305,14 +312,14 @@ config = LDScoreConfig(
     strategy="center",
     ld_wind=1.0,
     ld_unit="CM",
-    chromosomes="all"
+    chromosomes="all",
 )
 
 pipeline = LDScorePipeline(config)
 pipeline.run()
 ```
 
-`````
+````
 
 **Use in gsMap3D:**
 
@@ -327,21 +334,22 @@ gsmap quick-mode \
 
 The example data includes enhancer-gene links for multiple tissues:
 
-| Tissue Code | Description |
-|-------------|-------------|
-| `ALL` | All tissues combined |
-| `BLD` | Blood |
-| `BRN` | Brain |
-| `FAT` | Adipose tissue |
-| `GI` | Gastrointestinal |
-| `HRT` | Heart |
-| `KID` | Kidney |
-| `LIV` | Liver |
-| `LNG` | Lung |
-| `PANC` | Pancreas |
-| `SKIN` | Skin |
+| Tissue Code | Description          |
+| ----------- | -------------------- |
+| `ALL`       | All tissues combined |
+| `BLD`       | Blood                |
+| `BRN`       | Brain                |
+| `FAT`       | Adipose tissue       |
+| `GI`        | Gastrointestinal     |
+| `HRT`       | Heart                |
+| `KID`       | Kidney               |
+| `LIV`       | Liver                |
+| `LNG`       | Lung                 |
+| `PANC`      | Pancreas             |
+| `SKIN`      | Skin                 |
 
 Each tissue folder contains:
+
 - `ABC.bed`: Activity-by-Contact model predictions
 - `roadmap.bed`: Roadmap Epigenomics enhancers
 - `ABC_roadmap_merged.bed`: Combined ABC and Roadmap annotations
@@ -351,30 +359,32 @@ Each tissue folder contains:
 ### Missing PLINK files
 
 If you see an error about missing PLINK files, ensure:
+
 1. The `--bfile-root` path template is correct
-2. The `{chr}` placeholder is included in the path
-3. All chromosome files exist for the specified chromosomes
+1. The `{chr}` placeholder is included in the path
+1. All chromosome files exist for the specified chromosomes
 
 The `--chromosomes` parameter controls which chromosomes to process:
+
 - `--chromosomes "all"` (default): Processes autosomes 1-22
 - `--chromosomes "1,2,3"`: Processes only the specified chromosomes (comma-separated list)
-
 
 ### Memory errors
 
 If you encounter out-of-memory errors:
+
 1. Reduce `--batch-size-hm3` (e.g., from 50 to 25)
-2. Use a machine with more RAM
+1. Use a machine with more RAM
 
 - **Memory**: Memory usage scales linearly with the number of SNPs in the reference panel and the number of features. For example, using 1000 Genomes Phase 3 as the reference panel with Gencode v46 protein-coding genes (~20,000 genes) costs approximately 25 GB memory.
-
 
 ### No SNPs mapped
 
 If the output has very few or no SNPs:
+
 1. Check that chromosome naming is consistent (e.g., `chr1` vs `1`)
-2. Verify the BED file coordinates are correct (0-based start)
-3. Increase `--feature-window-size` if using TSS-based mapping
+1. Verify the BED file coordinates are correct (0-based start)
+1. Increase `--feature-window-size` if using TSS-based mapping
 
 ### BED file has header
 

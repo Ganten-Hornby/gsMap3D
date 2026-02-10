@@ -5,7 +5,6 @@ Unified spatial LDSC processor combining chunk production, parallel loading, and
 import gc
 import logging
 import queue
-import sys
 import threading
 import time
 import traceback
@@ -40,10 +39,10 @@ logger = logging.getLogger("gsMap.spatial_ldsc_processor")
 
 def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:
     """Prepare SNP-related data arrays for equal-sized blocks."""
-    if 'chisq' in data:
-        n_snps = len(data['chisq'])
-    elif 'N' in data:
-        n_snps = len(data['N'])
+    if "chisq" in data:
+        n_snps = len(data["chisq"])
+    elif "N" in data:
+        n_snps = len(data["N"])
     else:
         raise ValueError("Cannot determine number of SNPs from data")
 
@@ -52,24 +51,26 @@ def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:
     n_dropped = n_snps - n_snps_used
 
     if n_dropped > 0:
-        logger.info(f"Truncating SNP data: dropping {n_dropped} SNPs "
-                   f"({n_dropped/n_snps*100:.3f}%) for {n_blocks} blocks of size {block_size}")
+        logger.info(
+            f"Truncating SNP data: dropping {n_dropped} SNPs "
+            f"({n_dropped / n_snps * 100:.3f}%) for {n_blocks} blocks of size {block_size}"
+        )
 
     truncated = {}
-    snp_keys = ['baseline_ld_sum', 'w_ld', 'chisq', 'N', 'snp_positions']
+    snp_keys = ["baseline_ld_sum", "w_ld", "chisq", "N", "snp_positions"]
 
     for key, value in data.items():
         if key in snp_keys and isinstance(value, np.ndarray | jnp.ndarray):
             truncated[key] = value[:n_snps_used]
-        elif key == 'baseline_ld':
+        elif key == "baseline_ld":
             truncated[key] = value.iloc[:n_snps_used]
         else:
             truncated[key] = value
 
-    truncated['block_size'] = block_size
-    truncated['n_blocks'] = n_blocks
-    truncated['n_snps_used'] = n_snps_used
-    truncated['n_snps_original'] = n_snps
+    truncated["block_size"] = block_size
+    truncated["n_blocks"] = n_blocks
+    truncated["n_snps_used"] = n_snps_used
+    truncated["n_snps_original"] = n_snps
 
     return truncated
 
@@ -77,6 +78,7 @@ def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:
 @dataclass
 class ComponentThroughput:
     """Track throughput for individual pipeline components"""
+
     total_batches: int = 0
     total_time: float = 0.0
     last_batch_time: float = 0.0
@@ -109,7 +111,7 @@ class ParallelLDScoreReader:
         self,
         processor,  # Reference to SpatialLDSCProcessor for data access
         num_workers: int = 4,
-        output_queue: queue.Queue = None
+        output_queue: queue.Queue = None,
     ):
         """Initialize reader pool"""
         self.processor = processor
@@ -135,11 +137,7 @@ class ParallelLDScoreReader:
     def _start_workers(self):
         """Start worker threads"""
         for i in range(self.num_workers):
-            worker = threading.Thread(
-                target=self._worker,
-                args=(i,),
-                daemon=True
-            )
+            worker = threading.Thread(target=self._worker, args=(i,), daemon=True)
             worker.start()
             self.workers.append(worker)
         logger.info(f"Started {self.num_workers} reader threads")
@@ -161,8 +159,9 @@ class ParallelLDScoreReader:
                 start_time = time.time()
 
                 # Fetch the chunk using processor's method
-                ldscore, spot_names, abs_start, abs_end = self.processor._fetch_ldscore_chunk(chunk_idx)
-
+                ldscore, spot_names, abs_start, abs_end = self.processor._fetch_ldscore_chunk(
+                    chunk_idx
+                )
 
                 # Track throughput
                 elapsed = time.time() - start_time
@@ -170,30 +169,36 @@ class ParallelLDScoreReader:
                     self.throughput.record_batch(elapsed)
 
                 # Put result for computer
-                self.result_queue.put({
-                    'chunk_idx': chunk_idx,
-                    'ldscore': ldscore,
-                    'spot_names': spot_names,
-                    'abs_start': abs_start,
-                    'abs_end': abs_end,
-                    'worker_id': worker_id,
-                    'success': True
-                })
+                self.result_queue.put(
+                    {
+                        "chunk_idx": chunk_idx,
+                        "ldscore": ldscore,
+                        "spot_names": spot_names,
+                        "abs_start": abs_start,
+                        "abs_end": abs_end,
+                        "worker_id": worker_id,
+                        "success": True,
+                    }
+                )
                 self.read_queue.task_done()
 
             except queue.Empty:
                 continue
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 error_trace = traceback.format_exc()
-                logger.error(f"Reader worker {worker_id} error on chunk {chunk_idx}: {e}\nTraceback:\n{error_trace}")
+                logger.error(
+                    f"Reader worker {worker_id} error on chunk {chunk_idx}: {e}\nTraceback:\n{error_trace}"
+                )
                 self.exception_queue.put((worker_id, e, error_trace))
                 self.has_error.set()
-                self.result_queue.put({
-                    'chunk_idx': chunk_idx if 'chunk_idx' in locals() else -1,
-                    'worker_id': worker_id,
-                    'success': False,
-                    'error': str(e)
-                })
+                self.result_queue.put(
+                    {
+                        "chunk_idx": chunk_idx if "chunk_idx" in locals() else -1,
+                        "worker_id": worker_id,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
                 break
 
         logger.debug(f"Reader worker {worker_id} stopped")
@@ -215,9 +220,11 @@ class ParallelLDScoreReader:
         if self.has_error.is_set():
             try:
                 worker_id, exception, error_trace = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Reader worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}") from exception
+                raise RuntimeError(
+                    f"Reader worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
+                ) from exception
             except queue.Empty:
-                raise RuntimeError("Reader worker failed with unknown error")
+                raise RuntimeError("Reader worker failed with unknown error") from None
 
     def close(self):
         """Clean up resources"""
@@ -237,7 +244,7 @@ class ParallelLDScoreComputer:
         processor,  # Reference to SpatialLDSCProcessor
         process_chunk_jit_fn,  # JIT-compiled processing function
         num_workers: int = 4,
-        input_queue: queue.Queue = None
+        input_queue: queue.Queue = None,
     ):
         """Initialize computer pool"""
         self.processor = processor
@@ -274,21 +281,26 @@ class ParallelLDScoreComputer:
 
     def _prepare_jax_arrays(self):
         """Prepare static JAX arrays from data_truncated"""
-        n_snps_used = self.processor.data_truncated['n_snps_used']
+        n_snps_used = self.processor.data_truncated["n_snps_used"]
 
-        baseline_ann = (self.processor.data_truncated['baseline_ld'].values.astype(np.float32) *
-                       self.processor.data_truncated['N'].reshape(-1, 1).astype(np.float32) /
-                       self.processor.data_truncated['Nbar'])
-        baseline_ann = np.concatenate([baseline_ann,
-                                      np.ones((n_snps_used, 1), dtype=np.float32)], axis=1)
+        baseline_ann = (
+            self.processor.data_truncated["baseline_ld"].values.astype(np.float32)
+            * self.processor.data_truncated["N"].reshape(-1, 1).astype(np.float32)
+            / self.processor.data_truncated["Nbar"]
+        )
+        baseline_ann = np.concatenate(
+            [baseline_ann, np.ones((n_snps_used, 1), dtype=np.float32)], axis=1
+        )
 
         # Convert to JAX arrays
-        self.baseline_ld_sum_jax = jnp.asarray(self.processor.data_truncated['baseline_ld_sum'], dtype=jnp.float32)
-        self.chisq_jax = jnp.asarray(self.processor.data_truncated['chisq'], dtype=jnp.float32)
-        self.N_jax = jnp.asarray(self.processor.data_truncated['N'], dtype=jnp.float32)
+        self.baseline_ld_sum_jax = jnp.asarray(
+            self.processor.data_truncated["baseline_ld_sum"], dtype=jnp.float32
+        )
+        self.chisq_jax = jnp.asarray(self.processor.data_truncated["chisq"], dtype=jnp.float32)
+        self.N_jax = jnp.asarray(self.processor.data_truncated["N"], dtype=jnp.float32)
         self.baseline_ann_jax = jnp.asarray(baseline_ann, dtype=jnp.float32)
-        self.w_ld_jax = jnp.asarray(self.processor.data_truncated['w_ld'], dtype=jnp.float32)
-        self.Nbar = self.processor.data_truncated['Nbar']
+        self.w_ld_jax = jnp.asarray(self.processor.data_truncated["w_ld"], dtype=jnp.float32)
+        self.Nbar = self.processor.data_truncated["Nbar"]
 
         del baseline_ann
         gc.collect()
@@ -296,11 +308,7 @@ class ParallelLDScoreComputer:
     def _start_workers(self):
         """Start compute worker threads"""
         for i in range(self.num_workers):
-            worker = threading.Thread(
-                target=self._compute_worker,
-                args=(i,),
-                daemon=True
-            )
+            worker = threading.Thread(target=self._compute_worker, args=(i,), daemon=True)
             worker.start()
             self.workers.append(worker)
         logger.info(f"Started {self.num_workers} compute workers")
@@ -317,16 +325,16 @@ class ParallelLDScoreComputer:
                     break
 
                 # Skip failed chunks
-                if not item.get('success', False):
+                if not item.get("success", False):
                     logger.error(f"Skipping chunk {item.get('chunk_idx')} due to read error")
                     continue
 
                 # Unpack data
-                chunk_idx = item['chunk_idx']
-                ldscore = item['ldscore']
-                spot_names = item['spot_names']
-                abs_start = item['abs_start']
-                abs_end = item['abs_end']
+                chunk_idx = item["chunk_idx"]
+                ldscore = item["ldscore"]
+                spot_names = item["spot_names"]
+                abs_start = item["abs_start"]
+                abs_end = item["abs_end"]
 
                 # Track timing
                 start_time = time.time()
@@ -343,7 +351,7 @@ class ParallelLDScoreComputer:
                     self.N_jax,
                     self.baseline_ann_jax,
                     self.w_ld_jax,
-                    self.Nbar
+                    self.Nbar,
                 )
 
                 # Ensure computation completes
@@ -368,8 +376,7 @@ class ParallelLDScoreComputer:
                 # Store result
                 with self.results_lock:
                     self.processor._add_chunk_result(
-                        chunk_idx, betas_np, ses_np, spot_names,
-                        abs_start, abs_end
+                        chunk_idx, betas_np, ses_np, spot_names, abs_start, abs_end
                     )
 
                 # Clean up
@@ -377,7 +384,7 @@ class ParallelLDScoreComputer:
 
             except queue.Empty:
                 continue
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 error_trace = traceback.format_exc()
                 logger.error(f"Compute worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
                 self.exception_queue.put((worker_id, e, error_trace))
@@ -400,9 +407,11 @@ class ParallelLDScoreComputer:
         if self.has_error.is_set():
             try:
                 worker_id, exception, error_trace = self.exception_queue.get_nowait()
-                raise RuntimeError(f"Compute worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}") from exception
+                raise RuntimeError(
+                    f"Compute worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
+                ) from exception
             except queue.Empty:
-                raise RuntimeError("Compute worker failed with unknown error")
+                raise RuntimeError("Compute worker failed with unknown error") from None
 
     def close(self):
         """Close compute pool"""
@@ -423,14 +432,16 @@ class SpatialLDSCProcessor:
     - ResultAccumulator: Validating, merging and saving results
     """
 
-    def __init__(self,
-                 config: SpatialLDSCConfig,
-                 output_dir: Path,
-                 marker_score_adata: ad.AnnData,
-                 snp_gene_weight_adata: ad.AnnData,
-                 baseline_ld: pd.DataFrame,
-                 w_ld: pd.DataFrame,
-                 n_loader_threads: int = 10):
+    def __init__(
+        self,
+        config: SpatialLDSCConfig,
+        output_dir: Path,
+        marker_score_adata: ad.AnnData,
+        snp_gene_weight_adata: ad.AnnData,
+        baseline_ld: pd.DataFrame,
+        w_ld: pd.DataFrame,
+        n_loader_threads: int = 10,
+    ):
         """
         Initialize the unified processor.
 
@@ -458,31 +469,37 @@ class SpatialLDSCProcessor:
 
         self.results = []
         self.processed_chunks = set()
-        self.min_spot_start = float('inf')
+        self.min_spot_start = float("inf")
         self.max_spot_end = 0
 
-        logger.info(f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})")
+        logger.info(
+            f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})"
+        )
 
         # Find common genes and initialize indices
         gene_names_from_adata = np.array(self.marker_score_adata.var_names)
         self.spot_names_all = np.array(self.marker_score_adata.obs_names)
 
         if self.snp_gene_weight_adata is None:
-             raise ValueError("snp_gene_weight_adata must be provided")
+            raise ValueError("snp_gene_weight_adata must be provided")
 
         marker_score_genes_series = pd.Series(gene_names_from_adata)
         common_genes_mask = marker_score_genes_series.isin(self.snp_gene_weight_adata.var.index)
         common_genes = gene_names_from_adata[common_genes_mask]
 
         self.marker_score_gene_indices = np.where(common_genes_mask)[0]
-        self.weight_gene_indices = [self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes]
+        self.weight_gene_indices = [
+            self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes
+        ]
 
         logger.info(f"Found {len(common_genes)} common genes")
 
         # Filter by sample if specified
         if self.config.sample_filter:
             logger.info(f"Filtering spots by sample: {self.config.sample_filter}")
-            sample_info = self.marker_score_adata.obs.get('sample', self.marker_score_adata.obs.get('sample_name', None))
+            sample_info = self.marker_score_adata.obs.get(
+                "sample", self.marker_score_adata.obs.get("sample_name", None)
+            )
 
             if sample_info is None:
                 raise ValueError("No 'sample' or 'sample_name' column found in obs")
@@ -497,7 +514,9 @@ class SpatialLDSCProcessor:
 
             self.sample_start_offset = self.spot_indices[0]
             self.spot_names_filtered = self.spot_names_all[self.spot_indices]
-            logger.info(f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_filter}'")
+            logger.info(
+                f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_filter}'"
+            )
         else:
             self.spot_indices = np.arange(self.n_spots)
             self.spot_names_filtered = self.spot_names_all
@@ -524,7 +543,6 @@ class SpatialLDSCProcessor:
         self.total_chunks = len(self.chunk_starts)
         logger.info(f"Total chunks to process: {self.total_chunks}")
 
-
     def setup_trait(self, trait_name: str, sumstats_file: str):
         """
         Setup processor for a new trait.
@@ -540,7 +558,7 @@ class SpatialLDSCProcessor:
             sumstats_file,
             self.baseline_ld,
             self.w_ld,
-            self.snp_gene_weight_adata
+            self.snp_gene_weight_adata,
         )
 
         # Prepare blocks
@@ -548,14 +566,16 @@ class SpatialLDSCProcessor:
 
         # Extract SNP-gene weight matrix for this trait's SNPs
         logger.info(f"Initializing trait-specific components for trait: {self.trait_name}")
-        snp_positions = self.data_truncated.get('snp_positions', None)
+        snp_positions = self.data_truncated.get("snp_positions", None)
         if snp_positions is None:
             raise ValueError("snp_positions not found in data_truncated")
 
         # Extract SNP-gene weight matrix for this trait's SNPs
-        self.snp_gene_weight_sparse = self.snp_gene_weight_adata.X[snp_positions, :][:, self.weight_gene_indices]
+        self.snp_gene_weight_sparse = self.snp_gene_weight_adata.X[snp_positions, :][
+            :, self.weight_gene_indices
+        ]
 
-        if hasattr(self.snp_gene_weight_sparse, 'tocsr'):
+        if hasattr(self.snp_gene_weight_sparse, "tocsr"):
             self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
 
         logger.info(f"SNP-gene weight matrix shape: {self.snp_gene_weight_sparse.shape}")
@@ -563,11 +583,8 @@ class SpatialLDSCProcessor:
         # Reset results
         self.results = []
         self.processed_chunks = set()
-        self.min_spot_start = float('inf')
+        self.min_spot_start = float("inf")
         self.max_spot_end = 0
-
-
-
 
     def _fetch_ldscore_chunk(self, chunk_index: int) -> tuple[np.ndarray, pd.Index, int, int]:
         """
@@ -587,13 +604,15 @@ class SpatialLDSCProcessor:
         memmap_end = self.sample_start_offset + end
 
         # Load chunk from marker_score_adata
-        mk_score_chunk = self.marker_score_adata.X[memmap_start:memmap_end, self.marker_score_gene_indices]
+        mk_score_chunk = self.marker_score_adata.X[
+            memmap_start:memmap_end, self.marker_score_gene_indices
+        ]
         mk_score_chunk = mk_score_chunk.T.astype(np.float32)
 
         # Compute LD scores via sparse matrix multiplication
         ldscore_chunk = self.snp_gene_weight_sparse @ mk_score_chunk
 
-        if hasattr(ldscore_chunk, 'toarray'):
+        if hasattr(ldscore_chunk, "toarray"):
             ldscore_chunk = ldscore_chunk.toarray()
 
         # Get spot names
@@ -603,8 +622,12 @@ class SpatialLDSCProcessor:
         absolute_start = self.spot_indices[start] if start < len(self.spot_indices) else start
         absolute_end = self.spot_indices[end - 1] + 1 if end > 0 else absolute_start
 
-        return ldscore_chunk.astype(np.float32, copy=False), spot_names, absolute_start, absolute_end
-
+        return (
+            ldscore_chunk.astype(np.float32, copy=False),
+            spot_names,
+            absolute_start,
+            absolute_end,
+        )
 
     def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
         """
@@ -626,7 +649,7 @@ class SpatialLDSCProcessor:
             processor=self,
             process_chunk_jit_fn=process_chunk_jit_fn,
             num_workers=self.config.ldsc_compute_workers,
-            input_queue=reader.result_queue  # Connect reader output to computer input
+            input_queue=reader.result_queue,  # Connect reader output to computer input
         )
 
         try:
@@ -635,9 +658,11 @@ class SpatialLDSCProcessor:
                 reader.submit_chunk(chunk_idx)
 
             # Build description with sample name and range info
-            desc_parts = [f"Processing {self.total_chunks:,} chunks ({self.total_cells_to_process:,} cells)"]
+            desc_parts = [
+                f"Processing {self.total_chunks:,} chunks ({self.total_cells_to_process:,} cells)"
+            ]
 
-            if hasattr(self.config, 'sample_filter') and self.config.sample_filter:
+            if hasattr(self.config, "sample_filter") and self.config.sample_filter:
                 desc_parts.append(f"Sample: {self.config.sample_filter}")
 
             if self.config.cell_indices_range:
@@ -677,10 +702,7 @@ class SpatialLDSCProcessor:
                 refresh_per_second=2,
             ) as progress:
                 task = progress.add_task(
-                    description,
-                    total=self.total_cells_to_process,
-                    speed="0",
-                    r_to_c_queue="0"
+                    description, total=self.total_cells_to_process, speed="0", r_to_c_queue="0"
                 )
 
                 start_time = time.time()
@@ -688,7 +710,7 @@ class SpatialLDSCProcessor:
                 last_chunks_processed = 0
 
                 # For 10s moving average
-                speed_window = deque() # Stores (timestamp, n_cells_processed)
+                speed_window = deque()  # Stores (timestamp, n_cells_processed)
 
                 while last_chunks_processed < self.total_chunks:
                     # Check for errors
@@ -718,23 +740,32 @@ class SpatialLDSCProcessor:
                         else:
                             # Fallback to cumulative speed if not enough data for window
                             elapsed_total = current_time - start_time
-                            speed_10s = n_cells_processed / elapsed_total if elapsed_total > 0 else 0
+                            speed_10s = (
+                                n_cells_processed / elapsed_total if elapsed_total > 0 else 0
+                            )
 
                         # Update progress bar (only effective in terminal mode)
                         progress.update(
                             task,
                             completed=n_cells_processed,
                             speed=f"{speed_10s:,.0f}",
-                            r_to_c_queue=f"{r_to_c}"
+                            r_to_c_queue=f"{r_to_c}",
                         )
 
                         # Log progress when output is not interactive (redirected to file)
                         if not console.is_interactive:
-                            current_pct = (n_cells_processed / self.total_cells_to_process) * 100 if self.total_cells_to_process > 0 else 0
+                            current_pct = (
+                                (n_cells_processed / self.total_cells_to_process) * 100
+                                if self.total_cells_to_process > 0
+                                else 0
+                            )
                             time_since_last_log = current_time - last_log_time
 
                             # Log every 10% or every 60 seconds
-                            if current_pct >= last_log_pct + log_interval_pct or time_since_last_log >= 60:
+                            if (
+                                current_pct >= last_log_pct + log_interval_pct
+                                or time_since_last_log >= 60
+                            ):
                                 elapsed = current_time - start_time
                                 console.log(
                                     f"Progress: {n_cells_processed:,}/{self.total_cells_to_process:,} cells "
@@ -781,22 +812,31 @@ class SpatialLDSCProcessor:
         # Validate and merge results
         return self._validate_merge_and_save()
 
-    def _add_chunk_result(self, chunk_idx: int, betas: np.ndarray, ses: np.ndarray,
-                         spot_names: pd.Index, abs_start: int, abs_end: int):
+    def _add_chunk_result(
+        self,
+        chunk_idx: int,
+        betas: np.ndarray,
+        ses: np.ndarray,
+        spot_names: pd.Index,
+        abs_start: int,
+        abs_end: int,
+    ):
         """Add processed chunk result to accumulator."""
         # Update coverage tracking
         self.min_spot_start = min(self.min_spot_start, abs_start)
         self.max_spot_end = max(self.max_spot_end, abs_end)
 
         # Store result
-        self.results.append({
-            'chunk_idx': chunk_idx,
-            'betas': betas,
-            'ses': ses,
-            'spot_names': spot_names,
-            'abs_start': abs_start,
-            'abs_end': abs_end
-        })
+        self.results.append(
+            {
+                "chunk_idx": chunk_idx,
+                "betas": betas,
+                "ses": ses,
+                "spot_names": spot_names,
+                "abs_start": abs_start,
+                "abs_end": abs_end,
+            }
+        )
         self.processed_chunks.add(chunk_idx)
 
     def _validate_merge_and_save(self) -> pd.DataFrame:
@@ -818,27 +858,29 @@ class SpatialLDSCProcessor:
             logger.warning(f"Processed {len(self.processed_chunks)}/{self.total_chunks} chunks")
 
         # Sort results by chunk index
-        sorted_results = sorted(self.results, key=lambda x: x['chunk_idx'])
+        sorted_results = sorted(self.results, key=lambda x: x["chunk_idx"])
 
         # Merge all results
         dfs = []
         for result in sorted_results:
-            betas = result['betas'].astype(np.float64)
-            ses = result['ses'].astype(np.float64)
+            betas = result["betas"].astype(np.float64)
+            ses = result["ses"].astype(np.float64)
 
             # Calculate statistics
             z_scores = betas / ses
             p_values = norm.sf(z_scores)
             log10_p = -np.log10(np.maximum(p_values, 1e-300))
 
-            chunk_df = pd.DataFrame({
-                'spot': result['spot_names'],
-                'beta': result['betas'],
-                'se': result['ses'],
-                'z': z_scores.astype(np.float32),
-                'p': p_values,
-                'neg_log10_p': log10_p
-            })
+            chunk_df = pd.DataFrame(
+                {
+                    "spot": result["spot_names"],
+                    "beta": result["betas"],
+                    "se": result["ses"],
+                    "z": z_scores.astype(np.float32),
+                    "p": p_values,
+                    "neg_log10_p": log10_p,
+                }
+            )
             dfs.append(chunk_df)
 
         merged_df = pd.concat(dfs, ignore_index=True)
@@ -849,7 +891,7 @@ class SpatialLDSCProcessor:
 
         # Save results
         logger.info(f"Saving results to {output_path}")
-        merged_df.to_csv(output_path, index=False, compression='gzip')
+        merged_df.to_csv(output_path, index=False, compression="gzip")
 
         # Log statistics
         self._log_statistics(merged_df, output_path)
@@ -882,12 +924,10 @@ class SpatialLDSCProcessor:
         """Log statistical summary of results."""
         n_spots = len(df)
         bonferroni_threshold = 0.05 / n_spots
-        n_bonferroni_sig = (df['p'] < bonferroni_threshold).sum()
+        n_bonferroni_sig = (df["p"] < bonferroni_threshold).sum()
 
         # FDR correction
-        reject, _, _, _ = multipletests(
-            df['p'], alpha=0.001, method='fdr_bh'
-        )
+        reject, _, _, _ = multipletests(df["p"], alpha=0.001, method="fdr_bh")
         n_fdr_sig = reject.sum()
 
         logger.info("=" * 70)
@@ -906,5 +946,6 @@ class SpatialLDSCProcessor:
 
         # Warn if incomplete
         if len(self.processed_chunks) < self.total_chunks:
-            logger.warning(f"WARNING: Only processed {len(self.processed_chunks)}/{self.total_chunks} chunks")
-
+            logger.warning(
+                f"WARNING: Only processed {len(self.processed_chunks)}/{self.total_chunks} chunks"
+            )

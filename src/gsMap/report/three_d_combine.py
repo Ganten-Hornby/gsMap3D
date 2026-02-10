@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 
 def combine_ldsc(args):
-
     # Set the output path
     ldsc_root = Path(args.project_dir) / "3D_combine" / "spatial_ldsc"
     ldsc_root.mkdir(parents=True, exist_ok=True)
@@ -35,7 +34,9 @@ def combine_ldsc(args):
             sldsc_pth.append(filtemp)
 
     if not os.path.exists(name):
-        logger.info(f"Find {len(sldsc_pth)} ST sections for {args.trait_name}, start to merge the results...")
+        logger.info(
+            f"Find {len(sldsc_pth)} ST sections for {args.trait_name}, start to merge the results..."
+        )
         # Load the results
         ldsc_merge = pd.DataFrame()
         for idx, file in enumerate(sldsc_pth):
@@ -46,16 +47,20 @@ def combine_ldsc(args):
 
         # Check the cell name duplication
         if (ldsc_merge.spot.value_counts() > 1).any():
-            logger.info('There are duplicated spot names, using the st_id + spot_id as the spot index.')
-            ldsc_merge['spot_index'] = ldsc_merge['ST_id'] + '_' + ldsc_merge['spot'].astype(str)
+            logger.info(
+                "There are duplicated spot names, using the st_id + spot_id as the spot index."
+            )
+            ldsc_merge["spot_index"] = ldsc_merge["ST_id"] + "_" + ldsc_merge["spot"].astype(str)
         else:
-            ldsc_merge['spot_index'] = ldsc_merge['spot']
+            ldsc_merge["spot_index"] = ldsc_merge["spot"]
 
         # save the merged results
         ldsc_merge.to_csv(name, compression="gzip", index=False)
         logger.info(f"Saving the 3D merged results to {name}")
     else:
-        logger.info(f"The merged gsMap results already exist, loading the merged results from {name}...")
+        logger.info(
+            f"The merged gsMap results already exist, loading the merged results from {name}..."
+        )
         ldsc_merge = pd.read_csv(name, compression="gzip")
 
     return ldsc_merge
@@ -82,10 +87,7 @@ def cauchy_combination_3d(ldsc):
         # Outlier: -log10(p) < median + 3IQR && len(outlier set) < 20
         # if 0 < n_remove < max(len(p_temp) * 0.001,100):
         if 0 < n_remove < len(p_temp) * 0.05:
-            print(
-                f"Remove {
-                    n_remove}/{len(p_temp)} outliers (median + 3*IQR) for {ct}."
-            )
+            print(f"Remove {n_remove}/{len(p_temp)} outliers (median + 3*IQR) for {ct}.")
             p_cauchy_temp = _acat_test(p_use)
         else:
             p_cauchy_temp = _acat_test(p_temp)
@@ -107,6 +109,7 @@ def cauchy_combination_3d(ldsc):
     p_tissue.columns = ["p_cauchy", "p_median", "inflation_factor", "annotation"]
     p_tissue.sort_values("p_cauchy", inplace=True)
     return p_tissue
+
 
 # def cauchy_combination_3d(args):
 
@@ -166,34 +169,39 @@ def cauchy_combination_3d(ldsc):
 
 def odds_test_3d(ldsc_merge):
     _, corrected_p_values, _, _ = smm.multipletests(ldsc_merge.p, alpha=0.05)
-    ldsc_merge['p_fdr'] = corrected_p_values.tolist()
+    ldsc_merge["p_fdr"] = corrected_p_values.tolist()
 
     Odds = []
     for focal_annotation in ldsc_merge.annotation.unique():
         try:
-            focal_no,focal_yes = (ldsc_merge.loc[ldsc_merge.annotation==focal_annotation,'p_fdr'] < 0.05).value_counts()
-            other_no,other_yes = (ldsc_merge.loc[ldsc_merge.annotation!=focal_annotation,'p_fdr'] < 0.05).value_counts()
+            focal_no, focal_yes = (
+                ldsc_merge.loc[ldsc_merge.annotation == focal_annotation, "p_fdr"] < 0.05
+            ).value_counts()
+            other_no, other_yes = (
+                ldsc_merge.loc[ldsc_merge.annotation != focal_annotation, "p_fdr"] < 0.05
+            ).value_counts()
             contingency_table = [[focal_yes, focal_no], [other_yes, other_no]]
             odds_ratio, p_value = fisher_exact(contingency_table)
             table = sm.stats.Table2x2(contingency_table)
             conf_int = table.oddsratio_confint()
-        except Exception:
+        except Exception:  # noqa: BLE001
             odds_ratio = 0
             p_value = 1
             conf_int = (0, 0)
-        Odds.append({
-            'annotation': focal_annotation,
-            'odds_ratio': f"{odds_ratio:.3f}",
-            '95%_ci_low': f"{conf_int[0]:.3f}",
-            '95%_ci_high': f"{conf_int[1]:.3f}",
-            'p_odds_ratio': p_value
-        })
+        Odds.append(
+            {
+                "annotation": focal_annotation,
+                "odds_ratio": f"{odds_ratio:.3f}",
+                "95%_ci_low": f"{conf_int[0]:.3f}",
+                "95%_ci_high": f"{conf_int[1]:.3f}",
+                "p_odds_ratio": p_value,
+            }
+        )
     Odds = pd.DataFrame(Odds)
     return Odds
 
 
 def three_d_combine(args: ThreeDCombineConfig):
-
     # Load the ldsc results
     ldsc_merge = combine_ldsc(args)
     ldsc_merge.spot_index = ldsc_merge.spot_index.astype(str).replace(r"\.0", "", regex=True)
@@ -202,17 +210,21 @@ def three_d_combine(args: ThreeDCombineConfig):
     # Load the spatial data
     logger.info(f"Loading {args.adata_3d}.")
     adata_3d_path = str(args.adata_3d)
-    if adata_3d_path.endswith('.parquet'):
+    if adata_3d_path.endswith(".parquet"):
         logger.info("The input data is the metadata file of adata.")
         meta_merged = pd.read_parquet(adata_3d_path)
-    elif adata_3d_path.endswith('.h5ad'):
+    elif adata_3d_path.endswith(".h5ad"):
         logger.info("The input data is the h5ad.")
-        adata_merge = ad.read_h5ad(adata_3d_path, backed='r')
-        adata_merge.obs.index.name = 'index'
-        spatial = pd.DataFrame(adata_merge.obsm[args.spatial_key], columns=['sx', 'sy', 'sz'], index=adata_merge.obs_names).copy()
+        adata_merge = ad.read_h5ad(adata_3d_path, backed="r")
+        adata_merge.obs.index.name = "index"
+        spatial = pd.DataFrame(
+            adata_merge.obsm[args.spatial_key],
+            columns=["sx", "sy", "sz"],
+            index=adata_merge.obs_names,
+        ).copy()
         spatial = spatial.reset_index()
         meta = adata_merge.obs.copy()
-        meta_merged = spatial.merge(meta, left_on='index', right_index=True, how='left')
+        meta_merged = spatial.merge(meta, left_on="index", right_index=True, how="left")
         meta_merged.index = adata_merge.obs_names
 
     # Handle DataFrame or AnnData
@@ -221,14 +233,18 @@ def three_d_combine(args: ThreeDCombineConfig):
         if len(np.intersect1d(ldsc_merge.index, meta_merged.index)) == 0:
             # If no common cells, create a new index using st_id
             logger.info(f"Using {args.st_id} + adata.obs_names as the new cell index.")
-            meta_merged.index = meta_merged[args.st_id].astype(str) + '_' + meta_merged.index.astype(str)
+            meta_merged.index = (
+                meta_merged[args.st_id].astype(str) + "_" + meta_merged.index.astype(str)
+            )
 
     # Find common cells
     common_cell = np.intersect1d(ldsc_merge.index, meta_merged.index)
     if len(common_cell) == 0:
         raise ValueError("No common cells between the spatial data and the ldsc results.")
 
-    logger.info(f"Found {len(common_cell)} common cells between the 3D spatial data and the mapping results.")
+    logger.info(
+        f"Found {len(common_cell)} common cells between the 3D spatial data and the mapping results."
+    )
 
     # Subset the data to common cells
     meta_merged = meta_merged.loc[common_cell].copy()
@@ -237,29 +253,37 @@ def three_d_combine(args: ThreeDCombineConfig):
     # Do cauchy combination test and odds ratio test
     if args.annotation is not None:
         annotation_use = meta_merged[args.annotation]
-        ldsc_merge['annotation'] = annotation_use
+        ldsc_merge["annotation"] = annotation_use
         ldsc_merge = ldsc_merge[~ldsc_merge.annotation.isna()]
 
         cauchy = cauchy_combination_3d(ldsc_merge)
         odds = odds_test_3d(ldsc_merge)
-        cauchy_odds = pd.merge(odds,cauchy,left_on='annotation',right_on='annotation')
+        cauchy_odds = pd.merge(odds, cauchy, left_on="annotation", right_on="annotation")
 
         # Save the results
         cauchy_root = Path(args.project_dir) / "3D_combine" / "cauchy_combination"
         cauchy_root.mkdir(parents=True, exist_ok=True, mode=0o755)
         cauchy_name = cauchy_root / f"{args.trait_name}.{args.annotation}.Cauchy.csv.gz"
-        cauchy_odds = cauchy_odds.sort_values('odds_ratio',ascending=False)
+        cauchy_odds = cauchy_odds.sort_values("odds_ratio", ascending=False)
         cauchy_odds.to_csv(cauchy_name, compression="gzip", index=False)
         logger.info(f"Saving the 3D combination combination results to {cauchy_name}")
     else:
         logger.info("No annotation provided for the cauchy combination test.")
 
-
     # Plot the 3D results
-    p_color = ['#313695', '#4575b4', '#74add1','#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026']
+    p_color = [
+        "#313695",
+        "#4575b4",
+        "#74add1",
+        "#fee090",
+        "#fdae61",
+        "#f46d43",
+        "#d73027",
+        "#a50026",
+    ]
     meta_merged["logp"] = -np.log10(ldsc_merge.p)
 
-    required_columns = {'sx', 'sy', 'sz'}
+    required_columns = {"sx", "sy", "sz"}
     if required_columns.issubset(meta_merged.columns):
         logger.info("Generating 3D plot...")
 
@@ -268,18 +292,20 @@ def three_d_combine(args: ThreeDCombineConfig):
         text_kwargs = dict(text_font_size=15, text_loc="upper_edge")
 
         # Set the opacity for each point
-        meta_merged['logp'].fillna(0, inplace=True)
-        bins = np.linspace(meta_merged['logp'].min(), meta_merged['logp'].max(), 5)
-        alpha = np.exp(np.linspace(0.1, 1.0, num=(len(bins)-1)))-1
+        meta_merged["logp"].fillna(0, inplace=True)
+        bins = np.linspace(meta_merged["logp"].min(), meta_merged["logp"].max(), 5)
+        alpha = np.exp(np.linspace(0.1, 1.0, num=(len(bins) - 1))) - 1
         alpha = alpha / max(alpha)
-        opacity_show = pd.cut(meta_merged['logp'], bins=bins, labels=alpha, include_lowest=True).values.tolist()
+        opacity_show = pd.cut(
+            meta_merged["logp"], bins=bins, labels=alpha, include_lowest=True
+        ).values.tolist()
 
         # Set the clim
-        max_v = np.round(np.median(np.sort(meta_merged['logp'])[::-1][0:20]))
+        max_v = np.round(np.median(np.sort(meta_merged["logp"])[::-1][0:20]))
 
         # Plot the 3D results
         plotter = three_d_plot(
-            clim = [0,max_v],
+            clim=[0, max_v],
             point_size=args.point_size,
             opacity=opacity_show,
             window_size=(1200, 1008),

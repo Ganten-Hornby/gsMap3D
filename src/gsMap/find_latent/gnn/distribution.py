@@ -37,9 +37,7 @@ def log_zinb_positive(
     """
     # theta is the dispersion rate. If .ndimension() == 1, it is shared for all cells (regardless of batch or labels)
     if theta.ndimension() == 1:
-        theta = theta.view(
-            1, theta.size(0)
-        )  # In this case, we reshape theta for broadcasting
+        theta = theta.view(1, theta.size(0))  # In this case, we reshape theta for broadcasting
 
     softplus_pi = F.softplus(-pi)  # uses log(sigmoid(x)) = -softplus(-x)
     log_theta_eps = torch.log(theta + eps)
@@ -86,9 +84,7 @@ def log_nb_positive(x: torch.Tensor, mu: torch.Tensor, theta: torch.Tensor, eps=
 
     """
     if theta.ndimension() == 1:
-        theta = theta.view(
-            1, theta.size(0)
-        )  # In this case, we reshape theta for broadcasting
+        theta = theta.view(1, theta.size(0))  # In this case, we reshape theta for broadcasting
 
     log_theta_mu_eps = torch.log(theta + mu + eps)
 
@@ -144,9 +140,7 @@ def log_mixture_nb(
     else:
         theta = theta_1
         if theta.ndimension() == 1:
-            theta = theta.view(
-                1, theta.size(0)
-            )  # In this case, we reshape theta for broadcasting
+            theta = theta.view(1, theta.size(0))  # In this case, we reshape theta for broadcasting
 
         log_theta_mu_1_eps = torch.log(theta + mu_1 + eps)
         log_theta_mu_2_eps = torch.log(theta + mu_2 + eps)
@@ -169,8 +163,7 @@ def log_mixture_nb(
             - lgamma_x_plus_1
         )
 
-    logsumexp = torch.logsumexp(torch.stack(
-        (log_nb_1, log_nb_2 - pi_logits)), dim=0)
+    logsumexp = torch.logsumexp(torch.stack((log_nb_1, log_nb_2 - pi_logits)), dim=0)
     softplus_pi = F.softplus(-pi_logits)
 
     log_mixture_nb = logsumexp - softplus_pi
@@ -293,15 +286,12 @@ class NegativeBinomial(Distribution):
                 "Please use one of the two possible parameterizations. Refer to the documentation for more information."
             )
 
-        using_param_1 = total_count is not None and (
-            logits is not None or probs is not None
-        )
+        using_param_1 = total_count is not None and (logits is not None or probs is not None)
         if using_param_1:
             logits = logits if logits is not None else probs_to_logits(probs)
             total_count = total_count.type_as(logits)
             total_count, logits = broadcast_all(total_count, logits)
-            mu, theta = _convert_counts_logits_to_mean_disp(
-                total_count, logits)
+            mu, theta = _convert_counts_logits_to_mean_disp(total_count, logits)
         else:
             mu, theta = broadcast_all(mu, theta)
         self.mu = mu
@@ -346,7 +336,8 @@ class NegativeBinomial(Distribution):
             except ValueError:
                 warnings.warn(
                     "The value argument must be within the support of the distribution",
-                    UserWarning, stacklevel=2,
+                    UserWarning,
+                    stacklevel=2,
                 )
 
         return log_nb_positive(value, mu=self.mu, theta=self.theta, eps=self._eps)
@@ -436,9 +427,7 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
             scale=scale,
             validate_args=validate_args,
         )
-        self.zi_logits, self.mu, self.theta = broadcast_all(
-            zi_logits, self.mu, self.theta
-        )
+        self.zi_logits, self.mu, self.theta = broadcast_all(zi_logits, self.mu, self.theta)
 
     @property
     def mean(self):
@@ -474,7 +463,7 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
         return samp_
 
     @torch.inference_mode()
-    def rsample(  # type: ignore
+    def rsample(
         self,
         sample_shape: torch.Size | tuple | None = None,
     ) -> torch.Tensor:
@@ -482,8 +471,9 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
         sample_shape = sample_shape or torch.Size()
         samp = super().rsample(sample_shape=sample_shape)
         is_zero = torch.rand_like(samp) <= self.zi_probs
-        samp_ = torch.where(is_zero, torch.tensor(
-            0.0, dtype=torch.float32, device=samp.device), samp)
+        samp_ = torch.where(
+            is_zero, torch.tensor(0.0, dtype=torch.float32, device=samp.device), samp
+        )
         return samp_
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
@@ -493,6 +483,7 @@ class ZeroInflatedNegativeBinomial(NegativeBinomial):
         except ValueError:
             warnings.warn(
                 "The value argument must be within the support of the distribution",
-                UserWarning, stacklevel=2,
+                UserWarning,
+                stacklevel=2,
             )
         return log_zinb_positive(value, self.mu, self.theta, self.zi_logits, eps=1e-08)

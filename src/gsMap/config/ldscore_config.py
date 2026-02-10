@@ -19,93 +19,94 @@ class LDScoreConfig(BaseConfig):
     """LD Score Weights Configuration"""
 
     # Paths
-    bfile_root: Annotated[str, typer.Option(
-        help="Reference panel prefix template (e.g., 'data/1000G.{chr}')"
-    )]
+    bfile_root: Annotated[
+        str, typer.Option(help="Reference panel prefix template (e.g., 'data/1000G.{chr}')")
+    ]
 
-    hm3_snp_path: Annotated[Path, typer.Option(
-        help="Path to HM3 SNP list",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )]
+    hm3_snp_path: Annotated[
+        Path,
+        typer.Option(
+            help="Path to HM3 SNP list",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ]
 
-    output_dir: Annotated[Path | None, typer.Option(
-        help="Output directory. If None, uses {workdir}/{project_name}/generate_ldscore"
-    )] = None
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Output directory. If None, uses {workdir}/{project_name}/generate_ldscore"
+        ),
+    ] = None
 
-    output_filename: Annotated[str, typer.Option(
-        help="Prefix for output files"
-    )] = "ld_score_weights"
+    output_filename: Annotated[str, typer.Option(help="Prefix for output files")] = (
+        "ld_score_weights"
+    )
 
     # Omics Input
-    omics_h5ad_path: Annotated[Path | None, typer.Option(
-        help="Path to omics H5AD file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
+    omics_h5ad_path: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to omics H5AD file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None
 
     # Mapping Input (Strategy A/B)
-    mapping_type: Annotated[str, typer.Option(
-         help="Mapping type: 'bed' or 'dict'"
-    )] = "bed"
+    mapping_type: Annotated[str, typer.Option(help="Mapping type: 'bed' or 'dict'")] = "bed"
 
-    mapping_file: Annotated[Path | None, typer.Option(
-        help="Path to mapping file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        resolve_path=True
-    )] = None
+    mapping_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to mapping file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None
 
     # Annotation Input (Strategy C - Direct Annotation Matrix)
-    annot_file: Annotated[str | None, typer.Option(
-        help="Template for annotation files (e.g., 'baseline.{chr}.annot.gz')"
-    )] = None
+    annot_file: Annotated[
+        str | None,
+        typer.Option(help="Template for annotation files (e.g., 'baseline.{chr}.annot.gz')"),
+    ] = None
 
     # Mapping Strategy parameters
-    feature_window_size: Annotated[int, typer.Option(
-        help="bp window for mapping (e.g. TSS window)"
-    )] = 0
+    feature_window_size: Annotated[
+        int, typer.Option(help="bp window for mapping (e.g. TSS window)")
+    ] = 0
 
-    strategy: Annotated[str, typer.Option(
-        help="Strategy: 'score', 'tss', 'center', 'allow_repeat'"
-    )] = "score"
+    strategy: Annotated[
+        str, typer.Option(help="Strategy: 'score', 'tss', 'center', 'allow_repeat'")
+    ] = "score"
 
     # LD Calculation parameters
-    ld_wind: Annotated[float, typer.Option(
-        help="LD window size"
-    )] = 1.0
+    ld_wind: Annotated[float, typer.Option(help="LD window size")] = 1.0
 
-    ld_unit: Annotated[str, typer.Option(
-        help="LD unit: 'SNP', 'KB', 'CM'"
-    )] = "CM"
+    ld_unit: Annotated[str, typer.Option(help="LD unit: 'SNP', 'KB', 'CM'")] = "CM"
 
-    maf_min: Annotated[float, typer.Option(
-        help="Minimum MAF filter"
-    )] = 0.01
+    maf_min: Annotated[float, typer.Option(help="Minimum MAF filter")] = 0.01
 
     # Computation
-    chromosomes: Annotated[str, typer.Option(
-        help="Chromosomes to process. 'all' uses 1-22 autosomes, or provide a comma-separated list of chromosomes (e.g., '1,2,3')"
-    )] = "all"
+    chromosomes: Annotated[
+        str,
+        typer.Option(
+            help="Chromosomes to process. 'all' uses 1-22 autosomes, or provide a comma-separated list of chromosomes (e.g., '1,2,3')"
+        ),
+    ] = "all"
 
-    batch_size_hm3: Annotated[int, typer.Option(
-        help="Batch size for HM3 SNPs"
-    )] = 50
+    batch_size_hm3: Annotated[int, typer.Option(help="Batch size for HM3 SNPs")] = 50
 
     # w_ld Calculation
-    calculate_w_ld: Annotated[bool, typer.Option(
-        help="Whether to calculate w_ld"
-    )] = False
+    calculate_w_ld: Annotated[bool, typer.Option(help="Whether to calculate w_ld")] = False
 
-    w_ld_dir: Annotated[Path | None, typer.Option(
-        help="Directory for w_ld outputs"
-    )] = None
-
+    w_ld_dir: Annotated[Path | None, typer.Option(help="Directory for w_ld outputs")] = None
 
     def __post_init__(self):
         """
@@ -125,7 +126,7 @@ class LDScoreConfig(BaseConfig):
             self.chromosomes = list(range(1, 23))
         elif isinstance(self.chromosomes, str):
             # Handle string input like "1,2,22"
-            self.chromosomes = [int(x) for x in self.chromosomes.split(',')]
+            self.chromosomes = [int(x) for x in self.chromosomes.split(",")]
         # Else it's already a list or properly set
 
         # 4. Handle PLINK Prefix Template
@@ -150,7 +151,8 @@ class LDScoreConfig(BaseConfig):
         if missing_paths:
             error_msg = (
                 f"PLINK .bed files missing for {len(missing_paths)} chromosomes. "
-                "The following files were not found:\n" + "\n".join(f"  - {p}" for p in missing_paths)
+                "The following files were not found:\n"
+                + "\n".join(f"  - {p}" for p in missing_paths)
             )
             raise FileNotFoundError(error_msg)
 
@@ -164,84 +166,73 @@ class GenerateLDScoreConfig(ConfigWithAutoPaths):
     """Generate LDScore Configuration"""
 
     # Required from parent
-    workdir: Annotated[Path, typer.Option(
-        help="Path to the working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )]
+    workdir: Annotated[
+        Path,
+        typer.Option(
+            help="Path to the working directory",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ]
 
-    chrom: Annotated[str, typer.Option(
-        help='Chromosome id (1-22) or "all"'
-    )]
+    chrom: Annotated[str, typer.Option(help='Chromosome id (1-22) or "all"')]
 
-    bfile_root: Annotated[str, typer.Option(
-        help="Root path for genotype plink bfiles (.bim, .bed, .fam)"
-    )]
+    bfile_root: Annotated[
+        str, typer.Option(help="Root path for genotype plink bfiles (.bim, .bed, .fam)")
+    ]
 
-    gtf_annotation_file: Annotated[Path, typer.Option(
-        help="Path to GTF annotation file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )]
+    gtf_annotation_file: Annotated[
+        Path,
+        typer.Option(
+            help="Path to GTF annotation file", exists=True, file_okay=True, dir_okay=False
+        ),
+    ]
 
-    sample_name: Annotated[str | None, typer.Option(
-        help="Name of the sample"
-    )] = None
+    sample_name: Annotated[str | None, typer.Option(help="Name of the sample")] = None
 
     keep_snp_root: str | None = None  # Internal field
 
-    gene_window_size: Annotated[int, typer.Option(
-        help="Gene window size in base pairs",
-        min=1000,
-        max=1000000
-    )] = 50000
+    gene_window_size: Annotated[
+        int, typer.Option(help="Gene window size in base pairs", min=1000, max=1000000)
+    ] = 50000
 
-    enhancer_annotation_file: Annotated[Path | None, typer.Option(
-        help="Path to enhancer annotation file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
+    enhancer_annotation_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to enhancer annotation file", exists=True, file_okay=True, dir_okay=False
+        ),
+    ] = None
 
-    snp_multiple_enhancer_strategy: Annotated[str, typer.Option(
-        help="Strategy for handling multiple enhancers per SNP",
-        case_sensitive=False
-    )] = "max_mkscore"
+    snp_multiple_enhancer_strategy: Annotated[
+        str,
+        typer.Option(
+            help="Strategy for handling multiple enhancers per SNP", case_sensitive=False
+        ),
+    ] = "max_mkscore"
 
-    gene_window_enhancer_priority: Annotated[str | None, typer.Option(
-        help="Priority between gene window and enhancer annotations"
-    )] = None
+    gene_window_enhancer_priority: Annotated[
+        str | None, typer.Option(help="Priority between gene window and enhancer annotations")
+    ] = None
 
-    additional_baseline_annotation: Annotated[str | None, typer.Option(
-        help="Path of additional baseline annotations"
-    )] = None
+    additional_baseline_annotation: Annotated[
+        str | None, typer.Option(help="Path of additional baseline annotations")
+    ] = None
 
-    spots_per_chunk: Annotated[int, typer.Option(
-        help="Number of spots per chunk",
-        min=100,
-        max=10000
-    )] = 1000
+    spots_per_chunk: Annotated[
+        int, typer.Option(help="Number of spots per chunk", min=100, max=10000)
+    ] = 1000
 
-    ld_wind: Annotated[int, typer.Option(
-        help="LD window size",
-        min=1,
-        max=10
-    )] = 1
+    ld_wind: Annotated[int, typer.Option(help="LD window size", min=1, max=10)] = 1
 
-    ld_unit: Annotated[str, typer.Option(
-        help="Unit for LD window",
-        case_sensitive=False
-    )] = "CM"
+    ld_unit: Annotated[str, typer.Option(help="Unit for LD window", case_sensitive=False)] = "CM"
 
     # Additional fields
     ldscore_save_format: str = "feather"
     save_pre_calculate_snp_gene_weight_matrix: bool = False
     baseline_annotation_dir: str | None = None
     SNP_gene_pair_dir: str | None = None
-
 
     def __post_init__(self):
         super().__post_init__()

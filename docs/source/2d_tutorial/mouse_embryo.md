@@ -2,7 +2,6 @@
 
 The `Quick Mode` option provides a simplified and efficient way to execute the entire `gsMap3D` pipeline. It minimizes running time and configuration complexity by utilizing pre-calculated weights based on the 1000G EUR reference panel and protein-coding genes from BED file of Gencode v46. This mode is ideal for users who prefer a streamlined approach. For a more customizable experience, such as using custom BED files, reference panels, and more adjustable parameters, please refer to the {doc}`Customization Guide <../advanced_usage>` guide.
 
-
 ## Preparation
 
 Make sure you have {doc}`installed <../install>` the `gsMap3D` package before proceeding.
@@ -122,7 +121,7 @@ config = QuickModeConfig(
     data_layer="count",
     trait_name="IQ",
     sumstats_file="./mouse_embryo_E16_example_data/GWAS/IQ_NG_2018.sumstats.gz",
-    plot_origin="lower"
+    plot_origin="lower",
 )
 
 run_quick_mode(config)
@@ -178,7 +177,7 @@ config = QuickModeConfig(
     w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
     snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
     annotation="annotation",
-    sumstats_config_file="./mouse_embryo_E16_example_data/GWAS/gwas_config.yaml"
+    sumstats_config_file="./mouse_embryo_E16_example_data/GWAS/gwas_config.yaml",
 )
 
 run_quick_mode(config)
@@ -190,6 +189,7 @@ run_quick_mode(config)
 The pipeline generates two main directories:
 
 **`report_data/`** - Data files for downstream analysis:
+
 - `spot_metadata.csv` - Spot-level coordinates and annotations
 - `cauchy_results.csv` - Cauchy combination test results
 - `umap_data.csv` - UMAP coordinates for visualization
@@ -198,6 +198,7 @@ The pipeline generates two main directories:
 - `manhattan_data/` - Manhattan plot data per trait
 
 **`gsmap_web_report/`** - Self-contained interactive web report:
+
 - `index.html` - Main report entry point
 - `spatial_plots/` - Static LDSC spatial plots
 - `gene_diagnostic_plots/` - Gene expression diagnostics
@@ -206,11 +207,12 @@ The pipeline generates two main directories:
 **Viewing the Report:**
 
 1. **Remote Server**: Start a temporary web server:
-   ```bash
-   gsmap report-view ./gsmap_web_report --port 8080 --no-browser
-   ```
 
-2. **Local PC**: Copy the `gsmap_web_report` folder to your machine and open `index.html` in a browser.
+    ```bash
+    gsmap report-view ./gsmap_web_report --port 8080 --no-browser
+    ```
+
+1. **Local PC**: Copy the `gsmap_web_report` folder to your machine and open `index.html` in a browser.
 
 ## See Also
 

@@ -24,7 +24,7 @@ def optimize_row_order(
     neighbor_indices: np.ndarray,
     cell_indices: np.ndarray,
     method: str | None = None,
-    neighbor_weights: np.ndarray | None = None
+    neighbor_weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Sort rows by shared neighbors to improve cache locality
@@ -51,11 +51,11 @@ def optimize_row_order(
     # Auto-select method if None
     if method is None:
         if neighbor_weights is not None and n_cells > 2000:
-            method = 'weighted'
+            method = "weighted"
         else:
-            method = 'greedy'
+            method = "greedy"
 
-    if method == 'weighted' and neighbor_weights is not None:
+    if method == "weighted" and neighbor_weights is not None:
         # Efficient weighted heuristic: follow highest-weight neighbors
         visited = np.zeros(n_cells, dtype=bool)
         ordered = []
@@ -101,13 +101,15 @@ def optimize_row_order(
                 connection_scores = np.zeros(n_cells)
 
                 # Check connections from last few visited cells
-                for cell_idx in ordered[-min(10, len(ordered)):]:
+                for cell_idx in ordered[-min(10, len(ordered)) :]:
                     # Add forward connections
                     for j, neighbor_global_idx in enumerate(neighbor_indices[cell_idx]):
                         if neighbor_global_idx in global_to_local:
                             neighbor_local_idx = global_to_local[neighbor_global_idx]
                             if not visited[neighbor_local_idx]:
-                                connection_scores[neighbor_local_idx] += neighbor_weights[cell_idx, j]
+                                connection_scores[neighbor_local_idx] += neighbor_weights[
+                                    cell_idx, j
+                                ]
 
                     # Add reverse connections
                     for reverse_idx, reverse_weight in reverse_neighbors[cell_idx]:
@@ -131,7 +133,7 @@ def optimize_row_order(
 
         return np.array(ordered)
 
-    elif method == 'greedy':
+    elif method == "greedy":
         # Original greedy approach - only for small datasets
         if n_cells > 5000:
             logger.warning(f"Greedy method is O(n²) - not recommended for {n_cells} cells")

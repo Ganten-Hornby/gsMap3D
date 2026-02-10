@@ -159,8 +159,15 @@ def ManhattanPlot(
 
     """
     mh = _ManhattanPlot(
-        dataframe, chrm=chrm, bp=bp, p=p, snp=snp, gene=gene, annotation=annotation, logp=logp,
-        color_by=kwargs.get('highlight_color_by')
+        dataframe,
+        chrm=chrm,
+        bp=bp,
+        p=p,
+        snp=snp,
+        gene=gene,
+        annotation=annotation,
+        logp=logp,
+        color_by=kwargs.get("highlight_color_by"),
     )
 
     return mh.figure(
@@ -185,7 +192,16 @@ def ManhattanPlot(
 
 class _ManhattanPlot:
     def __init__(
-        self, x, chrm="CHR", bp="BP", p="P", snp="SNP", gene="GENE", annotation=None, logp=True, color_by=None
+        self,
+        x,
+        chrm="CHR",
+        bp="BP",
+        p="P",
+        snp="SNP",
+        gene="GENE",
+        annotation=None,
+        logp=True,
+        color_by=None,
     ):
         """
         Keyword arguments:
@@ -298,8 +314,11 @@ class _ManhattanPlot:
             if color_by in x.columns:
                 self.data[color_by] = x[color_by]
             else:
-                 import logging
-                 logging.getLogger(__name__).warning(f"color_by column {color_by} not found in input.")
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    f"color_by column {color_by} not found in input."
+                )
 
         self.xlabel = ""
         self.ticks = []
@@ -504,7 +523,10 @@ class _ManhattanPlot:
                 if len(common_genes) == 0:
                     # Don't raise error, just warn
                     import logging
-                    logging.getLogger(__name__).warning("No common genes found in the data to highlight")
+
+                    logging.getLogger(__name__).warning(
+                        "No common genes found in the data to highlight"
+                    )
                 elif len(common_genes) < len(highlight_gene_list):
                     warnings.warn(
                         f"Some genes don't contain any SNP to highlight: "

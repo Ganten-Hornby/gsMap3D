@@ -16,10 +16,10 @@ Method 1: Use uv (Recommended)
 
       # On Linux/macOS
       curl -LsSf https://astral.sh/uv/install.sh | sh
-      
+
       # On Windows
       powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-      
+
       # Or via pip
       pip install uv
 
@@ -31,10 +31,10 @@ Method 1: Use uv (Recommended)
 
       # Create a virtual environment
       uv venv
-      
+
       # Activate it
       source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-      
+
       # Install gsMap3D
       uv pip install gsMap3D
 
@@ -63,10 +63,10 @@ You can also use Conda to manage your environment.
 
     # Create a new environment with Python >= 3.12
     conda create -n gsMap3D python=3.12
-    
+
     # Activate the environment
     conda activate gsMap3D
-    
+
     # Install gsMap via pip
     pip install gsMap3D
 

@@ -14,66 +14,71 @@ def full_block(in_dim, out_dim, p_drop=0.1):
         nn.Dropout(p=p_drop),
     )
 
+
 class transform(nn.Module):
     """
     batch transform encoder
     """
-    def __init__(self,
-                 input_size,
-                 hidden_size,
-                 batch_emb_size,
-                 module_dim,
-                 hidden_gmf,
-                 n_modules,
-                 nhead,
-                 n_enc_layer,
-                 use_tf):
 
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        batch_emb_size,
+        module_dim,
+        hidden_gmf,
+        n_modules,
+        nhead,
+        n_enc_layer,
+        use_tf,
+    ):
         super().__init__()
         self.use_tf = use_tf
 
         if self.use_tf:
             self.input_size = hidden_gmf + batch_emb_size
-            self.gmf = GeneModuleFormer(input_dim=input_size,
-                                        module_dim=module_dim,
-                                        hidden_dim=hidden_gmf,
-                                        n_modules=n_modules,
-                                        nhead=nhead,
-                                        n_enc_layer=n_enc_layer
-                                        )
-            self.transform = full_block(self.input_size,hidden_size)
+            self.gmf = GeneModuleFormer(
+                input_dim=input_size,
+                module_dim=module_dim,
+                hidden_dim=hidden_gmf,
+                n_modules=n_modules,
+                nhead=nhead,
+                n_enc_layer=n_enc_layer,
+            )
+            self.transform = full_block(self.input_size, hidden_size)
         else:
             self.input_size = input_size + batch_emb_size
-            self.transform = full_block(self.input_size,hidden_size)
+            self.transform = full_block(self.input_size, hidden_size)
             self.norm = nn.LayerNorm(hidden_size)
 
     def forward(self, x, batch):
         if self.use_tf:
             x = self.gmf(x)
-            x = self.transform(torch.cat([x,batch],dim=1))
+            x = self.transform(torch.cat([x, batch], dim=1))
         else:
-            x = self.transform(torch.cat([x,batch],dim=1))
+            x = self.transform(torch.cat([x, batch], dim=1))
         return self.norm(x)
-
 
 
 class Encoder(nn.Module):
     """
     GCN encoder
     """
-    def __init__(self,
-                 input_size,
-                 hidden_size,
-                 emb_size,
-                 batch_emb_size,
-                 module_dim,
-                 hidden_gmf,
-                 n_modules,
-                 nhead,
-                 n_enc_layer,
-                 use_tf,
-                 variational=True):
 
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        emb_size,
+        batch_emb_size,
+        module_dim,
+        hidden_gmf,
+        n_modules,
+        nhead,
+        n_enc_layer,
+        use_tf,
+        variational=True,
+    ):
         super().__init__()
         self.variational = variational
 
@@ -86,19 +91,18 @@ class Encoder(nn.Module):
             n_modules,
             nhead,
             n_enc_layer,
-            use_tf
+            use_tf,
         )
 
-        self.mlp = nn.Sequential(full_block(hidden_size, hidden_size),
-                                 full_block(hidden_size,hidden_size))
+        self.mlp = nn.Sequential(
+            full_block(hidden_size, hidden_size), full_block(hidden_size, hidden_size)
+        )
 
-
-        self.fc_mean = nn.Linear(hidden_size,emb_size)
-        self.fc_var = nn.Linear(hidden_size,emb_size)
+        self.fc_mean = nn.Linear(hidden_size, emb_size)
+        self.fc_var = nn.Linear(hidden_size, emb_size)
 
     def forward(self, x, batch):
-
-        xtf = self.tf(x,batch)
+        xtf = self.tf(x, batch)
         h = self.mlp(xtf)
         if not self.variational:
             mu = self.fc_mean(h)
@@ -120,28 +124,32 @@ class Encoder(nn.Module):
         kl_loss = kl(self.dist, Normal(mean, scale))
         return kl_loss.mean()
 
+
 class Decoder(nn.Module):
     """
     Shared decoder
     """
-    def __init__(self,
-                 out_put_size,
-                 hidden_size,
-                 emb_size,
-                 batch_emb_size,
-                 class_size,
-                 decoder_type,
-                 distribution,
-                 n_layers=3):
+
+    def __init__(
+        self,
+        out_put_size,
+        hidden_size,
+        emb_size,
+        batch_emb_size,
+        class_size,
+        decoder_type,
+        distribution,
+        n_layers=3,
+    ):
         super().__init__()
 
         self.decoder_type = decoder_type
         self.mlp = nn.ModuleList()
 
         # Set initial input size
-        if decoder_type == 'reconstruction':
+        if decoder_type == "reconstruction":
             input_size = emb_size + batch_emb_size
-        elif decoder_type == 'classification':
+        elif decoder_type == "classification":
             input_size = emb_size * 2 + batch_emb_size
         else:
             raise ValueError(f"Unknown decoder_type: {decoder_type}")
@@ -155,13 +163,13 @@ class Decoder(nn.Module):
             input_size = hidden_size + batch_emb_size  # update for next layer input
 
         # Final output layer
-        if decoder_type == 'reconstruction':
+        if decoder_type == "reconstruction":
             self.zi_logit = nn.Linear(input_size, out_put_size)
             self.fc_rec = nn.Linear(input_size, out_put_size)
-        elif decoder_type == 'classification':
+        elif decoder_type == "classification":
             self.fc_class = nn.Linear(input_size, class_size)
 
-        if distribution in ['nb','zinb']:
+        if distribution in ["nb", "zinb"]:
             self.act = nn.Softmax(dim=-1)
         else:
             self.act = nn.Identity()
@@ -173,12 +181,12 @@ class Decoder(nn.Module):
             x = layer(x)
             x = torch.cat([x, batch], dim=1)  # concat batch after each layer
 
-        if self.decoder_type == 'reconstruction':
+        if self.decoder_type == "reconstruction":
             x_hat = self.act(self.fc_rec(x))
             zi_logit = self.zi_logit(x)
             return x_hat, zi_logit
 
-        elif self.decoder_type == 'classification':
+        elif self.decoder_type == "classification":
             x_class = self.fc_class(x)
             return x_class
 

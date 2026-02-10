@@ -17,7 +17,7 @@ from pathlib import Path
 import anndata as ad
 import numpy as np
 import pandas as pd
-import pyranges as pr
+import pyranges1 as pr
 import scipy.sparse
 from rich.progress import (
     BarColumn,
@@ -56,6 +56,7 @@ class ChromosomeResult:
     feature_names : List[str]
         Names of mapped features
     """
+
     hm3_snp_names: list[str]
     hm3_snp_chr: list[int]
     hm3_snp_bp: list[int]
@@ -98,7 +99,9 @@ class LDScorePipeline:
             logger.info(f"Mode: SNP-Feature Mapping ({self.config.mapping_type})")
             self._run_with_mapping()
         else:
-            raise ValueError("Invalid Configuration: Neither 'annot_file' nor 'mapping_file' specified.")
+            raise ValueError(
+                "Invalid Configuration: Neither 'annot_file' nor 'mapping_file' specified."
+            )
 
     def _run_with_mapping(self):
         """Run the pipeline using SNP-Feature mapping (BED/Dictionary)."""
@@ -107,10 +110,7 @@ class LDScorePipeline:
 
         results = {}
         for chrom in self.config.chromosomes:
-            result = self._process_chromosome_from_mapping(
-                chrom,
-                mapping_data=mapping_data
-            )
+            result = self._process_chromosome_from_mapping(chrom, mapping_data=mapping_data)
             if result is not None:
                 results[str(chrom)] = result
 
@@ -138,30 +138,35 @@ class LDScorePipeline:
         """Helper to load mapping file based on config."""
         logger.info(f"Loading mapping data from: {self.config.mapping_file}")
 
-        if self.config.mapping_type == 'bed':
-            # Use pyranges to read standard BED file
+        if self.config.mapping_type == "bed":
+            # Use pyranges1 to read standard BED file
             try:
-                bed_pr = pr.read_bed(str(self.config.mapping_file))
-                bed_df = bed_pr.df
+                bed_df = pr.read_bed(str(self.config.mapping_file)).copy()
 
-                # Convert pyranges BED format to expected format
+                # Convert pyranges1 BED format to expected format
                 # Standard BED columns: Chromosome, Start, End, Name, Score, Strand
                 # Expected format: Feature, Chromosome, Start, End, [Score], [Strand]
 
-                if 'Name' not in bed_df.columns:
-                    logger.error("BED file must contain a 'Name' column (4th column in BED6 format)")
-                    logger.error("Required format: standard BED6 (chr, start, end, name, score, strand)")
+                if "Name" not in bed_df.columns:
+                    logger.error(
+                        "BED file must contain a 'Name' column (4th column in BED6 format)"
+                    )
+                    logger.error(
+                        "Required format: standard BED6 (chr, start, end, name, score, strand)"
+                    )
                     logger.error("Note: BED file should NOT have a header line")
                     sys.exit(1)
 
                 # Rename 'Name' to 'Feature' for internal use
-                bed_df = bed_df.rename(columns={'Name': 'Feature'})
+                bed_df = bed_df.rename(columns={"Name": "Feature"})
 
                 # Ensure required columns exist
-                required_cols = ['Chromosome', 'Start', 'End', 'Feature']
+                required_cols = ["Chromosome", "Start", "End", "Feature"]
                 if not all(col in bed_df.columns for col in required_cols):
                     logger.error("BED file missing required columns after parsing")
-                    logger.error("Required format: standard BED6 (chr, start, end, name, score, strand)")
+                    logger.error(
+                        "Required format: standard BED6 (chr, start, end, name, score, strand)"
+                    )
                     logger.error("Note: BED file should NOT have a header line")
                     sys.exit(1)
 
@@ -169,22 +174,26 @@ class LDScorePipeline:
                 logger.info(f"Columns: {list(bed_df.columns)}")
                 return bed_df
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Failed to read BED file: {e}")
-                logger.error("Required format: standard BED6 (chr, start, end, name, score, strand)")
+                logger.error(
+                    "Required format: standard BED6 (chr, start, end, name, score, strand)"
+                )
                 logger.error("Note: BED file should NOT have a header line")
                 sys.exit(1)
 
-        elif self.config.mapping_type == 'dict':
-            df_map = pd.read_csv(self.config.mapping_file, sep=None, engine='python')
+        elif self.config.mapping_type == "dict":
+            df_map = pd.read_csv(self.config.mapping_file, sep=None, engine="python")
 
-            if 'SNP' in df_map.columns and 'Feature' in df_map.columns:
-                return dict(zip(df_map['SNP'], df_map['Feature'], strict=False))
+            if "SNP" in df_map.columns and "Feature" in df_map.columns:
+                return dict(zip(df_map["SNP"], df_map["Feature"], strict=False))
             elif len(df_map.columns) >= 2:
                 logger.info("Assuming first column is SNP and second is Feature.")
                 return dict(zip(df_map.iloc[:, 0], df_map.iloc[:, 1], strict=False))
             else:
-                raise ValueError(f"Dictionary mapping file {self.config.mapping_file} must have at least 2 columns.")
+                raise ValueError(
+                    f"Dictionary mapping file {self.config.mapping_file} must have at least 2 columns."
+                )
         else:
             raise ValueError(f"Unsupported mapping_type: {self.config.mapping_type}")
 
@@ -204,7 +213,7 @@ class LDScorePipeline:
                     snps = pd.read_csv(path, header=None, names=["SNP"])["SNP"].tolist()
                     logger.info(f"Loaded {len(snps)} HM3 SNPs from {path}")
                     return snps
-                except:
+                except Exception:  # noqa: BLE001
                     continue
 
         logger.warning(f"No HM3 SNP file found for chromosome {chromosome}")
@@ -256,18 +265,20 @@ class LDScorePipeline:
 
         # Save Curated Mapping if it exists (BED type)
         if mapping_df is not None:
-             logger.debug(f"  Captured SNP-Feature mapping ({len(mapping_df)} rows) for chromosome {chromosome}")
+            logger.debug(
+                f"  Captured SNP-Feature mapping ({len(mapping_df)} rows) for chromosome {chromosome}"
+            )
 
         # Ensure feature names align with matrix width (handle Unmapped bin)
         if mapping_matrix.shape[1] == len(feature_names) + 1:
-             feature_names_full = feature_names + ["Unmapped"]
+            feature_names_full = feature_names + ["Unmapped"]
         else:
-             feature_names_full = feature_names
+            feature_names_full = feature_names
 
         logger.info(f"  Features: {len(feature_names_full)} | Matrix nnz: {mapping_matrix.nnz}")
 
         if self.config.calculate_w_ld:
-             self._compute_w_ld(chromosome, target_hm3_snps)
+            self._compute_w_ld(chromosome, target_hm3_snps)
 
         return self._compute_chromosome_weights(
             chromosome=chromosome,
@@ -276,7 +287,7 @@ class LDScorePipeline:
             mapping_matrix=mapping_matrix,
             feature_names=feature_names_full,
             mapping_df=mapping_df,
-            output_format="sparse"
+            output_format="sparse",
         )
 
     def _process_chromosome_from_annotation(
@@ -309,7 +320,7 @@ class LDScorePipeline:
         logger.info(f"Loading annotation from: {annot_file}")
         try:
             df_annot = pd.read_csv(annot_file, sep=r"\s+")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to read annotation file: {e}")
             return None
 
@@ -321,19 +332,27 @@ class LDScorePipeline:
             df_annot = df_annot.set_index("SNP")
             df_annot = df_annot.reindex(reader.bim["SNP"], fill_value=0)
         else:
-            logger.warning("Annotation file missing 'SNP' column. Thin annotation format detected, assuming strict alignment.")
+            logger.warning(
+                "Annotation file missing 'SNP' column. Thin annotation format detected, assuming strict alignment."
+            )
 
             if len(df_annot) == reader.m_original:
                 # Filter df_annot according to filtered SNPs using snp_ids_original
-                logger.info(f"Filtering annotation from {len(df_annot)} to {reader.m} SNPs based on MAF/QC filters")
+                logger.info(
+                    f"Filtering annotation from {len(df_annot)} to {reader.m} SNPs based on MAF/QC filters"
+                )
                 df_annot.index = reader.snp_ids_original
                 df_annot = df_annot.reindex(reader.bim["SNP"], fill_value=0)
             else:
-                logger.error(f"Annotation rows mismatch. Missing 'SNP' column preventing alignment. For the thin format, annotation rows ({len(df_annot)}) must match SNP count ({reader.m_original}) in the plink panel.")
+                logger.error(
+                    f"Annotation rows mismatch. Missing 'SNP' column preventing alignment. For the thin format, annotation rows ({len(df_annot)}) must match SNP count ({reader.m_original}) in the plink panel."
+                )
                 return None
 
         # Drop non-feature columns
-        feature_df = df_annot.drop(columns=[c for c in ["CHR", "BP", "CM"] if c in df_annot.columns])
+        feature_df = df_annot.drop(
+            columns=[c for c in ["CHR", "BP", "CM"] if c in df_annot.columns]
+        )
         feature_names = feature_df.columns.tolist()
 
         # QC
@@ -345,7 +364,7 @@ class LDScorePipeline:
         annot_matrix = scipy.sparse.csr_matrix(feature_df.values, dtype=np.float32)
 
         if self.config.calculate_w_ld:
-             self._compute_w_ld(chromosome, target_hm3_snps)
+            self._compute_w_ld(chromosome, target_hm3_snps)
 
         return self._compute_chromosome_weights(
             chromosome=chromosome,
@@ -354,7 +373,7 @@ class LDScorePipeline:
             mapping_matrix=annot_matrix,
             feature_names=feature_names,
             mapping_df=None,
-            output_format="dense"
+            output_format="dense",
         )
 
     def _compute_chromosome_weights(
@@ -365,7 +384,7 @@ class LDScorePipeline:
         mapping_matrix: scipy.sparse.csr_matrix | np.ndarray,
         feature_names: list[str],
         mapping_df: pd.DataFrame | None = None,
-        output_format: str = "sparse"
+        output_format: str = "sparse",
     ) -> ChromosomeResult | None:
         """
         Core logic: Batches -> Load Genotypes -> Slice Mapping -> Compute Weights.
@@ -392,8 +411,12 @@ class LDScorePipeline:
         all_hm3_snp_bp = []
 
         with Progress(
-            SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-            BarColumn(), TaskProgressColumn(), TimeElapsedColumn(), TimeRemainingColumn()
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
         ) as progress:
             task = progress.add_task(f"[cyan]Chr {chromosome}", total=total_snps)
 
@@ -418,11 +441,13 @@ class LDScorePipeline:
                 # Compute
                 weights = compute_batch_weights_sparse(X_hm3, X_ref_block, block_mapping)
 
-                batch_weight_data.append({
-                    'weights': weights,
-                    'hm3_start_idx': len(all_hm3_snp_names) - len(batch_snp_names),
-                    'n_hm3': len(batch_snp_names)
-                })
+                batch_weight_data.append(
+                    {
+                        "weights": weights,
+                        "hm3_start_idx": len(all_hm3_snp_names) - len(batch_snp_names),
+                        "n_hm3": len(batch_snp_names),
+                    }
+                )
                 progress.update(task, advance=len(batch_snp_names))
 
         # Aggregate
@@ -430,9 +455,13 @@ class LDScorePipeline:
         n_features = len(feature_names)
 
         if output_format == "sparse":
-            weights_out = self._create_sparse_matrix_from_batches(batch_weight_data, n_hm3_total, n_features)
+            weights_out = self._create_sparse_matrix_from_batches(
+                batch_weight_data, n_hm3_total, n_features
+            )
         else:
-            weights_out = self._create_dense_matrix_from_batches(batch_weight_data, n_hm3_total, n_features)
+            weights_out = self._create_dense_matrix_from_batches(
+                batch_weight_data, n_hm3_total, n_features
+            )
 
         return ChromosomeResult(
             hm3_snp_names=all_hm3_snp_names,
@@ -440,21 +469,25 @@ class LDScorePipeline:
             hm3_snp_bp=all_hm3_snp_bp,
             weights=weights_out,
             feature_names=feature_names,
-            mapping_df=mapping_df
+            mapping_df=mapping_df,
         )
 
-    def _create_sparse_matrix_from_batches(self, batch_data: list[dict], n_rows: int, n_cols: int) -> scipy.sparse.csr_matrix:
+    def _create_sparse_matrix_from_batches(
+        self, batch_data: list[dict], n_rows: int, n_cols: int
+    ) -> scipy.sparse.csr_matrix:
         """Helper to stack batch results into sparse CSR."""
         if not batch_data:
             return scipy.sparse.csr_matrix((n_rows, n_cols), dtype=np.float32)
-        matrices = [scipy.sparse.csr_matrix(b['weights']) for b in batch_data]
-        return scipy.sparse.vstack(matrices, format='csr')
+        matrices = [scipy.sparse.csr_matrix(b["weights"]) for b in batch_data]
+        return scipy.sparse.vstack(matrices, format="csr")
 
-    def _create_dense_matrix_from_batches(self, batch_data: list[dict], n_rows: int, n_cols: int) -> np.ndarray:
+    def _create_dense_matrix_from_batches(
+        self, batch_data: list[dict], n_rows: int, n_cols: int
+    ) -> np.ndarray:
         """Helper to stack batch results into dense numpy array."""
         if not batch_data:
             return np.zeros((n_rows, n_cols), dtype=np.float32)
-        return np.vstack([b['weights'] for b in batch_data])
+        return np.vstack([b["weights"] for b in batch_data])
 
     def _compute_w_ld(self, chromosome: int, hm3_snps: list[str]):
         """
@@ -473,7 +506,7 @@ class LDScorePipeline:
                 keep_snps=hm3_snps,
                 preload=True,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to load PLINK for w_ld (chk {chromosome}): {e}")
             return
 
@@ -496,8 +529,12 @@ class LDScorePipeline:
         w_ld_snps = []
 
         with Progress(
-            SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-            BarColumn(), TaskProgressColumn(), TimeElapsedColumn(), TimeRemainingColumn()
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
         ) as progress:
             task = progress.add_task(f"[magenta]w_ld Chr {chromosome}", total=len(available_hm3))
 
@@ -535,12 +572,16 @@ class LDScorePipeline:
             out_cols = ["CHR", "SNP", "BP", "CM", "L2"]
             # Ensure columns exist (CM might be missing or 0)
             if "CM" not in df_w_ld.columns:
-                 df_w_ld["CM"] = 0.0
+                df_w_ld["CM"] = 0.0
 
             df_w_ld = df_w_ld[out_cols]
 
             # Determine output path
-            w_ld_base = Path(self.config.w_ld_dir) if self.config.w_ld_dir else Path(self.config.output_dir) / "w_ld"
+            w_ld_base = (
+                Path(self.config.w_ld_dir)
+                if self.config.w_ld_dir
+                else Path(self.config.output_dir) / "w_ld"
+            )
             w_ld_base.mkdir(parents=True, exist_ok=True)
 
             out_file = w_ld_base / f"weights.{chromosome}.l2.ldscore.gz"
@@ -548,10 +589,7 @@ class LDScorePipeline:
             logger.info(f"  Saved w_ld to: {out_file}")
 
     def _save_aggregated_results(
-        self,
-        results: dict[str, ChromosomeResult],
-        output_dir: str,
-        output_filename: str
+        self, results: dict[str, ChromosomeResult], output_dir: str, output_filename: str
     ):
         """Helper to concatenate and save results."""
         logger.info("\n" + "=" * 80)
@@ -559,7 +597,7 @@ class LDScorePipeline:
         logger.info("=" * 80)
 
         all_snp_names = []
-        all_snp_chr = [] # numeric CHR from BIM
+        all_snp_chr = []  # numeric CHR from BIM
         all_snp_bp = []  # numeric BP from BIM
         matrices = []
 
@@ -582,21 +620,20 @@ class LDScorePipeline:
 
         # Concatenate
         if scipy.sparse.issparse(matrices[0]):
-            X_full = scipy.sparse.vstack(matrices, format='csr')
+            X_full = scipy.sparse.vstack(matrices, format="csr")
         else:
             X_full = np.vstack(matrices)
 
         # AnnData
-        obs = pd.DataFrame({
-            'CHR': all_snp_chr,
-            'BP': all_snp_bp
-        }, index=all_snp_names)
-        obs.index.name = 'SNP'
+        obs = pd.DataFrame({"CHR": all_snp_chr, "BP": all_snp_bp}, index=all_snp_names)
+        obs.index.name = "SNP"
 
         var = pd.DataFrame(index=feature_names)
-        var.index.name = 'Feature'
+        var.index.name = "Feature"
 
-        logger.info(f"Creating AnnData object: {X_full.shape[0]} SNPs x {X_full.shape[1]} Features")
+        logger.info(
+            f"Creating AnnData object: {X_full.shape[0]} SNPs x {X_full.shape[1]} Features"
+        )
         adata = ad.AnnData(X=X_full, obs=obs, var=var)
 
         out_path = Path(output_dir)
@@ -607,7 +644,9 @@ class LDScorePipeline:
         logger.info(f"Successfully saved AnnData to {out_file}")
 
         # Save Combined Mapping CSV if available
-        all_mapping_dfs = [res.mapping_df for res in results.values() if res.mapping_df is not None]
+        all_mapping_dfs = [
+            res.mapping_df for res in results.values() if res.mapping_df is not None
+        ]
         if all_mapping_dfs:
             combined_mapping_df = pd.concat(all_mapping_dfs, ignore_index=True)
             mapping_out_file = out_path / f"{output_filename}.csv"

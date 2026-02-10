@@ -71,7 +71,7 @@ def construct_batches(
     chromosome = str(bim_df["CHR"].iloc[0])
 
     # Pre-extract arrays for performance
-    bim_df["SNP"].values
+    _snp_values = bim_df["SNP"].values
 
     # helper to get coordinates based on unit
     if ld_unit == "SNP":
@@ -85,7 +85,9 @@ def construct_batches(
         max_dist = ld_wind
         # Fallback if CM is all zero
         if np.all(coords == 0):
-            logger.warning(f"All CM values are 0 for chromosome {chromosome}. Fallback to 1MB window (BP).")
+            logger.warning(
+                f"All CM values are 0 for chromosome {chromosome}. Fallback to 1MB window (BP)."
+            )
             coords = bim_df["BP"].values
             max_dist = 1_000_000
     else:
@@ -102,7 +104,9 @@ def construct_batches(
         logger.warning(f"No HM3 SNPs found in chromosome {chromosome}")
         return []
     if n_hm3 < len(hm3_snp_names):
-        logger.warning(f"{len(hm3_snp_names) - n_hm3} HM3 SNPs not found in chromosome {chromosome} reference plink panel")
+        logger.warning(
+            f"{len(hm3_snp_names) - n_hm3} HM3 SNPs not found in chromosome {chromosome} reference plink panel"
+        )
 
     logger.info(f"Found {n_hm3} HM3 SNPs in chromosome {chromosome}")
 
@@ -139,21 +143,23 @@ def construct_batches(
     else:
         # Vectorized searchsorted
         # Find insertion points for all window starts and ends at once
-        ref_starts = np.searchsorted(coords, window_starts, side='left')
-        ref_ends = np.searchsorted(coords, window_ends, side='right')
+        ref_starts = np.searchsorted(coords, window_starts, side="left")
+        ref_ends = np.searchsorted(coords, window_ends, side="right")
 
     # Construct BatchInfo objects
     batch_infos = []
     for i in range(n_batches):
         # Slice the HM3 indices for this batch
-        b_hm3_indices = hm3_indices_all[batch_starts[i]:batch_ends[i]]
+        b_hm3_indices = hm3_indices_all[batch_starts[i] : batch_ends[i]]
 
-        batch_infos.append(BatchInfo(
-            chromosome=chromosome,
-            hm3_indices=b_hm3_indices,
-            ref_start_idx=int(ref_starts[i]),
-            ref_end_idx=int(ref_ends[i]),
-        ))
+        batch_infos.append(
+            BatchInfo(
+                chromosome=chromosome,
+                hm3_indices=b_hm3_indices,
+                ref_start_idx=int(ref_starts[i]),
+                ref_end_idx=int(ref_ends[i]),
+            )
+        )
 
     logger.info(f"Created {len(batch_infos)} batches for chromosome {chromosome}")
     if len(batch_infos) > 0:

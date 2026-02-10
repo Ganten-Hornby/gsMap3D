@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from gsMap.cli import create_parser
+from gsMap.cli import (
+    create_parser,  # type: ignore[attr-defined]  # TODO: update test for typer CLI
+)
 
 
 # Import your original functions

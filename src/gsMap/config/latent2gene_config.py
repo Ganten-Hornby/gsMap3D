@@ -5,7 +5,7 @@ Configuration for latent to gene mapping.
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -17,187 +17,233 @@ from gsMap.config.utils import configure_jax_platform, process_h5ad_inputs, vali
 
 logger = logging.getLogger("gsMap.config")
 
-class DatasetType(str, Enum):
-    SCRNA_SEQ = 'scRNA'
-    SPATIAL_2D = 'spatial2D'
-    SPATIAL_3D = 'spatial3D'
 
-class MarkerScoreCrossSliceStrategy(str, Enum):
-    GLOBAL_POOL = 'global_pool'
-    PER_SLICE_POOL = 'per_slice_pool'
-    HIERARCHICAL_POOL = 'hierarchical_pool'
+class DatasetType(StrEnum):
+    SCRNA_SEQ = "scRNA"
+    SPATIAL_2D = "spatial2D"
+    SPATIAL_3D = "spatial3D"
+
+
+class MarkerScoreCrossSliceStrategy(StrEnum):
+    GLOBAL_POOL = "global_pool"
+    PER_SLICE_POOL = "per_slice_pool"
+    HIERARCHICAL_POOL = "hierarchical_pool"
+
 
 @dataclass
 class LatentToGeneComputeConfig:
     """Compute configuration for latent-to-gene step."""
+
     __display_in_quick_mode_cli__ = True
 
-    use_gpu: Annotated[bool, typer.Option(
-        "--use-gpu/--no-gpu",
-        help="Use GPU for JAX computations (requires sufficient GPU memory)"
-    )] = True
+    use_gpu: Annotated[
+        bool,
+        typer.Option(
+            "--use-gpu/--no-gpu",
+            help="Use GPU for JAX computations (requires sufficient GPU memory)",
+        ),
+    ] = True
 
-    memmap_tmp_dir: Annotated[Path | None, typer.Option(
-        help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-             "If provided, memory maps will be copied to this directory for faster random access during computation.",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True
-    )] = None
+    memmap_tmp_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
+            "If provided, memory maps will be copied to this directory for faster random access during computation.",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None
 
     # Batch sizes
     rank_batch_size: int = 500
 
-    mkscore_batch_size: Annotated[int, typer.Option(
-        help="Number of cells per batch for marker score calculation. Reduce this value (e.g., 50) if encountering GPU OOM errors.",
-        min=10,
-        max=1000
-    )] = 500
+    mkscore_batch_size: Annotated[
+        int,
+        typer.Option(
+            help="Number of cells per batch for marker score calculation. Reduce this value (e.g., 50) if encountering GPU OOM errors.",
+            min=10,
+            max=1000,
+        ),
+    ] = 500
 
     find_homogeneous_batch_size: int = 100
     rank_write_interval: int = 10
 
     # Worker configurations
-    rank_read_workers: Annotated[int, typer.Option(
-        help="Number of parallel reader threads for rank memory map",
-        min=1,
-        max=50
-    )] = 16
+    rank_read_workers: Annotated[
+        int,
+        typer.Option(help="Number of parallel reader threads for rank memory map", min=1, max=50),
+    ] = 16
 
-    mkscore_compute_workers: Annotated[int, typer.Option(
-        help="Number of parallel compute threads for marker score calculation",
-        min=1,
-        max=16
-    )] = 4
+    mkscore_compute_workers: Annotated[
+        int,
+        typer.Option(
+            help="Number of parallel compute threads for marker score calculation", min=1, max=16
+        ),
+    ] = 4
 
-    mkscore_write_workers: Annotated[int, typer.Option(
-        help="Number of parallel writer threads for marker scores",
-        min=1,
-        max=50
-    )] = 4
+    mkscore_write_workers: Annotated[
+        int,
+        typer.Option(help="Number of parallel writer threads for marker scores", min=1, max=50),
+    ] = 4
 
-    compute_input_queue_size: Annotated[int, typer.Option(
-        help="Maximum size of compute input queue (multiplier of mkscore_compute_workers)",
-        min=1,
-        max=10
-    )] = 5
+    compute_input_queue_size: Annotated[
+        int,
+        typer.Option(
+            help="Maximum size of compute input queue (multiplier of mkscore_compute_workers)",
+            min=1,
+            max=10,
+        ),
+    ] = 5
 
-    writer_queue_size: Annotated[int, typer.Option(
-        help="Maximum size of writer input queue",
-        min=10,
-        max=500
-    )] = 100
+    writer_queue_size: Annotated[
+        int, typer.Option(help="Maximum size of writer input queue", min=10, max=500)
+    ] = 100
+
 
 @dataclass
 class LatentToGeneCoreConfig:
-
-    dataset_type: Annotated[DatasetType, typer.Option(
-        help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
-        case_sensitive=False
-    )] = 'spatial2D'
+    dataset_type: Annotated[
+        DatasetType,
+        typer.Option(
+            help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
+            case_sensitive=False,
+        ),
+    ] = "spatial2D"
 
     # --------input h5ad file paths which have the latent representations
-    h5ad_path: Annotated[list[Path] | None, typer.Option(
-        help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
-        exists=True,
-        file_okay=True,
-    )] = None
+    h5ad_path: Annotated[
+        list[Path] | None,
+        typer.Option(
+            help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
+            exists=True,
+            file_okay=True,
+        ),
+    ] = None
 
-    h5ad_yaml: Annotated[Path | None, typer.Option(
-        help="YAML file with sample names and h5ad paths",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    )] = None
+    h5ad_yaml: Annotated[
+        Path | None,
+        typer.Option(
+            help="YAML file with sample names and h5ad paths",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+        ),
+    ] = None
 
-    h5ad_list_file: Annotated[Path | None, typer.Option(
-        help="Each row is a h5ad file path, sample name is the file name without suffix",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    )] = None
+    h5ad_list_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Each row is a h5ad file path, sample name is the file name without suffix",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+        ),
+    ] = None
 
     sample_h5ad_dict: OrderedDict | None = None
 
     # --------input h5ad obs, obsm, layers keys
 
-    annotation: Annotated[str | None, typer.Option(
-        help="Cell type annotation in adata.obs to use. This would constrain finding homogeneous spots within each cell type"
-    )] = None
+    annotation: Annotated[
+        str | None,
+        typer.Option(
+            help="Cell type annotation in adata.obs to use. This would constrain finding homogeneous spots within each cell type"
+        ),
+    ] = None
 
-    data_layer: Annotated[str, typer.Option(
-        help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
-    )] = "X"
+    data_layer: Annotated[
+        str,
+        typer.Option(
+            help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
+        ),
+    ] = "X"
 
-    latent_representation_niche: Annotated[str | None, typer.Option(
-        help="Key for spatial niche embedding in obsm"
-    )] = None
+    latent_representation_niche: Annotated[
+        str | None, typer.Option(help="Key for spatial niche embedding in obsm")
+    ] = None
 
-    latent_representation_cell: Annotated[str, typer.Option(
-        help="Key for cell identity embedding in obsm"
-    )] = "emb_cell"
+    latent_representation_cell: Annotated[
+        str, typer.Option(help="Key for cell identity embedding in obsm")
+    ] = "emb_cell"
 
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm"
-    )] = "spatial"
+    spatial_key: Annotated[str, typer.Option(help="Spatial key in adata.obsm")] = "spatial"
 
     # --------parameters for finding homogeneous spots
 
-    spatial_neighbors: Annotated[int, typer.Option(
-        help="k1: Number of spatial neighbors in it's own slice for spatial dataset",
-        min=10,
-        max=5000
-    )] = 301
+    spatial_neighbors: Annotated[
+        int,
+        typer.Option(
+            help="k1: Number of spatial neighbors in it's own slice for spatial dataset",
+            min=10,
+            max=5000,
+        ),
+    ] = 301
 
-    homogeneous_neighbors: Annotated[int, typer.Option(
-        help="k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)",
-        min=1,
-        max=200
-    )] = 21
+    homogeneous_neighbors: Annotated[
+        int,
+        typer.Option(
+            help="k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)",
+            min=1,
+            max=200,
+        ),
+    ] = 21
 
-    cell_embedding_similarity_threshold: Annotated[float, typer.Option(
-        help="Minimum similarity threshold for cell embedding.",
-        min=0.0,
-        max=1.0
-    )] = 0.0
+    cell_embedding_similarity_threshold: Annotated[
+        float,
+        typer.Option(help="Minimum similarity threshold for cell embedding.", min=0.0, max=1.0),
+    ] = 0.0
 
-    spatial_domain_similarity_threshold: Annotated[float, typer.Option(
-        help="Minimum similarity threshold for spatial domain embedding.",
-        min=0.0,
-        max=1.0
-    )] = 0.6
+    spatial_domain_similarity_threshold: Annotated[
+        float,
+        typer.Option(
+            help="Minimum similarity threshold for spatial domain embedding.", min=0.0, max=1.0
+        ),
+    ] = 0.6
 
-    no_expression_fraction: Annotated[bool, typer.Option(
-        "--no-expression-fraction",
-        help="Skip expression fraction filtering"
-    )] = False
+    no_expression_fraction: Annotated[
+        bool, typer.Option("--no-expression-fraction", help="Skip expression fraction filtering")
+    ] = False
 
     # --------3D slice-aware neighbor search parameters
-    adjacent_slice_spatial_neighbors: Annotated[int, typer.Option(
-        help="Number of spatial neighbors to find on each adjacent slice for 3D data",
-        min=10,
-        max=2000
-    )] = 200
+    adjacent_slice_spatial_neighbors: Annotated[
+        int,
+        typer.Option(
+            help="Number of spatial neighbors to find on each adjacent slice for 3D data",
+            min=10,
+            max=2000,
+        ),
+    ] = 200
 
-    n_adjacent_slices: Annotated[int, typer.Option(
-        help="Number of adjacent slices to search above and below (± n_adjacent_slices) in 3D space for each focal spot. Padding will be applied automatically.",
-        min=0,
-        max=5
-    )] = 1
+    n_adjacent_slices: Annotated[
+        int,
+        typer.Option(
+            help="Number of adjacent slices to search above and below (± n_adjacent_slices) in 3D space for each focal spot. Padding will be applied automatically.",
+            min=0,
+            max=5,
+        ),
+    ] = 1
 
-    cross_slice_marker_score_strategy: Annotated[MarkerScoreCrossSliceStrategy, typer.Option(
-        help="Strategy for computing marker scores across slices in spatial3D datasets. "
-             "'global_pool': Select the top K most similar neighbors globally across all slices combined. "
-             "'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. "
-             "'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.",
-        case_sensitive=False
-    )] = MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
+    cross_slice_marker_score_strategy: Annotated[
+        MarkerScoreCrossSliceStrategy,
+        typer.Option(
+            help="Strategy for computing marker scores across slices in spatial3D datasets. "
+            "'global_pool': Select the top K most similar neighbors globally across all slices combined. "
+            "'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. "
+            "'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.",
+            case_sensitive=False,
+        ),
+    ] = MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
 
-    high_quality_neighbor_filter: Annotated[bool, typer.Option(
-        "--high-quality-neighbor-filter/--no-high-quality-filter",
-        help="Only find neighbors within high quality cells (requires High_quality column in obs)"
-    )] = False
+    high_quality_neighbor_filter: Annotated[
+        bool,
+        typer.Option(
+            "--high-quality-neighbor-filter/--no-high-quality-filter",
+            help="Only find neighbors within high quality cells (requires High_quality column in obs)",
+        ),
+    ] = False
 
     fix_cross_slice_homogenous_neighbors: bool = False
 
@@ -244,9 +290,9 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         if not self.sample_h5ad_dict:
             # Define input options
             input_options = {
-                'h5ad_yaml': ('h5ad_yaml', 'yaml'),
-                'h5ad_path': ('h5ad_path', 'list'),
-                'h5ad_list_file': ('h5ad_list_file', 'file'),
+                "h5ad_yaml": ("h5ad_yaml", "yaml"),
+                "h5ad_path": ("h5ad_path", "list"),
+                "h5ad_list_file": ("h5ad_list_file", "file"),
             }
             self.sample_h5ad_dict = process_h5ad_inputs(self, input_options)
 
@@ -263,19 +309,26 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         """Auto-detect h5ad files from latent directory"""
         if self.find_latent_metadata_path.exists():
             import yaml
+
             with open(self.find_latent_metadata_path) as f:
                 find_latent_metadata = yaml.safe_load(f)
             self.sample_h5ad_dict = OrderedDict(
-                {sample_name: Path(latent_file)
-                 for sample_name, latent_file in
-                 find_latent_metadata['outputs']['latent_files'].items()
-                 })
+                {
+                    sample_name: Path(latent_file)
+                    for sample_name, latent_file in find_latent_metadata["outputs"][
+                        "latent_files"
+                    ].items()
+                }
+            )
             # assert all files exist
             for sample_name, latent_file in self.sample_h5ad_dict.items():
                 if not latent_file.exists():
-                    raise FileNotFoundError(f"Latent file not found for sample '{sample_name}': {latent_file}")
+                    raise FileNotFoundError(
+                        f"Latent file not found for sample '{sample_name}': {latent_file}"
+                    )
             logger.info(
-                f"Auto-detected {len(self.sample_h5ad_dict)} samples from find_latent_metadata_path: {self.find_latent_metadata_path}")
+                f"Auto-detected {len(self.sample_h5ad_dict)} samples from find_latent_metadata_path: {self.find_latent_metadata_path}"
+            )
         else:
             self.sample_h5ad_dict = OrderedDict()
             latent_dir = self.latent_dir
@@ -307,7 +360,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         suffixes_to_remove = ["_latent_adata", "_add_latent"]
         for suffix in suffixes_to_remove:
             if filename.endswith(suffix):
-                return filename[:-len(suffix)]
+                return filename[: -len(suffix)]
 
         return filename
 
@@ -315,33 +368,44 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         """Set up required/optional fields and validate h5ad structure"""
         # Define required fields
         required_fields = {
-            'latent_representation_cell': ('obsm', self.latent_representation_cell,
-                                           'Latent representation of cell identity'),
-            'spatial_key': ('obsm', self.spatial_key, 'Spatial key'),
+            "latent_representation_cell": (
+                "obsm",
+                self.latent_representation_cell,
+                "Latent representation of cell identity",
+            ),
+            "spatial_key": ("obsm", self.spatial_key, "Spatial key"),
         }
 
         # Add annotation as required if provided
         if self.annotation:
-            required_fields['annotation'] = ('obs', self.annotation, 'Annotation')
+            required_fields["annotation"] = ("obs", self.annotation, "Annotation")
 
         # Add niche representation as required if provided
         if self.latent_representation_niche:
-            required_fields['latent_representation_niche'] = (
-                'obsm',
+            required_fields["latent_representation_niche"] = (
+                "obsm",
                 self.latent_representation_niche,
-                'Latent representation of spatial niche'
+                "Latent representation of spatial niche",
             )
 
         # Add High_quality as required if find_neighbor_within_high_quality is enabled
         if self.high_quality_neighbor_filter:
-            required_fields['High_quality'] = ('obs', 'High_quality', 'High quality cell indicator')
+            required_fields["High_quality"] = (
+                "obs",
+                "High_quality",
+                "High quality cell indicator",
+            )
 
         # Validate h5ad structure
         validate_h5ad_structure(self.sample_h5ad_dict, required_fields)
 
     def _configure_dataset_parameters(self):
         """Configure parameters based on dataset type"""
-        self.min_cells_per_type = self.homogeneous_neighbors if self.min_cells_per_type is None else min(self.min_cells_per_type, self.homogeneous_neighbors)
+        self.min_cells_per_type = (
+            self.homogeneous_neighbors
+            if self.min_cells_per_type is None
+            else min(self.min_cells_per_type, self.homogeneous_neighbors)
+        )
 
         if self.dataset_type == DatasetType.SPATIAL_2D:
             self._configure_spatial_2d()
@@ -357,13 +421,17 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
             self.n_adjacent_slices = 0
             self.adjacent_slice_spatial_neighbors = 0
             logger.info(
-                "Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting adjacent_slices=0.")
+                "Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting adjacent_slices=0."
+            )
 
         if self.latent_representation_niche is None:
-            logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
+            logger.warning(
+                "latent_representation_niche is not provided. Spatial domain similarity will not be used."
+            )
 
-        assert self.homogeneous_neighbors <= self.spatial_neighbors, \
+        assert self.homogeneous_neighbors <= self.spatial_neighbors, (
             f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors}) for spatial2D datasets"
+        )
 
     def _configure_spatial_3d(self):
         """Configure parameters for spatial 3D datasets"""
@@ -375,21 +443,29 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
             )
 
         if self.latent_representation_niche is None:
-            logger.warning("latent_representation_niche is not provided. Spatial domain similarity will not be used.")
+            logger.warning(
+                "latent_representation_niche is not provided. Spatial domain similarity will not be used."
+            )
 
-        assert self.adjacent_slice_spatial_neighbors <= self.spatial_neighbors, \
+        assert self.adjacent_slice_spatial_neighbors <= self.spatial_neighbors, (
             f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors})"
-        assert self.homogeneous_neighbors <= self.adjacent_slice_spatial_neighbors, \
+        )
+        assert self.homogeneous_neighbors <= self.adjacent_slice_spatial_neighbors, (
             f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors})"
+        )
 
         n_slices = 1 + self.n_adjacent_slices  # only focal + above slices
-        assert n_slices <= len(self.sample_h5ad_dict), \
-            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). " \
+        assert n_slices <= len(self.sample_h5ad_dict), (
+            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). "
             f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce adjacent_slices."
+        )
 
         logger.info(
-            f"Dataset type is spatial3D, using adjacent_slices={self.n_adjacent_slices} for cross-slice search")
-        logger.info("The Z axis order of slices is determined by the h5ad input order. Currently, the order is: ")
+            f"Dataset type is spatial3D, using adjacent_slices={self.n_adjacent_slices} for cross-slice search"
+        )
+        logger.info(
+            "The Z axis order of slices is determined by the h5ad input order. Currently, the order is: "
+        )
         logger.info(f"{' -> '.join(list(self.sample_h5ad_dict.keys()))}")
 
         homogeneous_neighbors = self.homogeneous_neighbors
@@ -397,26 +473,28 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         # Check if we should use fix number of homogeneous neighbors per slice
         if self.cross_slice_marker_score_strategy in [
             MarkerScoreCrossSliceStrategy.PER_SLICE_POOL,
-            MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
+            MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL,
         ]:
-
             self.fix_cross_slice_homogenous_neighbors = True
             logger.info(
-                f"Using {self.cross_slice_marker_score_strategy.value} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.homogeneous_neighbors} per slice.")
-
+                f"Using {self.cross_slice_marker_score_strategy.value} strategy with fixed number of homogeneous neighbors per adjacent slice: {self.homogeneous_neighbors} per slice."
+            )
 
         elif self.cross_slice_marker_score_strategy == MarkerScoreCrossSliceStrategy.GLOBAL_POOL:
             logger.info(
-                "Using global_pool strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors.")
+                "Using global_pool strategy, will select top homogeneous neighbors from all adjacent slices based on similarity scores. Each adjacent slice can contribute variable number of homogeneous neighbors."
+            )
 
         logger.info(
-            f"Each focal cell will select {homogeneous_neighbors * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices.")
+            f"Each focal cell will select {homogeneous_neighbors * (1 + 2 * n_adjacent_slices) = } total homogeneous neighbors across {(1 + 2 * n_adjacent_slices) = } slices."
+        )
 
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
         self.n_adjacent_slices = 0
         self.spatial_key = None
         self.latent_representation_niche = None
+
 
 def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
     """
@@ -452,10 +530,10 @@ def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
         with open(expected_outputs["metadata"]) as f:
             metadata = yaml.unsafe_load(f)
 
-        if 'outputs' not in metadata:
+        if "outputs" not in metadata:
             return False
 
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Error checking latent2gene results: {e}")
         return False

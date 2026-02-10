@@ -13,6 +13,4 @@ from .entry_point import run_latent_to_gene
 from .marker_scores import MarkerScoreCalculator
 from .rank_calculator import RankCalculator
 
-__all__ = [
-    'run_latent_to_gene'
-]
+__all__ = ["run_latent_to_gene"]

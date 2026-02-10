@@ -6,7 +6,7 @@ on:
       - gsMap3D
     paths:
       - "docs/**"
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch: # Allow manual trigger
 
 permissions:
   contents: read
@@ -47,7 +47,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './docs/build/html'
+          path: "./docs/build/html"
 
   deploy:
     environment:

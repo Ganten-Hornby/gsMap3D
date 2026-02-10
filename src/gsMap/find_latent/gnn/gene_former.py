@@ -15,25 +15,18 @@ class Linear2D(nn.Module):
         bias (bool, optional): Whether to use bias. Defaults to False.
     """
 
-    def __init__(self,
-                 input_dim,
-                 hidden_dim,
-                 n_modules,
-                 bias=False):
-
+    def __init__(self, input_dim, hidden_dim, n_modules, bias=False):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_modules = n_modules
 
         self.weights = torch.randn(input_dim, hidden_dim, n_modules)
-        self.weights = nn.Parameter(
-            nn.init.xavier_normal_(self.weights))
+        self.weights = nn.Parameter(nn.init.xavier_normal_(self.weights))
         self.bias = None
         if bias:
             self.bias = torch.randn(1, hidden_dim, n_modules)
-            self.bias = nn.Parameter(
-                nn.init.xavier_normal_(self.bias))
+            self.bias = nn.Parameter(nn.init.xavier_normal_(self.bias))
 
     def forward(self, x):
         affine_out = torch.einsum("bi,ijk->bjk", [x, self.weights])
@@ -53,20 +46,14 @@ class GeneModuler(nn.Module):
         extractor (Linear2D): The Linear2D object.
     """
 
-    def __init__(self,
-                 input_dim=2000,
-                 hidden_dim=8,
-                 n_modules=16):
-
+    def __init__(self, input_dim=2000, hidden_dim=8, n_modules=16):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.n_modules = n_modules
 
         self.layernorm = nn.LayerNorm(input_dim)
-        self.extractor = Linear2D(
-            input_dim=input_dim, hidden_dim=hidden_dim, n_modules=n_modules
-        )
+        self.extractor = Linear2D(input_dim=input_dim, hidden_dim=hidden_dim, n_modules=n_modules)
 
     def forward(self, x, batch=None):
         if batch is not None:
@@ -84,19 +71,19 @@ class PositionalEncoding(nn.Module):
         d_model (int): The dimensionality of the model. This should match the dimension of the input embeddings.
         max_len (int): The maximum length of the sequence for which positional encoding is computed.
     """
-    def __init__(self,
-                 d_model,
-                 max_len=500):
 
+    def __init__(self, d_model, max_len=500):
         super().__init__()
 
         self.d_model = d_model
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).float().unsqueeze(1)
-        angular_speed = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        angular_speed = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * angular_speed)
         pe[:, 1::2] = torch.cos(position * angular_speed)
-        self.register_buffer('pe', pe.unsqueeze(0))
+        self.register_buffer("pe", pe.unsqueeze(0))
 
     def forward(self, x):
         # x is N, L, D
@@ -127,32 +114,29 @@ class GeneModuleFormer(nn.Module):
         nhead=8,
         n_enc_layer=3,
     ):
-
         super().__init__()
 
-        self.moduler = GeneModuler(
-            input_dim=input_dim, hidden_dim=module_dim, n_modules=n_modules
-        )
+        self.moduler = GeneModuler(input_dim=input_dim, hidden_dim=module_dim, n_modules=n_modules)
 
         self.expand = (
-            nn.Linear(module_dim, hidden_dim)
-            if module_dim != hidden_dim
-            else nn.Identity()
+            nn.Linear(module_dim, hidden_dim) if module_dim != hidden_dim else nn.Identity()
         )
 
         self.module = nn.TransformerEncoder(
-            encoder_layer=nn.TransformerEncoderLayer(d_model=hidden_dim,
-                                                     nhead=nhead,
-                                                     dim_feedforward=4 * hidden_dim,
-                                                     batch_first=True),
-            num_layers=n_enc_layer
+            encoder_layer=nn.TransformerEncoderLayer(
+                d_model=hidden_dim, nhead=nhead, dim_feedforward=4 * hidden_dim, batch_first=True
+            ),
+            num_layers=n_enc_layer,
         )
 
         self.pe = PositionalEncoding(d_model=module_dim)
 
         self.cls_token = nn.Parameter(torch.randn(1, 1, module_dim))
 
-    def forward(self, x,):
+    def forward(
+        self,
+        x,
+    ):
         auto_fold = self.moduler(x)
         b, _, _ = auto_fold.shape
         auto_fold = self.pe(auto_fold)
@@ -160,5 +144,5 @@ class GeneModuleFormer(nn.Module):
         auto_fold = torch.cat([cls_tokens, auto_fold], dim=1)
         auto_fold = self.expand(auto_fold)
         rep = self.module(auto_fold)
-        cls_rep = rep[:,0,:]
+        cls_rep = rep[:, 0, :]
         return cls_rep

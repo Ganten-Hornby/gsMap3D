@@ -49,7 +49,7 @@ class PlinkBEDReader:
         bfile_prefix: str,
         maf_min: float | None = None,
         keep_snps: list[str] | None = None,
-        preload: bool = True
+        preload: bool = True,
     ):
         """
         Initialize PlinkBEDReader with optional filtering.
@@ -74,7 +74,7 @@ class PlinkBEDReader:
 
         # Validate existence
         if not (Path(bed_path).exists() and Path(bim_path).exists() and Path(fam_path).exists()):
-             raise FileNotFoundError(f"One or more PLINK files missing for prefix: {bfile_prefix}")
+            raise FileNotFoundError(f"One or more PLINK files missing for prefix: {bfile_prefix}")
 
         logger.info(f"Loading PLINK files from: {bfile_prefix}")
 
@@ -83,12 +83,14 @@ class PlinkBEDReader:
         # Shape is (sample, variant)
         # Suppress FutureWarning about delim_whitespace deprecation (from pandas-plink internals)
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*delim_whitespace.*", category=FutureWarning)
+            warnings.filterwarnings(
+                "ignore", message=".*delim_whitespace.*", category=FutureWarning
+            )
             self.G = read_plink1_bin(bed_path, bim_path, fam_path, verbose=False)
 
         # Initial dimensions
-        self.n_original = self.G.sizes['sample']
-        self.m_original = self.G.sizes['variant']
+        self.n_original = self.G.sizes["sample"]
+        self.m_original = self.G.sizes["variant"]
         self.snp_ids_original = pd.Index(self.G.snp.values)
 
         logger.info(f"Loaded metadata: {self.m_original} SNPs × {self.n_original} individuals")
@@ -105,8 +107,8 @@ class PlinkBEDReader:
         self._apply_basic_qc()
 
         # Update dimensions after filtering
-        self.n = self.G.sizes['sample']
-        self.m = self.G.sizes['variant']
+        self.n = self.G.sizes["sample"]
+        self.m = self.G.sizes["variant"]
 
         # Extract metadata DataFrames from xarray coordinates for compatibility
         self._sync_metadata()
@@ -134,9 +136,7 @@ class PlinkBEDReader:
         return maf.compute()
 
     def _apply_filters(
-        self,
-        maf_min: float | None = None,
-        keep_snps: list[str] | None = None
+        self, maf_min: float | None = None, keep_snps: list[str] | None = None
     ) -> None:
         """
         Apply SNP filters directly to the xarray DataArray.
@@ -166,11 +166,11 @@ class PlinkBEDReader:
                 logger.info(f"Filtered {n_removed_snp} SNPs not in keep list")
 
         # 4. Filter the main DataArray
-        n_before = self.G.sizes['variant']
+        n_before = self.G.sizes["variant"]
         self.G = self.G.isel(variant=mask)
         self.maf = self.maf[mask]
 
-        n_after = self.G.sizes['variant']
+        n_after = self.G.sizes["variant"]
         if n_before != n_after:
             logger.info(f"Total SNPs filtered: {n_before - n_after}/{n_before}")
 
@@ -194,8 +194,8 @@ class PlinkBEDReader:
         # Create masks
         # Monomorphic: std == 0 (or very close to 0)
         # All missing: count == 0
-        mask_polymorphic = (stds_val > 0)
-        mask_not_empty = (counts_val > 0)
+        mask_polymorphic = stds_val > 0
+        mask_not_empty = counts_val > 0
 
         mask = mask_polymorphic & mask_not_empty
 
@@ -210,27 +210,30 @@ class PlinkBEDReader:
             logger.info("QC: No monomorphic or all-missing variants found.")
 
     def _sync_metadata(self):
-
-        self.bim = pd.DataFrame({
-            'CHR': self.G.chrom.values,
-            'SNP': self.G.snp.values,
-            'CM': self.G.cm.values,
-            'BP': self.G.pos.values,
-            'A1': self.G.a1.values,
-            'A2': self.G.a0.values,
-            'i': np.arange(self.m)
-        })
-        self.bim['MAF'] = self.maf.values
+        self.bim = pd.DataFrame(
+            {
+                "CHR": self.G.chrom.values,
+                "SNP": self.G.snp.values,
+                "CM": self.G.cm.values,
+                "BP": self.G.pos.values,
+                "A1": self.G.a1.values,
+                "A2": self.G.a0.values,
+                "i": np.arange(self.m),
+            }
+        )
+        self.bim["MAF"] = self.maf.values
 
         # pandas-plink stores FAM info in coordinates
-        self.fam = pd.DataFrame({
-            'fid': self.G.fid.values,
-            'iid': self.G.iid.values,
-            'father': self.G.father.values,
-            'mother': self.G.mother.values,
-            'gender': self.G.gender.values,
-            'trait': self.G.trait.values
-        })
+        self.fam = pd.DataFrame(
+            {
+                "fid": self.G.fid.values,
+                "iid": self.G.iid.values,
+                "father": self.G.father.values,
+                "mother": self.G.mother.values,
+                "gender": self.G.gender.values,
+                "trait": self.G.trait.values,
+            }
+        )
 
     def _load_and_standardize_all(self) -> np.ndarray:
         """

@@ -21,7 +21,9 @@ class FormatSumstatsConfig:
     a2: Annotated[str | None, typer.Option(help="Name of none-effect allele column")] = None
     info: Annotated[str | None, typer.Option(help="Name of info column")] = None
     beta: Annotated[str | None, typer.Option(help="Name of gwas beta column.")] = None
-    se: Annotated[str | None, typer.Option(help="Name of gwas standar error of beta column")] = None
+    se: Annotated[str | None, typer.Option(help="Name of gwas standar error of beta column")] = (
+        None
+    )
     p: Annotated[str | None, typer.Option(help="Name of p-value column")] = None
     frq: Annotated[str | None, typer.Option(help="Name of A1 ferquency column")] = None
     n: Annotated[str | None, typer.Option(help="Name of sample size column")] = None
@@ -36,10 +38,14 @@ class FormatSumstatsConfig:
     chunksize: Annotated[int, typer.Option(help="Chunk size for loading dbsnp file")] = 1000000
 
     # Arguments for output format and quality
-    format: Annotated[Literal["gsMap", "COJO"], typer.Option(help="Format of output data", case_sensitive=False)] = "gsMap"
+    format: Annotated[
+        Literal["gsMap", "COJO"], typer.Option(help="Format of output data", case_sensitive=False)
+    ] = "gsMap"
     info_min: Annotated[float, typer.Option(help="Minimum INFO score.")] = 0.9
     maf_min: Annotated[float, typer.Option(help="Minimum MAF.")] = 0.01
-    keep_chr_pos: Annotated[bool, typer.Option(help="Keep SNP chromosome and position columns in the output data")] = False
+    keep_chr_pos: Annotated[
+        bool, typer.Option(help="Keep SNP chromosome and position columns in the output data")
+    ] = False
 
     def __post_init__(self):
         # Handle n being potentially a number passed as a string from CLI

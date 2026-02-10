@@ -11,6 +11,7 @@ import yaml
 
 logger = logging.getLogger("gsMap.config")
 
+
 def configure_jax_platform(use_accelerator: bool = True):
     """Configure JAX platform based on availability of accelerators.
 
@@ -23,6 +24,7 @@ def configure_jax_platform(use_accelerator: bool = True):
     """
     try:
         import os
+
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         logging.getLogger("jax._src.xla_bridge").setLevel(logging.ERROR)
 
@@ -30,28 +32,30 @@ def configure_jax_platform(use_accelerator: bool = True):
         from jax import config as jax_config
 
         if not use_accelerator:
-            jax_config.update('jax_platform_name', 'cpu')
+            jax_config.update("jax_platform_name", "cpu")
             logger.info("JAX configured to use CPU for computations (accelerators disabled)")
             return
 
         # Priority list for accelerators
-        platforms = ['gpu', 'tpu']
+        platforms = ["gpu", "tpu"]
         configured = False
 
         for platform in platforms:
             try:
                 devices = jax.devices(platform)
                 if len(devices) > 0:
-                    jax_config.update('jax_platform_name', platform)
+                    jax_config.update("jax_platform_name", platform)
                     logger.info(f"JAX configured to use {platform.upper()} for computations.")
-                    logger.info(f" ({len(devices)} device(s) detected). Device {devices[0]} will be used.")
+                    logger.info(
+                        f" ({len(devices)} device(s) detected). Device {devices[0]} will be used."
+                    )
                     configured = True
                     break
-            except (RuntimeError, ValueError, Exception):
+            except (RuntimeError, ValueError):
                 continue
 
         if not configured:
-            jax_config.update('jax_platform_name', 'cpu')
+            jax_config.update("jax_platform_name", "cpu")
             logger.info("No GPU or TPU detected, JAX configured to use CPU for computations")
 
     except ImportError:
@@ -60,42 +64,44 @@ def configure_jax_platform(use_accelerator: bool = True):
             "pip install jax jaxlib (for CPU) or see JAX documentation for GPU/TPU installation."
         ) from None
 
+
 def get_anndata_shape(h5ad_path: str):
     """Get the shape (n_obs, n_vars) of an AnnData file without loading it."""
-    with h5py.File(h5ad_path, 'r') as f:
+    with h5py.File(h5ad_path, "r") as f:
         # 1. Verify it's a valid AnnData file by checking metadata
-        if f.attrs.get('encoding-type') != 'anndata':
+        if f.attrs.get("encoding-type") != "anndata":
             logger.error(f"File '{h5ad_path}' does not appear to be a valid AnnData file.")
             return None
 
         # 2. Determine n_obs and n_vars from the primary metadata sources
-        if 'obs' not in f or 'var' not in f:
+        if "obs" not in f or "var" not in f:
             logger.error("AnnData file is missing 'obs' or 'var' group.")
             return None
 
         # Get the name of the index column from attributes
-        obs_index_key = f['obs'].attrs.get('_index', None)
-        var_index_key = f['var'].attrs.get('_index', None)
+        obs_index_key = f["obs"].attrs.get("_index", None)
+        var_index_key = f["var"].attrs.get("_index", None)
 
-        if not obs_index_key or obs_index_key not in f['obs']:
+        if not obs_index_key or obs_index_key not in f["obs"]:
             logger.error("Could not determine index for 'obs'.")
             return None
-        if not var_index_key or var_index_key not in f['var']:
+        if not var_index_key or var_index_key not in f["var"]:
             logger.error("Could not determine index for 'var'.")
             return None
 
         # The shape is the length of these index arrays
-        obs_obj = f['obs'][obs_index_key]
+        obs_obj = f["obs"][obs_index_key]
         if isinstance(obs_obj, h5py.Group):
-            obs_obj = obs_obj['categories']
+            obs_obj = obs_obj["categories"]
         n_obs = obs_obj.shape[0]
 
-        var_obj  = f['var'][var_index_key]
+        var_obj = f["var"][var_index_key]
         if isinstance(var_obj, h5py.Group):
-            var_obj = var_obj['categories']
+            var_obj = var_obj["categories"]
         n_vars = var_obj.shape[0]
 
         return n_obs, n_vars
+
 
 def inspect_h5ad_structure(filename):
     """
@@ -105,19 +111,19 @@ def inspect_h5ad_structure(filename):
     """
     structure = {}
 
-    with h5py.File(filename, 'r') as f:
+    with h5py.File(filename, "r") as f:
         # Check main slots
-        slots = ['obs', 'var', 'obsm', 'varm', 'obsp', 'varp', 'uns', 'layers', 'X', 'raw']
+        slots = ["obs", "var", "obsm", "varm", "obsp", "varp", "uns", "layers", "X", "raw"]
 
         for slot in slots:
             if slot in f:
-                if slot in ['obsm', 'varm', 'obsp', 'varp', 'layers', 'uns']:
+                if slot in ["obsm", "varm", "obsp", "varp", "layers", "uns"]:
                     # These are groups containing multiple keys
                     structure[slot] = list(f[slot].keys())
-                elif slot in ['obs', 'var']:
+                elif slot in ["obs", "var"]:
                     # These are dataframes - get column names
-                    if 'column-order' in f[slot].attrs:
-                        structure[slot] = list(f[slot].attrs['column-order'])
+                    if "column-order" in f[slot].attrs:
+                        structure[slot] = list(f[slot].attrs["column-order"])
                     else:
                         structure[slot] = list(f[slot].keys())
                 else:
@@ -125,6 +131,7 @@ def inspect_h5ad_structure(filename):
                     structure[slot] = True
 
     return structure
+
 
 def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=None):
     """
@@ -152,14 +159,14 @@ def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=N
                 continue
 
             # Special handling for data_layer
-            if field_name == 'data_layer' and field_key != 'X':
-                if 'layers' not in structure or field_key not in structure.get('layers', []):
+            if field_name == "data_layer" and field_key != "X":
+                if "layers" not in structure or field_key not in structure.get("layers", []):
                     raise ValueError(
                         f"Data layer '{field_key}' not found in layers for sample '{sample_name}'. "
                         f"Available layers: {structure.get('layers', [])}"
                     )
-            elif field_name == 'data_layer' and field_key == 'X':
-                if 'X' not in structure:
+            elif field_name == "data_layer" and field_key == "X":
+                if "X" not in structure:
                     raise ValueError(f"X matrix not found in h5ad file for sample '{sample_name}'")
             else:
                 # Standard validation for obsm, obs, etc.
@@ -183,6 +190,7 @@ def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=N
                         f"Available keys in {slot}: {available}"
                     )
 
+
 def process_h5ad_inputs(config, input_options):
     """
     Process h5ad input options and create sample_h5ad_dict.
@@ -198,7 +206,7 @@ def process_h5ad_inputs(config, input_options):
         OrderedDict of {sample_name: h5ad_path}
     """
 
-    if config.sample_h5ad_dict  is not None and len(config.sample_h5ad_dict) > 0:
+    if config.sample_h5ad_dict is not None and len(config.sample_h5ad_dict) > 0:
         logger.info("Using pre-defined sample_h5ad_dict from configuration")
         return OrderedDict(config.sample_h5ad_dict)
 
@@ -212,7 +220,10 @@ def process_h5ad_inputs(config, input_options):
 
     # Ensure at most one option is provided
     if len(options_provided) > 1:
-        raise AssertionError(f"At most one input option can be provided. Got {len(options_provided)}: {', '.join(options_provided)}. " f"Please provide only one of: {', '.join(input_options.keys())}")
+        raise AssertionError(
+            f"At most one input option can be provided. Got {len(options_provided)}: {', '.join(options_provided)}. "
+            f"Please provide only one of: {', '.join(input_options.keys())}"
+        )
 
     # Process the provided input option
     for option_name, (field_name, processing_type) in input_options.items():
@@ -220,7 +231,7 @@ def process_h5ad_inputs(config, input_options):
         if not field_value:
             continue
 
-        if processing_type == 'yaml':
+        if processing_type == "yaml":
             logger.info(f"Using {option_name}: {field_value}")
             yaml_file_path = Path(field_value)
             yaml_parent_dir = yaml_file_path.parent
@@ -233,9 +244,9 @@ def process_h5ad_inputs(config, input_options):
                         h5ad_path = yaml_parent_dir / h5ad_path
                     sample_h5ad_dict[sample_name] = h5ad_path
 
-        elif processing_type == 'list':
+        elif processing_type == "list":
             # Handle single string or Path input by wrapping in a list
-            if isinstance(field_value, (str, Path)):
+            if isinstance(field_value, str | Path):
                 field_value = [field_value]
 
             logger.info(f"Using {option_name} with {len(field_value)} files")
@@ -246,7 +257,7 @@ def process_h5ad_inputs(config, input_options):
                     logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
                 sample_h5ad_dict[sample_name] = h5ad_path
 
-        elif processing_type == 'file':
+        elif processing_type == "file":
             logger.info(f"Using {option_name}: {field_value}")
             list_file_path = Path(field_value)
             list_file_parent_dir = list_file_path.parent
@@ -260,11 +271,14 @@ def process_h5ad_inputs(config, input_options):
                             h5ad_path = list_file_parent_dir / h5ad_path
                         sample_name = h5ad_path.stem
                         if sample_name in sample_h5ad_dict:
-                            logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
+                            logger.warning(
+                                f"Duplicate sample name: {sample_name}, will be overwritten"
+                            )
                         sample_h5ad_dict[sample_name] = h5ad_path
         break
 
     return sample_h5ad_dict
+
 
 def verify_homolog_file_format(config):
     if config.homolog_file is not None:

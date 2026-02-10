@@ -8,7 +8,7 @@ By default, `gsMap3D` utilizes pre-calculated SNP-to-gene weights based on the *
 
 For more customizable analyses—such as using custom gene BED files, alternative LD reference panels, or population-specific data—you can generate your own SNP-to-gene weight matrix. See the [Computing Custom LD Score Weight Matrix](ldscore_weight_matrix.md) guide for detailed instructions.
 
-**Using a Custom Weight Matrix**
+### Using a Custom Weight Matrix
 
 Once you have generated a custom SNP-to-gene weight matrix, provide it to `gsMap3D` using:
 
@@ -17,7 +17,6 @@ gsmap quick-mode \
     --snp-gene-weight-adata-path "/path/to/custom_snp_gene_weights.h5ad" \
     ...
 ```
-
 
 ## Use your own embedding
 
@@ -47,9 +46,10 @@ gsmap spatial-ldsc \
     ...
 ```
 
-**Format Requirements**
+### Format Requirements
 
 The custom GSS file must be in **h5ad format** with:
+
 - **Rows**: Cells/spots (observations)
 - **Columns**: Genes (variables)
 

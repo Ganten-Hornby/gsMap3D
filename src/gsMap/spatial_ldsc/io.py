@@ -152,8 +152,12 @@ def _read_w_ld(w_ld_dir):
     chr_files = _read_chr_files(w_file_pattern, suffix)
 
     if not chr_files:
-        logger.error(f"No LD score files found matching pattern: {w_file_pattern}*{suffix}* inside {w_ld_dir}")
-        raise FileNotFoundError(f"No LD score files found matching pattern: {w_file_pattern}*{suffix}* inside {w_ld_dir}")
+        logger.error(
+            f"No LD score files found matching pattern: {w_file_pattern}*{suffix}* inside {w_ld_dir}"
+        )
+        raise FileNotFoundError(
+            f"No LD score files found matching pattern: {w_file_pattern}*{suffix}* inside {w_ld_dir}"
+        )
 
     # Read and process each file
     w_array = []
@@ -190,6 +194,7 @@ def _read_w_ld(w_ld_dir):
 # Memory monitoring
 # ============================================================================
 
+
 def log_memory_usage(message=""):
     """Log current memory usage."""
     try:
@@ -198,7 +203,7 @@ def log_memory_usage(message=""):
         rss_gb = mem_info.rss / 1024**3
         logger.debug(f"Memory usage {message}: {rss_gb:.2f} GB")
         return rss_gb
-    except:
+    except Exception:  # noqa: BLE001
         return 0.0
 
 
@@ -206,7 +211,10 @@ def log_memory_usage(message=""):
 # Data loading and preparation
 # ============================================================================
 
-def load_common_resources(config: SpatialLDSCConfig) -> tuple[pd.DataFrame, pd.DataFrame, ad.AnnData]:
+
+def load_common_resources(
+    config: SpatialLDSCConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, ad.AnnData]:
     """
     Load resources common to all traits (weights, baseline, SNP-gene matrix).
     Returns (baseline_ld, w_ld, snp_gene_weight_adata)
@@ -233,7 +241,7 @@ def load_common_resources(config: SpatialLDSCConfig) -> tuple[pd.DataFrame, pd.D
     baseline_ld = pd.DataFrame(
         np.column_stack((base, all_gene)),
         columns=["base", "all_gene"],
-        index=snp_gene_weight_adata.obs_names
+        index=snp_gene_weight_adata.obs_names,
     )
     baseline_ld.index.name = "SNP"
     logger.info(f"Constructed baseline LD from SNP-gene weights. Shape: {baseline_ld.shape}")
@@ -243,21 +251,25 @@ def load_common_resources(config: SpatialLDSCConfig) -> tuple[pd.DataFrame, pd.D
 
     # 5. Load additional baselines and update common SNPs
     if config.additional_baseline_h5ad_path_list:
-        logger.info(f"Loading {len(config.additional_baseline_h5ad_path_list)} additional baseline annotations...")
+        logger.info(
+            f"Loading {len(config.additional_baseline_h5ad_path_list)} additional baseline annotations..."
+        )
 
         # We need to process additional baselines carefully to maintain the dataframe structure
         # First, ensure we only work with currently common SNPs
         baseline_ld = baseline_ld.loc[common_snps]
 
         for i, h5ad_path in enumerate(config.additional_baseline_h5ad_path_list):
-            logger.info(f"Loading additional baseline {i+1}: {h5ad_path}")
+            logger.info(f"Loading additional baseline {i + 1}: {h5ad_path}")
             add_adata = ad.read_h5ad(h5ad_path)
 
             # Intersect with current common SNPs
             common_in_add = common_snps.intersection(add_adata.obs_names)
 
             if len(common_in_add) < len(common_snps):
-                logger.warning(f"Additional baseline {h5ad_path} only has {len(common_in_add)}/{len(common_snps)} common SNPs. Intersecting...")
+                logger.warning(
+                    f"Additional baseline {h5ad_path} only has {len(common_in_add)}/{len(common_snps)} common SNPs. Intersecting..."
+                )
                 common_snps = common_in_add
                 baseline_ld = baseline_ld.loc[common_snps]
 
@@ -266,11 +278,7 @@ def load_common_resources(config: SpatialLDSCConfig) -> tuple[pd.DataFrame, pd.D
             if hasattr(add_X, "toarray"):
                 add_X = add_X.toarray()
 
-            add_df = pd.DataFrame(
-                add_X,
-                index=common_snps,
-                columns=add_adata.var_names
-            )
+            add_df = pd.DataFrame(add_X, index=common_snps, columns=add_adata.var_names)
 
             # Concatenate
             baseline_ld = pd.concat([baseline_ld, add_df], axis=1)
@@ -283,12 +291,14 @@ def load_common_resources(config: SpatialLDSCConfig) -> tuple[pd.DataFrame, pd.D
     return baseline_ld, w_ld, snp_gene_weight_adata
 
 
-def prepare_trait_data(config: SpatialLDSCConfig,
-                      trait_name: str,
-                      sumstats_file: str,
-                      baseline_ld: pd.DataFrame,
-                      w_ld: pd.DataFrame,
-                      snp_gene_weight_adata: ad.AnnData) -> tuple[dict, pd.Index]:
+def prepare_trait_data(
+    config: SpatialLDSCConfig,
+    trait_name: str,
+    sumstats_file: str,
+    baseline_ld: pd.DataFrame,
+    w_ld: pd.DataFrame,
+    snp_gene_weight_adata: ad.AnnData,
+) -> tuple[dict, pd.Index]:
     """
     Prepare data for a specific trait using pre-loaded common resources.
     """
@@ -303,7 +313,7 @@ def prepare_trait_data(config: SpatialLDSCConfig,
     chisq_max = config.chisq_max
     if chisq_max is None:
         chisq_max = max(0.001 * sumstats.N.max(), 80)
-    sumstats["chisq"] = sumstats.Z ** 2
+    sumstats["chisq"] = sumstats.Z**2
 
     # Calculate genomic control lambda (λGC) before filtering
     lambda_gc = np.median(sumstats.chisq) / 0.4559364
@@ -330,17 +340,18 @@ def prepare_trait_data(config: SpatialLDSCConfig,
 
     # Prepare data dictionary
     data = {
-        'baseline_ld': trait_baseline_ld,
-        'baseline_ld_sum': trait_baseline_ld.sum(axis=1).values.astype(np.float32),
-        'w_ld': trait_w_ld.LD_weights.values.astype(np.float32),
-        'sumstats': trait_sumstats,
-        'chisq': trait_sumstats.chisq.values.astype(np.float32),
-        'N': trait_sumstats.N.values.astype(np.float32),
-        'Nbar': np.float32(trait_sumstats.N.mean()),
-        'snp_positions': snp_positions
+        "baseline_ld": trait_baseline_ld,
+        "baseline_ld_sum": trait_baseline_ld.sum(axis=1).values.astype(np.float32),
+        "w_ld": trait_w_ld.LD_weights.values.astype(np.float32),
+        "sumstats": trait_sumstats,
+        "chisq": trait_sumstats.chisq.values.astype(np.float32),
+        "N": trait_sumstats.N.values.astype(np.float32),
+        "Nbar": np.float32(trait_sumstats.N.mean()),
+        "snp_positions": snp_positions,
     }
 
     return data, common_snps
+
 
 def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
     """
@@ -356,7 +367,7 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
     memmap_path = Path(config.marker_scores_memmap_path)
     metadata_path = Path(config.concatenated_latent_adata_path)
     tmp_dir = config.memmap_tmp_dir
-    mode = 'r'  # Read-only mode for loading
+    mode = "r"  # Read-only mode for loading
 
     if not metadata_path.exists():
         raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
@@ -364,22 +375,19 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
     # check complete
     is_complete, _ = MemMapDense.check_complete(memmap_path)
     if not is_complete:
-        raise ValueError(f"Marker score at {memmap_path} is incomplete or corrupted. Please recompute.")
+        raise ValueError(
+            f"Marker score at {memmap_path} is incomplete or corrupted. Please recompute."
+        )
 
     # Load metadata source in backed mode
     logger.info(f"Loading metadata from {metadata_path}")
-    src_adata = ad.read_h5ad(metadata_path, backed='r')
+    src_adata = ad.read_h5ad(metadata_path, backed="r")
 
     # Determine shape from metadata
     shape = (src_adata.n_obs, src_adata.n_vars)
 
     # Initialize MemMapDense
-    mm = MemMapDense(
-        memmap_path,
-        shape=shape,
-        mode=mode,
-        tmp_dir=tmp_dir
-    )
+    mm = MemMapDense(memmap_path, shape=shape, mode=mode, tmp_dir=tmp_dir)
 
     logger.info("Constructing AnnData wrapper...")
     adata = ad.AnnData(
@@ -388,19 +396,19 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
         var=src_adata.var.copy(),
         uns=src_adata.uns.copy(),
         obsm=src_adata.obsm.copy(),
-        varm=src_adata.varm.copy()
+        varm=src_adata.varm.copy(),
     )
     # Close metadata source to release file handle
     if src_adata.isbacked:
         src_adata.file.close()
 
     # Attach the manager to allow access to MemMapDense methods
-    adata.uns['memmap_manager'] = mm
+    adata.uns["memmap_manager"] = mm
 
     return adata
 
-def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str) -> str | None:
 
+def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str) -> str | None:
     base_name = f"{config.project_name}_{trait_name}"
 
     # If we have cell indices range, include it in filename
@@ -422,20 +430,17 @@ def generate_expected_output_filename(config: SpatialLDSCConfig, trait_name: str
 
 
 def log_existing_result_statistics(result_path: Path, trait_name: str):
-
     try:
         # Read the existing result
         logger.info(f"Reading existing result from: {result_path}")
-        df = pd.read_csv(result_path, compression='gzip')
+        df = pd.read_csv(result_path, compression="gzip")
 
         n_spots = len(df)
         bonferroni_threshold = 0.05 / n_spots
-        n_bonferroni_sig = (df['p'] < bonferroni_threshold).sum()
+        n_bonferroni_sig = (df["p"] < bonferroni_threshold).sum()
 
         # FDR correction
-        reject, _, _, _ = multipletests(
-            df['p'], alpha=0.001, method='fdr_bh'
-        )
+        reject, _, _, _ = multipletests(df["p"], alpha=0.001, method="fdr_bh")
         n_fdr_sig = reject.sum()
 
         logger.info("=" * 70)
@@ -450,10 +455,8 @@ def log_existing_result_statistics(result_path: Path, trait_name: str):
         logger.info(f"FDR significant (alpha=0.001): {n_fdr_sig:,}")
         logger.info("=" * 70)
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Could not read existing result statistics: {e}")
-
-
 
 
 class LazyFeatherX:
@@ -507,7 +510,9 @@ class LazyFeatherX:
                 # Single row request
                 sliced_table = self.table.slice(offset=row_key, length=1)
             else:
-                raise NotImplementedError("Only slice objects (start:stop) or integers are supported for rows.")
+                raise NotImplementedError(
+                    "Only slice objects (start:stop) or integers are supported for rows."
+                )
 
             # --- 2. Handle Column Slicing ---
             final_cols = self.feature_names
@@ -541,7 +546,7 @@ class LazyFeatherX:
 
             # If we had a row step > 1, apply it now on the small DataFrame
             if isinstance(row_key, slice) and row_key.step and row_key.step != 1:
-                df = df.iloc[::row_key.step]
+                df = df.iloc[:: row_key.step]
 
             return df.to_numpy()
 
@@ -561,7 +566,9 @@ class LazyFeatherX:
             elif isinstance(row_key, int):
                 selected_cols = [self.feature_names[row_key]]
             else:
-                raise NotImplementedError("Row key type not supported for transposed FeatherAnnData.")
+                raise NotImplementedError(
+                    "Row key type not supported for transposed FeatherAnnData."
+                )
 
             # --- 2. Determine which rows to read (Variables) ---
             if isinstance(col_key, slice):
@@ -573,7 +580,7 @@ class LazyFeatherX:
                 df = sliced_table.select(selected_cols).to_pandas()
                 # Apply step for rows if needed
                 if col_key.step and col_key.step != 1:
-                    df = df.iloc[::col_key.step]
+                    df = df.iloc[:: col_key.step]
             elif isinstance(col_key, int):
                 sliced_table = self.table.slice(offset=col_key, length=1)
                 df = sliced_table.select(selected_cols).to_pandas()
@@ -583,7 +590,9 @@ class LazyFeatherX:
                 sliced_table = self.table.take(col_key)
                 df = sliced_table.select(selected_cols).to_pandas()
             else:
-                raise NotImplementedError("Column key type not supported for transposed FeatherAnnData.")
+                raise NotImplementedError(
+                    "Column key type not supported for transposed FeatherAnnData."
+                )
 
             # The dataframe 'df' has table rows as index and selected_cols as columns.
             # In transposed mode, we want selected_cols as rows and table rows as columns.
@@ -645,12 +654,13 @@ class FeatherAnnData:
         self.shape = (self.n_obs, self.n_vars)
 
     def __repr__(self):
-        return (f"FeatherAnnData object with n_obs × n_vars = {self.n_obs} × {self.n_vars}\n"
-                f"    obs: {list(self.obs.columns)}\n"
-                f"    var: {list(self.var.columns)}\n"
-                f"    uns: (Empty)\n"
-                f"    obsm: (Empty)\n"
-                f"    varm: (Empty)\n"
-                f"    layers: (Empty)\n"
-                f"    Backing: PyArrow Memory Mapping (Read-Only)")
-
+        return (
+            f"FeatherAnnData object with n_obs × n_vars = {self.n_obs} × {self.n_vars}\n"
+            f"    obs: {list(self.obs.columns)}\n"
+            f"    var: {list(self.var.columns)}\n"
+            f"    uns: (Empty)\n"
+            f"    obsm: (Empty)\n"
+            f"    varm: (Empty)\n"
+            f"    layers: (Empty)\n"
+            f"    Backing: PyArrow Memory Mapping (Read-Only)"
+        )

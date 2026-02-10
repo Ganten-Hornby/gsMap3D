@@ -20,195 +20,180 @@ from gsMap.config.utils import (
 
 logger = logging.getLogger("gsMap.config")
 
+
 @dataclass
 class FindLatentModelConfig:
     __display_in_quick_mode_cli__ = False
 
-    feat_cell: Annotated[int, typer.Option(
-        help="Number of top variable features to retain",
-        min=100,
-        max=10000
-    )] = 2000
+    feat_cell: Annotated[
+        int, typer.Option(help="Number of top variable features to retain", min=100, max=10000)
+    ] = 2000
 
     # Feature extraction parameters
-    n_neighbors: Annotated[int, typer.Option(
-        help="Number of neighbors for LGCN",
-        min=1,
-        max=50
-    )] = 10
+    n_neighbors: Annotated[
+        int, typer.Option(help="Number of neighbors for LGCN", min=1, max=50)
+    ] = 10
 
-    K: Annotated[int, typer.Option(
-        help="Graph convolution depth for LGCN",
-        min=1,
-        max=10
-    )] = 3
+    K: Annotated[int, typer.Option(help="Graph convolution depth for LGCN", min=1, max=10)] = 3
 
     # Model parameters
-    hidden_size: Annotated[int, typer.Option(
-        help="Units in the first hidden layer",
-        min=32,
-        max=512
-    )] = 128
+    hidden_size: Annotated[
+        int, typer.Option(help="Units in the first hidden layer", min=32, max=512)
+    ] = 128
 
-    embedding_size: Annotated[int, typer.Option(
-        help="Size of the latent embedding layer",
-        min=8,
-        max=128
-    )] = 32
+    embedding_size: Annotated[
+        int, typer.Option(help="Size of the latent embedding layer", min=8, max=128)
+    ] = 32
 
     # Transformer parameters
-    use_tf: Annotated[bool, typer.Option(
-        "--use-tf",
-        help="Enable transformer module"
-    )] = False
+    use_tf: Annotated[bool, typer.Option("--use-tf", help="Enable transformer module")] = False
 
-    module_dim: Annotated[int, typer.Option(
-        help="Dimensionality of transformer modules",
-        min=10,
-        max=100
-    )] = 30
+    module_dim: Annotated[
+        int, typer.Option(help="Dimensionality of transformer modules", min=10, max=100)
+    ] = 30
 
-    hidden_gmf: Annotated[int, typer.Option(
-        help="Hidden units for global mean feature extractor",
-        min=32,
-        max=512
-    )] = 128
+    hidden_gmf: Annotated[
+        int, typer.Option(help="Hidden units for global mean feature extractor", min=32, max=512)
+    ] = 128
 
-    n_modules: Annotated[int, typer.Option(
-        help="Number of transformer modules",
-        min=4,
-        max=64
-    )] = 16
+    n_modules: Annotated[
+        int, typer.Option(help="Number of transformer modules", min=4, max=64)
+    ] = 16
 
-    nhead: Annotated[int, typer.Option(
-        help="Number of attention heads in transformer",
-        min=1,
-        max=16
-    )] = 4
+    nhead: Annotated[
+        int, typer.Option(help="Number of attention heads in transformer", min=1, max=16)
+    ] = 4
 
-    n_enc_layer: Annotated[int, typer.Option(
-        help="Number of transformer encoder layers",
-        min=1,
-        max=8
-    )] = 2
+    n_enc_layer: Annotated[
+        int, typer.Option(help="Number of transformer encoder layers", min=1, max=8)
+    ] = 2
 
     # Training parameters
-    distribution: Annotated[str, typer.Option(
-        help="Distribution type for loss calculation",
-        case_sensitive=False
-    )] = "nb"
+    distribution: Annotated[
+        str, typer.Option(help="Distribution type for loss calculation", case_sensitive=False)
+    ] = "nb"
 
+    batch_size: Annotated[int, typer.Option(help="Batch size for training", min=32, max=4096)] = (
+        1024
+    )
 
-    batch_size: Annotated[int, typer.Option(
-        help="Batch size for training",
-        min=32,
-        max=4096
-    )] = 1024
+    itermax: Annotated[
+        int, typer.Option(help="Maximum number of training iterations", min=10, max=1000)
+    ] = 100
 
-    itermax: Annotated[int, typer.Option(
-        help="Maximum number of training iterations",
-        min=10,
-        max=1000
-    )] = 100
+    patience: Annotated[int, typer.Option(help="Early stopping patience", min=1, max=50)] = 10
 
-    patience: Annotated[int, typer.Option(
-        help="Early stopping patience",
-        min=1,
-        max=50
-    )] = 10
+    two_stage: Annotated[
+        bool,
+        typer.Option(
+            "--two-stage/--single-stage",
+            help="Tune the cell embeddings based on the provided annotation",
+        ),
+        {"__display_in_quick_mode_cli__": True},
+    ] = False
 
-    two_stage: Annotated[bool, typer.Option(
-        "--two-stage/--single-stage",
-        help="Tune the cell embeddings based on the provided annotation"
-    ),{"__display_in_quick_mode_cli__": True}] = False
+    do_sampling: Annotated[
+        bool, typer.Option("--do-sampling/--no-sampling", help="Down-sampling cells in training")
+    ] = True
 
-    do_sampling: Annotated[bool, typer.Option(
-        "--do-sampling/--no-sampling",
-        help="Down-sampling cells in training"
-    )] = True
-
-    n_cell_training: Annotated[int, typer.Option(
-        help="Number of cells used for training",
-        min=1000,
-        max=1000000
-    ), {"__display_in_quick_mode_cli__": True}] = 100000
-
+    n_cell_training: Annotated[
+        int,
+        typer.Option(help="Number of cells used for training", min=1000, max=1000000),
+        {"__display_in_quick_mode_cli__": True},
+    ] = 100000
 
 
 @dataclass
 class FindLatentCoreConfig:
-    h5ad_path: Annotated[list[Path] | None, typer.Option(
-        help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
-        exists=True,
-        file_okay=True,
-    )] = None
+    h5ad_path: Annotated[
+        list[Path] | None,
+        typer.Option(
+            help="Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.",
+            exists=True,
+            file_okay=True,
+        ),
+    ] = None
 
-    h5ad_yaml: Annotated[Path | None, typer.Option(
-        help="YAML file with sample names and h5ad paths",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    )] = None
+    h5ad_yaml: Annotated[
+        Path | None,
+        typer.Option(
+            help="YAML file with sample names and h5ad paths",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+        ),
+    ] = None
 
-    h5ad_list_file: Annotated[Path | None, typer.Option(
-        help="Each row is a h5ad file path, sample name is the file name without suffix",
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-    )] = None
+    h5ad_list_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Each row is a h5ad file path, sample name is the file name without suffix",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+        ),
+    ] = None
 
     sample_h5ad_dict: OrderedDict | None = None
 
-    data_layer: Annotated[str, typer.Option(
-        help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
-    )] = "X"
+    data_layer: Annotated[
+        str,
+        typer.Option(
+            help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
+        ),
+    ] = "X"
 
-    spatial_key: Annotated[str, typer.Option(
-        help="Spatial key in adata.obsm storing spatial coordinates"
-    )] = "spatial"
+    spatial_key: Annotated[
+        str, typer.Option(help="Spatial key in adata.obsm storing spatial coordinates")
+    ] = "spatial"
 
-    annotation: Annotated[str | None, typer.Option(
-        help="Annotation of cell type in adata.obs to use"
-    )] = None
+    annotation: Annotated[
+        str | None, typer.Option(help="Annotation of cell type in adata.obs to use")
+    ] = None
 
-    homolog_file: Annotated[Path | None, typer.Option(
-        help="Path to homologous gene conversion file",
-        exists=True,
-        file_okay=True,
-        dir_okay=False
-    )] = None
+    homolog_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to homologous gene conversion file",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+        ),
+    ] = None
 
     species: str | None = None
 
-    latent_representation_niche: Annotated[str, typer.Option(
-        help="Key for spatial niche embedding in obsm"
-    )] = "emb_niche"
+    latent_representation_niche: Annotated[
+        str, typer.Option(help="Key for spatial niche embedding in obsm")
+    ] = "emb_niche"
 
-    latent_representation_cell: Annotated[str, typer.Option(
-        help="Key for cell identity embedding in obsm"
-    )] = "emb_cell"
+    latent_representation_cell: Annotated[
+        str, typer.Option(help="Key for cell identity embedding in obsm")
+    ] = "emb_cell"
 
-
-
-    high_quality_cell_qc: Annotated[bool, typer.Option(
-        "--high-quality-cell-qc/--no-high-quality-cell-qc",
-        help="Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores."
-    )] = True
+    high_quality_cell_qc: Annotated[
+        bool,
+        typer.Option(
+            "--high-quality-cell-qc/--no-high-quality-cell-qc",
+            help="Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.",
+        ),
+    ] = True
 
 
 @dataclass
-class FindLatentRepresentationsConfig(FindLatentModelConfig, FindLatentCoreConfig, ConfigWithAutoPaths):
+class FindLatentRepresentationsConfig(
+    FindLatentModelConfig, FindLatentCoreConfig, ConfigWithAutoPaths
+):
     """Find Latent Configuration"""
-
 
     def __post_init__(self):
         super().__post_init__()
 
         # Define input options
         input_options = {
-            'h5ad_yaml': ('h5ad_yaml', 'yaml'),
-            'h5ad_path': ('h5ad_path', 'list'),
-            'h5ad_list_file': ('h5ad_list_file', 'file'),
+            "h5ad_yaml": ("h5ad_yaml", "yaml"),
+            "h5ad_path": ("h5ad_path", "list"),
+            "h5ad_list_file": ("h5ad_list_file", "file"),
         }
 
         # Process h5ad inputs
@@ -221,13 +206,13 @@ class FindLatentRepresentationsConfig(FindLatentModelConfig, FindLatentCoreConfi
 
         # Define required and optional fields for validation
         required_fields = {
-            'data_layer': ('layers', self.data_layer, 'Data layer'),
-            'spatial_key': ('obsm', self.spatial_key, 'Spatial key'),
+            "data_layer": ("layers", self.data_layer, "Data layer"),
+            "spatial_key": ("obsm", self.spatial_key, "Spatial key"),
         }
 
         # Add annotation as required if provided
         if self.annotation:
-            required_fields['annotation'] = ('obs', self.annotation, 'Annotation')
+            required_fields["annotation"] = ("obs", self.annotation, "Annotation")
 
         # Validate h5ad structure
         validate_h5ad_structure(self.sample_h5ad_dict, required_fields)
@@ -257,10 +242,10 @@ def check_find_latent_done(config: FindLatentRepresentationsConfig) -> bool:
         with open(metadata_path) as f:
             metadata = yaml.safe_load(f)
 
-        if 'outputs' not in metadata or 'latent_files' not in metadata['outputs']:
+        if "outputs" not in metadata or "latent_files" not in metadata["outputs"]:
             return False
 
-        latent_files = metadata['outputs']['latent_files']
+        latent_files = metadata["outputs"]["latent_files"]
         if not latent_files:
             return False
 
@@ -271,6 +256,6 @@ def check_find_latent_done(config: FindLatentRepresentationsConfig) -> bool:
                 all_exist = False
                 break
         return all_exist
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Error checking find_latent metadata: {e}")
         return False

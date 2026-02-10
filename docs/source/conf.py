@@ -1,5 +1,5 @@
 project = "gsMap"
-copyright = "2024, Liyang, Wenhao"
+copyright = "2026, JianYang-Lab"
 author = "Liyang, Wenhao"
 # release = gsMap.__version__
 

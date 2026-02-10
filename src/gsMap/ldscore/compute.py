@@ -4,7 +4,6 @@ Simplified LD score computation without masking or padding.
 Direct computation of unbiased L2 statistics from genotype matrices using NumPy and Scipy.
 """
 
-
 import numpy as np
 import scipy.sparse
 
@@ -42,7 +41,7 @@ def compute_unbiased_l2_batch(
     r = np.dot(X_hm3.T, X_ref_block) / n_individuals
 
     # Compute r^2
-    r_squared = r ** 2
+    r_squared = r**2
 
     # Apply bias correction
     bias_correction = (1.0 - r_squared) / (n_individuals - LDSC_BIAS_CORRECTION_DF)
