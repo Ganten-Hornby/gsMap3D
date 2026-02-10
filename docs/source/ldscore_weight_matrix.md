@@ -18,7 +18,7 @@ Before running this command, you need:
 
 1. **PLINK Reference Panel**: Genotype data in PLINK binary format (.bed/.bim/.fam) for each chromosome. We recommend using the 1000 Genomes Project European samples.
 
-1. **HapMap3 SNP List**: A file containing HapMap3 SNP IDs (one per line). These are the SNPs used in LD score regression.
+1. **HapMap3 SNP Directory**: A directory containing per-chromosome HapMap3 SNP lists (e.g., `hm.{chr}.snp`, one SNP ID per line). These are the SNPs used in LD score regression.
 
 1. **SNP-to-Gene Mapping File**: A BED file defining which SNPs map to which genes/features.
 
@@ -53,9 +53,17 @@ chr1    33564939    33565256    A3GALT2
 chr1    33592784    33593190    A3GALT2
 ```
 
-### HM3 SNP List
+### HM3 SNP Directory
 
-A plain text file with one SNP ID per line:
+A directory containing per-chromosome HM3 SNP files. Each file is a plain text file with one SNP ID per line. The following naming conventions are supported (checked in order):
+
+- `hm.{chr}.snp`
+- `hm3_snps.chr{chr}.txt`
+- `hapmap3_snps.chr{chr}.txt`
+- `chr{chr}.snplist`
+- `w_hm3.snplist.chr{chr}`
+
+Example file content:
 
 ```text
 rs12345
@@ -78,11 +86,11 @@ Where `{chr}` is replaced by chromosome number (1-22).
 
 ### Required Parameters
 
-| Parameter        | Description                                                                                               |
-| ---------------- | --------------------------------------------------------------------------------------------------------- |
-| `--bfile-root`   | Path template for PLINK binary files. Must contain `{chr}` placeholder (e.g., `data/1000G.EUR.QC.{chr}`). |
-| `--hm3-snp-path` | Path to HapMap3 SNP list file.                                                                            |
-| `--output-dir`   | Directory where output files will be saved.                                                               |
+| Parameter       | Description                                                                                               |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| `--bfile-root`  | Path template for PLINK binary files. Must contain `{chr}` placeholder (e.g., `data/1000G.EUR.QC.{chr}`). |
+| `--hm3-snp-dir` | Directory containing per-chromosome HapMap3 SNP lists (e.g., `hapmap3_snps/`).                            |
+| `--output-dir`  | Directory where output files will be saved.                                                               |
 
 ### Snp-to-Gene Mapping Parameters
 
@@ -160,8 +168,10 @@ gsMap_ldscore_weight_matrix_example_data/
 │   ├── enhancer
 │   └── gencode
 ├── hapmap3_snps
-│   ├── hm3.snp
-│   └── hm.{chr}.snp
+│   ├── hm.1.snp
+│   ├── hm.2.snp
+│   ├── ...
+│   └── hm.22.snp
 └── LD_Reference_Panel
     └── 1000G_EUR_Phase3_plink
 ```
@@ -176,7 +186,7 @@ This example creates weights based on proximity to transcription start sites (TS
 # Set up environment variables
 LDSCORE_DATA_DIR="./gsMap_ldscore_weight_matrix_example_data"
 PLINK_REF="${LDSCORE_DATA_DIR}/LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
-HM3_SNPS="${LDSCORE_DATA_DIR}/hapmap3_snps/hm3.snp"
+HM3_DIR="${LDSCORE_DATA_DIR}/hapmap3_snps"
 GENCODE_BED="${LDSCORE_DATA_DIR}/genome_annotation/gencode/gencode_v46lift37_protein_coding.bed"
 
 # Create output directory
@@ -185,7 +195,7 @@ mkdir -p ./output/gencode_tss
 # Run ldscore-weight-matrix with TSS strategy
 gsmap ldscore-weight-matrix \
     --bfile-root "${PLINK_REF}.{chr}" \
-    --hm3-snp-path "${HM3_SNPS}" \
+    --hm3-snp-dir "${HM3_DIR}" \
     --mapping-file "${GENCODE_BED}" \
     --mapping-type "bed" \
     --output-dir "./output/gencode_tss" \
@@ -209,7 +219,7 @@ from pathlib import Path
 # Set up paths
 ldscore_data_dir = Path("./gsMap_ldscore_weight_matrix_example_data")
 plink_ref = ldscore_data_dir / "LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
-hm3_snps = ldscore_data_dir / "hapmap3_snps/hm3.snp"
+hm3_dir = ldscore_data_dir / "hapmap3_snps"
 gencode_bed = (
     ldscore_data_dir / "genome_annotation/gencode/gencode_v46lift37_protein_coding.bed"
 )
@@ -221,7 +231,7 @@ output_dir.mkdir(parents=True, exist_ok=True)
 # Configure and run pipeline
 config = LDScoreConfig(
     bfile_root=f"{plink_ref}.{{chr}}",
-    hm3_snp_path=hm3_snps,
+    hm3_snp_dir=hm3_dir,
     mapping_file=gencode_bed,
     mapping_type="bed",
     output_dir=output_dir,
@@ -258,7 +268,7 @@ This example creates weights using brain-specific enhancer-gene links from the A
 # Set up environment variables
 LDSCORE_DATA_DIR="./gsMap_ldscore_weight_matrix_example_data"
 PLINK_REF="${LDSCORE_DATA_DIR}/LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
-HM3_SNPS="${LDSCORE_DATA_DIR}/hapmap3_snps/hm3.snp"
+HM3_DIR="${LDSCORE_DATA_DIR}/hapmap3_snps"
 ENHANCER_BED="${LDSCORE_DATA_DIR}/genome_annotation/enhancer/by_tissue/BRN/ABC_roadmap_merged.bed"
 
 # Create output directory
@@ -267,7 +277,7 @@ mkdir -p ./output/enhancer_brain
 # Run ldscore-weight-matrix with center strategy
 gsmap ldscore-weight-matrix \
     --bfile-root "${PLINK_REF}.{chr}" \
-    --hm3-snp-path "${HM3_SNPS}" \
+    --hm3-snp-dir "${HM3_DIR}" \
     --mapping-file "${ENHANCER_BED}" \
     --mapping-type "bed" \
     --output-dir "./output/enhancer_brain" \
@@ -291,7 +301,7 @@ from pathlib import Path
 # Set up paths
 ldscore_data_dir = Path("./gsMap_ldscore_weight_matrix_example_data")
 plink_ref = ldscore_data_dir / "LD_Reference_Panel/1000G_EUR_Phase3_plink/1000G.EUR.QC"
-hm3_snps = ldscore_data_dir / "hapmap3_snps/hm3.snp"
+hm3_dir = ldscore_data_dir / "hapmap3_snps"
 enhancer_bed = (
     ldscore_data_dir / "genome_annotation/enhancer/by_tissue/BRN/ABC_roadmap_merged.bed"
 )
@@ -303,7 +313,7 @@ output_dir.mkdir(parents=True, exist_ok=True)
 # Configure and run pipeline
 config = LDScoreConfig(
     bfile_root=f"{plink_ref}.{{chr}}",
-    hm3_snp_path=hm3_snps,
+    hm3_snp_dir=hm3_dir,
     mapping_file=enhancer_bed,
     mapping_type="bed",
     output_dir=output_dir,

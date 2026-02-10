@@ -23,13 +23,14 @@ class LDScoreConfig(BaseConfig):
         str, typer.Option(help="Reference panel prefix template (e.g., 'data/1000G.{chr}')")
     ]
 
-    hm3_snp_path: Annotated[
+    hm3_snp_dir: Annotated[
         Path,
         typer.Option(
-            help="Path to HM3 SNP list",
+            help="Directory containing per-chromosome HM3 SNP lists (e.g., hm.{chr}.snp). "
+            "Typically set to '<ldscore_data_dir>/hapmap3_snps'.",
             exists=True,
-            file_okay=True,
-            dir_okay=False,
+            file_okay=False,
+            dir_okay=True,
             resolve_path=True,
         ),
     ]

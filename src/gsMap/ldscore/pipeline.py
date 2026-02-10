@@ -73,13 +73,13 @@ class LDScorePipeline:
 
     def __init__(self, config: LDScoreConfig):
         self.config = config
-        self.hm3_dir = Path(config.hm3_snp_path)
+        self.hm3_dir = Path(config.hm3_snp_dir)
 
         logger.info("=" * 80)
         logger.info("LD Score Pipeline Configuration (NumPy/Scipy)")
         logger.info("=" * 80)
         logger.info(f"PLINK template: {config.bfile_root}")
-        logger.info(f"HM3 directory: {config.hm3_snp_path}")
+        logger.info(f"HM3 directory: {config.hm3_snp_dir}")
         logger.info(f"Batch size (HM3): {config.batch_size_hm3}")
         logger.info(f"LD window: {config.ld_wind} {config.ld_unit}")
         logger.info(f"MAF filter: {config.maf_min}")
@@ -216,8 +216,13 @@ class LDScorePipeline:
                 except Exception:  # noqa: BLE001
                     continue
 
-        logger.warning(f"No HM3 SNP file found for chromosome {chromosome}")
-        return []
+        tried = "\n".join(f"  - {p}" for p in possible_paths)
+        raise FileNotFoundError(
+            f"No HM3 SNP file found for chromosome {chromosome} in '{self.hm3_dir}'.\n"
+            f"Tried the following paths:\n{tried}\n"
+            f"Please ensure the HM3 SNP directory contains per-chromosome files "
+            f"(e.g., hm.{chromosome}.snp)."
+        )
 
     def _load_plink_reader(self, chromosome: int) -> PlinkBEDReader | None:
         """Helper to initialize the PLINK reader for a chromosome."""

@@ -230,3 +230,6 @@ invalid-type-form = "ignore"
 unresolved-attribute = "ignore"
 unknown-argument = "ignore"
 missing-argument = "ignore"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = ["scipy.spatial.cKDTree"]

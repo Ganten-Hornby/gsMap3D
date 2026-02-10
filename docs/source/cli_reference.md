@@ -293,7 +293,7 @@ gsmap ldscore-weight-matrix [OPTIONS]
 **Options**:
 
 - `--bfile-root TEXT`: Reference panel prefix template (e.g., 'data/1000G.{chr}') [required]
-- `--hm3-snp-path FILE`: Path to HM3 SNP list [required]
+- `--hm3-snp-dir DIRECTORY`: Directory containing per-chromosome HM3 SNP lists (e.g., `hapmap3_snps/`) [required]
 - `--output-dir PATH`: Output directory. If None, uses {workdir}/{project_name}/generate_ldscore
 - `--output-filename TEXT`: Prefix for output files [default: ld_score_weights]
 - `--omics-h5ad-path FILE`: Path to omics H5AD file
