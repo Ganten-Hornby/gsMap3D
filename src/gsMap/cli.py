@@ -89,7 +89,7 @@ def find_latent_representations(config: FindLatentRepresentationsConfig):
     # Show auto-generated paths
     logger.info(f"Latent representations will be saved to: {config.latent_dir}")
     logger.info(f"Model will be saved to: {config.model_path}")
-    logger.info(f"H5AD with latent: {config.hdf5_with_latent_path}")
+    logger.info(f"H5AD with latent will be saved to: {config.latent_dir}")
 
     if config.annotation and config.two_stage:
         logger.info(f"Using two-stage training with annotation: {config.annotation}")
@@ -122,9 +122,7 @@ def latent_to_gene(config: LatentToGeneConfig):
     logger.info(f"Project directory: {config.project_dir}")
 
     # Show auto-generated paths
-    logger.info(f"Marker scores will be saved to: {config.mkscore_feather_path}")
-    if config.annotation:
-        logger.info(f"Tuned scores will be saved to: {config.tuned_mkscore_feather_path}")
+    logger.info(f"Marker scores will be saved to: {config.latent2gene_dir}")
 
     try:
         from gsMap.latent2gene import run_latent_to_gene

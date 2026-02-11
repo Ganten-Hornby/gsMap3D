@@ -1,14 +1,9 @@
 [run]
 source = src/gsMap
 omit =
-    # Exclude the files you mentioned
-    src/gsMap/utils/jackknife.py
-    src/gsMap/format_sumstats.py
-    # Other files you might want to exclude
     */tests/*
     */__init__.py
     src/gsMap/templates/*
-    # Additional excludes
     src/gsMap/__main__.py
     src/gsMap/setup.py
 
@@ -32,6 +27,8 @@ exclude_lines =
     if 0:
     if __name__ == .__main__.:
     if False:
+    if TYPE_CHECKING:
+    @overload
 
     # Skip pass statements
     pass

@@ -23,13 +23,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.13"]
+        python: ["3.12", "3.13"]
 
     name: Python ${{ matrix.python }} integration
 
     env:
       PYTHON: ${{ matrix.python }}
-      TEST_DATA_URL: https://yanglab.westlake.edu.cn/data/gsMap/gsMap_test_data.tar.gz
+      TEST_DATA_URL: https://yanglab.westlake.edu.cn/data/gsMap/gsmap3d_ci_test_data.tar.gz
       TEST_DATA_DIR: ${{ github.workspace }}/test_data
       WORK_DIR: ${{ github.workspace }}/gsmap_workdir
 
@@ -59,15 +59,15 @@ jobs:
         id: cache-test-data
         with:
           path: ${{ env.TEST_DATA_DIR }}
-          key: test-data-v1
+          key: test-data-gsmap3d-v1
 
       - name: Download and extract test data
         if: steps.cache-test-data.outputs.cache-hit != 'true'
         run: |
           echo "Downloading test data from $TEST_DATA_URL"
-          curl -L $TEST_DATA_URL -o gsMap_test_data.tar.gz
-          tar -xzf gsMap_test_data.tar.gz -C ${{ github.workspace }}
-          rm gsMap_test_data.tar.gz
+          curl -L $TEST_DATA_URL -o gsmap3d_ci_test_data.tar.gz
+          tar -xzf gsmap3d_ci_test_data.tar.gz -C ${{ github.workspace }}
+          rm gsmap3d_ci_test_data.tar.gz
           echo "Test data extracted to ${{ github.workspace }}"
           ls -la $TEST_DATA_DIR
 
