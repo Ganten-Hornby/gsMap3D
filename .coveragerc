@@ -6,6 +6,8 @@ omit =
     src/gsMap/templates/*
     src/gsMap/__main__.py
     src/gsMap/setup.py
+    src/gsMap/latent2gene/row_ordering.py
+    src/gsMap/format_sumstats.py
 
 [report]
 exclude_lines =
