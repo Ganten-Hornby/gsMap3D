@@ -49,6 +49,22 @@ jobs:
         run: |
           uv pip install --system -e ".[tests]"
 
+      - name: Build distribution packages
+        run: |
+          uv build
+          ls -lh dist
+
+      - name: Verify built packages
+        run: |
+          python -m pip install twine
+          twine check dist/*
+
+      - name: Store distribution packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions-py${{ matrix.python }}
+          path: dist/
+
       - name: Create workdir
         run: |
           mkdir -p $WORK_DIR
