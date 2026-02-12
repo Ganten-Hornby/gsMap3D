@@ -30,7 +30,7 @@ jobs:
     env:
       PYTHON: ${{ matrix.python }}
       TEST_DATA_URL: https://yanglab.westlake.edu.cn/data/gsMap/gsmap3d_ci_test_data.tar.gz
-      TEST_DATA_DIR: ${{ github.workspace }}/test_data
+      TEST_DATA_DIR: ${{ github.workspace }}/gsmap3d_ci_test_data
       WORK_DIR: ${{ github.workspace }}/gsmap_workdir
 
     steps:
@@ -59,7 +59,7 @@ jobs:
         id: cache-test-data
         with:
           path: ${{ env.TEST_DATA_DIR }}
-          key: test-data-gsmap3d-v1
+          key: test-data-gsmap3d-v2
 
       - name: Download and extract test data
         if: steps.cache-test-data.outputs.cache-hit != 'true'
