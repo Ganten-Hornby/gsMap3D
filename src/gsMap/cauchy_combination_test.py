@@ -200,13 +200,13 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
 
     all_results = []
 
-    # Define the groups
-    group_cols = [annotation_col]
+    # Pre-calculate groups to avoid repeated filtering.
+    # Use scalar column for single-column groupby so get_group() accepts
+    # scalar keys (pandas >= 2.2 deprecates scalar keys with list groupby).
     if extra_group_col:
-        group_cols.append(extra_group_col)
-
-    # Pre-calculate groups to avoid repeated filtering
-    grouped = df.groupby(group_cols, observed=True)
+        grouped = df.groupby([annotation_col, extra_group_col], observed=True)
+    else:
+        grouped = df.groupby(annotation_col, observed=True)
 
     for trait in trait_cols:
 
@@ -224,8 +224,8 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
                 if res:
                     res[extra_group_col] = extra
             else:
-                # Group key is just (anno,)
-                anno = group_key[0] if isinstance(group_key, tuple) else group_key
+                # Group key is a scalar (single-column groupby)
+                anno = group_key
                 res = process_trait(trait, df_group, df, anno, annotation_col)
 
             return res
