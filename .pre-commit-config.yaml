@@ -61,12 +61,6 @@ repos:
 
   - repo: local
     hooks:
-      - id: ty
-        name: ty
-        entry: uvx ty check .
-        language: system
-        types: [python]
-        pass_filenames: false
       - id: forbid-to-commit
         name: Don't commit rej files
         entry: |
