@@ -3,7 +3,7 @@ name: docs
 on:
   push:
     branches:
-      - gsMap3D
+      - main
     paths:
       - "docs/**"
   workflow_dispatch: # Allow manual trigger
