@@ -28,7 +28,7 @@ dependencies = [
     "pyyaml",
     "torch ~= 2.5",
     "torch-geometric ~= 2.7",
-    "pyranges1 ~= 1.2.0",
+    "pyranges1 ~= 1.3.0",
     "pyfiglet",
     "plotly",
     "kaleido",
