@@ -329,28 +329,6 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
             logger.info(
                 f"Auto-detected {len(self.sample_h5ad_dict)} samples from find_latent_metadata_path: {self.find_latent_metadata_path}"
             )
-        else:
-            self.sample_h5ad_dict = OrderedDict()
-            latent_dir = self.latent_dir
-            logger.info(f"Auto-detecting h5ad files from latent directory: {latent_dir}")
-
-            # Look for latent files with different naming patterns
-            latent_files = list(latent_dir.glob("*_latent_adata.h5ad"))
-            if not latent_files:
-                latent_files = list(latent_dir.glob("*_add_latent.h5ad"))
-
-            if not latent_files:
-                return
-
-            # Extract sample names from file names
-            for latent_file in latent_files:
-                sample_name = self._extract_sample_name(latent_file)
-                self.sample_h5ad_dict[sample_name] = latent_file
-
-            # sort by sample name
-            self.sample_h5ad_dict = OrderedDict(sorted(self.sample_h5ad_dict.items()))
-
-        logger.info(f"Auto-detected {len(self.sample_h5ad_dict)} samples from latent directory")
 
     def _extract_sample_name(self, latent_file):
         """Extract sample name from latent file path"""
@@ -492,7 +470,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
         self.n_adjacent_slices = 0
-        self.spatial_key = None
+        # self.spatial_key = None
         self.latent_representation_niche = None
 
 
