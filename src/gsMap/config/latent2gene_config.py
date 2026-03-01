@@ -470,7 +470,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
     def _configure_scrna_seq(self):
         """Configure parameters for scRNA-seq datasets"""
         self.n_adjacent_slices = 0
-        # self.spatial_key = None
+        self.spatial_key = None
         self.latent_representation_niche = None
 
 
