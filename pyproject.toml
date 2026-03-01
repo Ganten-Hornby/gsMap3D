@@ -39,7 +39,7 @@ dependencies = [
     "pyarrow",
     "numba >= 0.60",
     "jax >=0.7.2, <1.0.0",
-    "pandas_plink",
+    "pandas_plink >= 2.3.0",
     "xarray",
     "rich >= 14.1.0",
     "anndata >= 0.8.0",
