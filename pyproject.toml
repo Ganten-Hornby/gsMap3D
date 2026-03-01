@@ -21,14 +21,14 @@ version = "0.1.0"
 description = "Genetically informed spatial mapping of cells for complex traits"
 dependencies = [
     "numpy ~= 2.2",
-    "pandas >= 2.0",
+    "pandas >= 2.0, < 3.0",
     "scipy >= 1.11",
     "matplotlib",
     "tqdm",
     "pyyaml",
     "torch ~= 2.5",
     "torch-geometric ~= 2.7",
-    "pyranges1 ~= 1.2.0",
+    "pyranges1 ~= 1.3.2",
     "pyfiglet",
     "plotly",
     "kaleido",
