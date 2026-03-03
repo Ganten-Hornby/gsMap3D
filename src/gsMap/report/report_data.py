@@ -1027,10 +1027,21 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
     logger.info(f"Loading coordinates from {report_config.concatenated_latent_adata_path}")
 
     adata_concat = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
-
-    assert report_config.spatial_key in adata_concat.obsm
-    coords_data = adata_concat.obsm[report_config.spatial_key]
     sample_info = adata_concat.obs[["sample_name"]]
+
+    # For scRNA-seq, spatial_key is None — no spatial coordinates available
+    if report_config.spatial_key is None:
+        logger.info("scRNA-seq dataset: spatial_key is None, skipping spatial coordinate loading")
+        coords = pd.DataFrame(index=adata_concat.obs_names)
+        coords = pd.concat([coords, sample_info], axis=1)
+        if adata_concat.isbacked:
+            adata_concat.file.close()
+        return coords, False, None
+
+    assert report_config.spatial_key in adata_concat.obsm, (
+        f"spatial_key '{report_config.spatial_key}' not found in adata.obsm"
+    )
+    coords_data = adata_concat.obsm[report_config.spatial_key]
 
     # Check if dataset type is 3D
     is_3d_type = (
@@ -1786,6 +1797,9 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
         # Fallback to unique sample names from data
         samples = df["sample_name"].unique().tolist() if "sample_name" in df.columns else []
 
+    # Detect whether spatial coordinates are available (absent for scRNA-seq)
+    has_spatial_coords = "sx" in df.columns and "sy" in df.columns
+
     sample_index = {}
     max_spots_2d = meta.get("downsampling_n_spots_2d", 250000)
 
@@ -1800,24 +1814,30 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
         n_spots_original = len(sample_df)
 
         # Downsample if needed for 2D visualization performance
-        if len(sample_df) > max_spots_2d:
+        if has_spatial_coords and len(sample_df) > max_spots_2d:
             logger.info(
                 f"Downsampling {sample_name} from {len(sample_df):,} to {max_spots_2d:,} spots for 2D visualization"
             )
             sample_df = sample_df.sample(n=max_spots_2d, random_state=42)
 
-        # Calculate point size for this sample
-        _, point_size = estimate_plotly_point_size(
-            sample_df[["sx", "sy"]], DEFAULT_PIXEL_WIDTH=560
-        )
+        # Calculate point size for this sample (spatial only)
+        if has_spatial_coords:
+            _, point_size = estimate_plotly_point_size(
+                sample_df[["sx", "sy"]], DEFAULT_PIXEL_WIDTH=560
+            )
+        else:
+            point_size = 5.0  # default point size for non-spatial datasets
 
         # Build columnar data structure for efficient ScatterGL rendering
         data_struct = {
             "spot": sample_df["spot"].tolist(),
-            "sx": sample_df["sx"].tolist(),
-            "sy": sample_df["sy"].tolist(),
             "point_size": round(point_size, 2),
         }
+
+        # Add spatial coordinates only when available
+        if has_spatial_coords:
+            data_struct["sx"] = sample_df["sx"].tolist()
+            data_struct["sy"] = sample_df["sy"].tolist()
 
         # Add 3D coordinates if present
         for coord in ["3d_x", "3d_y", "3d_z"]:
