@@ -9,6 +9,7 @@ omit =
     src/gsMap/latent2gene/row_ordering.py
     src/gsMap/latent2gene/row_ordering_jax.py
     src/gsMap/format_sumstats.py
+    src/gsMap/report/visualize.py
 
 [report]
 exclude_lines =

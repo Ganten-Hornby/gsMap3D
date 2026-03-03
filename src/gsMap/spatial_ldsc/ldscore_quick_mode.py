@@ -534,10 +534,12 @@ class SpatialLDSCProcessor:
             start_cell = max(0, start_cell)
             end_cell = min(end_cell, self.n_spots_filtered)
             self.chunk_starts = list(range(start_cell, end_cell, self.chunk_size))
+            self._cell_end = end_cell  # cap for the last (possibly partial) chunk
             logger.info(f"Processing cell range [{start_cell}, {end_cell})")
             self.total_cells_to_process = end_cell - start_cell
         else:
             self.chunk_starts = list(range(0, self.n_spots_filtered, self.chunk_size))
+            self._cell_end = self.n_spots_filtered
             self.total_cells_to_process = self.n_spots_filtered
 
         self.total_chunks = len(self.chunk_starts)
@@ -597,7 +599,7 @@ class SpatialLDSCProcessor:
             raise ValueError(f"Invalid chunk index {chunk_index}")
 
         start = self.chunk_starts[chunk_index]
-        end = min(start + self.chunk_size, self.n_spots_filtered)
+        end = min(start + self.chunk_size, self._cell_end)
 
         # Calculate absolute positions in memmap
         memmap_start = self.sample_start_offset + start

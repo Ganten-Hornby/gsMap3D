@@ -64,6 +64,12 @@ class QuickModeConfig(
                 self.latent_representation_niche = "emb_niche"
             if self.latent_representation_cell is None:
                 self.latent_representation_cell = "emb_cell"
+
+        # For scRNA, clear spatial_key and niche key so downstream steps (e.g. report)
+        # skip spatial-coordinate-specific logic
+        if self.dataset_type == DatasetType.SCRNA_SEQ:
+            self.spatial_key = None
+            self.latent_representation_niche = None
         self.show_config(QuickModeConfig)
 
     @property
