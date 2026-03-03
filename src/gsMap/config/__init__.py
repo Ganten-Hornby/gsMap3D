@@ -14,14 +14,6 @@ from .base import BaseConfig, ConfigWithAutoPaths, ensure_path_exists
 
 # Configuration dataclasses
 from .cauchy_config import CauchyCombinationConfig
-from .dataclasses import (
-    CreateSliceMeanConfig,
-    DiagnosisConfig,
-    RunLinkModeConfig,
-    ThreeDCombineConfig,
-    VisualizeConfig,
-    gsMapPipelineConfig,
-)
 
 # Decorators
 from .decorators import dataclass_typer, show_banner, track_resource_usage
@@ -60,10 +52,5 @@ __all__ = [
     "ReportConfig",
     "GenerateLDScoreConfig",
     "CauchyCombinationConfig",
-    "CreateSliceMeanConfig",
     "FormatSumstatsConfig",
-    "DiagnosisConfig",
-    "VisualizeConfig",
-    "ThreeDCombineConfig",
-    "RunLinkModeConfig",
 ]

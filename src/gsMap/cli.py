@@ -154,20 +154,10 @@ def spatial_ldsc(config: SpatialLDSCConfig):
     logger.info(f"LDSC results will be saved to: {config.ldsc_save_dir}")
     logger.info(f"Result file: {config.get_ldsc_result_file(config.trait_name)}")
 
-    if config.use_gpu:
-        logger.info("Using JAX-accelerated implementation")
-    else:
-        logger.info("Using standard implementation")
-
     try:
-        if config.use_gpu:
-            from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
+        from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
 
-            run_spatial_ldsc_jax(config)
-        else:
-            from gsMap.spatial_ldsc.spatial_ldsc_multiple_sumstats import run_spatial_ldsc
-
-            run_spatial_ldsc(config)
+        run_spatial_ldsc_jax(config)
         logger.info("✓ Spatial LDSC completed successfully!")
     except ImportError:
         logger.info("Running in demo mode...")
