@@ -758,6 +758,11 @@
                                 </template>
                             </tbody>
                         </table>
+                        <!-- Empty state message -->
+                        <div x-show="filteredCauchyTable.length === 0" class="text-center py-8 text-gray-500">
+                            <p class="text-sm">No enrichment results found for the selected trait and annotation.</p>
+                            <p class="text-xs mt-1 text-gray-400">Try selecting a different trait or annotation category.</p>
+                        </div>
                     </div>
 
                     <!-- Cauchy Heatmap -->
@@ -803,7 +808,25 @@
                                 </div>
                             </div>
                         </div>
-                        <div id="cauchyHeatmap" class="plot-container w-full"></div>
+                        <div class="flex items-center gap-3 px-4 py-2 bg-gray-50 border-b border-gray-200">
+                            <label class="text-xs font-medium text-gray-500 whitespace-nowrap">Height:</label>
+                            <input id="cauchyHeatmapHeightSlider" type="range" min="300" max="3000" step="20"
+                                class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary-600"
+                                @input="
+                                    const h = parseInt($event.target.value);
+                                    document.getElementById('cauchyHeatmapHeightLabel').textContent = h + 'px';
+                                    this._cauchyUserHeight = h;
+                                    const plotDiv = document.getElementById('cauchyHeatmap');
+                                    if (plotDiv && plotDiv.data) Plotly.relayout(plotDiv, { height: h });
+                                ">
+                            <span id="cauchyHeatmapHeightLabel" class="text-xs text-gray-500 w-12 text-right">450px</span>
+                            <button class="text-xs text-primary-600 hover:text-primary-800 underline"
+                                @click="
+                                    this._cauchyUserHeight = null;
+                                    this.renderCauchyHeatmap();
+                                ">Auto</button>
+                        </div>
+                        <div id="cauchyHeatmap" class="w-full"></div>
                     </div>
                 </div>
             </div>
@@ -1063,6 +1086,7 @@
                 cauchyHeatmapMetric: 'mlog10_p_cauchy',
                 cauchyHeatmapCluster: true,
                 cauchyHeatmapNormalize: false,
+                _cauchyUserHeight: null,
 
                 // Memoized: filtered gene table
                 get filteredGeneTable() {
@@ -1282,16 +1306,11 @@
                     this.spatial3dTraitLoading = true;
 
                     // Parallel render operations using requestAnimationFrame for smooth UI
-                    // This prevents blocking the main thread
+                    // Each wrapped in try-catch to prevent one failure from blocking others
                     requestAnimationFrame(() => {
-                        // Load Manhattan data (async, doesn't block)
-                        this.loadManhattanData();
-
-                        // Render plots in parallel - only update trait-related views
-                        this.renderUmapPlotTrait();
-                        this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
-
-                        // Clear loading state after render
+                        try { this.loadManhattanData(); } catch(e) { console.error('Manhattan load:', e); }
+                        try { this.renderUmapPlotTrait(); } catch(e) { console.error('UMAP trait render:', e); }
+                        try { this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait'); } catch(e) { console.error('2D trait render:', e); }
                         this.loadingSpatial2dTraitData = false;
                     });
                 },
@@ -1303,14 +1322,18 @@
                     this._umapAnnoColorCache = null;
                     this._spatial2dAnnoTracesCache = null;
 
+                    // Reset user height override — new annotation may have different row count
+                    this._cauchyUserHeight = null;
+
                     // Update 3D visualization - annotation view needs reload
                     this.spatial3dAnnotationLoading = true;
 
                     // Parallel render - only update annotation-related views
+                    // Each wrapped in try-catch to prevent one failure from blocking others
                     requestAnimationFrame(() => {
-                        this.renderUmapPlotAnnotation();
-                        this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
-                        this.renderCauchyHeatmap();
+                        try { this.renderUmapPlotAnnotation(); } catch(e) { console.error('UMAP annotation render:', e); }
+                        try { this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation'); } catch(e) { console.error('2D annotation render:', e); }
+                        try { this.renderCauchyHeatmap(); } catch(e) { console.error('Cauchy heatmap render:', e); }
                     });
                 },
 
@@ -1708,7 +1731,17 @@
                     let finalAnnotations = annotationValues;
                     let finalTraits = traitValues;
 
-                    if (this.cauchyHeatmapCluster && traitValues.length > 1) {
+                    // Reorder rows and columns based on data
+                    // Note: Plotly heatmap y-axis goes bottom→top, so last array element = top of chart
+                    if (traitValues.length === 1) {
+                        // Single trait: sort ascending so highest value is last → appears at top
+                        const indices = annotationValues.map((_, i) => i);
+                        indices.sort((a, b) => zData[a][0] - zData[b][0]);
+                        zData = indices.map(i => zData[i]);
+                        hoverZData = indices.map(i => hoverZData[i]);
+                        finalAnnotations = indices.map(i => annotationValues[i]);
+                    } else if (this.cauchyHeatmapCluster) {
+                        // Multiple traits with clustering enabled
                         try {
                             // Cluster rows (Annotations)
                             const rowOrder = this.clusterData(zData);
@@ -1725,6 +1758,17 @@
                         } catch (e) {
                             console.error("Clustering failed, using default order:", e);
                         }
+                    } else {
+                        // Multiple traits, no clustering: sort ascending by mean so highest at top
+                        const indices = annotationValues.map((_, i) => i);
+                        indices.sort((a, b) => {
+                            const meanA = zData[a].reduce((s, v) => s + v, 0) / zData[a].length;
+                            const meanB = zData[b].reduce((s, v) => s + v, 0) / zData[b].length;
+                            return meanA - meanB;
+                        });
+                        zData = indices.map(i => zData[i]);
+                        hoverZData = indices.map(i => hoverZData[i]);
+                        finalAnnotations = indices.map(i => annotationValues[i]);
                     }
 
                     const metricLabel = {
@@ -1735,7 +1779,25 @@
 
                     const colorscale = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
 
-                    Plotly.react(plotDiv, [{
+                    const nAnnotations = finalAnnotations.length;
+                    const nTraits = finalTraits.length;
+                    const autoHeight = Math.max(450, nAnnotations * 28 + 230);
+                    const tickFontSize = Math.min(12, Math.max(8, Math.round(300 / nAnnotations)));
+
+                    // Use user-specified height if set, otherwise auto-calculate
+                    const plotHeight = this._cauchyUserHeight || autoHeight;
+
+                    // Sync slider to current height
+                    const slider = document.getElementById('cauchyHeatmapHeightSlider');
+                    const label = document.getElementById('cauchyHeatmapHeightLabel');
+                    if (slider) {
+                        slider.value = plotHeight;
+                        slider.max = Math.max(3000, autoHeight + 500);
+                    }
+                    if (label) label.textContent = plotHeight + 'px';
+
+                    // Build heatmap trace
+                    const heatmapTrace = {
                         z: zData,
                         x: finalTraits,
                         y: finalAnnotations,
@@ -1744,11 +1806,21 @@
                         reversescale: false,
                         customdata: hoverZData,
                         hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{customdata:.2f}<extra></extra>`
-                    }], {
+                    };
+
+                    // Add text annotations on cells when small enough
+                    if (nAnnotations * nTraits <= 100) {
+                        heatmapTrace.text = hoverZData.map(row => row.map(v => v != null ? v.toFixed(1) : ''));
+                        heatmapTrace.texttemplate = '%{text}';
+                        heatmapTrace.textfont = { size: Math.min(11, Math.max(7, Math.round(200 / Math.max(nAnnotations, nTraits)))) };
+                    }
+
+                    Plotly.react(plotDiv, [heatmapTrace], {
                         title: { text: `Cauchy Enrichment Heatmap: ${metricLabel}`, font: { size: 16 } },
                         xaxis: { title: 'Trait', tickangle: 45, automargin: true },
-                        yaxis: { title: 'Annotation', automargin: true },
-                        margin: { l: 150, r: 50, t: 80, b: 150 }
+                        yaxis: { title: 'Annotation', automargin: true, tickfont: { size: tickFontSize } },
+                        margin: { l: 150, r: 50, t: 80, b: 150 },
+                        height: plotHeight
                     }, { responsive: true });
                 },
 

@@ -212,8 +212,18 @@ class ReportDataManager:
         """Save spot metadata and coordinates."""
         metadata_file = self.report_data_dir / "spot_metadata.csv"
         if self._is_step_complete([metadata_file]):
-            logger.info("Spot metadata already exists. Skipping.")
             self.metadata = pd.read_csv(metadata_file)
+            # Validate all configured traits exist in cached file
+            missing_traits = [t for t in self.traits if t not in self.metadata.columns]
+            if missing_traits:
+                logger.warning(
+                    f"Cached spot_metadata.csv missing traits: {missing_traits}. Regenerating..."
+                )
+                self.metadata = _save_metadata(
+                    self.ldsc_results, self.coords, self.report_data_dir
+                )
+            else:
+                logger.info("Spot metadata already exists. Skipping.")
             if self.common_spots is None:
                 self.common_spots = self.metadata["spot"].values
             return
@@ -382,8 +392,14 @@ class ReportDataManager:
         cauchy_js = self.js_data_dir / "cauchy_results.js"
         # Since this combines all traits/annotations, we check for the final csv
         if self._is_step_complete([cauchy_file, cauchy_js]):
-            logger.info("Cauchy results already collected. Skipping.")
-            return
+            # Validate all configured traits are covered in cached results
+            df = pd.read_csv(cauchy_file)
+            cached_traits = set(df["trait"].unique()) if "trait" in df.columns else set()
+            missing_traits = set(self.traits) - cached_traits
+            if not missing_traits:
+                logger.info("Cauchy results already collected. Skipping.")
+                return
+            logger.warning(f"Cauchy results missing traits: {missing_traits}. Regenerating...")
 
         _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
         _export_cauchy_js(self.report_data_dir, self.js_data_dir)
