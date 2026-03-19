@@ -96,16 +96,23 @@ class GWASSumstatsConfig:
         """
         Process sumstats input options and populate sumstats_config_dict.
 
-        Args:
-            self: Configuration object with sumstats_file, sumstats_config_file, and trait_name fields.
-
-        Returns:
-            Dict mapping trait names to sumstats file paths.
+        Priority:
+        1. If ``sumstats_config_dict`` is already provided (non-empty), use it directly.
+        2. Otherwise resolve from ``sumstats_file`` / ``sumstats_config_file``.
         """
+        # If the caller already built the dict, validate and accept it directly.
+        if self.sumstats_config_dict:
+            self.sumstats_config_dict = {k: Path(v) for k, v in self.sumstats_config_dict.items()}
+            for sumstats_file in self.sumstats_config_dict.values():
+                assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
+            return
+
         sumstats_config_dict = {}
 
         if self.sumstats_file is None and self.sumstats_config_file is None:
-            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
+            raise ValueError(
+                "One of sumstats_file, sumstats_config_file, or sumstats_config_dict must be provided."
+            )
         if self.sumstats_file is not None and self.sumstats_config_file is not None:
             raise ValueError(
                 "Only one of sumstats_file and sumstats_config_file must be provided."
@@ -116,7 +123,7 @@ class GWASSumstatsConfig:
             raise ValueError(
                 "trait_name must not be provided if sumstats_config_file is provided."
             )
-        # load the sumstats self file
+        # load the sumstats config file
         if self.sumstats_config_file is not None:
             # get the directory of the config file to resolve relative paths
             config_dir = Path(self.sumstats_config_file).parent
@@ -128,10 +135,8 @@ class GWASSumstatsConfig:
                     s_path = config_dir / s_path
                 sumstats_config_dict[_trait_name] = s_path.resolve()
         # load the sumstats file
-        elif self.sumstats_file is not None:
-            sumstats_config_dict[self.trait_name] = Path(self.sumstats_file)
         else:
-            raise ValueError("One of sumstats_file and sumstats_config_file must be provided.")
+            sumstats_config_dict[self.trait_name] = Path(self.sumstats_file)
 
         for sumstats_file in sumstats_config_dict.values():
             assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
