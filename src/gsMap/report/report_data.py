@@ -646,9 +646,13 @@ def _stratified_subsample(
 def _calculate_umap_from_embeddings(
     adata: ad.AnnData,
     embedding_key: str,
+    umap_key: str = "X_umap",
 ) -> np.ndarray:
-    logger.info(f"Calculating UMAP for {embedding_key} with {adata.n_obs} spots using scanpy...")
+    if umap_key in adata.obsm:
+        logger.info(f"Using pre-computed '{umap_key}' from adata.obsm, skipping neighbors + UMAP.")
+        return adata.obsm[umap_key]
 
+    logger.info(f"Calculating UMAP for {embedding_key} with {adata.n_obs} spots using scanpy...")
     sc.pp.neighbors(adata, use_rep=embedding_key)
     sc.tl.umap(adata)
 
@@ -700,7 +704,7 @@ def _prepare_umap_data(
     logger.info(f"Using {len(selected_spots)} spots for UMAP calculation")
 
     # Calculate UMAPs
-    umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key)
+    umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key, umap_key="X_umap")
 
     # Estimate point size for UMAP cell
     _, point_size_cell = estimate_plotly_point_size(umap_cell, DEFAULT_PIXEL_WIDTH=600)
@@ -708,7 +712,9 @@ def _prepare_umap_data(
     umap_niche = None
     point_size_niche = None
     if has_niche:
-        umap_niche = _calculate_umap_from_embeddings(adata_sub, niche_emb_key)
+        umap_niche = _calculate_umap_from_embeddings(
+            adata_sub, niche_emb_key, umap_key="X_umap_niche"
+        )
         _, point_size_niche = estimate_plotly_point_size(umap_niche, DEFAULT_PIXEL_WIDTH=600)
 
     # Prepare metadata for the subsampled spots
