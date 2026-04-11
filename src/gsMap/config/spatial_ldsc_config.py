@@ -196,6 +196,19 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
         ),
     ] = None
 
+    ldscore_h5ad_path: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to a pre-computed SNP × Cell LD score h5ad file (obs=SNPs, var=cells). "
+            "When provided, skips on-the-fly LD score computation from the SNP-gene weight matrix. "
+            "additional_baseline_h5ad_path_list must also be provided to supply all baseline annotations.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None
+
     # use_gpu is inherited from SpatialLDSCComputeConfig
 
     marker_score_feather_path: Annotated[
@@ -282,8 +295,21 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
                     f"cell_indices_range start ({start}) must be less than end ({end})"
                 )
 
-            # Validate against actual data shape based on marker score format
-            if self.marker_score_format == "memmap":
+            # Validate against actual data shape.
+            # Direct ldscore mode takes priority: cells are var (columns) in the ldscore h5ad.
+            if self.ldscore_h5ad_path is not None:
+                ldscore_path = Path(self.ldscore_h5ad_path)
+                assert ldscore_path.exists(), f"ldscore_h5ad_path not found at {ldscore_path}."
+                shape = get_anndata_shape(str(ldscore_path))
+                if shape is not None:
+                    _, n_vars = shape  # n_vars = number of cells
+                    if end > n_vars:
+                        logger.warning(
+                            f"cell_indices_range end ({end}) exceeds number of cells ({n_vars}) in ldscore h5ad. "
+                            f"Setting end to {n_vars}."
+                        )
+                        end = n_vars
+            elif self.marker_score_format == "memmap":
                 # For memmap format, check the concatenated latent adata
                 adata_path = (
                     Path(self.workdir)
@@ -347,8 +373,15 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
             self.cell_indices_range = (start, end)
             logger.info(f"Processing cell_indices_range: [{start}, {end})")
 
-        if self.snp_gene_weight_adata_path is None:
-            raise ValueError("snp_gene_weight_adata_path must be provided.")
+        if self.snp_gene_weight_adata_path is None and self.ldscore_h5ad_path is None:
+            raise ValueError(
+                "One of snp_gene_weight_adata_path or ldscore_h5ad_path must be provided."
+            )
+        if self.ldscore_h5ad_path is not None and not self.additional_baseline_h5ad_path_list:
+            raise ValueError(
+                "additional_baseline_h5ad_path_list must be provided when using ldscore_h5ad_path "
+                "(it supplies all baseline annotations for the regression)."
+            )
 
         # Handle w_ld_dir
         if self.w_ld_dir is None:

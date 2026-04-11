@@ -436,11 +436,12 @@ class SpatialLDSCProcessor:
         self,
         config: SpatialLDSCConfig,
         output_dir: Path,
-        marker_score_adata: ad.AnnData,
-        snp_gene_weight_adata: ad.AnnData,
+        marker_score_adata: ad.AnnData | None,
+        snp_gene_weight_adata: ad.AnnData | None,
         baseline_ld: pd.DataFrame,
         w_ld: pd.DataFrame,
         n_loader_threads: int = 10,
+        ldscore_adata: ad.AnnData | None = None,
     ):
         """
         Initialize the unified processor.
@@ -448,17 +449,19 @@ class SpatialLDSCProcessor:
         Args:
             config: Configuration object
             output_dir: Output directory for results
-            marker_score_adata: AnnData object containing marker scores in .X
-            snp_gene_weight_adata: AnnData object containing SNP-gene weights
+            marker_score_adata: AnnData with marker scores in .X (weight-matrix mode).
+                                 Pass None when using ldscore_adata.
+            snp_gene_weight_adata: AnnData with SNP-gene weights (weight-matrix mode).
+                                    Pass None when using ldscore_adata.
             baseline_ld: Baseline LD scores common to all traits
             w_ld: Weights common to all traits
             n_loader_threads: Number of parallel loader threads
+            ldscore_adata: Pre-computed SNP × Cell LD score AnnData (obs=SNPs, var=cells).
+                           When provided, activates direct ldscore mode and marker_score_adata /
+                           snp_gene_weight_adata are ignored.
         """
         self.config = config
         self.output_dir = output_dir
-        self.marker_score_adata = marker_score_adata
-        self.snp_gene_weight_adata = snp_gene_weight_adata
-        self.n_spots = marker_score_adata.n_obs
         self.baseline_ld = baseline_ld
         self.w_ld = w_ld
         self.n_loader_threads = n_loader_threads
@@ -472,29 +475,60 @@ class SpatialLDSCProcessor:
         self.min_spot_start = float("inf")
         self.max_spot_end = 0
 
-        logger.info(
-            f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})"
-        )
+        if ldscore_adata is not None:
+            # ── Direct ldscore mode ──────────────────────────────────────────
+            self.mode = "direct_ldscore"
+            self.ldscore_adata = ldscore_adata
+            self.marker_score_adata = None
+            self.snp_gene_weight_adata = None
+            # Cells are var (columns) in the ldscore h5ad
+            self.n_spots = ldscore_adata.n_vars
+            self.spot_names_all = np.array(ldscore_adata.var_names)
+            self.marker_score_gene_indices = None
+            self.weight_gene_indices = None
+            logger.info(
+                f"Direct ldscore mode: {self.n_spots} cells, "
+                f"{ldscore_adata.n_obs} SNPs in ldscore h5ad"
+            )
+        else:
+            # ── Weight-matrix mode (original behavior) ───────────────────────
+            self.mode = "weight_matrix"
+            self.ldscore_adata = None
+            self.marker_score_adata = marker_score_adata
+            self.snp_gene_weight_adata = snp_gene_weight_adata
+            self.n_spots = marker_score_adata.n_obs
+            self.spot_names_all = np.array(self.marker_score_adata.obs_names)
 
-        # Find common genes and initialize indices
-        gene_names_from_adata = np.array(self.marker_score_adata.var_names)
-        self.spot_names_all = np.array(self.marker_score_adata.obs_names)
+            logger.info(
+                f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})"
+            )
 
-        if self.snp_gene_weight_adata is None:
-            raise ValueError("snp_gene_weight_adata must be provided")
+            # Find common genes and initialize indices
+            gene_names_from_adata = np.array(self.marker_score_adata.var_names)
 
-        marker_score_genes_series = pd.Series(gene_names_from_adata)
-        common_genes_mask = marker_score_genes_series.isin(self.snp_gene_weight_adata.var.index)
-        common_genes = gene_names_from_adata[common_genes_mask]
+            if self.snp_gene_weight_adata is None:
+                raise ValueError("snp_gene_weight_adata must be provided in weight-matrix mode")
 
-        self.marker_score_gene_indices = np.where(common_genes_mask)[0]
-        self.weight_gene_indices = [
-            self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes
-        ]
+            marker_score_genes_series = pd.Series(gene_names_from_adata)
+            common_genes_mask = marker_score_genes_series.isin(
+                self.snp_gene_weight_adata.var.index
+            )
+            common_genes = gene_names_from_adata[common_genes_mask]
 
-        logger.info(f"Found {len(common_genes)} common genes")
+            self.marker_score_gene_indices = np.where(common_genes_mask)[0]
+            self.weight_gene_indices = [
+                self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes
+            ]
+
+            logger.info(f"Found {len(common_genes)} common genes")
 
         # Filter by sample if specified
+        if self.mode == "direct_ldscore" and self.config.sample_filter:
+            raise ValueError(
+                "sample_filter is not supported in direct ldscore mode. "
+                "Use cell_indices_range to process a subset of cells."
+            )
+
         if self.config.sample_filter:
             logger.info(f"Filtering spots by sample: {self.config.sample_filter}")
             sample_info = self.marker_score_adata.obs.get(
@@ -553,34 +587,43 @@ class SpatialLDSCProcessor:
         self.trait_name = trait_name
         logger.info(f"Setting up processor for trait: {trait_name}")
 
-        # Prepare trait data
+        # Prepare trait data — pass the appropriate reference adata for snp_positions
+        snp_ref = (
+            self.ldscore_adata if self.mode == "direct_ldscore" else self.snp_gene_weight_adata
+        )
         data, common_snps = prepare_trait_data(
             self.config,
             trait_name,
             sumstats_file,
             self.baseline_ld,
             self.w_ld,
-            self.snp_gene_weight_adata,
+            snp_ref,
         )
 
         # Prepare blocks
         self.data_truncated = prepare_snp_data_for_blocks(data, self.config.n_blocks)
 
-        # Extract SNP-gene weight matrix for this trait's SNPs
         logger.info(f"Initializing trait-specific components for trait: {self.trait_name}")
         snp_positions = self.data_truncated.get("snp_positions", None)
         if snp_positions is None:
             raise ValueError("snp_positions not found in data_truncated")
 
-        # Extract SNP-gene weight matrix for this trait's SNPs
-        self.snp_gene_weight_sparse = self.snp_gene_weight_adata.X[snp_positions, :][
-            :, self.weight_gene_indices
-        ]
+        if self.mode == "direct_ldscore":
+            # Store SNP positions for direct slicing from ldscore_adata
+            self.ldscore_snp_positions = snp_positions
+            logger.info(
+                f"Direct ldscore: {len(snp_positions)} SNP positions stored for trait {trait_name}"
+            )
+        else:
+            # Extract SNP-gene weight matrix for this trait's SNPs
+            self.snp_gene_weight_sparse = self.snp_gene_weight_adata.X[snp_positions, :][
+                :, self.weight_gene_indices
+            ]
 
-        if hasattr(self.snp_gene_weight_sparse, "tocsr"):
-            self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
+            if hasattr(self.snp_gene_weight_sparse, "tocsr"):
+                self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
 
-        logger.info(f"SNP-gene weight matrix shape: {self.snp_gene_weight_sparse.shape}")
+            logger.info(f"SNP-gene weight matrix shape: {self.snp_gene_weight_sparse.shape}")
 
         # Reset results
         self.results = []
@@ -601,28 +644,36 @@ class SpatialLDSCProcessor:
         start = self.chunk_starts[chunk_index]
         end = min(start + self.chunk_size, self._cell_end)
 
-        # Calculate absolute positions in memmap
+        # Calculate absolute positions
         memmap_start = self.sample_start_offset + start
         memmap_end = self.sample_start_offset + end
 
-        # Load chunk from marker_score_adata
-        mk_score_chunk = self.marker_score_adata.X[
-            memmap_start:memmap_end, self.marker_score_gene_indices
-        ]
-        mk_score_chunk = mk_score_chunk.T.astype(np.float32)
-
-        # Compute LD scores via sparse matrix multiplication
-        ldscore_chunk = self.snp_gene_weight_sparse @ mk_score_chunk
-
-        if hasattr(ldscore_chunk, "toarray"):
-            ldscore_chunk = ldscore_chunk.toarray()
-
-        # Get spot names
+        # Get spot names and absolute positions (common to both modes)
         spot_names = pd.Index(self.spot_names_filtered[start:end])
-
-        # Calculate absolute positions in original data
         absolute_start = self.spot_indices[start] if start < len(self.spot_indices) else start
         absolute_end = self.spot_indices[end - 1] + 1 if end > 0 else absolute_start
+
+        if self.mode == "direct_ldscore":
+            # Read the contiguous cell-column slice across all SNPs, then filter rows.
+            # Reading a contiguous column range first avoids slow HDF5 fancy row indexing.
+            chunk_all_snps = np.asarray(
+                self.ldscore_adata.X[:, memmap_start:memmap_end]
+            )  # (n_snps_total, n_cells_chunk)
+            ldscore_chunk = chunk_all_snps[self.ldscore_snp_positions, :]
+            if hasattr(ldscore_chunk, "toarray"):
+                ldscore_chunk = ldscore_chunk.toarray()
+        else:
+            # Load chunk from marker_score_adata and compute LD scores
+            mk_score_chunk = self.marker_score_adata.X[
+                memmap_start:memmap_end, self.marker_score_gene_indices
+            ]
+            mk_score_chunk = mk_score_chunk.T.astype(np.float32)
+
+            # Compute LD scores via sparse matrix multiplication
+            ldscore_chunk = self.snp_gene_weight_sparse @ mk_score_chunk
+
+            if hasattr(ldscore_chunk, "toarray"):
+                ldscore_chunk = ldscore_chunk.toarray()
 
         return (
             ldscore_chunk.astype(np.float32, copy=False),

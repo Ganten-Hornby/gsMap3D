@@ -291,6 +291,68 @@ def load_common_resources(
     return baseline_ld, w_ld, snp_gene_weight_adata
 
 
+def load_common_resources_direct_ldscore(
+    config: SpatialLDSCConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, ad.AnnData]:
+    """
+    Load resources for direct ldscore input mode (pre-computed SNP × Cell h5ad).
+
+    Returns (baseline_ld, w_ld, ldscore_adata).
+    - baseline_ld is built entirely from additional_baseline_h5ad_path_list.
+    - ldscore_adata has obs=SNPs, var=cells, X=pre-computed LD scores.
+    """
+    logger.info("Loading common resources (direct ldscore mode)...")
+    log_memory_usage("before loading direct ldscore resources")
+
+    # 1. Load LD weights
+    w_ld = _read_w_ld(config.w_ld_dir)
+    w_ld.set_index("SNP", inplace=True)
+
+    # 2. Open the pre-computed ldscore h5ad in backed mode (can be large)
+    logger.info(f"Opening pre-computed ldscore h5ad from {config.ldscore_h5ad_path} ...")
+    ldscore_adata = ad.read_h5ad(config.ldscore_h5ad_path, backed="r")
+    logger.info(f"ldscore_adata: {ldscore_adata.n_obs} SNPs × {ldscore_adata.n_vars} cells")
+
+    # 3. Start with the intersection of ldscore SNPs and w_ld SNPs
+    common_snps = ldscore_adata.obs_names.intersection(w_ld.index)
+    logger.info(f"Common SNPs (ldscore_adata ∩ w_ld): {len(common_snps)}")
+
+    # 4. Build baseline_ld from additional_baseline_h5ad_path_list
+    baseline_ld: pd.DataFrame | None = None
+    for i, h5ad_path in enumerate(config.additional_baseline_h5ad_path_list):
+        logger.info(f"Loading baseline annotation {i + 1}: {h5ad_path}")
+        add_adata = ad.read_h5ad(h5ad_path)
+
+        common_in_add = common_snps.intersection(add_adata.obs_names)
+        if len(common_in_add) < len(common_snps):
+            logger.warning(
+                f"Baseline {h5ad_path} only has {len(common_in_add)}/{len(common_snps)} "
+                f"common SNPs. Intersecting..."
+            )
+            common_snps = common_in_add
+
+        add_X = add_adata[common_snps].X
+        if hasattr(add_X, "toarray"):
+            add_X = add_X.toarray()
+
+        add_df = pd.DataFrame(np.asarray(add_X), index=common_snps, columns=add_adata.var_names)
+        baseline_ld = add_df if baseline_ld is None else pd.concat([baseline_ld, add_df], axis=1)
+
+    if baseline_ld is None:
+        raise ValueError(
+            "No baseline annotations loaded. additional_baseline_h5ad_path_list is empty."
+        )
+
+    # 5. Final subset to common_snps
+    baseline_ld = baseline_ld.loc[common_snps]
+    w_ld = w_ld.loc[common_snps]
+
+    logger.info(f"Final common SNPs: {len(common_snps)}")
+    logger.info(f"Baseline LD shape: {baseline_ld.shape}")
+    log_memory_usage("after loading direct ldscore resources")
+    return baseline_ld, w_ld, ldscore_adata
+
+
 def prepare_trait_data(
     config: SpatialLDSCConfig,
     trait_name: str,

@@ -18,6 +18,7 @@ from .io import (
     FeatherAnnData,
     generate_expected_output_filename,
     load_common_resources,
+    load_common_resources_direct_ldscore,
     load_marker_scores_memmap_format,
     log_existing_result_statistics,
 )
@@ -285,11 +286,6 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     """
     Run spatial LDSC for all traits in config.sumstats_config_dict.
     """
-    if config.marker_score_format not in ["memmap", "h5ad", "feather"]:
-        raise NotImplementedError(
-            f"Marker score format '{config.marker_score_format}' is not supported. Only 'memmap', 'h5ad', and 'feather' are supported."
-        )
-
     traits_to_process = list(config.sumstats_config_dict.items())
     if not traits_to_process:
         raise ValueError("No traits to process. config.sumstats_config_dict is empty.")
@@ -301,49 +297,75 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     # Determine number of loader threads based on platform
     n_loader_threads = 10 if jax.default_backend() == "gpu" else 2
 
-    # Load marker scores once (format-agnostic)
-    logger.info(f"Loading marker scores (format: {config.marker_score_format})...")
     marker_score_adata = None
 
     try:
-        if config.marker_score_format == "memmap":
-            marker_score_adata = load_marker_scores_memmap_format(config)
+        if config.ldscore_h5ad_path is not None:
+            # ── Direct ldscore input mode ────────────────────────────────────
+            # Bypasses LD score computation;
+            # baseline annotations come from additional_baseline_h5ad_path_list.
+            logger.info("Using direct ldscore input mode (pre-computed SNP × Cell h5ad).")
+            baseline_ld, w_ld, ldscore_adata = load_common_resources_direct_ldscore(config)
 
-        elif config.marker_score_format == "feather":
-            feather_path = Path(config.marker_score_feather_path)
-            logger.info(f"Loading marker scores from Feather: {feather_path}")
-            # Use the specialized FeatherAnnData wrapper
-            marker_score_adata = FeatherAnnData(
-                feather_path, index_col="HUMAN_GENE_SYM", transpose=True
+            logger.debug("Initializing processor (direct ldscore mode)...")
+            processor = SpatialLDSCProcessor(
+                config=config,
+                output_dir=output_dir,
+                marker_score_adata=None,
+                snp_gene_weight_adata=None,
+                baseline_ld=baseline_ld,
+                w_ld=w_ld,
+                n_loader_threads=n_loader_threads,
+                ldscore_adata=ldscore_adata,
             )
-
-        elif config.marker_score_format == "h5ad":
-            if not config.marker_score_h5ad_path:
-                raise ValueError(
-                    "marker_score_h5ad_path must be provided when marker_score_format is 'h5ad'"
+        else:
+            # ── Weight-matrix mode ───────────────────────
+            if config.marker_score_format not in ["memmap", "h5ad", "feather"]:
+                raise NotImplementedError(
+                    f"Marker score format '{config.marker_score_format}' is not supported. "
+                    "Only 'memmap', 'h5ad', and 'feather' are supported."
                 )
 
-            h5ad_path = Path(config.marker_score_h5ad_path)
-            if not h5ad_path.exists():
-                raise FileNotFoundError(f"Marker score H5AD file not found: {h5ad_path}")
+            # Load marker scores once (format-agnostic)
+            logger.info(f"Loading marker scores (format: {config.marker_score_format})...")
 
-            logger.info(f"Loading marker scores from H5AD: {h5ad_path}")
-            marker_score_adata = ad.read_h5ad(h5ad_path, backed="r")
+            if config.marker_score_format == "memmap":
+                marker_score_adata = load_marker_scores_memmap_format(config)
 
-        # Load common resources once (baseline, weights, snp_gene_weights)
-        baseline_ld, w_ld, snp_gene_weight_adata = load_common_resources(config)
+            elif config.marker_score_format == "feather":
+                feather_path = Path(config.marker_score_feather_path)
+                logger.info(f"Loading marker scores from Feather: {feather_path}")
+                marker_score_adata = FeatherAnnData(
+                    feather_path, index_col="HUMAN_GENE_SYM", transpose=True
+                )
 
-        # Initialize processor with common resources
-        logger.debug("Initializing processor...")
-        processor = SpatialLDSCProcessor(
-            config=config,
-            output_dir=output_dir,
-            marker_score_adata=marker_score_adata,
-            snp_gene_weight_adata=snp_gene_weight_adata,
-            baseline_ld=baseline_ld,
-            w_ld=w_ld,
-            n_loader_threads=n_loader_threads,
-        )
+            elif config.marker_score_format == "h5ad":
+                if not config.marker_score_h5ad_path:
+                    raise ValueError(
+                        "marker_score_h5ad_path must be provided when marker_score_format is 'h5ad'"
+                    )
+
+                h5ad_path = Path(config.marker_score_h5ad_path)
+                if not h5ad_path.exists():
+                    raise FileNotFoundError(f"Marker score H5AD file not found: {h5ad_path}")
+
+                logger.info(f"Loading marker scores from H5AD: {h5ad_path}")
+                marker_score_adata = ad.read_h5ad(h5ad_path, backed="r")
+
+            # Load common resources once (baseline, weights, snp_gene_weights)
+            baseline_ld, w_ld, snp_gene_weight_adata = load_common_resources(config)
+
+            # Initialize processor with common resources
+            logger.debug("Initializing processor (weight-matrix mode)...")
+            processor = SpatialLDSCProcessor(
+                config=config,
+                output_dir=output_dir,
+                marker_score_adata=marker_score_adata,
+                snp_gene_weight_adata=snp_gene_weight_adata,
+                baseline_ld=baseline_ld,
+                w_ld=w_ld,
+                n_loader_threads=n_loader_threads,
+            )
 
         try:
             for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
