@@ -234,6 +234,34 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
             if not trait_3d_html.exists():
                 missing_web_files.append(trait_3d_html)
 
+            trait_module_specificity = (
+                config.project_dir
+                / "trait_modules"
+                / f"{config.project_name}_{trait}.module_specificity.csv"
+            )
+            if trait_module_specificity.exists():
+                try:
+                    import pandas as pd
+
+                    module_cols = pd.read_csv(trait_module_specificity, nrows=0).columns
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"Unable to inspect trait module specificity file "
+                        f"{trait_module_specificity}: {e}"
+                    )
+                    module_cols = []
+
+                for col in module_cols:
+                    if col == "spot" or col == "best_trait_module":
+                        continue
+                    safe_suffix = "".join(c if c.isalnum() else "_" for c in col)
+                    module_3d_html = (
+                        three_d_web_dir
+                        / f"spatial_3d_trait_module_{safe_trait}_{safe_suffix}.html"
+                    )
+                    if not module_3d_html.exists():
+                        missing_web_files.append(module_3d_html)
+
         for anno in annotation_list:
             safe_anno = "".join(c if c.isalnum() else "_" for c in anno)
             anno_3d_html = three_d_web_dir / f"spatial_3d_anno_{safe_anno}.html"

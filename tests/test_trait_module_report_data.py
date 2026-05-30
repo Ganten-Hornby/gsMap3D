@@ -1,13 +1,19 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
+import anndata as ad
 import numpy as np
 import pandas as pd
 
+import gsMap.report.report_data as report_data
+from gsMap.config.latent2gene_config import DatasetType
+from gsMap.config.quick_mode_config import get_report_missing_files
 from gsMap.report.report_data import (
     _export_per_sample_spatial_js,
     _export_trait_module_js,
     _merge_trait_module_metadata,
+    _prepare_3d_visualization,
 )
 
 
@@ -261,3 +267,135 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     assert data["IQ"]["pairs"][0]["profile_distinct"] is True
     assert data["IQ"]["pairs"][0]["marker_overlap_null_pvalue"] == 0.12
     assert data["IQ"]["pairs"][0]["shared_top_genes"] == "GENE2"
+
+
+def test_prepare_3d_visualization_writes_trait_module_specificity_views(tmp_path, monkeypatch):
+    config = SimpleNamespace(annotation_list=["annotation"], downsampling_n_spots_3d=100)
+    metadata = pd.DataFrame(
+        {
+            "spot": ["cell_1", "cell_2", "cell_3"],
+            "sample_name": ["sampleA", "sampleA", "sampleB"],
+            "3d_x": [0.0, 1.0, 2.0],
+            "3d_y": [0.0, 1.0, 2.0],
+            "3d_z": [0.0, 0.0, 1.0],
+            "IQ": [3.2, 0.4, 1.1],
+            "IQ_best_trait_module": [1, -1, 2],
+            "IQ_best_module_specificity": [0.9, 0.0, 0.8],
+            "IQ_module_1_specificity": [0.9, 0.0, 0.2],
+            "IQ_module_2_specificity": [0.1, 0.0, 0.8],
+            "annotation": ["A", "B", "A"],
+        }
+    )
+    calls = []
+
+    class FakePlotter:
+        pass
+
+    def fake_three_d_plot(**kwargs):
+        calls.append(kwargs)
+        return FakePlotter()
+
+    def fake_three_d_plot_save(plotter, filename):
+        Path(filename).with_suffix(".html").write_text("ok")
+
+    monkeypatch.setattr(report_data, "three_d_plot", fake_three_d_plot)
+    monkeypatch.setattr(report_data, "three_d_plot_save", fake_three_d_plot_save)
+
+    result = _prepare_3d_visualization(
+        config,
+        metadata,
+        ["IQ"],
+        tmp_path / "report_data",
+        tmp_path / "web_report",
+    )
+
+    web_3d = tmp_path / "web_report" / "spatial_3d"
+    assert result == "spatial_3d/spatial_3d_anno_annotation.html"
+    assert (web_3d / "spatial_3d_trait_IQ.html").exists()
+    assert (web_3d / "spatial_3d_trait_module_IQ_best_module_specificity.html").exists()
+    assert (web_3d / "spatial_3d_trait_module_IQ_module_1_specificity.html").exists()
+    assert (web_3d / "spatial_3d_trait_module_IQ_module_2_specificity.html").exists()
+    continuous_keys = [call["keys"][0] for call in calls if call["keys"][0] != "annotation"]
+    assert continuous_keys == [
+        "IQ",
+        "IQ_best_module_specificity",
+        "IQ_module_1_specificity",
+        "IQ_module_2_specificity",
+    ]
+    saved = ad.read_h5ad(tmp_path / "report_data" / "spatial_3d" / "spatial_3d.h5ad")
+    assert "IQ_module_1_specificity" in saved.obs.columns
+
+
+def test_report_missing_files_requires_trait_module_3d_views(tmp_path):
+    project_dir = tmp_path / "project"
+    report_data_dir = project_dir / "report_data"
+    web_report_dir = project_dir / "gsmap_web_report"
+    module_dir = project_dir / "trait_modules"
+    js_dir = web_report_dir / "js_data"
+    spatial_3d_dir = web_report_dir / "spatial_3d"
+    data_3d_dir = report_data_dir / "spatial_3d"
+    for path in [
+        report_data_dir / "gss_stats",
+        report_data_dir / "manhattan_data",
+        js_dir / "gss_stats",
+        module_dir,
+        spatial_3d_dir,
+        data_3d_dir,
+    ]:
+        path.mkdir(parents=True)
+
+    for path in [
+        web_report_dir / "index.html",
+        web_report_dir / "report_meta.json",
+        js_dir / "sample_index.js",
+        js_dir / "report_meta.js",
+        js_dir / "cauchy_results.js",
+        report_data_dir / "spot_metadata.csv",
+        report_data_dir / "gene_list.csv",
+        report_data_dir / "cauchy_results.csv",
+        report_data_dir / "gss_stats" / "gene_trait_correlation_IQ.csv",
+        report_data_dir / "manhattan_data" / "IQ_manhattan.csv",
+        js_dir / "gss_stats" / "gene_trait_correlation_IQ.js",
+        js_dir / "manhattan_IQ.js",
+        js_dir / "umap_data.js",
+        report_data_dir / "umap_data.csv",
+        data_3d_dir / "spatial_3d.h5ad",
+        spatial_3d_dir / "spatial_3d_trait_IQ.html",
+        spatial_3d_dir / "spatial_3d_anno_annotation.html",
+        web_report_dir / "gene_diagnostic_plots",
+    ]:
+        if path.suffix:
+            path.write_text("ok")
+        else:
+            path.mkdir(exist_ok=True)
+
+    pd.DataFrame(
+        {
+            "spot": ["cell_1"],
+            "best_trait_module": [1],
+            "best_module_specificity": [0.9],
+            "module_1_specificity": [0.9],
+        }
+    ).to_csv(module_dir / "module_report_IQ.module_specificity.csv", index=False)
+
+    config = SimpleNamespace(
+        dataset_type=DatasetType.SPATIAL_3D,
+        web_report_dir=web_report_dir,
+        report_data_dir=report_data_dir,
+        project_dir=project_dir,
+        project_name="module_report",
+        trait_name_list=["IQ"],
+        annotation_list=["annotation"],
+        sample_h5ad_dict=None,
+        generate_multi_sample_plots=False,
+        concatenated_latent_adata_path=None,
+    )
+
+    _, missing_web_files = get_report_missing_files(config)
+
+    assert (
+        spatial_3d_dir / "spatial_3d_trait_module_IQ_best_module_specificity.html"
+    ) in missing_web_files
+    assert (
+        spatial_3d_dir / "spatial_3d_trait_module_IQ_module_1_specificity.html"
+    ) in missing_web_files

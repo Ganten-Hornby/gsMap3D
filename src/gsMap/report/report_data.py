@@ -842,16 +842,29 @@ def _prepare_3d_visualization(
     if "sx" in metadata.columns and "sy" in metadata.columns:
         adata_vis_full.obsm["spatial_2d"] = metadata[["sx", "sy"]].values
 
-    # Ensure trait columns are float32
+    trait_module_3d_cols = {}
+    for trait in traits:
+        module_cols = [
+            col
+            for col in _trait_module_specificity_columns(metadata, trait)
+            if col != f"{trait}_best_trait_module"
+        ]
+        if module_cols:
+            trait_module_3d_cols[trait] = module_cols
+
+    # Ensure trait and module-specificity columns are float32
+    continuous_obs_cols = list(traits)
+    for module_cols in trait_module_3d_cols.values():
+        continuous_obs_cols.extend(module_cols)
     adata_vis_full.obs = adata_vis_full.obs.astype(
-        {trait: np.float32 for trait in traits if trait in adata_vis_full.obs.columns}
+        {col: np.float32 for col in continuous_obs_cols if col in adata_vis_full.obs.columns}
     )
 
     # Create 3D visualization directories
     three_d_data_dir = report_data_dir / "spatial_3d"
-    three_d_data_dir.mkdir(exist_ok=True)
+    three_d_data_dir.mkdir(parents=True, exist_ok=True)
     three_d_web_dir = web_report_dir / "spatial_3d"
-    three_d_web_dir.mkdir(exist_ok=True)
+    three_d_web_dir.mkdir(parents=True, exist_ok=True)
 
     # 2. Save the full adata_vis to data directory
     h5ad_path = three_d_data_dir / "spatial_3d.h5ad"
@@ -868,16 +881,17 @@ def _prepare_3d_visualization(
     else:
         adata_vis = adata_vis_full.copy()
 
-    # Add traits as continuous values
-    continuous_cols = traits
-
     # Add annotations (categorical)
     annotation_cols = []
     for anno in report_config.annotation_list:
         if anno in adata_vis.obs.columns:
             annotation_cols.append(anno)
 
-    logger.info(f"3D visualization: annotations={annotation_cols}, traits={continuous_cols}")
+    logger.info(
+        "3D visualization: "
+        f"annotations={annotation_cols}, traits={traits}, "
+        f"trait_module_specificity={trait_module_3d_cols}"
+    )
 
     # Create 3D plots
     try:
@@ -941,12 +955,17 @@ def _prepare_3d_visualization(
         # 2. Save each Trait 3D plot
         legend_kwargs = dict(scalar_bar_title_size=30, scalar_bar_label_size=30, fmt="%.1e")
 
-        for trait in continuous_cols:
-            logger.info(f"Generating 3D plot for trait: {trait}")
+        def save_continuous_3d_plot(
+            *,
+            column: str,
+            output_name: str,
+            scalar_bar_title: str,
+            text: str,
+        ):
+            logger.info(f"Generating 3D plot for {column}")
 
-            # Calculate opacity based on LogP (exponential scaling)
-            trait_values = adata_vis.obs[trait].fillna(0).values
-            bins = np.linspace(trait_values.min(), trait_values.max(), 5)
+            values = adata_vis.obs[column].fillna(0).values.astype(np.float32)
+            bins = np.linspace(values.min(), values.max(), 5)
             # Handle case where min == max to avoid bins error
             if bins[0] == bins[-1]:
                 opacity_show = 1.0
@@ -954,11 +973,11 @@ def _prepare_3d_visualization(
                 alpha = np.exp(np.linspace(0.1, 1.0, num=(len(bins) - 1))) - 1
                 alpha = alpha / max(alpha)
                 opacity_show = pd.cut(
-                    trait_values, bins=bins, labels=alpha, include_lowest=True
+                    values, bins=bins, labels=alpha, include_lowest=True
                 ).tolist()
 
             # Set the clim (median of top 20 spots)
-            sorted_vals = np.sort(trait_values)[::-1]
+            sorted_vals = np.sort(values)[::-1]
             max_v = (
                 np.round(np.median(sorted_vals[0:20]))
                 if len(sorted_vals) >= 20
@@ -967,19 +986,16 @@ def _prepare_3d_visualization(
             if max_v <= 0:
                 max_v = 1.0
 
-            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-            trait_plot_name = three_d_web_dir / f"spatial_3d_trait_{safe_trait}"
-
             plotter_trait = three_d_plot(
                 adata=adata_vis,
                 spatial_key="spatial",
-                keys=[trait],
+                keys=[column],
                 cmaps=[P_COLOR],
                 point_size=point_size,
                 opacity=opacity_show,
                 clim=[0, max_v],
-                scalar_bar_titles=["-log10(p)"],
-                texts=[trait],
+                scalar_bar_titles=[scalar_bar_title],
+                texts=[text],
                 off_screen=True,
                 jupyter=False,
                 background="white",
@@ -987,14 +1003,37 @@ def _prepare_3d_visualization(
                 text_kwargs=text_kwargs,
                 window_size=(win_w, win_h),
             )
-            three_d_plot_save(plotter_trait, filename=str(trait_plot_name))
+            three_d_plot_save(plotter_trait, filename=str(three_d_web_dir / output_name))
+
+        for trait in traits:
+            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+            save_continuous_3d_plot(
+                column=trait,
+                output_name=f"spatial_3d_trait_{safe_trait}",
+                scalar_bar_title="-log10(p)",
+                text=trait,
+            )
+            for module_col in trait_module_3d_cols.get(trait, []):
+                suffix = module_col.removeprefix(f"{trait}_")
+                safe_suffix = "".join(c if c.isalnum() else "_" for c in suffix)
+                title = (
+                    "Module specificity"
+                    if suffix == "best_module_specificity"
+                    else suffix.replace("_", " ")
+                )
+                save_continuous_3d_plot(
+                    column=module_col,
+                    output_name=f"spatial_3d_trait_module_{safe_trait}_{safe_suffix}",
+                    scalar_bar_title=title,
+                    text=f"{trait} {title}",
+                )
 
         # Return the relative path of the first available plot
         if annotation_cols:
             safe_first = "".join(c if c.isalnum() else "_" for c in annotation_cols[0])
             return f"spatial_3d/spatial_3d_anno_{safe_first}.html"
-        elif continuous_cols:
-            safe_first_trait = "".join(c if c.isalnum() else "_" for c in continuous_cols[0])
+        elif traits:
+            safe_first_trait = "".join(c if c.isalnum() else "_" for c in traits[0])
             return f"spatial_3d/spatial_3d_trait_{safe_first_trait}.html"
 
         return None
