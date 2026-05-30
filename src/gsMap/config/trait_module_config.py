@@ -91,7 +91,7 @@ class TraitModuleConfig(ConfigWithAutoPaths):
             min=0.0,
             max=1.0,
         ),
-    ] = 0.25
+    ] = 0.95
 
     condition_on_claimed_modules: Annotated[
         bool,

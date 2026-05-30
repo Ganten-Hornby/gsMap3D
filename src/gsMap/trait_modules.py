@@ -138,10 +138,13 @@ def _module_from_best_seed(
 
     profile = np.zeros_like(specificity, dtype=np.float32)
     profile[marker_mask] = specificity[marker_mask]
-    profile_norm = profile / max(float(np.linalg.norm(profile)), 1e-8)
-
-    normalized = _row_normalize(np.maximum(residual[remaining_idx], 0.0))
-    similarities = normalized @ profile_norm
+    # Assign cells by similarity inside the selected marker-gene subspace. Using
+    # all genes here over-penalizes broad marker-score residuals that are
+    # unrelated to the candidate module.
+    marker_residual = np.maximum(residual[remaining_idx][:, marker_mask], 0.0)
+    marker_profile = profile[marker_mask]
+    marker_profile_norm = marker_profile / max(float(np.linalg.norm(marker_profile)), 1e-8)
+    similarities = _row_normalize(marker_residual) @ marker_profile_norm
     module_idx = remaining_idx[similarities >= similarity_threshold]
     if module_idx.size == 0:
         module_idx = np.array([seed_idx], dtype=int)

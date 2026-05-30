@@ -3,7 +3,11 @@ import numpy as np
 import pandas as pd
 
 from gsMap.config import TraitModuleConfig
-from gsMap.trait_modules import _condition_residual_on_profile, discover_trait_modules
+from gsMap.trait_modules import (
+    _condition_residual_on_profile,
+    _module_from_best_seed,
+    discover_trait_modules,
+)
 
 
 def _write_trait_module_inputs(
@@ -66,8 +70,9 @@ def test_discover_trait_modules_recovers_two_marker_programs(tmp_path):
         trait_name="IQ",
         marker_score_h5ad_path=marker_path,
         pvalue_threshold=0.01,
+        top_gene_fraction=0.15,
         min_module_cells=5,
-        module_similarity_threshold=0.2,
+        module_similarity_threshold=0.95,
         max_modules=4,
         max_marker_genes=6,
     )
@@ -131,3 +136,20 @@ def test_condition_residual_on_profile_removes_claimed_program_only():
 
     np.testing.assert_allclose(conditioned[:2], 0.0, atol=1e-6)
     np.testing.assert_allclose(conditioned[2], residual[2], atol=1e-6)
+
+
+def test_module_similarity_uses_marker_gene_subspace():
+    residual = np.zeros((2, 100), dtype=np.float32)
+    residual[0, :5] = 2.0
+    residual[1, :5] = 2.0
+    residual[1, 5:] = 5.0
+
+    module_idx, _, _ = _module_from_best_seed(
+        residual=residual,
+        remaining_mask=np.array([True, True]),
+        weights=np.array([100.0, 1.0], dtype=np.float32),
+        top_n=5,
+        similarity_threshold=0.9,
+    )
+
+    assert module_idx.tolist() == [0, 1]
