@@ -215,12 +215,14 @@ class ReportDataManager:
             self.metadata = pd.read_csv(metadata_file)
             # Validate all configured traits exist in cached file
             missing_traits = [t for t in self.traits if t not in self.metadata.columns]
-            if missing_traits:
+            missing_module_cols = _missing_trait_module_columns(self.metadata, self.report_config)
+            if missing_traits or missing_module_cols:
                 logger.warning(
-                    f"Cached spot_metadata.csv missing traits: {missing_traits}. Regenerating..."
+                    "Cached spot_metadata.csv missing report columns: "
+                    f"traits={missing_traits}, trait_modules={missing_module_cols}. Regenerating..."
                 )
                 self.metadata = _save_metadata(
-                    self.ldsc_results, self.coords, self.report_data_dir
+                    self.ldsc_results, self.coords, self.report_data_dir, self.report_config
                 )
             else:
                 logger.info("Spot metadata already exists. Skipping.")
@@ -228,7 +230,9 @@ class ReportDataManager:
                 self.common_spots = self.metadata["spot"].values
             return
 
-        self.metadata = _save_metadata(self.ldsc_results, self.coords, self.report_data_dir)
+        self.metadata = _save_metadata(
+            self.ldsc_results, self.coords, self.report_data_dir, self.report_config
+        )
         if self.common_spots is None:
             self.common_spots = self.metadata["spot"].values
 
@@ -758,7 +762,8 @@ def _prepare_umap_data(
     available_traits = [t for t in traits if t in metadata.columns]
     if available_traits:
         # Prepare trait data: ensure 'spot' is a column and is string type
-        trait_data = metadata[available_traits].copy()
+        module_cols = _trait_module_columns_for_traits(metadata, traits)
+        trait_data = metadata[available_traits + module_cols].copy()
         trait_data["spot"] = metadata["spot"].astype(str)
         umap_metadata = umap_metadata.merge(trait_data, on="spot", how="left")
 
@@ -770,6 +775,8 @@ def _prepare_umap_data(
                     1
                 )
             logger.info(f"Added trait {trait} to UMAP data with 1 decimal precision")
+
+        _format_trait_module_columns(umap_metadata, traits)
 
     # Save to CSV
     umap_metadata.to_csv(report_dir / "umap_data.csv", index=False)
@@ -1284,7 +1291,10 @@ def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):
 
 
 def _save_metadata(
-    ldsc_results: pd.DataFrame, coords: pd.DataFrame, report_dir: Path
+    ldsc_results: pd.DataFrame,
+    coords: pd.DataFrame,
+    report_dir: Path,
+    report_config: QuickModeConfig | None = None,
 ) -> pd.DataFrame:
     """Save metadata and coordinates to CSV."""
     logger.info("Saving metadata and coordinates...")
@@ -1297,9 +1307,106 @@ def _save_metadata(
     metadata.index.name = "spot"
     metadata = metadata.reset_index()
     metadata = metadata.loc[:, ~metadata.columns.duplicated()]
+    if report_config is not None:
+        metadata = _merge_trait_module_metadata(metadata, report_config)
     metadata.to_csv(report_dir / "spot_metadata.csv", index=False)
 
     return metadata
+
+
+def _trait_module_cell_path(report_config: QuickModeConfig, trait: str) -> Path:
+    return (
+        report_config.project_dir
+        / "trait_modules"
+        / (f"{report_config.project_name}_{trait}.cell_modules.csv")
+    )
+
+
+def _trait_module_columns(trait: str) -> tuple[str, str, str]:
+    return (
+        f"{trait}_trait_module",
+        f"{trait}_module_specificity",
+        f"{trait}_is_module_cell",
+    )
+
+
+def _trait_module_columns_for_traits(df: pd.DataFrame, traits: list[str]) -> list[str]:
+    columns = []
+    for trait in traits:
+        columns.extend([col for col in _trait_module_columns(trait) if col in df.columns])
+    return columns
+
+
+def _format_trait_module_columns(df: pd.DataFrame, traits: list[str]) -> pd.DataFrame:
+    for trait in traits:
+        module_col, specificity_col, is_cell_col = _trait_module_columns(trait)
+        if module_col in df.columns:
+            df[module_col] = df[module_col].fillna(-1).astype(int)
+        if specificity_col in df.columns:
+            df[specificity_col] = pd.to_numeric(df[specificity_col], errors="coerce").round(3)
+        if is_cell_col in df.columns:
+            if pd.api.types.is_bool_dtype(df[is_cell_col]):
+                df[is_cell_col] = df[is_cell_col].fillna(False)
+            else:
+                df[is_cell_col] = (
+                    df[is_cell_col].astype("string").str.lower().isin(["true", "1", "yes"])
+                )
+    return df
+
+
+def _missing_trait_module_columns(
+    metadata: pd.DataFrame, report_config: QuickModeConfig
+) -> list[str]:
+    missing = []
+    for trait in report_config.trait_name_list:
+        if _trait_module_cell_path(report_config, trait).exists():
+            missing.extend([col for col in _trait_module_columns(trait) if col not in metadata])
+    return missing
+
+
+def _merge_trait_module_metadata(
+    metadata: pd.DataFrame, report_config: QuickModeConfig
+) -> pd.DataFrame:
+    """
+    Merge trait-module assignments into report metadata when available.
+
+    The trait module command writes one cell-level table per trait. Report data
+    keeps trait-specific module columns so users can color UMAP/spatial plots by
+    module identity or module specificity for the selected trait.
+    """
+    if "spot" not in metadata.columns:
+        raise ValueError("metadata must contain a 'spot' column before merging trait modules")
+
+    out = metadata.copy()
+    out["spot"] = out["spot"].astype(str)
+    for trait in report_config.trait_name_list:
+        path = _trait_module_cell_path(report_config, trait)
+        if not path.exists():
+            continue
+
+        module_col, specificity_col, is_cell_col = _trait_module_columns(trait)
+        module_df = pd.read_csv(path)
+        required = {"spot", "trait_module", "module_specificity", "is_module_cell"}
+        missing = required.difference(module_df.columns)
+        if missing:
+            logger.warning(
+                f"Skipping trait module file {path}; missing columns: {sorted(missing)}"
+            )
+            continue
+
+        module_df = module_df[list(required)].copy()
+        module_df["spot"] = module_df["spot"].astype(str)
+        module_df = module_df.rename(
+            columns={
+                "trait_module": module_col,
+                "module_specificity": specificity_col,
+                "is_module_cell": is_cell_col,
+            }
+        )
+        out = out.merge(module_df, on="spot", how="left")
+        logger.info(f"Added trait-module report columns for {trait} from {path}")
+
+    return _format_trait_module_columns(out, report_config.trait_name_list)
 
 
 def _prepare_manhattan_for_trait(
@@ -1826,7 +1933,7 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
     max_spots_2d = meta.get("downsampling_n_spots_2d", 250000)
 
     for sample_name in samples:
-        sample_df = df[df["sample_name"] == sample_name]
+        sample_df = df[df["sample_name"] == sample_name].copy()
 
         if len(sample_df) == 0:
             logger.warning(f"No data found for sample: {sample_name}")
@@ -1841,6 +1948,8 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
                 f"Downsampling {sample_name} from {len(sample_df):,} to {max_spots_2d:,} spots for 2D visualization"
             )
             sample_df = sample_df.sample(n=max_spots_2d, random_state=42)
+
+        _format_trait_module_columns(sample_df, traits)
 
         # Calculate point size for this sample (spatial only)
         if has_spatial_coords:
@@ -1876,6 +1985,19 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
             if trait in sample_df.columns:
                 data_struct[trait] = [
                     round(v, 1) if pd.notna(v) else None for v in sample_df[trait]
+                ]
+            module_col, specificity_col, is_cell_col = _trait_module_columns(trait)
+            if module_col in sample_df.columns:
+                data_struct[module_col] = [
+                    int(v) if pd.notna(v) else -1 for v in sample_df[module_col]
+                ]
+            if specificity_col in sample_df.columns:
+                data_struct[specificity_col] = [
+                    round(v, 3) if pd.notna(v) else None for v in sample_df[specificity_col]
+                ]
+            if is_cell_col in sample_df.columns:
+                data_struct[is_cell_col] = [
+                    bool(v) if pd.notna(v) else False for v in sample_df[is_cell_col].astype(bool)
                 ]
 
         # Create safe filename (replace non-alphanumeric chars)

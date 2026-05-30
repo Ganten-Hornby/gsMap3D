@@ -169,6 +169,19 @@
                     </select>
                 </div>
 
+                <!-- Trait Color Mode Selector -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Trait Color</label>
+                    <select x-model="traitColorMode" @change="onTraitColorModeChange()"
+                        class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
+                        <template x-for="mode in traitColorModes" :key="mode.value">
+                            <option :value="mode.value"
+                                :disabled="mode.value === 'module_specificity' && !hasTraitModuleData(selectedTrait)"
+                                x-text="mode.label"></option>
+                        </template>
+                    </select>
+                </div>
+
                 <!-- Annotation Category Selector -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">Annotation</label>
@@ -897,6 +910,7 @@
                 // Global state
                 selectedTrait: '',
                 selectedAnnotationCategory: '',
+                traitColorMode: 'ldsc',
                 selectedGene: '',
                 isLoading: false,
 
@@ -904,6 +918,10 @@
                 traits: [],
                 samples: [],
                 annotations: [],
+                traitColorModes: [
+                    { value: 'ldsc', label: '-log10(p)' },
+                    { value: 'module_specificity', label: 'Module specificity' }
+                ],
                 topCorrGenes: 50,
                 chromTickPositions: {},
 
@@ -1278,6 +1296,9 @@
                     this._geneFilterCache = null;
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
+                    if (!this.hasTraitModuleData(newTrait)) {
+                        this.traitColorMode = 'ldsc';
+                    }
 
                     // Show loading overlay for 2D trait plot
                     this.loadingSpatial2dTraitData = true;
@@ -1312,6 +1333,48 @@
                         try { this.renderUmapPlotTrait(); } catch(e) { console.error('UMAP trait render:', e); }
                         try { this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait'); } catch(e) { console.error('2D trait render:', e); }
                         this.loadingSpatial2dTraitData = false;
+                    });
+                },
+
+                hasTraitModuleData(trait) {
+                    const specificityCol = `${trait}_module_specificity`;
+                    return !!(
+                        (this.umapData && this.umapData[specificityCol]) ||
+                        (this.currentSampleData && this.currentSampleData[specificityCol])
+                    );
+                },
+
+                getTraitColorSpec(data, trait) {
+                    if (this.traitColorMode === 'module_specificity' && this.hasTraitModuleData(trait)) {
+                        const specificityCol = `${trait}_module_specificity`;
+                        const moduleCol = `${trait}_trait_module`;
+                        const values = data[specificityCol] || data.spot.map(() => 0);
+                        return {
+                            values: values.map(v => (v === null || v === undefined) ? 0 : v),
+                            label: `Module specificity ${trait}`,
+                            moduleCol: moduleCol,
+                            specificityCol: specificityCol,
+                            isModuleMode: true
+                        };
+                    }
+                    return {
+                        values: data[trait] || data.spot.map(() => 0),
+                        label: `-log10(p) ${trait}`,
+                        moduleCol: null,
+                        specificityCol: null,
+                        isModuleMode: false
+                    };
+                },
+
+                onTraitColorModeChange() {
+                    if (this.traitColorMode === 'module_specificity' && !this.hasTraitModuleData(this.selectedTrait)) {
+                        this.traitColorMode = 'ldsc';
+                    }
+                    this._umapTraitColorCache = null;
+                    this._spatial2dTraitColorCache = null;
+                    requestAnimationFrame(() => {
+                        try { this.renderUmapPlotTrait(); } catch(e) { console.error('UMAP trait render:', e); }
+                        try { this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait'); } catch(e) { console.error('2D trait render:', e); }
                     });
                 },
 
@@ -1888,15 +1951,8 @@
 
                     const trait = this.selectedTrait;
                     const traitColorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
-                    const traitColorLabel = `-log10(p) ${trait}`;
-
-                    // Get or compute trait color values
-                    let traitColorValues;
-                    if (trait && this.umapData[trait]) {
-                        traitColorValues = this.umapData[trait];
-                    } else {
-                        traitColorValues = new Array(this.umapData.spot.length).fill(0);
-                    }
+                    const colorSpec = this.getTraitColorSpec(this.umapData, trait);
+                    const traitColorValues = colorSpec.values;
 
                     // Build hover text for trait view (cached implicitly by browser)
                     const anno = this.selectedAnnotationCategory;
@@ -1911,6 +1967,12 @@
                         if (trait && this.umapData[trait]) {
                             const traitVal = this.umapData[trait][i];
                             text += `<br><b>-log10(p):</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
+                        }
+                        if (colorSpec.isModuleMode) {
+                            const moduleVal = this.umapData[colorSpec.moduleCol]?.[i];
+                            const specificityVal = this.umapData[colorSpec.specificityCol]?.[i];
+                            text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                            text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
                         }
                         return text;
                     });
@@ -1927,7 +1989,7 @@
                         traitColorMap,
                         traitHoverText,
                         'Cell Embedding',
-                        traitColorLabel,
+                        colorSpec.label,
                         cellPointSize
                     );
 
@@ -1941,7 +2003,7 @@
                             traitColorMap,
                             traitHoverText,
                             'Niche Embedding',
-                            traitColorLabel,
+                            colorSpec.label,
                             nichePointSize
                         );
                     }
@@ -2133,8 +2195,8 @@
 
                     if (plotType === 'trait') {
                         const trait = this.selectedTrait;
-                        // Values already rounded to 1 decimal during export
-                        const colorValues = data[trait] || x.map(() => 0);
+                        const colorSpec = this.getTraitColorSpec(data, trait);
+                        const colorValues = colorSpec.values;
                         const colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
 
                         // Build hover text - include annotation value for trait view
@@ -2150,6 +2212,12 @@
                             const val = data[trait] ? data[trait][i] : 0;
                             const rounded = (val !== null && val !== undefined) ? val.toFixed(1) : 'N/A';
                             text += `<br><b>-log10(p):</b> ${rounded}`;
+                            if (colorSpec.isModuleMode) {
+                                const moduleVal = data[colorSpec.moduleCol]?.[i];
+                                const specificityVal = data[colorSpec.specificityCol]?.[i];
+                                text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                                text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
+                            }
                             return text;
                         });
 
@@ -2169,7 +2237,7 @@
                                 showscale: true,
                                 colorbar: {
                                     title: {
-                                        text: '-log10(p)',
+                                        text: colorSpec.label,
                                         side: 'top',
                                         font: { size: 12 }
                                     },
