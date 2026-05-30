@@ -58,6 +58,28 @@ MODULE_SUMMARY_COLUMNS = [
 
 MODULE_GENE_COLUMNS = ["trait", "module", "rank", "gene", "score"]
 
+MODULE_PAIR_COLUMNS = [
+    "trait",
+    "module_a",
+    "module_b",
+    "profile_similarity",
+    "max_allowed_profile_similarity",
+    "profile_distinct",
+    "marker_jaccard",
+    "shared_marker_count",
+    "module_a_marker_count",
+    "module_b_marker_count",
+    "shared_top_genes",
+    "module_a_only_top_genes",
+    "module_b_only_top_genes",
+    "module_a_n_cells",
+    "module_b_n_cells",
+    "module_a_signal_fraction",
+    "module_b_signal_fraction",
+    "module_a_evidence_status",
+    "module_b_evidence_status",
+]
+
 MODULE_RUN_COLUMNS = [
     "trait",
     "n_seed_cells",
@@ -966,6 +988,130 @@ def _profile_similarity_to_accepted(
     return max_similarity, most_similar_module
 
 
+def _sparse_profile_similarity(
+    left_profile: dict[str, float], right_profile: dict[str, float]
+) -> float:
+    left_norm = float(np.sqrt(sum(value * value for value in left_profile.values())))
+    right_norm = float(np.sqrt(sum(value * value for value in right_profile.values())))
+    if left_norm <= 1e-8 or right_norm <= 1e-8:
+        return 0.0
+    shared_genes = set(left_profile).intersection(right_profile)
+    dot = sum(left_profile[gene] * right_profile[gene] for gene in shared_genes)
+    return float(dot / (left_norm * right_norm))
+
+
+def _format_gene_set(genes: list[str]) -> str:
+    return ";".join(genes)
+
+
+def summarize_trait_module_pairs(
+    config: TraitModuleConfig,
+    summary_df: pd.DataFrame,
+    genes_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Summarize pairwise distinctness among accepted trait modules.
+
+    Accepted modules are already gated against earlier module profiles during
+    discovery. This table makes that evidence explicit for downstream review by
+    reporting profile similarity and marker-gene overlap for every accepted
+    module pair.
+    """
+    if (
+        summary_df.empty
+        or genes_df.empty
+        or "module" not in summary_df
+        or "module" not in genes_df
+    ):
+        return pd.DataFrame(columns=MODULE_PAIR_COLUMNS)
+
+    summary = summary_df.copy()
+    summary["module"] = pd.to_numeric(summary["module"], errors="coerce")
+    summary = summary.dropna(subset=["module"]).copy()
+    summary["module"] = summary["module"].astype(int)
+    modules = sorted(summary["module"].unique())
+    if len(modules) < 2:
+        return pd.DataFrame(columns=MODULE_PAIR_COLUMNS)
+
+    genes = genes_df.copy()
+    genes["module"] = pd.to_numeric(genes["module"], errors="coerce")
+    genes["rank"] = pd.to_numeric(genes.get("rank"), errors="coerce")
+    genes["score"] = pd.to_numeric(genes.get("score"), errors="coerce").fillna(0.0)
+    genes = genes.dropna(subset=["module", "rank"]).copy()
+    genes["module"] = genes["module"].astype(int)
+
+    summary_by_module = summary.set_index("module")
+    gene_order_by_module: dict[int, list[str]] = {}
+    sparse_profile_by_module: dict[int, dict[str, float]] = {}
+    for module_id in modules:
+        module_genes = genes.loc[genes["module"] == module_id].sort_values(
+            ["rank", "gene"], kind="stable"
+        )
+        gene_order = [str(gene) for gene in module_genes["gene"].tolist()]
+        gene_order_by_module[module_id] = gene_order
+        sparse_profile_by_module[module_id] = {
+            str(row.gene): max(float(row.score), 0.0)
+            for row in module_genes.itertuples(index=False)
+        }
+
+    rows = []
+    for module_a_pos, module_a in enumerate(modules[:-1]):
+        for module_b in modules[module_a_pos + 1 :]:
+            genes_a = gene_order_by_module.get(module_a, [])
+            genes_b = gene_order_by_module.get(module_b, [])
+            gene_set_a = set(genes_a)
+            gene_set_b = set(genes_b)
+            shared = gene_set_a.intersection(gene_set_b)
+            union = gene_set_a.union(gene_set_b)
+            marker_jaccard = len(shared) / len(union) if union else 0.0
+            profile_similarity = _sparse_profile_similarity(
+                sparse_profile_by_module.get(module_a, {}),
+                sparse_profile_by_module.get(module_b, {}),
+            )
+            profile_distinct = profile_similarity <= config.max_module_profile_similarity
+
+            module_a_summary = summary_by_module.loc[module_a]
+            module_b_summary = summary_by_module.loc[module_b]
+            shared_ordered = [gene for gene in genes_a if gene in shared]
+            rows.append(
+                {
+                    "trait": config.trait_name,
+                    "module_a": module_a,
+                    "module_b": module_b,
+                    "profile_similarity": profile_similarity,
+                    "max_allowed_profile_similarity": config.max_module_profile_similarity,
+                    "profile_distinct": bool(profile_distinct),
+                    "marker_jaccard": marker_jaccard,
+                    "shared_marker_count": len(shared),
+                    "module_a_marker_count": len(gene_set_a),
+                    "module_b_marker_count": len(gene_set_b),
+                    "shared_top_genes": _format_gene_set(shared_ordered),
+                    "module_a_only_top_genes": _format_gene_set(
+                        [gene for gene in genes_a if gene not in gene_set_b]
+                    ),
+                    "module_b_only_top_genes": _format_gene_set(
+                        [gene for gene in genes_b if gene not in gene_set_a]
+                    ),
+                    "module_a_n_cells": int(module_a_summary.get("n_cells", 0)),
+                    "module_b_n_cells": int(module_b_summary.get("n_cells", 0)),
+                    "module_a_signal_fraction": float(
+                        module_a_summary.get("module_signal_fraction", float("nan"))
+                    ),
+                    "module_b_signal_fraction": float(
+                        module_b_summary.get("module_signal_fraction", float("nan"))
+                    ),
+                    "module_a_evidence_status": module_a_summary.get(
+                        "module_evidence_status", "unknown"
+                    ),
+                    "module_b_evidence_status": module_b_summary.get(
+                        "module_evidence_status", "unknown"
+                    ),
+                }
+            )
+
+    return pd.DataFrame(rows, columns=MODULE_PAIR_COLUMNS)
+
+
 def discover_trait_modules_with_trace(
     config: TraitModuleConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -1507,16 +1653,19 @@ def summarize_trait_module_run(
 def run_trait_module_discovery(config: TraitModuleConfig):
     cell_df, summary_df, genes_df, trace_df = discover_trait_modules_with_trace(config)
     run_summary_df = summarize_trait_module_run(config, cell_df, summary_df, trace_df)
+    pair_df = summarize_trait_module_pairs(config, summary_df, genes_df)
     config.trait_module_dir.mkdir(parents=True, exist_ok=True)
 
     cell_df.to_csv(config.cell_modules_path, index=False)
     summary_df.to_csv(config.module_summary_path, index=False)
     genes_df.to_csv(config.module_genes_path, index=False)
+    pair_df.to_csv(config.module_pairs_path, index=False)
     trace_df.to_csv(config.module_trace_path, index=False)
     run_summary_df.to_csv(config.run_summary_path, index=False)
 
     logger.info(f"Saved cell module assignments to {config.cell_modules_path}")
     logger.info(f"Saved module summary to {config.module_summary_path}")
     logger.info(f"Saved module marker genes to {config.module_genes_path}")
+    logger.info(f"Saved module pair diagnostics to {config.module_pairs_path}")
     logger.info(f"Saved module iteration trace to {config.module_trace_path}")
     logger.info(f"Saved trait module run summary to {config.run_summary_path}")

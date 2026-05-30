@@ -171,6 +171,29 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "score": [3.2, 2.8],
         }
     ).to_csv(module_dir / "module_report_IQ.module_genes.csv", index=False)
+    pd.DataFrame(
+        {
+            "trait": ["IQ"],
+            "module_a": [1],
+            "module_b": [2],
+            "profile_similarity": [0.12],
+            "max_allowed_profile_similarity": [0.9],
+            "profile_distinct": [True],
+            "marker_jaccard": [0.1],
+            "shared_marker_count": [1],
+            "module_a_marker_count": [5],
+            "module_b_marker_count": [6],
+            "shared_top_genes": ["GENE2"],
+            "module_a_only_top_genes": ["GENE1;GENE3"],
+            "module_b_only_top_genes": ["GENE4;GENE5"],
+            "module_a_n_cells": [12],
+            "module_b_n_cells": [8],
+            "module_a_signal_fraction": [0.62],
+            "module_b_signal_fraction": [0.22],
+            "module_a_evidence_status": ["strong"],
+            "module_b_evidence_status": ["moderate"],
+        }
+    ).to_csv(module_dir / "module_report_IQ.module_pairs.csv", index=False)
 
     js_dir = tmp_path / "js_data"
     js_dir.mkdir()
@@ -201,3 +224,7 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     assert data["IQ"]["trace"][0]["stability_null_pvalue"] == 0.02
     assert data["IQ"]["genes"][0]["gene"] == "GENE1"
     assert data["IQ"]["genes"][1]["rank"] == 2
+    assert data["IQ"]["pairs"][0]["module_a"] == 1
+    assert data["IQ"]["pairs"][0]["module_b"] == 2
+    assert data["IQ"]["pairs"][0]["profile_distinct"] is True
+    assert data["IQ"]["pairs"][0]["shared_top_genes"] == "GENE2"

@@ -953,6 +953,41 @@
                                 </tbody>
                             </table>
                         </div>
+                        <div x-show="selectedTraitModulePairs().length > 0" class="mb-4">
+                            <h4 class="font-medium text-gray-700 mb-2">Module Pair Distinctness</h4>
+                            <div class="overflow-x-auto custom-scrollbar max-h-64">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead class="bg-gray-50 sticky top-0">
+                                        <tr>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Pair</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Profile Similarity</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Distinct</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Marker Jaccard</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Shared Genes</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Module A Only</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Module B Only</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Signal A/B</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Evidence A/B</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-200">
+                                        <template x-for="row in selectedTraitModulePairs()" :key="row.module_a + '-' + row.module_b">
+                                            <tr>
+                                                <td class="px-3 py-2 text-sm font-medium text-gray-900" x-text="'M' + row.module_a + ' vs M' + row.module_b"></td>
+                                                <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.profile_similarity != null ? row.profile_similarity.toFixed(3) : 'N/A'"></td>
+                                                <td class="px-3 py-2 text-sm text-gray-600" x-text="row.profile_distinct === true ? 'yes' : 'no'"></td>
+                                                <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.marker_jaccard != null ? row.marker_jaccard.toFixed(3) : 'N/A'"></td>
+                                                <td class="px-3 py-2 text-sm text-gray-600" x-text="formatGeneList(row.shared_top_genes)"></td>
+                                                <td class="px-3 py-2 text-sm text-gray-600" x-text="formatGeneList(row.module_a_only_top_genes, 4)"></td>
+                                                <td class="px-3 py-2 text-sm text-gray-600" x-text="formatGeneList(row.module_b_only_top_genes, 4)"></td>
+                                                <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="formatPercent(row.module_a_signal_fraction) + ' / ' + formatPercent(row.module_b_signal_fraction)"></td>
+                                                <td class="px-3 py-2 text-sm text-gray-600" x-text="(row.module_a_evidence_status || 'N/A') + ' / ' + (row.module_b_evidence_status || 'N/A')"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                         <h4 class="font-medium text-gray-700 mb-2">Iteration Trace</h4>
                         <div class="overflow-x-auto custom-scrollbar max-h-64">
                             <table class="min-w-full divide-y divide-gray-200">
@@ -1492,6 +1527,10 @@
                     return this.traitModuleData?.[this.selectedTrait]?.genes || [];
                 },
 
+                selectedTraitModulePairs() {
+                    return this.traitModuleData?.[this.selectedTrait]?.pairs || [];
+                },
+
                 moduleTopGenes(moduleId, limit = 5) {
                     return this.selectedTraitModuleGenes()
                         .filter(row => Number(row.module) === Number(moduleId))
@@ -1499,6 +1538,14 @@
                         .slice(0, limit)
                         .map(row => row.gene)
                         .join(', ') || 'N/A';
+                },
+
+                formatGeneList(value, limit = 6) {
+                    if (!value) return 'None';
+                    const genes = String(value).split(';').filter(Boolean);
+                    if (genes.length === 0) return 'None';
+                    const shown = genes.slice(0, limit).join(', ');
+                    return genes.length > limit ? `${shown}...` : shown;
                 },
 
                 selectedTraitModules() {

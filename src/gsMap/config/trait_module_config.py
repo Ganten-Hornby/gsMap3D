@@ -430,6 +430,10 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_genes.csv"
 
     @property
+    def module_pairs_path(self) -> Path:
+        return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_pairs.csv"
+
+    @property
     def module_trace_path(self) -> Path:
         return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_trace.csv"
 

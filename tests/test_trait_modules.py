@@ -17,6 +17,7 @@ from gsMap.trait_modules import (
     discover_trait_modules,
     discover_trait_modules_with_trace,
     run_trait_module_discovery,
+    summarize_trait_module_pairs,
     summarize_trait_module_run,
 )
 
@@ -987,6 +988,75 @@ def test_summarize_trait_module_run_reports_resolution_status(tmp_path):
     }
 
 
+def test_summarize_trait_module_pairs_reports_distinct_marker_programs(tmp_path):
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path,
+        "pair_summary_test",
+        "IQ",
+        np.ones((4, 5), dtype=np.float32),
+        np.full(4, 0.9),
+    )
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="pair_summary_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        max_module_profile_similarity=0.9,
+    )
+    summary_df = pd.DataFrame(
+        {
+            "trait": ["IQ", "IQ"],
+            "module": [1, 2],
+            "n_cells": [12, 8],
+            "module_signal_fraction": [0.6, 0.25],
+            "module_evidence_status": ["strong", "moderate"],
+        }
+    )
+    genes_df = pd.DataFrame(
+        {
+            "trait": ["IQ"] * 6,
+            "module": [1, 1, 1, 2, 2, 2],
+            "rank": [1, 2, 3, 1, 2, 3],
+            "gene": ["G1", "G2", "G3", "G2", "G4", "G5"],
+            "score": [4.0, 2.0, 1.0, 3.0, 3.0, 1.0],
+        }
+    )
+
+    pair_df = summarize_trait_module_pairs(config, summary_df, genes_df)
+
+    assert list(pair_df.columns) == [
+        "trait",
+        "module_a",
+        "module_b",
+        "profile_similarity",
+        "max_allowed_profile_similarity",
+        "profile_distinct",
+        "marker_jaccard",
+        "shared_marker_count",
+        "module_a_marker_count",
+        "module_b_marker_count",
+        "shared_top_genes",
+        "module_a_only_top_genes",
+        "module_b_only_top_genes",
+        "module_a_n_cells",
+        "module_b_n_cells",
+        "module_a_signal_fraction",
+        "module_b_signal_fraction",
+        "module_a_evidence_status",
+        "module_b_evidence_status",
+    ]
+    assert pair_df.loc[0, "module_a"] == 1
+    assert pair_df.loc[0, "module_b"] == 2
+    assert pair_df.loc[0, "profile_distinct"]
+    assert pair_df.loc[0, "shared_marker_count"] == 1
+    assert pair_df.loc[0, "marker_jaccard"] == 0.2
+    assert pair_df.loc[0, "shared_top_genes"] == "G2"
+    assert pair_df.loc[0, "module_a_only_top_genes"] == "G1;G3"
+    assert pair_df.loc[0, "module_b_only_top_genes"] == "G4;G5"
+    assert pair_df.loc[0, "module_a_signal_fraction"] == 0.6
+    assert pair_df.loc[0, "module_b_evidence_status"] == "moderate"
+
+
 def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
     n_cells = 30
     n_genes = 20
@@ -1016,7 +1086,30 @@ def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
 
     trace_df = pd.read_csv(config.module_trace_path)
     run_summary_df = pd.read_csv(config.run_summary_path)
+    pair_df = pd.read_csv(config.module_pairs_path)
     assert trace_df["decision"].tolist() == ["accepted"]
     assert trace_df["candidate_n_cells"].tolist() == [10]
     assert run_summary_df["n_modules"].tolist() == [1]
     assert run_summary_df["resolution_status"].tolist() == ["single_module_dominant"]
+    assert list(pair_df.columns) == [
+        "trait",
+        "module_a",
+        "module_b",
+        "profile_similarity",
+        "max_allowed_profile_similarity",
+        "profile_distinct",
+        "marker_jaccard",
+        "shared_marker_count",
+        "module_a_marker_count",
+        "module_b_marker_count",
+        "shared_top_genes",
+        "module_a_only_top_genes",
+        "module_b_only_top_genes",
+        "module_a_n_cells",
+        "module_b_n_cells",
+        "module_a_signal_fraction",
+        "module_b_signal_fraction",
+        "module_a_evidence_status",
+        "module_b_evidence_status",
+    ]
+    assert pair_df.empty

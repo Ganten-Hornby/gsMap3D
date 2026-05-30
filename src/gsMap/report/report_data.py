@@ -1347,6 +1347,14 @@ def _trait_module_genes_path(report_config: QuickModeConfig, trait: str) -> Path
     )
 
 
+def _trait_module_pairs_path(report_config: QuickModeConfig, trait: str) -> Path:
+    return (
+        report_config.project_dir
+        / "trait_modules"
+        / (f"{report_config.project_name}_{trait}.module_pairs.csv")
+    )
+
+
 def _trait_module_run_summary_path(report_config: QuickModeConfig, trait: str) -> Path:
     return (
         report_config.project_dir
@@ -1476,15 +1484,17 @@ def _export_trait_module_js(report_config: QuickModeConfig, js_data_dir: Path):
         summary_records = _trait_module_records(_trait_module_summary_path(report_config, trait))
         trace_records = _trait_module_records(_trait_module_trace_path(report_config, trait))
         gene_records = _trait_module_records(_trait_module_genes_path(report_config, trait))
+        pair_records = _trait_module_records(_trait_module_pairs_path(report_config, trait))
         run_summary_records = _trait_module_records(
             _trait_module_run_summary_path(report_config, trait)
         )
-        if summary_records or trace_records or gene_records or run_summary_records:
+        if summary_records or trace_records or gene_records or pair_records or run_summary_records:
             payload[trait] = {
                 "run_summary": run_summary_records[0] if run_summary_records else {},
                 "summary": summary_records,
                 "trace": trace_records,
                 "genes": gene_records,
+                "pairs": pair_records,
             }
 
     _write_trait_module_js(js_data_dir, payload)
