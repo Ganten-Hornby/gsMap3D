@@ -899,6 +899,7 @@
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Enrichment</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Null P</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Profile Similarity</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Top Genes</th>
                                     </tr>
                                 </thead>
                                 <tbody class="bg-white divide-y divide-gray-200">
@@ -912,6 +913,7 @@
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.specificity_enrichment != null ? row.specificity_enrichment.toFixed(2) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.specificity_null_pvalue != null ? row.specificity_null_pvalue.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.max_profile_similarity != null ? row.max_profile_similarity.toFixed(3) : 'N/A'"></td>
+                                            <td class="px-3 py-2 text-sm text-gray-600" x-text="moduleTopGenes(row.module)"></td>
                                         </tr>
                                     </template>
                                 </tbody>
@@ -1432,6 +1434,19 @@
 
                 selectedTraitModuleTrace() {
                     return this.traitModuleData?.[this.selectedTrait]?.trace || [];
+                },
+
+                selectedTraitModuleGenes() {
+                    return this.traitModuleData?.[this.selectedTrait]?.genes || [];
+                },
+
+                moduleTopGenes(moduleId, limit = 5) {
+                    return this.selectedTraitModuleGenes()
+                        .filter(row => Number(row.module) === Number(moduleId))
+                        .sort((a, b) => (a.rank || 0) - (b.rank || 0))
+                        .slice(0, limit)
+                        .map(row => row.gene)
+                        .join(', ') || 'N/A';
                 },
 
                 selectedTraitModules() {

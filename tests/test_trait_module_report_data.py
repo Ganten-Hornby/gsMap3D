@@ -116,6 +116,15 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "remaining_cells_after": [8, 8],
         }
     ).to_csv(module_dir / "module_report_IQ.module_trace.csv", index=False)
+    pd.DataFrame(
+        {
+            "trait": ["IQ", "IQ"],
+            "module": [1, 1],
+            "rank": [1, 2],
+            "gene": ["GENE1", "GENE2"],
+            "score": [3.2, 2.8],
+        }
+    ).to_csv(module_dir / "module_report_IQ.module_genes.csv", index=False)
 
     js_dir = tmp_path / "js_data"
     js_dir.mkdir()
@@ -130,3 +139,5 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     assert data["IQ"]["summary"][0]["specificity_enrichment"] == 2.3
     assert data["IQ"]["trace"][0]["decision"] == "accepted"
     assert data["IQ"]["trace"][1]["reason"] == "min_module_cells"
+    assert data["IQ"]["genes"][0]["gene"] == "GENE1"
+    assert data["IQ"]["genes"][1]["rank"] == 2
