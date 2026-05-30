@@ -791,9 +791,13 @@ def discover_trait_modules_with_trace(
             most_similar_module > 0
             and max_profile_similarity > config.max_module_profile_similarity
         )
-        fails_conditional_ldsc = conditional_ldsc_context is not None and (
-            not np.isfinite(conditional_ldsc.p)
-            or conditional_ldsc.p > config.conditional_ldsc_pvalue_threshold
+        fails_conditional_ldsc = (
+            config.require_conditional_ldsc
+            and conditional_ldsc_context is not None
+            and (
+                not np.isfinite(conditional_ldsc.p)
+                or conditional_ldsc.p > config.conditional_ldsc_pvalue_threshold
+            )
         )
         if fails_enrichment or fails_null or fails_profile_similarity or fails_conditional_ldsc:
             remaining_mask[module_idx] = False

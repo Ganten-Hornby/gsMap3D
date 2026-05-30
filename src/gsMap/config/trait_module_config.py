@@ -151,12 +151,24 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = False
 
+    require_conditional_ldsc: Annotated[
+        bool,
+        typer.Option(
+            "--require-conditional-ldsc/--diagnose-conditional-ldsc",
+            help=(
+                "Reject candidate modules whose module-level conditional LDSC p-value "
+                "does not pass conditional_ldsc_pvalue_threshold. This automatically "
+                "enables --run-conditional-ldsc."
+            ),
+        ),
+    ] = False
+
     conditional_ldsc_pvalue_threshold: Annotated[
         float,
         typer.Option(
             help=(
                 "Maximum module-level conditional LDSC p-value allowed when "
-                "--run-conditional-ldsc is enabled."
+                "--require-conditional-ldsc is enabled."
             ),
             min=0.0,
             max=1.0,
@@ -343,6 +355,8 @@ class TraitModuleConfig(ConfigWithAutoPaths):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.require_conditional_ldsc:
+            self.run_conditional_ldsc = True
         if self.ldsc_result_path is None:
             self.ldsc_result_path = self.get_ldsc_result_file(self.trait_name)
         if not self.ldsc_result_path.exists():

@@ -443,7 +443,7 @@ def test_specificity_null_rejects_common_background_program(tmp_path):
     assert trace_df.loc[0, "specificity_null_pvalue"] > 0.05
 
 
-def test_conditional_ldsc_gate_rejects_candidate(tmp_path, monkeypatch):
+def test_conditional_ldsc_diagnostics_do_not_gate_by_default(tmp_path, monkeypatch):
     n_cells = 30
     n_genes = 20
     marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
@@ -487,6 +487,64 @@ def test_conditional_ldsc_gate_rejects_candidate(tmp_path, monkeypatch):
         min_specificity_enrichment=0.0,
         specificity_null_iterations=0,
         run_conditional_ldsc=True,
+        conditional_ldsc_pvalue_threshold=0.05,
+    )
+
+    cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+
+    assert set(cell_df.loc[cell_df["trait_module"] == 1, "spot"]) == {
+        f"cell_{i}" for i in range(10)
+    }
+    assert summary_df["n_cells"].tolist() == [10]
+    assert trace_df["decision"].tolist() == ["accepted"]
+    assert trace_df["reason"].tolist() == ["accepted"]
+    assert trace_df.loc[0, "conditional_ldsc_p"] == 0.75
+
+
+def test_require_conditional_ldsc_gate_rejects_candidate(tmp_path, monkeypatch):
+    n_cells = 30
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 2.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "conditional_ldsc_gate_test", "IQ", marker_scores, p_values
+    )
+
+    class FakeConditionalLDSCContext:
+        def fit_profile(self, profile, conditioning_annotations):
+            return (
+                ConditionalLDSCResult(
+                    beta=0.1,
+                    se=0.1,
+                    z=1.0,
+                    p=0.75,
+                    neg_log10_p=-np.log10(0.75),
+                ),
+                np.ones(5, dtype=np.float32),
+            )
+
+    monkeypatch.setattr(
+        "gsMap.trait_modules._prepare_conditional_ldsc_context",
+        lambda config, gene_names: FakeConditionalLDSCContext(),
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="conditional_ldsc_gate_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+        min_specificity_enrichment=0.0,
+        specificity_null_iterations=0,
+        require_conditional_ldsc=True,
         conditional_ldsc_pvalue_threshold=0.05,
     )
 
