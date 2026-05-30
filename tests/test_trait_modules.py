@@ -209,3 +209,35 @@ def test_module_specificity_uses_module_marker_subspace(tmp_path):
     assert summary_df["n_cells"].tolist() == [10]
     assigned = cell_df[cell_df["trait_module"] == 1]
     assert assigned["module_specificity"].min() > 0.99
+
+
+def test_module_summary_reports_background_specificity_enrichment(tmp_path):
+    n_cells = 40
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 2.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "specificity_enrichment_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="specificity_enrichment_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+    )
+
+    _, summary_df, _ = discover_trait_modules(config)
+
+    assert {"background_mean_specificity", "specificity_enrichment"} <= set(summary_df.columns)
+    assert summary_df.loc[0, "mean_specificity"] > summary_df.loc[0, "background_mean_specificity"]
+    assert summary_df.loc[0, "specificity_enrichment"] > 1.0

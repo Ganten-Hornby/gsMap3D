@@ -27,6 +27,8 @@ class ModuleResult:
     profile: np.ndarray
     specificity: np.ndarray
     mean_neg_log10_p: float
+    background_specificity_mean: float
+    specificity_enrichment: float
 
 
 def _read_ldsc_result(path) -> pd.DataFrame:
@@ -174,6 +176,17 @@ def _condition_residual_on_profile(residual: np.ndarray, profile: np.ndarray) ->
     return np.maximum(conditioned, 0.0).astype(np.float32, copy=False)
 
 
+def _module_specificity_scores(matrix: np.ndarray, profile: np.ndarray) -> np.ndarray:
+    module_marker_mask = profile > 0
+    if not np.any(module_marker_mask):
+        return np.zeros(matrix.shape[0], dtype=np.float32)
+
+    normalized = _row_normalize(np.maximum(matrix[:, module_marker_mask], 0.0))
+    profile_markers = profile[module_marker_mask]
+    profile_norm = profile_markers / max(float(np.linalg.norm(profile_markers)), 1e-8)
+    return (normalized @ profile_norm).astype(np.float32)
+
+
 def discover_trait_modules(
     config: TraitModuleConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -205,6 +218,7 @@ def discover_trait_modules(
         np.float32
     )
     residual = np.maximum(marker_matrix - background, 0.0)
+    background_residual = np.maximum(background_matrix - background, 0.0)
     search_residual = residual.copy()
     weights = ldsc.loc[cells, "neg_log10_p"].to_numpy(dtype=np.float32)
     n_top = min(
@@ -233,11 +247,14 @@ def discover_trait_modules(
             break
 
         module_cells = cells[module_idx]
-        module_marker_mask = profile > 0
-        normalized = _row_normalize(np.maximum(residual[module_idx][:, module_marker_mask], 0.0))
-        profile_markers = profile[module_marker_mask]
-        profile_norm = profile_markers / max(float(np.linalg.norm(profile_markers)), 1e-8)
-        cell_specificity = normalized @ profile_norm
+        cell_specificity = _module_specificity_scores(residual[module_idx], profile)
+        background_specificity = _module_specificity_scores(background_residual, profile)
+        background_specificity_mean = (
+            float(background_specificity.mean()) if background_specificity.size else 0.0
+        )
+        specificity_enrichment = float(cell_specificity.mean()) / max(
+            background_specificity_mean, 1e-8
+        )
 
         assigned_module[module_idx] = module_id
         module_specificity[module_idx] = cell_specificity
@@ -250,6 +267,8 @@ def discover_trait_modules(
                 profile=profile,
                 specificity=specificity,
                 mean_neg_log10_p=float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
+                background_specificity_mean=background_specificity_mean,
+                specificity_enrichment=specificity_enrichment,
             )
         )
         logger.info(
@@ -284,6 +303,8 @@ def discover_trait_modules(
                 "mean_neg_log10_p": result.mean_neg_log10_p,
                 "max_neg_log10_p": float(ldsc.loc[result.cells, "neg_log10_p"].max()),
                 "mean_specificity": float(cell_df.loc[result.cells, "module_specificity"].mean()),
+                "background_mean_specificity": result.background_specificity_mean,
+                "specificity_enrichment": result.specificity_enrichment,
             }
         )
 
