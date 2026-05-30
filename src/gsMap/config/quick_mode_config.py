@@ -139,6 +139,50 @@ def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
     return len(missing_files) == 0
 
 
+def _trait_module_output_paths(
+    config: QuickModeConfig, trait: str, *, metadata_only: bool = False
+) -> list[Path]:
+    module_dir = config.project_dir / "trait_modules"
+    paths = [
+        module_dir / f"{config.project_name}_{trait}.cell_modules.csv",
+        module_dir / f"{config.project_name}_{trait}.module_specificity.csv",
+    ]
+    if not metadata_only:
+        paths.extend(
+            [
+                module_dir / f"{config.project_name}_{trait}.module_summary.csv",
+                module_dir / f"{config.project_name}_{trait}.module_trace.csv",
+                module_dir / f"{config.project_name}_{trait}.module_genes.csv",
+                module_dir / f"{config.project_name}_{trait}.module_pairs.csv",
+                module_dir / f"{config.project_name}_{trait}.run_summary.csv",
+            ]
+        )
+    return paths
+
+
+def _trait_module_outputs(
+    config: QuickModeConfig, traits: list[str], *, metadata_only: bool = False
+) -> list[Path]:
+    outputs = []
+    for trait in traits:
+        outputs.extend(_trait_module_output_paths(config, trait, metadata_only=metadata_only))
+    return [path for path in outputs if path.exists()]
+
+
+def _files_newer_than(sources: list[Path], targets: list[Path]) -> bool:
+    existing_sources = [path for path in sources if path.exists()]
+    existing_targets = [path for path in targets if path.exists()]
+    if not existing_sources or not existing_targets:
+        return False
+    try:
+        newest_source = max(path.stat().st_mtime for path in existing_sources)
+        oldest_target = min(path.stat().st_mtime for path in existing_targets)
+    except OSError as e:
+        logger.warning(f"Unable to compare report cache timestamps: {e}")
+        return False
+    return newest_source > oldest_target
+
+
 def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[Path]]:
     """
     Get lists of missing report files, categorized by type.
@@ -184,6 +228,8 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
     # Per-trait files
     traits = config.trait_name_list
     annotation_list = config.annotation_list
+    metadata_trait_module_outputs = _trait_module_outputs(config, traits, metadata_only=True)
+    trait_module_outputs = _trait_module_outputs(config, traits)
 
     for trait in traits:
         trait_gss_csv = report_data_dir / "gss_stats" / f"gene_trait_correlation_{trait}.csv"
@@ -202,20 +248,34 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         if not trait_manhattan_js.exists():
             missing_web_files.append(trait_manhattan_js)
 
+    spot_metadata = report_data_dir / "spot_metadata.csv"
+    if _files_newer_than(metadata_trait_module_outputs, [spot_metadata]):
+        missing_data_files.append(spot_metadata)
+
     # Per-sample spatial JS files (Spatial only)
     if dataset_type in (DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D):
+        sample_js_files = []
         sample_h5ad_dict = config.sample_h5ad_dict
         if sample_h5ad_dict:
             for sample_name in sample_h5ad_dict.keys():
                 safe_name = "".join(c if c.isalnum() else "_" for c in sample_name)
                 sample_js = js_data_dir / f"sample_{safe_name}_spatial.js"
+                sample_js_files.append(sample_js)
                 if not sample_js.exists():
                     missing_web_files.append(sample_js)
+        if _files_newer_than(metadata_trait_module_outputs, sample_js_files):
+            missing_web_files.extend(sample_js_files)
 
         # Gene diagnostic plots directory (Spatial only)
         gene_plot_dir = web_report_dir / "gene_diagnostic_plots"
         if not gene_plot_dir.exists():
             missing_web_files.append(gene_plot_dir)
+
+    trait_module_js = js_data_dir / "trait_modules.js"
+    if trait_module_outputs and not trait_module_js.exists():
+        missing_web_files.append(trait_module_js)
+    elif _files_newer_than(trait_module_outputs, [trait_module_js]):
+        missing_web_files.append(trait_module_js)
 
     # 3D specific files (Spatial 3D only)
     if dataset_type == DatasetType.SPATIAL_3D:
@@ -225,6 +285,8 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         # 3D H5AD file
         h5ad_3d = three_d_data_dir / "spatial_3d.h5ad"
         if not h5ad_3d.exists():
+            missing_data_files.append(h5ad_3d)
+        elif _files_newer_than(metadata_trait_module_outputs, [h5ad_3d]):
             missing_data_files.append(h5ad_3d)
 
         # 3D HTML plot files (one per trait/annotation)
@@ -261,6 +323,8 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
                     )
                     if not module_3d_html.exists():
                         missing_web_files.append(module_3d_html)
+                    elif _files_newer_than(metadata_trait_module_outputs, [module_3d_html]):
+                        missing_web_files.append(module_3d_html)
 
         for anno in annotation_list:
             safe_anno = "".join(c if c.isalnum() else "_" for c in anno)
@@ -290,7 +354,11 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         umap_js = js_data_dir / "umap_data.js"
         if not umap_file.exists():
             missing_data_files.append(umap_file)
+        elif _files_newer_than([spot_metadata, *metadata_trait_module_outputs], [umap_file]):
+            missing_data_files.append(umap_file)
         if not umap_js.exists():
             missing_web_files.append(umap_js)
+        elif _files_newer_than([spot_metadata, *metadata_trait_module_outputs], [umap_js]):
+            missing_web_files.append(umap_js)
 
-    return missing_data_files, missing_web_files
+    return list(dict.fromkeys(missing_data_files)), list(dict.fromkeys(missing_web_files))

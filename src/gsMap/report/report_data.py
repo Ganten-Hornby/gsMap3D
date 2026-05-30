@@ -216,10 +216,14 @@ class ReportDataManager:
             # Validate all configured traits exist in cached file
             missing_traits = [t for t in self.traits if t not in self.metadata.columns]
             missing_module_cols = _missing_trait_module_columns(self.metadata, self.report_config)
-            if missing_traits or missing_module_cols:
+            stale_trait_modules = _trait_module_outputs_newer_than(
+                self.report_config, [metadata_file], metadata_only=True
+            )
+            if missing_traits or missing_module_cols or stale_trait_modules:
                 logger.warning(
-                    "Cached spot_metadata.csv missing report columns: "
-                    f"traits={missing_traits}, trait_modules={missing_module_cols}. Regenerating..."
+                    "Cached spot_metadata.csv is stale or missing report columns: "
+                    f"traits={missing_traits}, trait_modules={missing_module_cols}, "
+                    f"trait_module_outputs_newer={stale_trait_modules}. Regenerating..."
                 )
                 self.metadata = _save_metadata(
                     self.ldsc_results, self.coords, self.report_data_dir, self.report_config
@@ -413,8 +417,16 @@ class ReportDataManager:
         umap_file = self.report_data_dir / "umap_data.csv"
         umap_js = self.js_data_dir / "umap_data.js"
         if self._is_step_complete([umap_file, umap_js]):
-            logger.info("UMAP data already exists. Skipping.")
-            return
+            umap_sources = [self.report_data_dir / "spot_metadata.csv"]
+            umap_sources.extend(_trait_module_outputs(self.report_config, metadata_only=True))
+            if _files_newer_than(umap_sources, [umap_file, umap_js]):
+                logger.warning(
+                    "Cached UMAP data is older than spot metadata or trait module outputs. "
+                    "Regenerating..."
+                )
+            else:
+                logger.info("UMAP data already exists. Skipping.")
+                return
 
         self.umap_info = _prepare_umap_data(
             self.report_config, self.metadata, self.report_data_dir
@@ -1399,6 +1411,59 @@ def _trait_module_run_summary_path(report_config: QuickModeConfig, trait: str) -
         report_config.project_dir
         / "trait_modules"
         / (f"{report_config.project_name}_{trait}.run_summary.csv")
+    )
+
+
+def _trait_module_output_paths(
+    report_config: QuickModeConfig, trait: str, *, metadata_only: bool = False
+) -> list[Path]:
+    paths = [
+        _trait_module_cell_path(report_config, trait),
+        _trait_module_specificity_path(report_config, trait),
+    ]
+    if not metadata_only:
+        paths.extend(
+            [
+                _trait_module_summary_path(report_config, trait),
+                _trait_module_trace_path(report_config, trait),
+                _trait_module_genes_path(report_config, trait),
+                _trait_module_pairs_path(report_config, trait),
+                _trait_module_run_summary_path(report_config, trait),
+            ]
+        )
+    return paths
+
+
+def _trait_module_outputs(
+    report_config: QuickModeConfig, *, metadata_only: bool = False
+) -> list[Path]:
+    outputs = []
+    for trait in report_config.trait_name_list:
+        outputs.extend(
+            _trait_module_output_paths(report_config, trait, metadata_only=metadata_only)
+        )
+    return [path for path in outputs if path.exists()]
+
+
+def _files_newer_than(sources: list[Path], targets: list[Path]) -> bool:
+    existing_sources = [path for path in sources if path.exists()]
+    existing_targets = [path for path in targets if path.exists()]
+    if not existing_sources or not existing_targets:
+        return False
+    try:
+        newest_source = max(path.stat().st_mtime for path in existing_sources)
+        oldest_target = min(path.stat().st_mtime for path in existing_targets)
+    except OSError as e:
+        logger.warning(f"Unable to compare report cache timestamps: {e}")
+        return False
+    return newest_source > oldest_target
+
+
+def _trait_module_outputs_newer_than(
+    report_config: QuickModeConfig, targets: list[Path], *, metadata_only: bool = False
+) -> bool:
+    return _files_newer_than(
+        _trait_module_outputs(report_config, metadata_only=metadata_only), targets
     )
 
 
