@@ -71,6 +71,7 @@ SUBCOMMANDS = [
     "cauchy-combination",
     "ldscore-weight-matrix",
     "format-sumstats",
+    "trait-modules",
 ]
 
 

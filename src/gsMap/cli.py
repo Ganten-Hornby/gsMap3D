@@ -16,6 +16,7 @@ from gsMap.config import (
     LDScoreConfig,
     QuickModeConfig,
     SpatialLDSCConfig,
+    TraitModuleConfig,
     dataclass_typer,
 )
 
@@ -239,6 +240,30 @@ def format_sumstats(config: FormatSumstatsConfig):
 
         gwas_format(config)
         logger.info("✓ Summary statistics formatted successfully!")
+    except Exception as e:
+        logger.error(f"Execution Error: {e}")
+        raise
+
+
+@app.command(name="trait-modules")
+@dataclass_typer
+def trait_modules(config: TraitModuleConfig):
+    """
+    Discover fast independent trait modules from LDSC and marker-score outputs.
+
+    This prototype identifies significant trait-associated cells, clusters them by
+    marker-score specificity, and iteratively removes explained cells to expose
+    additional modules with different core gene-expression mechanisms.
+    """
+    logger.info(f"Trait: {config.trait_name}")
+    logger.info(f"LDSC result: {config.ldsc_result_path}")
+    logger.info(f"Output directory: {config.trait_module_dir}")
+
+    try:
+        from gsMap.trait_modules import run_trait_module_discovery
+
+        run_trait_module_discovery(config)
+        logger.info("✓ Trait module discovery completed successfully!")
     except Exception as e:
         logger.error(f"Execution Error: {e}")
         raise

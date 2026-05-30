@@ -26,6 +26,7 @@ from .ldscore_config import GenerateLDScoreConfig, LDScoreConfig
 from .quick_mode_config import QuickModeConfig
 from .report_config import ReportConfig
 from .spatial_ldsc_config import SpatialLDSCConfig
+from .trait_module_config import TraitModuleConfig
 
 # Create a legacy registry for backward compatibility with main.py
 cli_function_registry = OrderedDict()
@@ -53,4 +54,5 @@ __all__ = [
     "GenerateLDScoreConfig",
     "CauchyCombinationConfig",
     "FormatSumstatsConfig",
+    "TraitModuleConfig",
 ]

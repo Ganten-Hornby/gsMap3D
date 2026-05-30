@@ -1,0 +1,146 @@
+"""
+Configuration for trait module discovery.
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated
+
+import typer
+
+from .base import ConfigWithAutoPaths, ensure_path_exists
+
+
+@dataclass
+class TraitModuleConfig(ConfigWithAutoPaths):
+    """Trait Module Discovery Configuration"""
+
+    trait_name: Annotated[str, typer.Option(help="Trait to analyze")]
+
+    ldsc_result_path: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to a spatial LDSC result CSV/CSV.GZ. Defaults to the project LDSC result.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None
+
+    marker_score_h5ad_path: Annotated[
+        Path | None,
+        typer.Option(
+            help="Optional marker-score h5ad with cells as obs and genes as var. "
+            "If omitted, uses latent_to_gene/marker_scores.dat with project metadata.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None
+
+    memmap_tmp_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Temporary directory for marker-score memmap access.",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None
+
+    pvalue_threshold: Annotated[
+        float,
+        typer.Option(
+            help="Cell-level LDSC p-value threshold used to seed trait modules.",
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.05
+
+    top_gene_fraction: Annotated[
+        float,
+        typer.Option(
+            help="Fraction of genes retained per cell to represent marker specificity.",
+            min=0.001,
+            max=1.0,
+        ),
+    ] = 0.05
+
+    max_marker_genes: Annotated[
+        int,
+        typer.Option(help="Maximum marker genes retained per cell.", min=5),
+    ] = 200
+
+    min_module_cells: Annotated[
+        int,
+        typer.Option(help="Minimum cells required for an independent module.", min=2),
+    ] = 10
+
+    max_modules: Annotated[
+        int,
+        typer.Option(help="Maximum independent modules to report.", min=1),
+    ] = 10
+
+    module_similarity_threshold: Annotated[
+        float,
+        typer.Option(
+            help="Minimum cosine similarity to assign an unclaimed significant cell to a module.",
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.25
+
+    background_quantile: Annotated[
+        float,
+        typer.Option(
+            help="Background marker-score quantile subtracted from selected cells each iteration.",
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.5
+
+    min_positive_beta: Annotated[
+        bool,
+        typer.Option(
+            "--min-positive-beta/--allow-negative-beta",
+            help="Require positive LDSC beta for module seed cells.",
+        ),
+    ] = True
+
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help="Output directory for trait-module CSV files. Defaults to project_dir/trait_modules.",
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None
+
+    @property
+    @ensure_path_exists
+    def trait_module_dir(self) -> Path:
+        return self.output_dir or (self.project_dir / "trait_modules")
+
+    @property
+    def cell_modules_path(self) -> Path:
+        return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.cell_modules.csv"
+
+    @property
+    def module_summary_path(self) -> Path:
+        return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_summary.csv"
+
+    @property
+    def module_genes_path(self) -> Path:
+        return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_genes.csv"
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.ldsc_result_path is None:
+            self.ldsc_result_path = self.get_ldsc_result_file(self.trait_name)
+        if not self.ldsc_result_path.exists():
+            raise FileNotFoundError(f"LDSC result file not found: {self.ldsc_result_path}")
+        self.show_config(TraitModuleConfig)
