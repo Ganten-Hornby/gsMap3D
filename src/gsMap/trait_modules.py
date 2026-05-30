@@ -116,6 +116,13 @@ def _top_specificity_mask(specificity: np.ndarray, top_n: int) -> np.ndarray:
     return mask
 
 
+def _top_positive_sum(matrix: np.ndarray, top_n: int) -> np.ndarray:
+    positive = np.maximum(matrix, 0.0)
+    if top_n >= positive.shape[1]:
+        return positive.sum(axis=1)
+    return np.partition(positive, -top_n, axis=1)[:, -top_n:].sum(axis=1)
+
+
 def _module_from_best_seed(
     residual: np.ndarray,
     remaining_mask: np.ndarray,
@@ -127,7 +134,7 @@ def _module_from_best_seed(
     if remaining_idx.size == 0:
         return remaining_idx, np.array([], dtype=np.float32), np.array([], dtype=np.float32)
 
-    weighted_signal = residual[remaining_idx].sum(axis=1) * weights[remaining_idx]
+    weighted_signal = _top_positive_sum(residual[remaining_idx], top_n) * weights[remaining_idx]
     seed_local = int(np.argmax(weighted_signal))
     seed_idx = remaining_idx[seed_local]
 
@@ -149,7 +156,10 @@ def _module_from_best_seed(
     if module_idx.size == 0:
         module_idx = np.array([seed_idx], dtype=int)
 
-    module_profile = np.maximum(residual[module_idx], 0.0).mean(axis=0)
+    module_profile = np.zeros_like(specificity, dtype=np.float32)
+    module_profile[marker_mask] = np.maximum(residual[module_idx][:, marker_mask], 0.0).mean(
+        axis=0
+    )
     return module_idx, module_profile.astype(np.float32), specificity.astype(np.float32)
 
 
@@ -223,8 +233,10 @@ def discover_trait_modules(
             break
 
         module_cells = cells[module_idx]
-        normalized = _row_normalize(np.maximum(residual[module_idx], 0.0))
-        profile_norm = profile / max(float(np.linalg.norm(profile)), 1e-8)
+        module_marker_mask = profile > 0
+        normalized = _row_normalize(np.maximum(residual[module_idx][:, module_marker_mask], 0.0))
+        profile_markers = profile[module_marker_mask]
+        profile_norm = profile_markers / max(float(np.linalg.norm(profile_markers)), 1e-8)
         cell_specificity = normalized @ profile_norm
 
         assigned_module[module_idx] = module_id

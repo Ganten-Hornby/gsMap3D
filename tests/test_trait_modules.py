@@ -6,6 +6,7 @@ from gsMap.config import TraitModuleConfig
 from gsMap.trait_modules import (
     _condition_residual_on_profile,
     _module_from_best_seed,
+    _top_positive_sum,
     discover_trait_modules,
 )
 
@@ -153,3 +154,58 @@ def test_module_similarity_uses_marker_gene_subspace():
     )
 
     assert module_idx.tolist() == [0, 1]
+
+
+def test_module_seed_score_uses_concentrated_marker_signal():
+    residual = np.zeros((2, 100), dtype=np.float32)
+    residual[0, :] = 0.2
+    residual[1, :5] = 2.0
+
+    scores = _top_positive_sum(residual, top_n=5)
+
+    assert scores[1] > scores[0]
+
+    module_idx, profile, _ = _module_from_best_seed(
+        residual=residual,
+        remaining_mask=np.array([True, True]),
+        weights=np.ones(2, dtype=np.float32),
+        top_n=5,
+        similarity_threshold=0.9,
+    )
+
+    assert module_idx.tolist() == [0, 1]
+    assert set(np.flatnonzero(profile)) == set(range(5))
+    np.testing.assert_allclose(profile[:5], 1.1)
+
+
+def test_module_specificity_uses_module_marker_subspace(tmp_path):
+    n_cells = 20
+    n_genes = 100
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 2.1
+    marker_scores[5:10, 5:] = 1.0
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "specificity_subspace_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="specificity_subspace_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.05,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+    )
+
+    cell_df, summary_df, _ = discover_trait_modules(config)
+
+    assert summary_df["n_cells"].tolist() == [10]
+    assigned = cell_df[cell_df["trait_module"] == 1]
+    assert assigned["module_specificity"].min() > 0.99
