@@ -34,6 +34,23 @@ MODULE_SUMMARY_COLUMNS = [
 
 MODULE_GENE_COLUMNS = ["trait", "module", "rank", "gene", "score"]
 
+MODULE_TRACE_COLUMNS = [
+    "trait",
+    "iteration",
+    "candidate_module",
+    "decision",
+    "reason",
+    "candidate_n_cells",
+    "remaining_cells_before",
+    "remaining_cells_after",
+    "accepted_module",
+    "mean_neg_log10_p",
+    "mean_specificity",
+    "background_mean_specificity",
+    "specificity_enrichment",
+    "specificity_null_pvalue",
+]
+
 
 @dataclass
 class ModuleResult:
@@ -252,13 +269,14 @@ def _specificity_empirical_pvalue(
     return float((n_extreme + 1) / (n_iterations + 1))
 
 
-def discover_trait_modules(
+def discover_trait_modules_with_trace(
     config: TraitModuleConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Discover fast independent trait modules.
 
-    Returns cell assignments, module summaries, and module marker genes.
+    Returns cell assignments, module summaries, module marker genes, and
+    candidate-level iteration trace diagnostics.
     """
     ldsc = _read_ldsc_result(config.ldsc_result_path)
     seed_cells = _select_seed_cells(ldsc, config)
@@ -306,9 +324,13 @@ def discover_trait_modules(
     assigned_module = np.full(len(cells), -1, dtype=int)
     module_specificity = np.zeros(len(cells), dtype=np.float32)
     module_results: list[ModuleResult] = []
+    trace_rows = []
+    iteration = 0
 
     while len(module_results) < config.max_modules:
+        iteration += 1
         module_id = len(module_results) + 1
+        remaining_before = int(remaining_mask.sum())
         module_idx, profile, specificity = _module_from_best_seed(
             residual=search_residual,
             remaining_mask=remaining_mask,
@@ -317,6 +339,29 @@ def discover_trait_modules(
             similarity_threshold=config.module_similarity_threshold,
         )
         if module_idx.size < config.min_module_cells:
+            mean_neg_log10_p = (
+                float(ldsc.loc[cells[module_idx], "neg_log10_p"].mean())
+                if module_idx.size
+                else float("nan")
+            )
+            trace_rows.append(
+                {
+                    "trait": config.trait_name,
+                    "iteration": iteration,
+                    "candidate_module": module_id,
+                    "decision": "stopped",
+                    "reason": "min_module_cells",
+                    "candidate_n_cells": int(module_idx.size),
+                    "remaining_cells_before": remaining_before,
+                    "remaining_cells_after": remaining_before,
+                    "accepted_module": -1,
+                    "mean_neg_log10_p": mean_neg_log10_p,
+                    "mean_specificity": float("nan"),
+                    "background_mean_specificity": float("nan"),
+                    "specificity_enrichment": float("nan"),
+                    "specificity_null_pvalue": float("nan"),
+                }
+            )
             logger.info(
                 f"Stopping at module {module_id}: candidate has {module_idx.size} cells, "
                 f"below min_module_cells={config.min_module_cells}."
@@ -346,19 +391,40 @@ def discover_trait_modules(
         if fails_enrichment or fails_null:
             remaining_mask[module_idx] = False
             rejection_reasons = []
+            rejection_messages = []
             if fails_enrichment:
-                rejection_reasons.append(
+                rejection_reasons.append("min_specificity_enrichment")
+                rejection_messages.append(
                     f"specificity_enrichment={specificity_enrichment:.3f} "
                     f"below min_specificity_enrichment={config.min_specificity_enrichment:.3f}"
                 )
             if fails_null:
-                rejection_reasons.append(
+                rejection_reasons.append("specificity_null_pvalue")
+                rejection_messages.append(
                     f"specificity_null_pvalue={specificity_null_pvalue:.3f} "
                     f"above max_specificity_null_pvalue={config.max_specificity_null_pvalue:.3f}"
                 )
+            trace_rows.append(
+                {
+                    "trait": config.trait_name,
+                    "iteration": iteration,
+                    "candidate_module": module_id,
+                    "decision": "rejected",
+                    "reason": ",".join(rejection_reasons),
+                    "candidate_n_cells": int(module_idx.size),
+                    "remaining_cells_before": remaining_before,
+                    "remaining_cells_after": int(remaining_mask.sum()),
+                    "accepted_module": -1,
+                    "mean_neg_log10_p": float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
+                    "mean_specificity": float(cell_specificity.mean()),
+                    "background_mean_specificity": background_specificity_mean,
+                    "specificity_enrichment": specificity_enrichment,
+                    "specificity_null_pvalue": specificity_null_pvalue,
+                }
+            )
             logger.info(
                 f"Rejected module candidate before module {module_id}: "
-                f"{'; '.join(rejection_reasons)}; "
+                f"{'; '.join(rejection_messages)}; "
                 f"removed {len(module_cells)} background-like cells from later searches."
             )
             if remaining_mask.sum() < config.min_module_cells:
@@ -368,6 +434,24 @@ def discover_trait_modules(
         assigned_module[module_idx] = module_id
         module_specificity[module_idx] = cell_specificity
         remaining_mask[module_idx] = False
+        trace_rows.append(
+            {
+                "trait": config.trait_name,
+                "iteration": iteration,
+                "candidate_module": module_id,
+                "decision": "accepted",
+                "reason": "accepted",
+                "candidate_n_cells": int(module_idx.size),
+                "remaining_cells_before": remaining_before,
+                "remaining_cells_after": int(remaining_mask.sum()),
+                "accepted_module": module_id,
+                "mean_neg_log10_p": float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
+                "mean_specificity": float(cell_specificity.mean()),
+                "background_mean_specificity": background_specificity_mean,
+                "specificity_enrichment": specificity_enrichment,
+                "specificity_null_pvalue": specificity_null_pvalue,
+            }
+        )
 
         module_results.append(
             ModuleResult(
@@ -444,17 +528,32 @@ def discover_trait_modules(
 
     summary_df = pd.DataFrame(summaries, columns=MODULE_SUMMARY_COLUMNS)
     genes_df = pd.DataFrame(gene_rows, columns=MODULE_GENE_COLUMNS)
-    return cell_df.reset_index(drop=True), summary_df, genes_df
+    trace_df = pd.DataFrame(trace_rows, columns=MODULE_TRACE_COLUMNS)
+    return cell_df.reset_index(drop=True), summary_df, genes_df, trace_df
+
+
+def discover_trait_modules(
+    config: TraitModuleConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Discover fast independent trait modules.
+
+    Returns cell assignments, module summaries, and module marker genes.
+    """
+    cell_df, summary_df, genes_df, _ = discover_trait_modules_with_trace(config)
+    return cell_df, summary_df, genes_df
 
 
 def run_trait_module_discovery(config: TraitModuleConfig):
-    cell_df, summary_df, genes_df = discover_trait_modules(config)
+    cell_df, summary_df, genes_df, trace_df = discover_trait_modules_with_trace(config)
     config.trait_module_dir.mkdir(parents=True, exist_ok=True)
 
     cell_df.to_csv(config.cell_modules_path, index=False)
     summary_df.to_csv(config.module_summary_path, index=False)
     genes_df.to_csv(config.module_genes_path, index=False)
+    trace_df.to_csv(config.module_trace_path, index=False)
 
     logger.info(f"Saved cell module assignments to {config.cell_modules_path}")
     logger.info(f"Saved module summary to {config.module_summary_path}")
     logger.info(f"Saved module marker genes to {config.module_genes_path}")
+    logger.info(f"Saved module iteration trace to {config.module_trace_path}")

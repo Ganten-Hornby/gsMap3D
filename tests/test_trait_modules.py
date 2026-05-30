@@ -8,6 +8,8 @@ from gsMap.trait_modules import (
     _module_from_best_seed,
     _top_positive_sum,
     discover_trait_modules,
+    discover_trait_modules_with_trace,
+    run_trait_module_discovery,
 )
 
 
@@ -276,15 +278,22 @@ def test_background_like_candidate_is_rejected_before_distinct_module(tmp_path):
         max_marker_genes=5,
         background_quantile=0.0,
         min_specificity_enrichment=1.5,
+        specificity_null_iterations=0,
     )
 
-    cell_df, summary_df, genes_df = discover_trait_modules(config)
+    cell_df, summary_df, genes_df, trace_df = discover_trait_modules_with_trace(config)
 
     assert summary_df["n_cells"].tolist() == [10]
     assert set(cell_df.loc[cell_df["trait_module"] == 1, "spot"]) == set(cells[10:20])
     assert set(cell_df.loc[cell_df["trait_module"] == -1, "spot"]) == set(cells[:10])
     assert set(genes_df["gene"]) == set(genes[10:15])
     assert summary_df.loc[0, "specificity_enrichment"] > 1.5
+    assert trace_df["decision"].tolist() == ["rejected", "accepted"]
+    assert trace_df["reason"].tolist() == ["min_specificity_enrichment", "accepted"]
+    assert trace_df["candidate_n_cells"].tolist() == [10, 10]
+    assert trace_df["remaining_cells_before"].tolist() == [20, 10]
+    assert trace_df["remaining_cells_after"].tolist() == [10, 0]
+    assert trace_df["accepted_module"].tolist() == [-1, 1]
 
 
 def test_iterative_background_removes_claimed_program_variants(tmp_path):
@@ -358,11 +367,14 @@ def test_specificity_null_rejects_common_background_program(tmp_path):
         max_specificity_null_pvalue=0.05,
     )
 
-    cell_df, summary_df, genes_df = discover_trait_modules(config)
+    cell_df, summary_df, genes_df, trace_df = discover_trait_modules_with_trace(config)
 
     assert cell_df["trait_module"].tolist() == [-1] * 10
     assert summary_df.empty
     assert genes_df.empty
+    assert trace_df["decision"].tolist() == ["rejected"]
+    assert trace_df["reason"].tolist() == ["specificity_null_pvalue"]
+    assert trace_df.loc[0, "specificity_null_pvalue"] > 0.05
 
 
 def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
@@ -410,3 +422,68 @@ def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
     assert summary_df.empty
     assert list(genes_df.columns) == ["trait", "module", "rank", "gene", "score"]
     assert genes_df.empty
+
+
+def test_module_trace_reports_stop_condition(tmp_path):
+    n_cells = 30
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 2.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    cells, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "trace_stop_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="trace_stop_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+    )
+
+    cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+
+    assert set(cell_df.loc[cell_df["trait_module"] == 1, "spot"]) == set(cells[:10])
+    assert summary_df["n_cells"].tolist() == [10]
+    assert trace_df["decision"].tolist() == ["accepted"]
+    assert trace_df["remaining_cells_after"].tolist() == [0]
+
+
+def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
+    n_cells = 30
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 2.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "trace_write_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="trace_write_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+    )
+
+    run_trait_module_discovery(config)
+
+    trace_df = pd.read_csv(config.module_trace_path)
+    assert trace_df["decision"].tolist() == ["accepted"]
+    assert trace_df["candidate_n_cells"].tolist() == [10]

@@ -229,6 +229,10 @@ class TraitModuleConfig(ConfigWithAutoPaths):
     def module_genes_path(self) -> Path:
         return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_genes.csv"
 
+    @property
+    def module_trace_path(self) -> Path:
+        return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_trace.csv"
+
     def __post_init__(self):
         super().__post_init__()
         if self.ldsc_result_path is None:
