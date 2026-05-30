@@ -330,6 +330,33 @@ def _condition_residual_on_profile(residual: np.ndarray, profile: np.ndarray) ->
     return np.maximum(conditioned, 0.0).astype(np.float32, copy=False)
 
 
+def _compute_iterative_background(
+    marker_matrix: np.ndarray,
+    base_background: np.ndarray,
+    claimed_module_indices: list[np.ndarray],
+    *,
+    recompute_background_after_modules: bool,
+    iterative_background_quantile: float,
+) -> np.ndarray:
+    search_background = base_background.copy()
+    if recompute_background_after_modules:
+        for module_idx in claimed_module_indices:
+            module_background = np.quantile(
+                marker_matrix[module_idx], iterative_background_quantile, axis=0
+            ).astype(np.float32)
+            search_background = np.maximum(search_background, module_background)
+    return search_background
+
+
+def _condition_residual_on_profiles(
+    residual: np.ndarray, claimed_profiles: list[np.ndarray], *, condition_on_claimed_modules: bool
+) -> np.ndarray:
+    if condition_on_claimed_modules:
+        for profile in claimed_profiles:
+            residual = _condition_residual_on_profile(residual, profile)
+    return residual
+
+
 def _compute_search_residual(
     marker_matrix: np.ndarray,
     base_background: np.ndarray,
@@ -340,21 +367,21 @@ def _compute_search_residual(
     iterative_background_quantile: float,
     condition_on_claimed_modules: bool,
 ) -> np.ndarray:
-    search_background = base_background.copy()
-    if recompute_background_after_modules:
-        for module_idx in claimed_module_indices:
-            module_background = np.quantile(
-                marker_matrix[module_idx], iterative_background_quantile, axis=0
-            ).astype(np.float32)
-            search_background = np.maximum(search_background, module_background)
-
+    search_background = _compute_iterative_background(
+        marker_matrix,
+        base_background,
+        claimed_module_indices,
+        recompute_background_after_modules=recompute_background_after_modules,
+        iterative_background_quantile=iterative_background_quantile,
+    )
     search_residual = np.maximum(marker_matrix - search_background, 0.0).astype(
         np.float32, copy=False
     )
-    if condition_on_claimed_modules:
-        for profile in claimed_profiles:
-            search_residual = _condition_residual_on_profile(search_residual, profile)
-    return search_residual
+    return _condition_residual_on_profiles(
+        search_residual,
+        claimed_profiles,
+        condition_on_claimed_modules=condition_on_claimed_modules,
+    )
 
 
 def _conditional_neg_log10_p_proxy(
@@ -937,7 +964,6 @@ def discover_trait_modules_with_trace(
         np.float32
     )
     residual = np.maximum(marker_matrix - background, 0.0)
-    background_residual = np.maximum(background_matrix - background, 0.0)
     claimed_module_indices: list[np.ndarray] = []
     claimed_profiles: list[np.ndarray] = []
     accepted_module_annotations: list[np.ndarray] = []
@@ -1026,8 +1052,23 @@ def discover_trait_modules_with_trace(
             break
 
         module_cells = cells[module_idx]
-        cell_specificity = _module_specificity_scores(residual[module_idx], profile)
-        background_specificity = _module_specificity_scores(background_residual, profile)
+        search_background = _compute_iterative_background(
+            marker_matrix,
+            background,
+            claimed_module_indices,
+            recompute_background_after_modules=config.recompute_background_after_modules,
+            iterative_background_quantile=config.iterative_background_quantile,
+        )
+        search_background_residual = np.maximum(background_matrix - search_background, 0.0).astype(
+            np.float32, copy=False
+        )
+        search_background_residual = _condition_residual_on_profiles(
+            search_background_residual,
+            claimed_profiles,
+            condition_on_claimed_modules=config.condition_on_claimed_modules,
+        )
+        cell_specificity = _module_specificity_scores(search_residual[module_idx], profile)
+        background_specificity = _module_specificity_scores(search_background_residual, profile)
         background_specificity_mean = (
             float(background_specificity.mean()) if background_specificity.size else 0.0
         )

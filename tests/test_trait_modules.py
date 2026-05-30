@@ -506,6 +506,49 @@ def test_iterative_background_removes_claimed_program_variants(tmp_path):
     )
 
 
+def test_module_specificity_uses_conditioned_residual_for_later_modules(tmp_path):
+    n_cells = 30
+    n_genes = 12
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :2] = 10.1
+    marker_scores[10:15, 0] = 10.1
+    marker_scores[10:15, 2:4] = 3.1
+    marker_scores[15:20, 1] = 10.1
+    marker_scores[15:20, 2:4] = 3.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-12
+    p_values[10:20] = 1e-8
+    cells, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "conditioned_specificity_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="conditioned_specificity_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.2,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=3,
+        max_marker_genes=2,
+        min_specificity_enrichment=1.0,
+        specificity_null_iterations=0,
+        recompute_background_after_modules=False,
+        condition_on_claimed_modules=True,
+    )
+
+    cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+
+    assert summary_df["n_cells"].tolist() == [10, 10]
+    assert trace_df["decision"].tolist() == ["accepted", "accepted"]
+    second_module = cell_df[cell_df["trait_module"] == 2]
+    assert set(second_module["spot"]) == set(cells[10:20])
+    assert second_module["module_specificity"].min() > 0.999
+
+
 def test_specificity_null_rejects_common_background_program(tmp_path):
     n_cells = 100
     n_genes = 20
