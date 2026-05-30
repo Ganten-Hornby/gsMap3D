@@ -86,6 +86,12 @@ MODULE_RUN_COLUMNS = [
     "n_modules",
     "n_module_cells",
     "module_cell_fraction",
+    "n_assigned_seed_cells",
+    "assigned_seed_cell_fraction",
+    "n_rejected_seed_cells",
+    "rejected_seed_cell_fraction",
+    "n_unresolved_seed_cells",
+    "unresolved_seed_cell_fraction",
     "top_module_signal_fraction",
     "accepted_signal_fraction",
     "residual_signal_fraction",
@@ -1683,6 +1689,19 @@ def summarize_trait_module_run(
     n_modules = int(len(summary_df))
     n_module_cells = int(cell_df["is_module_cell"].sum()) if "is_module_cell" in cell_df else 0
     module_cell_fraction = n_module_cells / max(n_seed_cells, 1)
+    if "module_status" in cell_df:
+        status_counts = cell_df["module_status"].value_counts()
+        n_assigned_seed_cells = int(status_counts.get(CELL_MODULE_STATUS_ASSIGNED, 0))
+        n_rejected_seed_cells = int(status_counts.get(CELL_MODULE_STATUS_REJECTED, 0))
+        n_unresolved_seed_cells = int(status_counts.get(CELL_MODULE_STATUS_UNRESOLVED, 0))
+    else:
+        n_assigned_seed_cells = n_module_cells
+        n_rejected_seed_cells = 0
+        n_unresolved_seed_cells = max(n_seed_cells - n_module_cells, 0)
+    seed_denominator = max(n_seed_cells, 1)
+    assigned_seed_cell_fraction = n_assigned_seed_cells / seed_denominator
+    rejected_seed_cell_fraction = n_rejected_seed_cells / seed_denominator
+    unresolved_seed_cell_fraction = n_unresolved_seed_cells / seed_denominator
     top_module_signal_fraction = (
         float(summary_df["module_signal_fraction"].max()) if n_modules else 0.0
     )
@@ -1706,6 +1725,12 @@ def summarize_trait_module_run(
                 "n_modules": n_modules,
                 "n_module_cells": n_module_cells,
                 "module_cell_fraction": module_cell_fraction,
+                "n_assigned_seed_cells": n_assigned_seed_cells,
+                "assigned_seed_cell_fraction": assigned_seed_cell_fraction,
+                "n_rejected_seed_cells": n_rejected_seed_cells,
+                "rejected_seed_cell_fraction": rejected_seed_cell_fraction,
+                "n_unresolved_seed_cells": n_unresolved_seed_cells,
+                "unresolved_seed_cell_fraction": unresolved_seed_cell_fraction,
                 "top_module_signal_fraction": top_module_signal_fraction,
                 "accepted_signal_fraction": accepted_signal_fraction,
                 "residual_signal_fraction": residual_signal_fraction,

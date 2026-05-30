@@ -156,6 +156,12 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "n_modules": [1],
             "n_module_cells": [12],
             "module_cell_fraction": [0.6],
+            "n_assigned_seed_cells": [12],
+            "assigned_seed_cell_fraction": [0.6],
+            "n_rejected_seed_cells": [3],
+            "rejected_seed_cell_fraction": [0.15],
+            "n_unresolved_seed_cells": [5],
+            "unresolved_seed_cell_fraction": [0.25],
             "top_module_signal_fraction": [0.62],
             "accepted_signal_fraction": [0.62],
             "residual_signal_fraction": [0.18],
@@ -214,6 +220,9 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     assert data["IQ"]["summary"][0]["stability_profile_similarity"] == 0.96
     assert data["IQ"]["run_summary"]["resolution_status"] == "single_module_dominant"
     assert data["IQ"]["run_summary"]["accepted_signal_fraction"] == 0.62
+    assert data["IQ"]["run_summary"]["n_assigned_seed_cells"] == 12
+    assert data["IQ"]["run_summary"]["rejected_seed_cell_fraction"] == 0.15
+    assert data["IQ"]["run_summary"]["n_unresolved_seed_cells"] == 5
     assert data["IQ"]["trace"][0]["decision"] == "accepted"
     assert data["IQ"]["trace"][1]["reason"] == "min_module_cells"
     assert data["IQ"]["trace"][0]["candidate_signal_fraction"] == 0.62

@@ -973,6 +973,12 @@ def test_summarize_trait_module_run_reports_resolution_status(tmp_path):
         "n_modules",
         "n_module_cells",
         "module_cell_fraction",
+        "n_assigned_seed_cells",
+        "assigned_seed_cell_fraction",
+        "n_rejected_seed_cells",
+        "rejected_seed_cell_fraction",
+        "n_unresolved_seed_cells",
+        "unresolved_seed_cell_fraction",
         "top_module_signal_fraction",
         "accepted_signal_fraction",
         "residual_signal_fraction",
@@ -980,6 +986,10 @@ def test_summarize_trait_module_run_reports_resolution_status(tmp_path):
     ]
     assert run_summary.loc[0, "n_modules"] == 2
     assert run_summary.loc[0, "n_module_cells"] == 20
+    assert run_summary.loc[0, "n_assigned_seed_cells"] == 20
+    assert run_summary.loc[0, "assigned_seed_cell_fraction"] == 1.0
+    assert run_summary.loc[0, "n_rejected_seed_cells"] == 0
+    assert run_summary.loc[0, "n_unresolved_seed_cells"] == 0
     assert (
         run_summary.loc[0, "accepted_signal_fraction"]
         == summary_df.loc[1, "cumulative_signal_fraction"]

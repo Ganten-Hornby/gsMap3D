@@ -887,7 +887,7 @@
                     </div>
                     <div x-show="selectedTraitModuleSummary().length > 0" class="border-t border-gray-200 p-4">
                         <h3 class="font-medium text-gray-700 mb-3" x-text="'Trait Modules: ' + selectedTrait"></h3>
-                        <div x-show="selectedTraitModuleRunSummary()" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+                        <div x-show="selectedTraitModuleRunSummary()" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mb-4">
                             <div class="p-3 bg-gray-50 rounded-lg">
                                 <p class="text-xs uppercase text-gray-500">Resolution</p>
                                 <p class="text-sm font-semibold text-gray-900" x-text="formatModuleStatus(selectedTraitModuleRunSummary()?.resolution_status)"></p>
@@ -899,6 +899,18 @@
                             <div class="p-3 bg-gray-50 rounded-lg">
                                 <p class="text-xs uppercase text-gray-500">Cells</p>
                                 <p class="text-sm font-semibold text-gray-900" x-text="selectedTraitModuleRunSummary()?.n_module_cells ?? 'N/A'"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Assigned Seeds</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="formatCountPercent(selectedTraitModuleRunSummary()?.n_assigned_seed_cells, selectedTraitModuleRunSummary()?.assigned_seed_cell_fraction)"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Rejected Seeds</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="formatCountPercent(selectedTraitModuleRunSummary()?.n_rejected_seed_cells, selectedTraitModuleRunSummary()?.rejected_seed_cell_fraction)"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Unresolved Seeds</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="formatCountPercent(selectedTraitModuleRunSummary()?.n_unresolved_seed_cells, selectedTraitModuleRunSummary()?.unresolved_seed_cell_fraction)"></p>
                             </div>
                             <div class="p-3 bg-gray-50 rounded-lg">
                                 <p class="text-xs uppercase text-gray-500">Accepted Signal</p>
@@ -1557,6 +1569,12 @@
 
                 formatPercent(value) {
                     return value !== null && value !== undefined ? `${(value * 100).toFixed(1)}%` : 'N/A';
+                },
+
+                formatCountPercent(count, fraction) {
+                    if (count === null || count === undefined) return 'N/A';
+                    if (fraction === null || fraction === undefined) return `${count}`;
+                    return `${count} (${(fraction * 100).toFixed(1)}%)`;
                 },
 
                 formatModuleStatus(value) {
