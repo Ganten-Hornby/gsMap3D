@@ -54,6 +54,7 @@ cmake-build-*/
 out/
 
 .claude/
+CLAUDE.md
 
 # mpeltonen/sbt-idea plugin
 .idea_modules/

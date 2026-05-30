@@ -272,9 +272,47 @@ def process_chunk_batched_jit(
 
 
 def wrapper_of_process_chunk_jit(*args, **kwargs):
-    """Wrapper to call the JIT-compiled process_chunk_jit function."""
-    # return process_chunk_jit(*args, **kwargs)
-    return process_chunk_batched_jit(*args, **kwargs)
+    """Wrapper to call the JIT-compiled processing function.
+
+    Automatically selects between the fully-batched implementation
+    (process_chunk_batched_jit) and the memory-efficient per-spot vmap
+    implementation (process_chunk_jit) based on estimated peak GPU/CPU memory.
+
+    Args layout (positional, matching process_chunk_batched_jit):
+        args[0]: n_blocks (int)
+        args[1]: spatial_ld  (n_snps, n_spots)
+        args[2]: baseline_ld_sum  (n_snps,)
+        args[3]: chisq  (n_snps,)
+        args[4]: N  (n_snps,)
+        args[5]: baseline_ann  (n_snps, n_baseline_features)
+        args[6]: w_ld  (n_snps,)
+        args[7]: Nbar  (float)
+    """
+    n_blocks = args[0]
+    spatial_ld = args[1]
+    baseline_ann = args[5]
+
+    n_snps = spatial_ld.shape[0]
+    n_spots = spatial_ld.shape[1]
+    # +1 because spatial_ld is concatenated with baseline_ann inside the JIT fn
+    n_features = 1 + baseline_ann.shape[1]
+
+    # Peak memory estimate: x_blocks shape = (n_snps, n_spots, n_features) × float32
+    est_gb = n_snps * n_spots * n_features * 4 / (1024**3)
+
+    # Use the fast batched kernel only when the estimated allocation fits comfortably.
+    # On GPU use a tighter bound (2 GB) because JAX pre-allocates most of the device
+    # memory as its pool, XLA kernel caches from earlier traits persist in the pool,
+    # and a single compute worker is used (cap above), so we have only one stream
+    # of allocations but less headroom than the nominal pool size suggests.
+    # On CPU the OS can page, so a generous 8 GB bound is fine.
+    is_gpu = jax.default_backend() == "gpu"
+    _SAFE_GB = 2.0 if is_gpu else 8.0
+    if est_gb <= _SAFE_GB:
+        return process_chunk_batched_jit(*args, **kwargs)
+
+    # Insert batch_size=1 between n_blocks and spatial_ld for process_chunk_jit
+    return process_chunk_jit(n_blocks, 1, *args[1:], **kwargs)
 
 
 # ============================================================================
@@ -369,42 +407,46 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
         try:
             for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
-                logger.info("=" * 70)
-                logger.info("Running Spatial LDSC (JAX Implementation)")
-                logger.info(
-                    f"Project: {config.project_name}, Trait: {trait_name} ({idx + 1}/{len(traits_to_process)})"
-                )
-                if config.sample_filter:
-                    logger.info(f"Sample filter: {config.sample_filter}")
-                if config.cell_indices_range:
-                    logger.info(f"Cell indices range: {config.cell_indices_range}")
-                logger.info("=" * 70)
+                try:
+                    logger.info("=" * 70)
+                    logger.info("Running Spatial LDSC (JAX Implementation)")
+                    logger.info(
+                        f"Project: {config.project_name}, Trait: {trait_name} ({idx + 1}/{len(traits_to_process)})"
+                    )
+                    if config.sample_filter:
+                        logger.info(f"Sample filter: {config.sample_filter}")
+                    if config.cell_indices_range:
+                        logger.info(f"Cell indices range: {config.cell_indices_range}")
+                    logger.info("=" * 70)
 
-                # Check if output already exists
-                expected_filename = generate_expected_output_filename(config, trait_name)
-                if expected_filename is not None:
-                    expected_output_path = output_dir / expected_filename
-                    if expected_output_path.exists():
-                        logger.info(f"Output file already exists: {expected_output_path}")
-                        logger.info(
-                            f"Skipping trait {trait_name} ({idx + 1}/{len(traits_to_process)})"
-                        )
+                    # Check if output already exists
+                    expected_filename = generate_expected_output_filename(config, trait_name)
+                    if expected_filename is not None:
+                        expected_output_path = output_dir / expected_filename
+                        if expected_output_path.exists():
+                            logger.info(f"Output file already exists: {expected_output_path}")
+                            logger.info(
+                                f"Skipping trait {trait_name} ({idx + 1}/{len(traits_to_process)})"
+                            )
 
-                        # Log statistics from existing result
-                        log_existing_result_statistics(expected_output_path, trait_name)
-                        continue
+                            # Log statistics from existing result
+                            log_existing_result_statistics(expected_output_path, trait_name)
+                            continue
 
-                # Setup processor for current trait
-                processor.setup_trait(trait_name, sumstats_file)
+                    # Setup processor for current trait
+                    processor.setup_trait(trait_name, sumstats_file)
 
-                # Process all chunks for current trait
-                start_time = time.time()
-                processor.process_all_chunks(wrapper_of_process_chunk_jit)
+                    # Process all chunks for current trait
+                    start_time = time.time()
+                    processor.process_all_chunks(wrapper_of_process_chunk_jit)
 
-                elapsed_time = time.time() - start_time
-                h, rem = divmod(elapsed_time, 3600)
-                m, s = divmod(rem, 60)
-                logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
+                    elapsed_time = time.time() - start_time
+                    h, rem = divmod(elapsed_time, 3600)
+                    m, s = divmod(rem, 60)
+                    logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"Error processing trait {trait_name}: {e}")
+                    continue  # Move on to the next trait even if this one fails
 
         finally:
             # Cleanup once: close memmap/adata if needed

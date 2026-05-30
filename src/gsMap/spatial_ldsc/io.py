@@ -310,7 +310,9 @@ def load_common_resources_direct_ldscore(
 
     # 2. Open the pre-computed ldscore h5ad in backed mode (can be large)
     logger.info(f"Opening pre-computed ldscore h5ad from {config.ldscore_h5ad_path} ...")
-    ldscore_adata = ad.read_h5ad(config.ldscore_h5ad_path, backed="r")
+    ldscore_adata = ad.read_h5ad(
+        config.ldscore_h5ad_path,
+    )
     logger.info(f"ldscore_adata: {ldscore_adata.n_obs} SNPs × {ldscore_adata.n_vars} cells")
 
     # 3. Start with the intersection of ldscore SNPs and w_ld SNPs

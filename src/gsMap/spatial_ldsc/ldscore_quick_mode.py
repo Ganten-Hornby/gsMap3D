@@ -656,12 +656,14 @@ class SpatialLDSCProcessor:
         if self.mode == "direct_ldscore":
             # Read the contiguous cell-column slice across all SNPs, then filter rows.
             # Reading a contiguous column range first avoids slow HDF5 fancy row indexing.
-            chunk_all_snps = np.asarray(
-                self.ldscore_adata.X[:, memmap_start:memmap_end]
-            )  # (n_snps_total, n_cells_chunk)
+            chunk_raw = self.ldscore_adata.X[:, memmap_start:memmap_end]
+            # scipy sparse matrices cannot be converted with np.asarray() — use toarray()
+            if hasattr(chunk_raw, "toarray"):
+                chunk_all_snps = chunk_raw.toarray()
+            else:
+                chunk_all_snps = np.asarray(chunk_raw)
+            # (n_snps_total, n_cells_chunk)
             ldscore_chunk = chunk_all_snps[self.ldscore_snp_positions, :]
-            if hasattr(ldscore_chunk, "toarray"):
-                ldscore_chunk = ldscore_chunk.toarray()
         else:
             # Load chunk from marker_score_adata and compute LD scores
             mk_score_chunk = self.marker_score_adata.X[
@@ -692,16 +694,30 @@ class SpatialLDSCProcessor:
         Returns:
             Merged DataFrame with all results
         """
+        import jax as _jax
+
         # Create the reader-computer pipeline
         reader = ParallelLDScoreReader(
             processor=self,
             num_workers=self.config.ldsc_read_workers,
         )
 
+        # On GPU, JAX handles device parallelism internally; using more than one
+        # Python compute thread causes cuSolver handle-pool race conditions and
+        # excessive GPU memory pressure.  Cap to 1 worker on GPU.
+        effective_compute_workers = (
+            1 if _jax.default_backend() == "gpu" else self.config.ldsc_compute_workers
+        )
+        if effective_compute_workers != self.config.ldsc_compute_workers:
+            logger.info(
+                f"GPU backend detected: capping ldsc_compute_workers to 1 "
+                f"(configured: {self.config.ldsc_compute_workers})"
+            )
+
         computer = ParallelLDScoreComputer(
             processor=self,
             process_chunk_jit_fn=process_chunk_jit_fn,
-            num_workers=self.config.ldsc_compute_workers,
+            num_workers=effective_compute_workers,
             input_queue=reader.result_queue,  # Connect reader output to computer input
         )
 
