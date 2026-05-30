@@ -182,6 +182,17 @@
                     </select>
                 </div>
 
+                <div x-show="traitColorMode === 'module_specificity' && selectedTraitModules().length > 0">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Module</label>
+                    <select x-model.number="selectedTraitModule" @change="onTraitModuleFilterChange()"
+                        class="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm p-2.5 border bg-white">
+                        <option :value="-1">All</option>
+                        <template x-for="moduleId in selectedTraitModules()" :key="moduleId">
+                            <option :value="moduleId" x-text="'Module ' + moduleId"></option>
+                        </template>
+                    </select>
+                </div>
+
                 <!-- Annotation Category Selector -->
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-2">Annotation</label>
@@ -974,6 +985,7 @@
                 selectedTrait: '',
                 selectedAnnotationCategory: '',
                 traitColorMode: 'ldsc',
+                selectedTraitModule: -1,
                 selectedGene: '',
                 isLoading: false,
 
@@ -1365,6 +1377,7 @@
                     this._geneFilterCache = null;
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
+                    this.selectedTraitModule = -1;
                     if (!this.hasTraitModuleData(newTrait)) {
                         this.traitColorMode = 'ldsc';
                     }
@@ -1421,16 +1434,32 @@
                     return this.traitModuleData?.[this.selectedTrait]?.trace || [];
                 },
 
+                selectedTraitModules() {
+                    return this.selectedTraitModuleSummary()
+                        .map(row => row.module)
+                        .filter(moduleId => moduleId !== null && moduleId !== undefined)
+                        .sort((a, b) => a - b);
+                },
+
                 getTraitColorSpec(data, trait) {
                     if (this.traitColorMode === 'module_specificity' && this.hasTraitModuleData(trait)) {
                         const specificityCol = `${trait}_module_specificity`;
                         const moduleCol = `${trait}_trait_module`;
-                        const values = data[specificityCol] || data.spot.map(() => 0);
+                        const specificityValues = data[specificityCol] || data.spot.map(() => 0);
+                        const moduleValues = data[moduleCol] || data.spot.map(() => -1);
+                        const selectedModule = Number(this.selectedTraitModule);
+                        const hasModuleFilter = selectedModule > 0;
+                        const values = specificityValues.map((v, i) => {
+                            if (v === null || v === undefined) return 0;
+                            if (hasModuleFilter && Number(moduleValues[i]) !== selectedModule) return 0;
+                            return v;
+                        });
                         return {
-                            values: values.map(v => (v === null || v === undefined) ? 0 : v),
-                            label: `Module specificity ${trait}`,
+                            values: values,
+                            label: hasModuleFilter ? `Module ${selectedModule} specificity ${trait}` : `Module specificity ${trait}`,
                             moduleCol: moduleCol,
                             specificityCol: specificityCol,
+                            selectedModule: hasModuleFilter ? selectedModule : -1,
                             isModuleMode: true
                         };
                     }
@@ -1447,6 +1476,13 @@
                     if (this.traitColorMode === 'module_specificity' && !this.hasTraitModuleData(this.selectedTrait)) {
                         this.traitColorMode = 'ldsc';
                     }
+                    if (this.traitColorMode !== 'module_specificity') {
+                        this.selectedTraitModule = -1;
+                    }
+                    this.onTraitModuleFilterChange();
+                },
+
+                onTraitModuleFilterChange() {
                     this._umapTraitColorCache = null;
                     this._spatial2dTraitColorCache = null;
                     requestAnimationFrame(() => {
@@ -2050,6 +2086,9 @@
                             const specificityVal = this.umapData[colorSpec.specificityCol]?.[i];
                             text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
                             text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
+                            if (colorSpec.selectedModule > 0) {
+                                text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
+                            }
                         }
                         return text;
                     });
@@ -2294,6 +2333,9 @@
                                 const specificityVal = data[colorSpec.specificityCol]?.[i];
                                 text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
                                 text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
+                                if (colorSpec.selectedModule > 0) {
+                                    text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
+                                }
                             }
                             return text;
                         });
