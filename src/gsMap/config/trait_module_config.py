@@ -104,6 +104,29 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 1.5
 
+    recompute_background_after_modules: Annotated[
+        bool,
+        typer.Option(
+            "--recompute-background-after-modules/--fixed-background-after-modules",
+            help=(
+                "After accepting a module, raise the per-gene search background using "
+                "that module's marker scores before searching for later modules."
+            ),
+        ),
+    ] = True
+
+    iterative_background_quantile: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Quantile of accepted module-cell marker scores used as the iterative "
+                "search background for later module discovery."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.5
+
     condition_on_claimed_modules: Annotated[
         bool,
         typer.Option(

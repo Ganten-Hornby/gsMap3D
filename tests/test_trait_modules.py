@@ -282,6 +282,48 @@ def test_background_like_candidate_is_rejected_before_distinct_module(tmp_path):
     assert summary_df.loc[0, "specificity_enrichment"] > 1.5
 
 
+def test_iterative_background_removes_claimed_program_variants(tmp_path):
+    n_cells = 50
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 3.1
+    marker_scores[10:20, [0, 2, 4]] = 3.1
+    marker_scores[20:30, 10:15] = 3.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-12
+    p_values[10:20] = 1e-11
+    p_values[20:30] = 1e-8
+    cells, genes, marker_path = _write_trait_module_inputs(
+        tmp_path, "iterative_background_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="iterative_background_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=3,
+        max_marker_genes=5,
+        min_specificity_enrichment=1.5,
+        recompute_background_after_modules=True,
+        condition_on_claimed_modules=False,
+    )
+
+    cell_df, summary_df, genes_df = discover_trait_modules(config)
+
+    assert summary_df["n_cells"].tolist() == [10, 10]
+    assert set(cell_df.loc[cell_df["trait_module"] == 1, "spot"]) == set(cells[:10])
+    assert set(cell_df.loc[cell_df["trait_module"] == 2, "spot"]) == set(cells[20:30])
+    assert set(cell_df.loc[cell_df["trait_module"] == -1, "spot"]) == set(cells[10:20])
+    assert set(genes_df.loc[genes_df["module"] == 1, "gene"]) == set(genes[:5])
+    assert set(genes_df.loc[genes_df["module"] == 2, "gene"]) == set(genes[10:15])
+
+
 def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
     n_cells = 50
     n_genes = 20

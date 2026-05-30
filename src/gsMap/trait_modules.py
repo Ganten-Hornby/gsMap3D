@@ -190,6 +190,33 @@ def _condition_residual_on_profile(residual: np.ndarray, profile: np.ndarray) ->
     return np.maximum(conditioned, 0.0).astype(np.float32, copy=False)
 
 
+def _compute_search_residual(
+    marker_matrix: np.ndarray,
+    base_background: np.ndarray,
+    claimed_module_indices: list[np.ndarray],
+    claimed_profiles: list[np.ndarray],
+    *,
+    recompute_background_after_modules: bool,
+    iterative_background_quantile: float,
+    condition_on_claimed_modules: bool,
+) -> np.ndarray:
+    search_background = base_background.copy()
+    if recompute_background_after_modules:
+        for module_idx in claimed_module_indices:
+            module_background = np.quantile(
+                marker_matrix[module_idx], iterative_background_quantile, axis=0
+            ).astype(np.float32)
+            search_background = np.maximum(search_background, module_background)
+
+    search_residual = np.maximum(marker_matrix - search_background, 0.0).astype(
+        np.float32, copy=False
+    )
+    if condition_on_claimed_modules:
+        for profile in claimed_profiles:
+            search_residual = _condition_residual_on_profile(search_residual, profile)
+    return search_residual
+
+
 def _module_specificity_scores(matrix: np.ndarray, profile: np.ndarray) -> np.ndarray:
     module_marker_mask = profile > 0
     if not np.any(module_marker_mask):
@@ -233,7 +260,17 @@ def discover_trait_modules(
     )
     residual = np.maximum(marker_matrix - background, 0.0)
     background_residual = np.maximum(background_matrix - background, 0.0)
-    search_residual = residual.copy()
+    claimed_module_indices: list[np.ndarray] = []
+    claimed_profiles: list[np.ndarray] = []
+    search_residual = _compute_search_residual(
+        marker_matrix,
+        background,
+        claimed_module_indices,
+        claimed_profiles,
+        recompute_background_after_modules=config.recompute_background_after_modules,
+        iterative_background_quantile=config.iterative_background_quantile,
+        condition_on_claimed_modules=config.condition_on_claimed_modules,
+    )
     weights = ldsc.loc[cells, "neg_log10_p"].to_numpy(dtype=np.float32)
     n_top = min(
         config.max_marker_genes,
@@ -302,9 +339,19 @@ def discover_trait_modules(
             f"mean -log10(p)={module_results[-1].mean_neg_log10_p:.3f}"
         )
 
-        if config.condition_on_claimed_modules:
-            search_residual = _condition_residual_on_profile(search_residual, profile)
-            logger.info(f"Conditioned later module search on module {module_id} profile")
+        claimed_module_indices.append(module_idx.copy())
+        claimed_profiles.append(profile.copy())
+        if config.recompute_background_after_modules or config.condition_on_claimed_modules:
+            search_residual = _compute_search_residual(
+                marker_matrix,
+                background,
+                claimed_module_indices,
+                claimed_profiles,
+                recompute_background_after_modules=config.recompute_background_after_modules,
+                iterative_background_quantile=config.iterative_background_quantile,
+                condition_on_claimed_modules=config.condition_on_claimed_modules,
+            )
+            logger.info(f"Updated residual search space after accepting module {module_id}")
 
         if remaining_mask.sum() < config.min_module_cells:
             break
