@@ -47,6 +47,7 @@ MODULE_TRACE_COLUMNS = [
     "remaining_cells_after",
     "accepted_module",
     "mean_neg_log10_p",
+    "mean_conditional_neg_log10_p",
     "mean_specificity",
     "background_mean_specificity",
     "specificity_enrichment",
@@ -242,6 +243,20 @@ def _compute_search_residual(
     return search_residual
 
 
+def _conditional_neg_log10_p_proxy(
+    original_neg_log10_p: np.ndarray,
+    residual: np.ndarray,
+    search_residual: np.ndarray,
+    top_n: int,
+) -> np.ndarray:
+    original_signal = _top_positive_sum(residual, top_n)
+    conditional_signal = _top_positive_sum(search_residual, top_n)
+    retained_fraction = conditional_signal / np.maximum(original_signal, 1e-8)
+    return (original_neg_log10_p * np.clip(retained_fraction, 0.0, 1.0)).astype(
+        np.float32, copy=False
+    )
+
+
 def _module_specificity_scores(matrix: np.ndarray, profile: np.ndarray) -> np.ndarray:
     module_marker_mask = profile > 0
     if not np.any(module_marker_mask):
@@ -341,12 +356,13 @@ def discover_trait_modules_with_trace(
         iterative_background_quantile=config.iterative_background_quantile,
         condition_on_claimed_modules=config.condition_on_claimed_modules,
     )
-    weights = ldsc.loc[cells, "neg_log10_p"].to_numpy(dtype=np.float32)
     null_rng = np.random.default_rng(config.random_seed + 1729)
     n_top = min(
         config.max_marker_genes,
         max(1, int(np.ceil(residual.shape[1] * config.top_gene_fraction))),
     )
+    weights = ldsc.loc[cells, "neg_log10_p"].to_numpy(dtype=np.float32)
+    conditional_weights = _conditional_neg_log10_p_proxy(weights, residual, search_residual, n_top)
 
     remaining_mask = np.ones(len(cells), dtype=bool)
     assigned_module = np.full(len(cells), -1, dtype=int)
@@ -362,7 +378,7 @@ def discover_trait_modules_with_trace(
         module_idx, profile, specificity = _module_from_best_seed(
             residual=search_residual,
             remaining_mask=remaining_mask,
-            weights=weights,
+            weights=conditional_weights,
             top_n=n_top,
             similarity_threshold=config.module_similarity_threshold,
         )
@@ -371,6 +387,9 @@ def discover_trait_modules_with_trace(
                 float(ldsc.loc[cells[module_idx], "neg_log10_p"].mean())
                 if module_idx.size
                 else float("nan")
+            )
+            mean_conditional_neg_log10_p = (
+                float(conditional_weights[module_idx].mean()) if module_idx.size else float("nan")
             )
             trace_rows.append(
                 {
@@ -384,6 +403,7 @@ def discover_trait_modules_with_trace(
                     "remaining_cells_after": remaining_before,
                     "accepted_module": -1,
                     "mean_neg_log10_p": mean_neg_log10_p,
+                    "mean_conditional_neg_log10_p": mean_conditional_neg_log10_p,
                     "mean_specificity": float("nan"),
                     "background_mean_specificity": float("nan"),
                     "specificity_enrichment": float("nan"),
@@ -458,6 +478,7 @@ def discover_trait_modules_with_trace(
                     "remaining_cells_after": int(remaining_mask.sum()),
                     "accepted_module": -1,
                     "mean_neg_log10_p": float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
+                    "mean_conditional_neg_log10_p": float(conditional_weights[module_idx].mean()),
                     "mean_specificity": float(cell_specificity.mean()),
                     "background_mean_specificity": background_specificity_mean,
                     "specificity_enrichment": specificity_enrichment,
@@ -490,6 +511,7 @@ def discover_trait_modules_with_trace(
                 "remaining_cells_after": int(remaining_mask.sum()),
                 "accepted_module": module_id,
                 "mean_neg_log10_p": float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
+                "mean_conditional_neg_log10_p": float(conditional_weights[module_idx].mean()),
                 "mean_specificity": float(cell_specificity.mean()),
                 "background_mean_specificity": background_specificity_mean,
                 "specificity_enrichment": specificity_enrichment,
@@ -531,6 +553,9 @@ def discover_trait_modules_with_trace(
                 recompute_background_after_modules=config.recompute_background_after_modules,
                 iterative_background_quantile=config.iterative_background_quantile,
                 condition_on_claimed_modules=config.condition_on_claimed_modules,
+            )
+            conditional_weights = _conditional_neg_log10_p_proxy(
+                weights, residual, search_residual, n_top
             )
             logger.info(f"Updated residual search space after accepting module {module_id}")
 

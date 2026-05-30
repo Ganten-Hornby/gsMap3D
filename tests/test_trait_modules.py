@@ -5,6 +5,7 @@ import pandas as pd
 from gsMap.config import TraitModuleConfig
 from gsMap.trait_modules import (
     _condition_residual_on_profile,
+    _conditional_neg_log10_p_proxy,
     _module_from_best_seed,
     _top_positive_sum,
     discover_trait_modules,
@@ -180,6 +181,31 @@ def test_module_seed_score_uses_concentrated_marker_signal():
     np.testing.assert_allclose(profile[:5], 1.1)
 
 
+def test_conditional_neg_log10_p_proxy_uses_retained_marker_signal():
+    original_neg_log10_p = np.array([10.0, 8.0], dtype=np.float32)
+    residual = np.array(
+        [
+            [3.0, 3.0, 0.0, 0.0],
+            [2.0, 0.0, 5.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    search_residual = np.array(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 5.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+
+    conditional = _conditional_neg_log10_p_proxy(
+        original_neg_log10_p, residual, search_residual, top_n=2
+    )
+
+    assert conditional[0] == 0.0
+    np.testing.assert_allclose(conditional[1], 8.0 * 6.0 / 7.0, rtol=1e-6)
+
+
 def test_module_specificity_uses_module_marker_subspace(tmp_path):
     n_cells = 20
     n_genes = 100
@@ -332,7 +358,7 @@ def test_iterative_background_removes_claimed_program_variants(tmp_path):
         condition_on_claimed_modules=False,
     )
 
-    cell_df, summary_df, genes_df = discover_trait_modules(config)
+    cell_df, summary_df, genes_df, trace_df = discover_trait_modules_with_trace(config)
 
     assert summary_df["n_cells"].tolist() == [10, 10]
     assert set(cell_df.loc[cell_df["trait_module"] == 1, "spot"]) == set(cells[:10])
@@ -340,6 +366,12 @@ def test_iterative_background_removes_claimed_program_variants(tmp_path):
     assert set(cell_df.loc[cell_df["trait_module"] == -1, "spot"]) == set(cells[10:20])
     assert set(genes_df.loc[genes_df["module"] == 1, "gene"]) == set(genes[:5])
     assert set(genes_df.loc[genes_df["module"] == 2, "gene"]) == set(genes[10:15])
+    assert "mean_conditional_neg_log10_p" in trace_df.columns
+    accepted_trace = trace_df[trace_df["decision"] == "accepted"]
+    assert accepted_trace["mean_conditional_neg_log10_p"].notna().all()
+    assert (
+        accepted_trace["mean_conditional_neg_log10_p"] <= accepted_trace["mean_neg_log10_p"]
+    ).all()
 
 
 def test_specificity_null_rejects_common_background_program(tmp_path):
