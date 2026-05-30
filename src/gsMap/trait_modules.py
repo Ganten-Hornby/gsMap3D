@@ -22,11 +22,15 @@ from gsMap.spatial_ldsc.io import _read_sumstats, _read_w_ld, load_marker_scores
 
 logger = logging.getLogger("gsMap.trait_modules")
 
+MODULE_EVIDENCE_STRONG_THRESHOLD = 0.85
+
 
 MODULE_SUMMARY_COLUMNS = [
     "trait",
     "module",
     "n_cells",
+    "module_evidence_score",
+    "module_evidence_status",
     "mean_neg_log10_p",
     "max_neg_log10_p",
     "conditional_ldsc_neg_log10_p",
@@ -53,6 +57,8 @@ MODULE_TRACE_COLUMNS = [
     "candidate_module",
     "decision",
     "reason",
+    "module_evidence_score",
+    "module_evidence_status",
     "candidate_n_cells",
     "remaining_cells_before",
     "remaining_cells_after",
@@ -88,6 +94,8 @@ class ModuleResult:
     specificity_null_pvalue: float
     max_profile_similarity: float
     most_similar_module: int
+    module_evidence_score: float = float("nan")
+    module_evidence_status: str = "unknown"
     conditional_ldsc_beta: float = float("nan")
     conditional_ldsc_se: float = float("nan")
     conditional_ldsc_z: float = float("nan")
@@ -359,6 +367,13 @@ def _trace_conditional_ldsc_empty() -> dict[str, float]:
 
 def _trace_module_stability_empty() -> dict[str, float]:
     return ModuleStabilityResult().as_columns()
+
+
+def _trace_module_evidence_empty() -> dict[str, float | str]:
+    return {
+        "module_evidence_score": float("nan"),
+        "module_evidence_status": "not_evaluated",
+    }
 
 
 def _read_report_meta(config: TraitModuleConfig) -> dict:
@@ -745,6 +760,119 @@ def _specificity_empirical_pvalue(
     return float((n_extreme + 1) / (n_iterations + 1))
 
 
+def _bounded_metric(value: float, low: float, high: float) -> float | None:
+    if not np.isfinite(value):
+        return None
+    if high <= low:
+        return float(value >= high)
+    return float(np.clip((value - low) / (high - low), 0.0, 1.0))
+
+
+def _inverse_bounded_metric(value: float, low: float, high: float) -> float | None:
+    if not np.isfinite(value):
+        return None
+    if high <= low:
+        return float(value <= low)
+    return float(np.clip((high - value) / (high - low), 0.0, 1.0))
+
+
+def _module_evidence(
+    *,
+    decision: str,
+    specificity_enrichment: float,
+    specificity_null_pvalue: float,
+    max_profile_similarity: float,
+    stability: ModuleStabilityResult,
+    conditional_ldsc: ConditionalLDSCResult,
+    config: TraitModuleConfig,
+) -> tuple[float, str]:
+    """
+    Collapse heterogeneous diagnostics into one descriptive confidence score.
+
+    The score is diagnostic and intentionally separate from acceptance gates:
+    gates decide whether a module is kept, while this ranks kept or rejected
+    candidates by trait specificity, uniqueness, reproducibility, and optional
+    conditional genetic support.
+    """
+    metrics: list[float] = []
+
+    enrichment_score = _bounded_metric(
+        specificity_enrichment,
+        config.min_specificity_enrichment,
+        config.min_specificity_enrichment * 2,
+    )
+    if enrichment_score is not None:
+        metrics.append(enrichment_score)
+
+    if config.specificity_null_iterations > 0:
+        null_score = _inverse_bounded_metric(
+            specificity_null_pvalue,
+            config.max_specificity_null_pvalue,
+            1.0,
+        )
+        if null_score is not None:
+            metrics.append(null_score)
+
+    uniqueness_score = _inverse_bounded_metric(
+        max_profile_similarity,
+        config.max_module_profile_similarity,
+        1.0,
+    )
+    if uniqueness_score is not None:
+        metrics.append(uniqueness_score)
+
+    stability_profile_score = _bounded_metric(
+        stability.profile_similarity,
+        config.min_module_stability_profile_similarity,
+        1.0,
+    )
+    if stability_profile_score is not None:
+        metrics.append(stability_profile_score)
+
+    stability_assignment_score = _bounded_metric(
+        stability.assignment_fraction,
+        config.min_module_stability_assignment_fraction,
+        1.0,
+    )
+    if stability_assignment_score is not None:
+        metrics.append(stability_assignment_score)
+
+    stability_null_score = _inverse_bounded_metric(
+        stability.null_pvalue,
+        config.max_module_stability_null_pvalue,
+        1.0,
+    )
+    if stability_null_score is not None:
+        metrics.append(stability_null_score)
+
+    if config.run_conditional_ldsc:
+        conditional_score = _inverse_bounded_metric(
+            conditional_ldsc.p,
+            config.conditional_ldsc_pvalue_threshold,
+            1.0,
+        )
+        if conditional_score is not None:
+            metrics.append(conditional_score)
+
+    score = float(np.mean(metrics)) if metrics else float("nan")
+    moderate_threshold = config.min_module_evidence_score
+    strong_threshold = min(
+        1.0,
+        max(MODULE_EVIDENCE_STRONG_THRESHOLD, moderate_threshold + (1.0 - moderate_threshold) / 2),
+    )
+    if decision == "rejected":
+        status = "failed_gate"
+    elif not np.isfinite(score):
+        status = "unknown"
+    elif score >= strong_threshold:
+        status = "strong"
+    elif score >= moderate_threshold:
+        status = "moderate"
+    else:
+        status = "weak"
+    return score, status
+
+
 def _profile_similarity_to_accepted(
     profile: np.ndarray, module_results: list[ModuleResult]
 ) -> tuple[float, int]:
@@ -860,6 +988,7 @@ def discover_trait_modules_with_trace(
                     "remaining_cells_before": remaining_before,
                     "remaining_cells_after": remaining_before,
                     "accepted_module": -1,
+                    **_trace_module_evidence_empty(),
                     "mean_neg_log10_p": mean_neg_log10_p,
                     "mean_conditional_neg_log10_p": mean_conditional_neg_log10_p,
                     "mean_specificity": float("nan"),
@@ -938,6 +1067,26 @@ def discover_trait_modules_with_trace(
                 or conditional_ldsc.p > config.conditional_ldsc_pvalue_threshold
             )
         )
+        candidate_decision = (
+            "rejected"
+            if (
+                fails_enrichment
+                or fails_null
+                or fails_profile_similarity
+                or fails_stability
+                or fails_conditional_ldsc
+            )
+            else "accepted"
+        )
+        module_evidence_score, module_evidence_status = _module_evidence(
+            decision=candidate_decision,
+            specificity_enrichment=specificity_enrichment,
+            specificity_null_pvalue=specificity_null_pvalue,
+            max_profile_similarity=max_profile_similarity,
+            stability=stability,
+            conditional_ldsc=conditional_ldsc,
+            config=config,
+        )
         if (
             fails_enrichment
             or fails_null
@@ -996,6 +1145,8 @@ def discover_trait_modules_with_trace(
                     "remaining_cells_before": remaining_before,
                     "remaining_cells_after": int(remaining_mask.sum()),
                     "accepted_module": -1,
+                    "module_evidence_score": module_evidence_score,
+                    "module_evidence_status": module_evidence_status,
                     "mean_neg_log10_p": float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
                     "mean_conditional_neg_log10_p": float(conditional_weights[module_idx].mean()),
                     "mean_specificity": float(cell_specificity.mean()),
@@ -1031,6 +1182,8 @@ def discover_trait_modules_with_trace(
                 "remaining_cells_before": remaining_before,
                 "remaining_cells_after": int(remaining_mask.sum()),
                 "accepted_module": module_id,
+                "module_evidence_score": module_evidence_score,
+                "module_evidence_status": module_evidence_status,
                 "mean_neg_log10_p": float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
                 "mean_conditional_neg_log10_p": float(conditional_weights[module_idx].mean()),
                 "mean_specificity": float(cell_specificity.mean()),
@@ -1056,6 +1209,8 @@ def discover_trait_modules_with_trace(
                 specificity_null_pvalue=specificity_null_pvalue,
                 max_profile_similarity=max_profile_similarity,
                 most_similar_module=most_similar_module,
+                module_evidence_score=module_evidence_score,
+                module_evidence_status=module_evidence_status,
                 conditional_ldsc_beta=conditional_ldsc.beta,
                 conditional_ldsc_se=conditional_ldsc.se,
                 conditional_ldsc_z=conditional_ldsc.z,
@@ -1112,6 +1267,8 @@ def discover_trait_modules_with_trace(
                 "trait": config.trait_name,
                 "module": result.module_id,
                 "n_cells": len(result.cells),
+                "module_evidence_score": result.module_evidence_score,
+                "module_evidence_status": result.module_evidence_status,
                 "mean_neg_log10_p": result.mean_neg_log10_p,
                 "max_neg_log10_p": float(ldsc.loc[result.cells, "neg_log10_p"].max()),
                 "conditional_ldsc_neg_log10_p": result.conditional_ldsc_neg_log10_p,

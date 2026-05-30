@@ -9,6 +9,7 @@ from gsMap.trait_modules import (
     _condition_residual_on_profile,
     _conditional_neg_log10_p_proxy,
     _fit_conditional_ldsc,
+    _module_evidence,
     _module_from_best_seed,
     _module_stability,
     _top_positive_sum,
@@ -262,6 +263,68 @@ def test_module_stability_detects_reproducible_profile():
     assert stability.profile_similarity > 0.99
     assert stability.assignment_fraction > 0.99
     assert stability.null_pvalue <= 0.05
+
+
+def test_module_evidence_scores_specific_unique_stable_module(tmp_path):
+    ldsc_path = tmp_path / "dummy.csv.gz"
+    ldsc_path.write_text("spot,p\n")
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="evidence_score_test",
+        trait_name="IQ",
+        ldsc_result_path=ldsc_path,
+        min_specificity_enrichment=1.5,
+        specificity_null_iterations=100,
+        max_specificity_null_pvalue=0.05,
+        max_module_profile_similarity=0.9,
+        module_stability_iterations=100,
+        run_conditional_ldsc=True,
+        conditional_ldsc_pvalue_threshold=0.05,
+    )
+
+    score, status = _module_evidence(
+        decision="accepted",
+        specificity_enrichment=3.0,
+        specificity_null_pvalue=0.01,
+        max_profile_similarity=0.0,
+        stability=ModuleStabilityResult(
+            profile_similarity=0.98,
+            assignment_fraction=0.96,
+            null_pvalue=0.02,
+        ),
+        conditional_ldsc=ConditionalLDSCResult(p=0.01, neg_log10_p=2.0),
+        config=config,
+    )
+
+    assert score > 0.85
+    assert status == "strong"
+
+
+def test_module_evidence_marks_rejected_candidate_as_failed_gate(tmp_path):
+    ldsc_path = tmp_path / "dummy.csv.gz"
+    ldsc_path.write_text("spot,p\n")
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="evidence_failed_test",
+        trait_name="IQ",
+        ldsc_result_path=ldsc_path,
+        min_specificity_enrichment=1.5,
+        specificity_null_iterations=0,
+        module_stability_iterations=0,
+    )
+
+    score, status = _module_evidence(
+        decision="rejected",
+        specificity_enrichment=0.8,
+        specificity_null_pvalue=float("nan"),
+        max_profile_similarity=0.95,
+        stability=ModuleStabilityResult(),
+        conditional_ldsc=ConditionalLDSCResult(),
+        config=config,
+    )
+
+    assert np.isfinite(score)
+    assert status == "failed_gate"
 
 
 def test_module_specificity_uses_module_marker_subspace(tmp_path):
@@ -709,6 +772,8 @@ def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
         "trait",
         "module",
         "n_cells",
+        "module_evidence_score",
+        "module_evidence_status",
         "mean_neg_log10_p",
         "max_neg_log10_p",
         "conditional_ldsc_neg_log10_p",

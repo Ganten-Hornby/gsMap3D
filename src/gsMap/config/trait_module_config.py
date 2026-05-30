@@ -139,6 +139,19 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 0.9
 
+    min_module_evidence_score: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Minimum diagnostic evidence score expected for a moderate independent "
+                "trait module. This is reported as module_evidence_score/status and "
+                "does not gate discovery."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.65
+
     module_stability_iterations: Annotated[
         int,
         typer.Option(
