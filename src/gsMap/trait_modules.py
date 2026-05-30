@@ -1004,55 +1004,15 @@ def _format_gene_set(genes: list[str]) -> str:
     return ";".join(genes)
 
 
-def summarize_trait_module_pairs(
+def _trait_module_pair_rows(
     config: TraitModuleConfig,
-    summary_df: pd.DataFrame,
-    genes_df: pd.DataFrame,
+    summary_by_module: dict[int, dict],
+    gene_order_by_module: dict[int, list[str]],
+    profile_by_module: dict[int, np.ndarray | dict[str, float]],
 ) -> pd.DataFrame:
-    """
-    Summarize pairwise distinctness among accepted trait modules.
-
-    Accepted modules are already gated against earlier module profiles during
-    discovery. This table makes that evidence explicit for downstream review by
-    reporting profile similarity and marker-gene overlap for every accepted
-    module pair.
-    """
-    if (
-        summary_df.empty
-        or genes_df.empty
-        or "module" not in summary_df
-        or "module" not in genes_df
-    ):
-        return pd.DataFrame(columns=MODULE_PAIR_COLUMNS)
-
-    summary = summary_df.copy()
-    summary["module"] = pd.to_numeric(summary["module"], errors="coerce")
-    summary = summary.dropna(subset=["module"]).copy()
-    summary["module"] = summary["module"].astype(int)
-    modules = sorted(summary["module"].unique())
+    modules = sorted(summary_by_module)
     if len(modules) < 2:
         return pd.DataFrame(columns=MODULE_PAIR_COLUMNS)
-
-    genes = genes_df.copy()
-    genes["module"] = pd.to_numeric(genes["module"], errors="coerce")
-    genes["rank"] = pd.to_numeric(genes.get("rank"), errors="coerce")
-    genes["score"] = pd.to_numeric(genes.get("score"), errors="coerce").fillna(0.0)
-    genes = genes.dropna(subset=["module", "rank"]).copy()
-    genes["module"] = genes["module"].astype(int)
-
-    summary_by_module = summary.set_index("module")
-    gene_order_by_module: dict[int, list[str]] = {}
-    sparse_profile_by_module: dict[int, dict[str, float]] = {}
-    for module_id in modules:
-        module_genes = genes.loc[genes["module"] == module_id].sort_values(
-            ["rank", "gene"], kind="stable"
-        )
-        gene_order = [str(gene) for gene in module_genes["gene"].tolist()]
-        gene_order_by_module[module_id] = gene_order
-        sparse_profile_by_module[module_id] = {
-            str(row.gene): max(float(row.score), 0.0)
-            for row in module_genes.itertuples(index=False)
-        }
 
     rows = []
     for module_a_pos, module_a in enumerate(modules[:-1]):
@@ -1064,14 +1024,16 @@ def summarize_trait_module_pairs(
             shared = gene_set_a.intersection(gene_set_b)
             union = gene_set_a.union(gene_set_b)
             marker_jaccard = len(shared) / len(union) if union else 0.0
-            profile_similarity = _sparse_profile_similarity(
-                sparse_profile_by_module.get(module_a, {}),
-                sparse_profile_by_module.get(module_b, {}),
-            )
+            profile_a = profile_by_module.get(module_a, {})
+            profile_b = profile_by_module.get(module_b, {})
+            if isinstance(profile_a, np.ndarray) and isinstance(profile_b, np.ndarray):
+                profile_similarity = _profile_cosine_similarity(profile_a, profile_b)
+            else:
+                profile_similarity = _sparse_profile_similarity(profile_a, profile_b)
             profile_distinct = profile_similarity <= config.max_module_profile_similarity
 
-            module_a_summary = summary_by_module.loc[module_a]
-            module_b_summary = summary_by_module.loc[module_b]
+            module_a_summary = summary_by_module[module_a]
+            module_b_summary = summary_by_module[module_b]
             shared_ordered = [gene for gene in genes_a if gene in shared]
             rows.append(
                 {
@@ -1112,14 +1074,94 @@ def summarize_trait_module_pairs(
     return pd.DataFrame(rows, columns=MODULE_PAIR_COLUMNS)
 
 
-def discover_trait_modules_with_trace(
+def _summarize_trait_module_pairs_from_results(
     config: TraitModuleConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    module_results: list[ModuleResult],
+    gene_order_by_module: dict[int, list[str]],
+) -> pd.DataFrame:
+    summary_by_module = {
+        result.module_id: {
+            "n_cells": len(result.cells),
+            "module_signal_fraction": result.module_signal_fraction,
+            "module_evidence_status": result.module_evidence_status,
+        }
+        for result in module_results
+    }
+    profile_by_module = {result.module_id: result.profile for result in module_results}
+    return _trait_module_pair_rows(
+        config,
+        summary_by_module,
+        gene_order_by_module,
+        profile_by_module,
+    )
+
+
+def summarize_trait_module_pairs(
+    config: TraitModuleConfig,
+    summary_df: pd.DataFrame,
+    genes_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Summarize pairwise distinctness among accepted trait modules.
+
+    This public fallback uses exported marker genes because full module profiles
+    are not available after loading CSV outputs. The discovery writer uses the
+    full in-memory profiles through _summarize_trait_module_pairs_from_results.
+    """
+    if (
+        summary_df.empty
+        or genes_df.empty
+        or "module" not in summary_df
+        or "module" not in genes_df
+    ):
+        return pd.DataFrame(columns=MODULE_PAIR_COLUMNS)
+
+    summary = summary_df.copy()
+    summary["module"] = pd.to_numeric(summary["module"], errors="coerce")
+    summary = summary.dropna(subset=["module"]).copy()
+    summary["module"] = summary["module"].astype(int)
+    modules = sorted(summary["module"].unique())
+    if len(modules) < 2:
+        return pd.DataFrame(columns=MODULE_PAIR_COLUMNS)
+
+    genes = genes_df.copy()
+    genes["module"] = pd.to_numeric(genes["module"], errors="coerce")
+    genes["rank"] = pd.to_numeric(genes.get("rank"), errors="coerce")
+    genes["score"] = pd.to_numeric(genes.get("score"), errors="coerce").fillna(0.0)
+    genes = genes.dropna(subset=["module", "rank"]).copy()
+    genes["module"] = genes["module"].astype(int)
+
+    summary_by_module = {int(row.module): row._asdict() for row in summary.itertuples(index=False)}
+    gene_order_by_module: dict[int, list[str]] = {}
+    sparse_profile_by_module: dict[int, dict[str, float]] = {}
+    for module_id in modules:
+        module_genes = genes.loc[genes["module"] == module_id].sort_values(
+            ["rank", "gene"], kind="stable"
+        )
+        gene_order = [str(gene) for gene in module_genes["gene"].tolist()]
+        gene_order_by_module[module_id] = gene_order
+        sparse_profile_by_module[module_id] = {
+            str(row.gene): max(float(row.score), 0.0)
+            for row in module_genes.itertuples(index=False)
+        }
+
+    return _trait_module_pair_rows(
+        config,
+        summary_by_module,
+        gene_order_by_module,
+        sparse_profile_by_module,
+    )
+
+
+def _discover_trait_modules_with_trace_and_pairs(
+    config: TraitModuleConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Discover fast independent trait modules.
 
     Returns cell assignments, module summaries, module marker genes, and
-    candidate-level iteration trace diagnostics.
+    candidate-level iteration trace diagnostics plus pairwise module
+    distinctness diagnostics for the writer.
     """
     ldsc = _read_ldsc_result(config.ldsc_result_path)
     seed_cells = _select_seed_cells(ldsc, config)
@@ -1542,10 +1584,14 @@ def discover_trait_modules_with_trace(
 
     summaries = []
     gene_rows = []
+    gene_order_by_module = {}
     for result in module_results:
         marker_mask = _top_specificity_mask(result.profile, n_top)
         marker_idx = np.flatnonzero(marker_mask)
         marker_idx = marker_idx[np.argsort(result.profile[marker_idx])[::-1]]
+        gene_order_by_module[result.module_id] = [
+            gene_names[gene_idx] for gene_idx in marker_idx[: config.max_marker_genes]
+        ]
 
         summaries.append(
             {
@@ -1591,8 +1637,28 @@ def discover_trait_modules_with_trace(
 
     summary_df = pd.DataFrame(summaries, columns=MODULE_SUMMARY_COLUMNS)
     genes_df = pd.DataFrame(gene_rows, columns=MODULE_GENE_COLUMNS)
+    pair_df = _summarize_trait_module_pairs_from_results(
+        config,
+        module_results,
+        gene_order_by_module,
+    )
     trace_df = pd.DataFrame(trace_rows, columns=MODULE_TRACE_COLUMNS)
-    return cell_df.reset_index(drop=True), summary_df, genes_df, trace_df
+    return cell_df.reset_index(drop=True), summary_df, genes_df, trace_df, pair_df
+
+
+def discover_trait_modules_with_trace(
+    config: TraitModuleConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Discover fast independent trait modules.
+
+    Returns cell assignments, module summaries, module marker genes, and
+    candidate-level iteration trace diagnostics.
+    """
+    cell_df, summary_df, genes_df, trace_df, _ = _discover_trait_modules_with_trace_and_pairs(
+        config
+    )
+    return cell_df, summary_df, genes_df, trace_df
 
 
 def discover_trait_modules(
@@ -1651,9 +1717,10 @@ def summarize_trait_module_run(
 
 
 def run_trait_module_discovery(config: TraitModuleConfig):
-    cell_df, summary_df, genes_df, trace_df = discover_trait_modules_with_trace(config)
+    cell_df, summary_df, genes_df, trace_df, pair_df = (
+        _discover_trait_modules_with_trace_and_pairs(config)
+    )
     run_summary_df = summarize_trait_module_run(config, cell_df, summary_df, trace_df)
-    pair_df = summarize_trait_module_pairs(config, summary_df, genes_df)
     config.trait_module_dir.mkdir(parents=True, exist_ok=True)
 
     cell_df.to_csv(config.cell_modules_path, index=False)

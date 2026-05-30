@@ -5,6 +5,7 @@ import pandas as pd
 from gsMap.config import TraitModuleConfig
 from gsMap.trait_modules import (
     ConditionalLDSCResult,
+    ModuleResult,
     ModuleStabilityResult,
     _condition_residual_on_profile,
     _conditional_neg_log10_p_proxy,
@@ -12,6 +13,7 @@ from gsMap.trait_modules import (
     _module_evidence,
     _module_from_best_seed,
     _module_stability,
+    _summarize_trait_module_pairs_from_results,
     _top_positive_sum,
     _trait_resolution_status,
     discover_trait_modules,
@@ -1055,6 +1057,71 @@ def test_summarize_trait_module_pairs_reports_distinct_marker_programs(tmp_path)
     assert pair_df.loc[0, "module_b_only_top_genes"] == "G4;G5"
     assert pair_df.loc[0, "module_a_signal_fraction"] == 0.6
     assert pair_df.loc[0, "module_b_evidence_status"] == "moderate"
+
+
+def test_trait_module_pairs_from_results_use_full_profiles(tmp_path):
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path,
+        "pair_result_test",
+        "IQ",
+        np.ones((4, 6), dtype=np.float32),
+        np.full(4, 0.9),
+    )
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="pair_result_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        max_module_profile_similarity=0.9,
+    )
+    module_results = [
+        ModuleResult(
+            module_id=1,
+            cells=pd.Index(["cell_1", "cell_2"]),
+            profile=np.array([4.0, 3.0, 0.0, 0.0, 2.0, 0.0], dtype=np.float32),
+            specificity=np.zeros(6, dtype=np.float32),
+            mean_neg_log10_p=8.0,
+            background_specificity_mean=0.1,
+            specificity_enrichment=2.0,
+            specificity_null_pvalue=0.01,
+            max_profile_similarity=0.0,
+            most_similar_module=-1,
+            module_signal_fraction=0.6,
+            module_evidence_status="strong",
+        ),
+        ModuleResult(
+            module_id=2,
+            cells=pd.Index(["cell_3", "cell_4"]),
+            profile=np.array([0.0, 0.0, 5.0, 4.0, 2.0, 0.0], dtype=np.float32),
+            specificity=np.zeros(6, dtype=np.float32),
+            mean_neg_log10_p=7.0,
+            background_specificity_mean=0.1,
+            specificity_enrichment=2.0,
+            specificity_null_pvalue=0.01,
+            max_profile_similarity=0.0,
+            most_similar_module=-1,
+            module_signal_fraction=0.25,
+            module_evidence_status="moderate",
+        ),
+    ]
+    gene_order_by_module = {
+        1: ["G1", "G2"],
+        2: ["G3", "G4"],
+    }
+
+    pair_df = _summarize_trait_module_pairs_from_results(
+        config,
+        module_results,
+        gene_order_by_module,
+    )
+
+    assert len(pair_df) == 1
+    assert pair_df.loc[0, "profile_similarity"] > 0.1
+    assert pair_df.loc[0, "profile_distinct"]
+    assert pair_df.loc[0, "marker_jaccard"] == 0.0
+    assert pair_df.loc[0, "module_a_marker_count"] == 2
+    assert pair_df.loc[0, "module_b_marker_count"] == 2
+    assert pair_df.loc[0, "module_a_signal_fraction"] == 0.6
 
 
 def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
