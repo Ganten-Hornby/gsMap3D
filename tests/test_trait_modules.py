@@ -1170,10 +1170,21 @@ def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
     trace_df = pd.read_csv(config.module_trace_path)
     run_summary_df = pd.read_csv(config.run_summary_path)
     pair_df = pd.read_csv(config.module_pairs_path)
+    specificity_df = pd.read_csv(config.module_specificity_path)
     assert trace_df["decision"].tolist() == ["accepted"]
     assert trace_df["candidate_n_cells"].tolist() == [10]
     assert run_summary_df["n_modules"].tolist() == [1]
     assert run_summary_df["resolution_status"].tolist() == ["single_module_dominant"]
+    assert list(specificity_df.columns) == [
+        "spot",
+        "best_trait_module",
+        "best_module_specificity",
+        "module_1_specificity",
+    ]
+    assert len(specificity_df) == n_cells
+    assert specificity_df.loc[:9, "module_1_specificity"].min() > 0.99
+    assert specificity_df.loc[:9, "best_trait_module"].tolist() == [1] * 10
+    assert specificity_df.loc[10:, "best_trait_module"].tolist() == [-1] * 20
     assert list(pair_df.columns) == [
         "trait",
         "module_a",

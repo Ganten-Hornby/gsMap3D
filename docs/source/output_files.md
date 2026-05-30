@@ -203,14 +203,15 @@ be enabled as an additional diagnostic or gate.
 
 ### Files
 
-| File                                        | Description                                      |
-| ------------------------------------------- | ------------------------------------------------ |
-| `{project_name}_{trait}.cell_modules.csv`   | Per-seed-cell module assignment and specificity  |
-| `{project_name}_{trait}.module_summary.csv` | Accepted module-level diagnostics                |
-| `{project_name}_{trait}.module_genes.csv`   | Ranked marker genes for each accepted module     |
-| `{project_name}_{trait}.module_pairs.csv`   | Pairwise diagnostics between accepted modules    |
-| `{project_name}_{trait}.module_trace.csv`   | Iteration-by-iteration candidate decisions       |
-| `{project_name}_{trait}.run_summary.csv`    | Run-level resolution and seed-cell status counts |
+| File                                            | Description                                          |
+| ----------------------------------------------- | ---------------------------------------------------- |
+| `{project_name}_{trait}.cell_modules.csv`       | Per-seed-cell module assignment and specificity      |
+| `{project_name}_{trait}.module_summary.csv`     | Accepted module-level diagnostics                    |
+| `{project_name}_{trait}.module_genes.csv`       | Ranked marker genes for each accepted module         |
+| `{project_name}_{trait}.module_specificity.csv` | Per-cell specificity scores for each accepted module |
+| `{project_name}_{trait}.module_pairs.csv`       | Pairwise diagnostics between accepted modules        |
+| `{project_name}_{trait}.module_trace.csv`       | Iteration-by-iteration candidate decisions           |
+| `{project_name}_{trait}.run_summary.csv`        | Run-level resolution and seed-cell status counts     |
 
 ### cell_modules.csv
 
@@ -254,6 +255,20 @@ Ranked marker genes for each accepted module.
 | `rank`   | int    | Rank within the module marker profile     |
 | `gene`   | string | Gene symbol                               |
 | `score`  | float  | Marker-profile score used for the ranking |
+
+### module_specificity.csv
+
+Per-cell specificity scores for each accepted module. Unlike
+`cell_modules.csv`, this table includes all cells available in the marker-score
+matrix, not only significant seed cells. The report uses these columns to color
+UMAP and spatial plots by best-module specificity or by one selected module.
+
+| Column                    | Type   | Description                                            |
+| ------------------------- | ------ | ------------------------------------------------------ |
+| `spot`                    | string | Spot identifier                                        |
+| `best_trait_module`       | int    | Module with the highest specificity score for the spot |
+| `best_module_specificity` | float  | Highest module specificity score for the spot          |
+| `module_{n}_specificity`  | float  | Specificity score for accepted module `n`              |
 
 ### module_pairs.csv
 

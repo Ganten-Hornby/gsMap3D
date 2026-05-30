@@ -1516,9 +1516,12 @@
 
                 hasTraitModuleData(trait) {
                     const specificityCol = `${trait}_module_specificity`;
+                    const bestSpecificityCol = `${trait}_best_module_specificity`;
                     return !!(
                         (this.umapData && this.umapData[specificityCol]) ||
+                        (this.umapData && this.umapData[bestSpecificityCol]) ||
                         (this.currentSampleData && this.currentSampleData[specificityCol])
+                        || (this.currentSampleData && this.currentSampleData[bestSpecificityCol])
                     );
                 },
 
@@ -1611,26 +1614,36 @@
 
                 getTraitColorSpec(data, trait) {
                     if (this.traitColorMode === 'module_specificity' && this.hasTraitModuleData(trait)) {
-                        const specificityCol = `${trait}_module_specificity`;
+                        const seedSpecificityCol = `${trait}_module_specificity`;
+                        const bestSpecificityCol = `${trait}_best_module_specificity`;
+                        const bestModuleCol = `${trait}_best_trait_module`;
                         const moduleCol = `${trait}_trait_module`;
                         const statusCol = `${trait}_module_status`;
                         const reasonCol = `${trait}_module_reason`;
-                        const specificityValues = data[specificityCol] || data.spot.map(() => 0);
-                        const moduleValues = data[moduleCol] || data.spot.map(() => -1);
                         const selectedModule = Number(this.selectedTraitModule);
                         const hasModuleFilter = selectedModule > 0;
+                        const selectedSpecificityCol = hasModuleFilter
+                            ? `${trait}_module_${selectedModule}_specificity`
+                            : bestSpecificityCol;
+                        const specificityValues = data[selectedSpecificityCol] || data[seedSpecificityCol] || data.spot.map(() => 0);
+                        const moduleValues = data[moduleCol] || data.spot.map(() => -1);
+                        const bestModuleValues = data[bestModuleCol] || data.spot.map(() => -1);
                         const values = specificityValues.map((v, i) => {
                             if (v === null || v === undefined) return 0;
-                            if (hasModuleFilter && Number(moduleValues[i]) !== selectedModule) return 0;
                             return v;
                         });
                         return {
                             values: values,
                             label: hasModuleFilter ? `Module ${selectedModule} specificity ${trait}` : `Module specificity ${trait}`,
                             moduleCol: moduleCol,
-                            specificityCol: specificityCol,
+                            seedSpecificityCol: seedSpecificityCol,
+                            specificityCol: selectedSpecificityCol,
+                            bestSpecificityCol: bestSpecificityCol,
+                            bestModuleCol: bestModuleCol,
                             statusCol: statusCol,
                             reasonCol: reasonCol,
+                            moduleValues: moduleValues,
+                            bestModuleValues: bestModuleValues,
                             selectedModule: hasModuleFilter ? selectedModule : -1,
                             isModuleMode: true
                         };
@@ -2257,13 +2270,17 @@
                         }
                         if (colorSpec.isModuleMode) {
                             const moduleVal = this.umapData[colorSpec.moduleCol]?.[i];
+                            const bestModuleVal = this.umapData[colorSpec.bestModuleCol]?.[i];
                             const specificityVal = this.umapData[colorSpec.specificityCol]?.[i];
+                            const seedSpecificityVal = this.umapData[colorSpec.seedSpecificityCol]?.[i];
                             const statusVal = this.umapData[colorSpec.statusCol]?.[i];
                             const reasonVal = this.umapData[colorSpec.reasonCol]?.[i];
-                            text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                            text += `<br><b>Seed module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                            text += `<br><b>Best specificity module:</b> ${bestModuleVal != null && bestModuleVal >= 0 ? bestModuleVal : 'None'}`;
                             text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
                             text += `<br><b>Module reason:</b> ${reasonVal || 'N/A'}`;
-                            text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
+                            text += `<br><b>Plotted specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
+                            text += `<br><b>Seed specificity:</b> ${typeof seedSpecificityVal === 'number' ? seedSpecificityVal.toFixed(3) : 'N/A'}`;
                             if (colorSpec.selectedModule > 0) {
                                 text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
                             }
@@ -2508,13 +2525,17 @@
                             text += `<br><b>-log10(p):</b> ${rounded}`;
                             if (colorSpec.isModuleMode) {
                                 const moduleVal = data[colorSpec.moduleCol]?.[i];
+                                const bestModuleVal = data[colorSpec.bestModuleCol]?.[i];
                                 const specificityVal = data[colorSpec.specificityCol]?.[i];
+                                const seedSpecificityVal = data[colorSpec.seedSpecificityCol]?.[i];
                                 const statusVal = data[colorSpec.statusCol]?.[i];
                                 const reasonVal = data[colorSpec.reasonCol]?.[i];
-                                text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                                text += `<br><b>Seed module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                                text += `<br><b>Best specificity module:</b> ${bestModuleVal != null && bestModuleVal >= 0 ? bestModuleVal : 'None'}`;
                                 text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
                                 text += `<br><b>Module reason:</b> ${reasonVal || 'N/A'}`;
-                                text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
+                                text += `<br><b>Plotted specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
+                                text += `<br><b>Seed specificity:</b> ${typeof seedSpecificityVal === 'number' ? seedSpecificityVal.toFixed(3) : 'N/A'}`;
                                 if (colorSpec.selectedModule > 0) {
                                     text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
                                 }

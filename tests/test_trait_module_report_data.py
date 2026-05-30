@@ -34,6 +34,15 @@ def test_merge_trait_module_metadata_adds_trait_specific_columns(tmp_path):
             "module_reason": ["accepted", "specificity_null_pvalue"],
         }
     ).to_csv(module_dir / "module_report_IQ.cell_modules.csv", index=False)
+    pd.DataFrame(
+        {
+            "spot": ["cell_1", "cell_2", "cell_3"],
+            "best_trait_module": [2, 2, 1],
+            "best_module_specificity": [0.9234, 0.2211, 0.5123],
+            "module_1_specificity": [0.1234, 0.1111, 0.5123],
+            "module_2_specificity": [0.9234, 0.2211, 0.1122],
+        }
+    ).to_csv(module_dir / "module_report_IQ.module_specificity.csv", index=False)
 
     metadata = pd.DataFrame(
         {
@@ -48,6 +57,10 @@ def test_merge_trait_module_metadata_adds_trait_specific_columns(tmp_path):
     assert merged["IQ_trait_module"].tolist() == [2, -1, 1]
     assert merged["IQ_module_specificity"].iloc[[0, 2]].tolist() == [0.923, 0.512]
     assert np.isnan(merged["IQ_module_specificity"].iloc[1])
+    assert merged["IQ_best_trait_module"].tolist() == [2, 2, 1]
+    assert merged["IQ_best_module_specificity"].tolist() == [0.923, 0.221, 0.512]
+    assert merged["IQ_module_1_specificity"].tolist() == [0.123, 0.111, 0.512]
+    assert merged["IQ_module_2_specificity"].tolist() == [0.923, 0.221, 0.112]
     assert merged["IQ_is_module_cell"].tolist() == [True, False, True]
     assert merged["IQ_module_status"].tolist() == ["assigned", "unresolved", "rejected"]
     assert merged["IQ_module_reason"].tolist() == [
@@ -73,6 +86,10 @@ def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
             "IQ": [8.1, 0.2],
             "IQ_trait_module": [2, -1],
             "IQ_module_specificity": [0.9234, None],
+            "IQ_best_trait_module": [2, 2],
+            "IQ_best_module_specificity": [0.9234, 0.2211],
+            "IQ_module_1_specificity": [0.1234, 0.1111],
+            "IQ_module_2_specificity": [0.9234, 0.2211],
             "IQ_is_module_cell": ["True", "False"],
             "IQ_module_status": ["assigned", "rejected"],
             "IQ_module_reason": ["accepted", "module_profile_similarity"],
@@ -96,6 +113,10 @@ def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
 
     assert data["IQ_trait_module"] == [2, -1]
     assert data["IQ_module_specificity"] == [0.923, None]
+    assert data["IQ_best_trait_module"] == [2, 2]
+    assert data["IQ_best_module_specificity"] == [0.923, 0.221]
+    assert data["IQ_module_1_specificity"] == [0.123, 0.111]
+    assert data["IQ_module_2_specificity"] == [0.923, 0.221]
     assert data["IQ_is_module_cell"] == [True, False]
     assert data["IQ_module_status"] == ["assigned", "rejected"]
     assert data["IQ_module_reason"] == ["accepted", "module_profile_similarity"]

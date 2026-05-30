@@ -1363,7 +1363,7 @@ def _trait_module_run_summary_path(report_config: QuickModeConfig, trait: str) -
     )
 
 
-def _trait_module_columns(trait: str) -> tuple[str, str, str, str, str]:
+def _trait_module_assignment_columns(trait: str) -> tuple[str, str, str, str, str]:
     return (
         f"{trait}_trait_module",
         f"{trait}_module_specificity",
@@ -1373,11 +1373,43 @@ def _trait_module_columns(trait: str) -> tuple[str, str, str, str, str]:
     )
 
 
+def _trait_module_columns(trait: str) -> tuple[str, str, str, str, str]:
+    return _trait_module_assignment_columns(trait)
+
+
+def _trait_module_specificity_path(report_config: QuickModeConfig, trait: str) -> Path:
+    return (
+        report_config.project_dir
+        / "trait_modules"
+        / (f"{report_config.project_name}_{trait}.module_specificity.csv")
+    )
+
+
+def _trait_module_specificity_prefix(trait: str) -> str:
+    return f"{trait}_module_"
+
+
+def _trait_module_specificity_columns(df: pd.DataFrame, trait: str) -> list[str]:
+    prefix = _trait_module_specificity_prefix(trait)
+    exact = {
+        f"{trait}_best_trait_module",
+        f"{trait}_best_module_specificity",
+    }
+    return [
+        col
+        for col in df.columns
+        if col in exact or (col.startswith(prefix) and col.endswith("_specificity"))
+    ]
+
+
 def _trait_module_columns_for_traits(df: pd.DataFrame, traits: list[str]) -> list[str]:
     columns = []
     for trait in traits:
-        columns.extend([col for col in _trait_module_columns(trait) if col in df.columns])
-    return columns
+        columns.extend(
+            [col for col in _trait_module_assignment_columns(trait) if col in df.columns]
+        )
+        columns.extend(_trait_module_specificity_columns(df, trait))
+    return list(dict.fromkeys(columns))
 
 
 def _format_trait_module_columns(df: pd.DataFrame, traits: list[str]) -> pd.DataFrame:
@@ -1389,6 +1421,19 @@ def _format_trait_module_columns(df: pd.DataFrame, traits: list[str]) -> pd.Data
             df[module_col] = df[module_col].fillna(-1).astype(int)
         if specificity_col in df.columns:
             df[specificity_col] = pd.to_numeric(df[specificity_col], errors="coerce").round(3)
+        for module_specificity_col in _trait_module_specificity_columns(df, trait):
+            if module_specificity_col in {module_col, specificity_col}:
+                continue
+            if module_specificity_col.endswith("_trait_module"):
+                df[module_specificity_col] = (
+                    pd.to_numeric(df[module_specificity_col], errors="coerce")
+                    .fillna(-1)
+                    .astype(int)
+                )
+            else:
+                df[module_specificity_col] = pd.to_numeric(
+                    df[module_specificity_col], errors="coerce"
+                ).round(3)
         if is_cell_col in df.columns:
             if pd.api.types.is_bool_dtype(df[is_cell_col]):
                 df[is_cell_col] = df[is_cell_col].fillna(False)
@@ -1409,7 +1454,27 @@ def _missing_trait_module_columns(
     missing = []
     for trait in report_config.trait_name_list:
         if _trait_module_cell_path(report_config, trait).exists():
-            missing.extend([col for col in _trait_module_columns(trait) if col not in metadata])
+            missing.extend(
+                [col for col in _trait_module_assignment_columns(trait) if col not in metadata]
+            )
+        specificity_path = _trait_module_specificity_path(report_config, trait)
+        if specificity_path.exists():
+            try:
+                specificity_cols = pd.read_csv(specificity_path, nrows=0).columns
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Unable to inspect trait module specificity file {specificity_path}: {e}"
+                )
+                continue
+            expected_cols = []
+            for col in specificity_cols:
+                if col == "spot":
+                    continue
+                if col == "best_trait_module":
+                    expected_cols.append(f"{trait}_best_trait_module")
+                else:
+                    expected_cols.append(f"{trait}_{col}")
+            missing.extend([col for col in expected_cols if col not in metadata])
     return missing
 
 
@@ -1417,11 +1482,12 @@ def _merge_trait_module_metadata(
     metadata: pd.DataFrame, report_config: QuickModeConfig
 ) -> pd.DataFrame:
     """
-    Merge trait-module assignments into report metadata when available.
+    Merge trait-module outputs into report metadata when available.
 
-    The trait module command writes one cell-level table per trait. Report data
-    keeps trait-specific module columns so users can color UMAP/spatial plots by
-    module identity or module specificity for the selected trait.
+    Seed-cell assignment/status columns are kept separately from full-field
+    per-module specificity columns. This lets the report color all available
+    cells by similarity to each accepted module while still showing which seed
+    cells were assigned, rejected, or left unresolved by the trait-module run.
     """
     if "spot" not in metadata.columns:
         raise ValueError("metadata must contain a 'spot' column before merging trait modules")
@@ -1430,37 +1496,56 @@ def _merge_trait_module_metadata(
     out["spot"] = out["spot"].astype(str)
     for trait in report_config.trait_name_list:
         path = _trait_module_cell_path(report_config, trait)
-        if not path.exists():
+        if path.exists():
+            module_col, specificity_col, is_cell_col, status_col, reason_col = (
+                _trait_module_assignment_columns(trait)
+            )
+            module_df = pd.read_csv(path)
+            required = {"spot", "trait_module", "module_specificity", "is_module_cell"}
+            missing = required.difference(module_df.columns)
+            if missing:
+                logger.warning(
+                    f"Skipping trait module file {path}; missing columns: {sorted(missing)}"
+                )
+            else:
+                optional = ["module_status", "module_reason"]
+                module_df = module_df[
+                    list(required) + [col for col in optional if col in module_df]
+                ].copy()
+                module_df["spot"] = module_df["spot"].astype(str)
+                module_df = module_df.rename(
+                    columns={
+                        "trait_module": module_col,
+                        "module_specificity": specificity_col,
+                        "is_module_cell": is_cell_col,
+                        "module_status": status_col,
+                        "module_reason": reason_col,
+                    }
+                )
+                out = out.merge(module_df, on="spot", how="left")
+                logger.info(f"Added trait-module seed columns for {trait} from {path}")
+
+        specificity_path = _trait_module_specificity_path(report_config, trait)
+        if not specificity_path.exists():
             continue
 
-        module_col, specificity_col, is_cell_col, status_col, reason_col = _trait_module_columns(
-            trait
-        )
-        module_df = pd.read_csv(path)
-        required = {"spot", "trait_module", "module_specificity", "is_module_cell"}
-        missing = required.difference(module_df.columns)
-        if missing:
+        specificity_df = pd.read_csv(specificity_path)
+        if "spot" not in specificity_df.columns:
             logger.warning(
-                f"Skipping trait module file {path}; missing columns: {sorted(missing)}"
+                f"Skipping trait module specificity file {specificity_path}; missing 'spot' column"
             )
             continue
 
-        optional = ["module_status", "module_reason"]
-        module_df = module_df[
-            list(required) + [col for col in optional if col in module_df]
-        ].copy()
-        module_df["spot"] = module_df["spot"].astype(str)
-        module_df = module_df.rename(
-            columns={
-                "trait_module": module_col,
-                "module_specificity": specificity_col,
-                "is_module_cell": is_cell_col,
-                "module_status": status_col,
-                "module_reason": reason_col,
-            }
-        )
-        out = out.merge(module_df, on="spot", how="left")
-        logger.info(f"Added trait-module report columns for {trait} from {path}")
+        specificity_df = specificity_df.copy()
+        specificity_df["spot"] = specificity_df["spot"].astype(str)
+        rename_cols = {
+            col: f"{trait}_best_trait_module" if col == "best_trait_module" else f"{trait}_{col}"
+            for col in specificity_df.columns
+            if col != "spot"
+        }
+        specificity_df = specificity_df.rename(columns=rename_cols)
+        out = out.merge(specificity_df, on="spot", how="left")
+        logger.info(f"Added trait-module specificity columns for {trait} from {specificity_path}")
 
     return _format_trait_module_columns(out, report_config.trait_name_list)
 
@@ -2099,6 +2184,18 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
                 data_struct[status_col] = sample_df[status_col].tolist()
             if reason_col in sample_df.columns:
                 data_struct[reason_col] = sample_df[reason_col].tolist()
+            for module_specificity_col in _trait_module_specificity_columns(sample_df, trait):
+                if module_specificity_col in data_struct:
+                    continue
+                if module_specificity_col.endswith("_trait_module"):
+                    data_struct[module_specificity_col] = [
+                        int(v) if pd.notna(v) else -1 for v in sample_df[module_specificity_col]
+                    ]
+                else:
+                    data_struct[module_specificity_col] = [
+                        round(v, 3) if pd.notna(v) else None
+                        for v in sample_df[module_specificity_col]
+                    ]
 
         # Create safe filename (replace non-alphanumeric chars)
         safe_name = "".join(c if c.isalnum() else "_" for c in sample_name)

@@ -58,6 +58,12 @@ MODULE_SUMMARY_COLUMNS = [
 
 MODULE_GENE_COLUMNS = ["trait", "module", "rank", "gene", "score"]
 
+MODULE_SPECIFICITY_BASE_COLUMNS = [
+    "spot",
+    "best_trait_module",
+    "best_module_specificity",
+]
+
 MODULE_PAIR_COLUMNS = [
     "trait",
     "module_a",
@@ -732,6 +738,72 @@ def _module_specificity_scores(matrix: np.ndarray, profile: np.ndarray) -> np.nd
     return (normalized @ profile_norm).astype(np.float32)
 
 
+def _module_specificity_column(module_id: int) -> str:
+    return f"module_{module_id}_specificity"
+
+
+def _module_specificity_table(
+    spot_names: pd.Index,
+    residual: np.ndarray,
+    module_results: list[ModuleResult],
+) -> pd.DataFrame:
+    columns = MODULE_SPECIFICITY_BASE_COLUMNS + [
+        _module_specificity_column(result.module_id) for result in module_results
+    ]
+    if not module_results:
+        return pd.DataFrame(columns=columns)
+
+    module_scores = {
+        _module_specificity_column(result.module_id): _module_specificity_scores(
+            residual, result.profile
+        )
+        for result in module_results
+    }
+    score_matrix = np.column_stack(list(module_scores.values()))
+    best_pos = np.argmax(score_matrix, axis=1)
+    best_scores = score_matrix[np.arange(score_matrix.shape[0]), best_pos]
+    module_ids = np.array([result.module_id for result in module_results], dtype=int)
+    best_modules = module_ids[best_pos]
+    best_modules = np.where(best_scores > 0.0, best_modules, -1)
+
+    df = pd.DataFrame(
+        {
+            "spot": spot_names.astype(str),
+            "best_trait_module": best_modules,
+            "best_module_specificity": best_scores.astype(np.float32),
+        }
+    )
+    for column, values in module_scores.items():
+        df[column] = values
+    return df[columns]
+
+
+def _module_specificity_table_from_marker_adata(
+    marker_adata,
+    base_background: np.ndarray,
+    module_results: list[ModuleResult],
+    *,
+    chunk_size: int = 1000,
+) -> pd.DataFrame:
+    columns = MODULE_SPECIFICITY_BASE_COLUMNS + [
+        _module_specificity_column(result.module_id) for result in module_results
+    ]
+    if not module_results:
+        return pd.DataFrame(columns=columns)
+
+    frames = []
+    spot_names = pd.Index(marker_adata.obs_names)
+    for start in range(0, marker_adata.n_obs, chunk_size):
+        end = min(start + chunk_size, marker_adata.n_obs)
+        matrix = _as_dense_float32(marker_adata.X[start:end, :])
+        residual = np.maximum(matrix - base_background, 0.0).astype(np.float32, copy=False)
+        frames.append(_module_specificity_table(spot_names[start:end], residual, module_results))
+
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)[columns]
+
+
 def _profile_cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
     left = np.maximum(left, 0.0)
     right = np.maximum(right, 0.0)
@@ -1214,13 +1286,21 @@ def summarize_trait_module_pairs(
 
 def _discover_trait_modules_with_trace_and_pairs(
     config: TraitModuleConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+]:
     """
     Discover fast independent trait modules.
 
-    Returns cell assignments, module summaries, module marker genes, and
-    candidate-level iteration trace diagnostics plus pairwise module
-    distinctness diagnostics for the writer.
+    Returns seed-cell assignments, module summaries, module marker genes,
+    candidate-level iteration trace diagnostics, pairwise module distinctness
+    diagnostics, and per-marker-cell module specificity scores for report
+    coloring.
     """
     ldsc = _read_ldsc_result(config.ldsc_result_path)
     seed_cells = _select_seed_cells(ldsc, config)
@@ -1702,7 +1782,22 @@ def _discover_trait_modules_with_trace_and_pairs(
         gene_order_by_module,
     )
     trace_df = pd.DataFrame(trace_rows, columns=MODULE_TRACE_COLUMNS)
-    return cell_df.reset_index(drop=True), summary_df, genes_df, trace_df, pair_df
+
+    if module_results:
+        marker_adata_for_specificity = _load_marker_scores(config)
+        try:
+            specificity_df = _module_specificity_table_from_marker_adata(
+                marker_adata_for_specificity,
+                background,
+                module_results,
+            )
+        finally:
+            if getattr(marker_adata_for_specificity, "isbacked", False):
+                marker_adata_for_specificity.file.close()
+    else:
+        specificity_df = pd.DataFrame(columns=MODULE_SPECIFICITY_BASE_COLUMNS)
+
+    return cell_df.reset_index(drop=True), summary_df, genes_df, trace_df, pair_df, specificity_df
 
 
 def discover_trait_modules_with_trace(
@@ -1714,7 +1809,7 @@ def discover_trait_modules_with_trace(
     Returns cell assignments, module summaries, module marker genes, and
     candidate-level iteration trace diagnostics.
     """
-    cell_df, summary_df, genes_df, trace_df, _ = _discover_trait_modules_with_trace_and_pairs(
+    cell_df, summary_df, genes_df, trace_df, _, _ = _discover_trait_modules_with_trace_and_pairs(
         config
     )
     return cell_df, summary_df, genes_df, trace_df
@@ -1795,7 +1890,7 @@ def summarize_trait_module_run(
 
 
 def run_trait_module_discovery(config: TraitModuleConfig):
-    cell_df, summary_df, genes_df, trace_df, pair_df = (
+    cell_df, summary_df, genes_df, trace_df, pair_df, specificity_df = (
         _discover_trait_modules_with_trace_and_pairs(config)
     )
     run_summary_df = summarize_trait_module_run(config, cell_df, summary_df, trace_df)
@@ -1804,6 +1899,7 @@ def run_trait_module_discovery(config: TraitModuleConfig):
     cell_df.to_csv(config.cell_modules_path, index=False)
     summary_df.to_csv(config.module_summary_path, index=False)
     genes_df.to_csv(config.module_genes_path, index=False)
+    specificity_df.to_csv(config.module_specificity_path, index=False)
     pair_df.to_csv(config.module_pairs_path, index=False)
     trace_df.to_csv(config.module_trace_path, index=False)
     run_summary_df.to_csv(config.run_summary_path, index=False)
@@ -1811,6 +1907,7 @@ def run_trait_module_discovery(config: TraitModuleConfig):
     logger.info(f"Saved cell module assignments to {config.cell_modules_path}")
     logger.info(f"Saved module summary to {config.module_summary_path}")
     logger.info(f"Saved module marker genes to {config.module_genes_path}")
+    logger.info(f"Saved module specificity scores to {config.module_specificity_path}")
     logger.info(f"Saved module pair diagnostics to {config.module_pairs_path}")
     logger.info(f"Saved module iteration trace to {config.module_trace_path}")
     logger.info(f"Saved trait module run summary to {config.run_summary_path}")
