@@ -86,6 +86,25 @@ def _load_seed_marker_matrix(
     return common_cells, gene_names, matrix
 
 
+def _load_background_marker_matrix(marker_adata, config: TraitModuleConfig) -> np.ndarray:
+    if config.background_scope == "seeds":
+        raise ValueError("Seed-scoped background should use the seed marker matrix directly.")
+
+    n_cells = marker_adata.n_obs
+    n_background = min(config.background_sample_size, n_cells)
+    if n_background == n_cells:
+        cell_pos = np.arange(n_cells)
+    else:
+        rng = np.random.default_rng(config.random_seed)
+        cell_pos = np.sort(rng.choice(n_cells, size=n_background, replace=False))
+
+    matrix = _as_dense_float32(marker_adata.X[cell_pos, :])
+    logger.info(
+        f"Loaded global background marker matrix: {matrix.shape[0]} cells x {matrix.shape[1]} genes"
+    )
+    return matrix
+
+
 def _top_specificity_mask(specificity: np.ndarray, top_n: int) -> np.ndarray:
     if top_n >= specificity.size:
         mask = specificity > 0
@@ -131,6 +150,17 @@ def _module_from_best_seed(
     return module_idx, module_profile.astype(np.float32), specificity.astype(np.float32)
 
 
+def _condition_residual_on_profile(residual: np.ndarray, profile: np.ndarray) -> np.ndarray:
+    profile = np.maximum(profile, 0.0).astype(np.float32, copy=False)
+    profile_norm_sq = float(np.dot(profile, profile))
+    if profile_norm_sq <= 1e-8:
+        return residual
+
+    projection_scale = (residual @ profile) / profile_norm_sq
+    conditioned = residual - np.outer(np.maximum(projection_scale, 0.0), profile)
+    return np.maximum(conditioned, 0.0).astype(np.float32, copy=False)
+
+
 def discover_trait_modules(
     config: TraitModuleConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -150,12 +180,19 @@ def discover_trait_modules(
     marker_adata = _load_marker_scores(config)
     try:
         cells, gene_names, marker_matrix = _load_seed_marker_matrix(marker_adata, seed_cells)
+        if config.background_scope == "all":
+            background_matrix = _load_background_marker_matrix(marker_adata, config)
+        else:
+            background_matrix = marker_matrix
     finally:
         if getattr(marker_adata, "isbacked", False):
             marker_adata.file.close()
 
-    background = np.quantile(marker_matrix, config.background_quantile, axis=0).astype(np.float32)
+    background = np.quantile(background_matrix, config.background_quantile, axis=0).astype(
+        np.float32
+    )
     residual = np.maximum(marker_matrix - background, 0.0)
+    search_residual = residual.copy()
     weights = ldsc.loc[cells, "neg_log10_p"].to_numpy(dtype=np.float32)
     n_top = min(
         config.max_marker_genes,
@@ -169,7 +206,7 @@ def discover_trait_modules(
 
     for module_id in range(1, config.max_modules + 1):
         module_idx, profile, specificity = _module_from_best_seed(
-            residual=residual,
+            residual=search_residual,
             remaining_mask=remaining_mask,
             weights=weights,
             top_n=n_top,
@@ -204,6 +241,10 @@ def discover_trait_modules(
             f"Module {module_id}: {len(module_cells)} cells, "
             f"mean -log10(p)={module_results[-1].mean_neg_log10_p:.3f}"
         )
+
+        if config.condition_on_claimed_modules:
+            search_residual = _condition_residual_on_profile(search_residual, profile)
+            logger.info(f"Conditioned later module search on module {module_id} profile")
 
         if remaining_mask.sum() < config.min_module_cells:
             break

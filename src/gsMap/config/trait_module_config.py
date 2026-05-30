@@ -4,7 +4,7 @@ Configuration for trait module discovery.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -93,6 +93,36 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 0.25
 
+    condition_on_claimed_modules: Annotated[
+        bool,
+        typer.Option(
+            "--condition-on-claimed-modules/--no-module-conditioning",
+            help=(
+                "After accepting a module, project its marker profile out of later "
+                "iterations so follow-up modules must use residual marker signal."
+            ),
+        ),
+    ] = True
+
+    background_scope: Annotated[
+        Literal["all", "seeds"],
+        typer.Option(
+            help=(
+                "Cells used to estimate marker-score background. 'all' samples from the "
+                "full marker-score matrix; 'seeds' uses only significant seed cells."
+            ),
+            case_sensitive=False,
+        ),
+    ] = "all"
+
+    background_sample_size: Annotated[
+        int,
+        typer.Option(
+            help="Maximum number of cells sampled to estimate global marker-score background.",
+            min=1,
+        ),
+    ] = 50000
+
     background_quantile: Annotated[
         float,
         typer.Option(
@@ -101,6 +131,11 @@ class TraitModuleConfig(ConfigWithAutoPaths):
             max=1.0,
         ),
     ] = 0.5
+
+    random_seed: Annotated[
+        int,
+        typer.Option(help="Random seed used when sampling cells for background estimation."),
+    ] = 0
 
     min_positive_beta: Annotated[
         bool,
