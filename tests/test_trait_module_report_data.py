@@ -6,6 +6,7 @@ import pandas as pd
 
 from gsMap.report.report_data import (
     _export_per_sample_spatial_js,
+    _export_trait_module_js,
     _merge_trait_module_metadata,
 )
 
@@ -86,3 +87,46 @@ def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
     assert data["IQ_trait_module"] == [2, -1]
     assert data["IQ_module_specificity"] == [0.923, None]
     assert data["IQ_is_module_cell"] == [True, False]
+
+
+def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
+    config = _report_config(tmp_path)
+    module_dir = config.project_dir / "trait_modules"
+    module_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "trait": ["IQ"],
+            "module": [1],
+            "n_cells": [12],
+            "mean_specificity": [0.91],
+            "specificity_enrichment": [2.3],
+            "specificity_null_pvalue": [0.01],
+            "max_profile_similarity": [0.0],
+            "most_similar_module": [-1],
+        }
+    ).to_csv(module_dir / "module_report_IQ.module_summary.csv", index=False)
+    pd.DataFrame(
+        {
+            "trait": ["IQ", "IQ"],
+            "iteration": [1, 2],
+            "decision": ["accepted", "stopped"],
+            "reason": ["accepted", "min_module_cells"],
+            "candidate_n_cells": [12, 1],
+            "remaining_cells_before": [20, 8],
+            "remaining_cells_after": [8, 8],
+        }
+    ).to_csv(module_dir / "module_report_IQ.module_trace.csv", index=False)
+
+    js_dir = tmp_path / "js_data"
+    js_dir.mkdir()
+
+    _export_trait_module_js(config, js_dir)
+
+    js_text = (js_dir / "trait_modules.js").read_text()
+    payload = js_text.split("=", 1)[1].rstrip(";")
+    data = json.loads(payload)
+
+    assert data["IQ"]["summary"][0]["module"] == 1
+    assert data["IQ"]["summary"][0]["specificity_enrichment"] == 2.3
+    assert data["IQ"]["trace"][0]["decision"] == "accepted"
+    assert data["IQ"]["trace"][1]["reason"] == "min_module_cells"

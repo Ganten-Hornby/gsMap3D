@@ -456,6 +456,7 @@ class ReportDataManager:
         with open(self.web_report_dir / "report_meta.json") as f:
             meta = json.load(f)
         _export_per_sample_spatial_js(self.report_data_dir, self.js_data_dir, meta)
+        _export_trait_module_js(self.report_config, self.js_data_dir)
         _export_report_meta_js(self.web_report_dir, self.js_data_dir, meta)
 
 
@@ -1322,6 +1323,22 @@ def _trait_module_cell_path(report_config: QuickModeConfig, trait: str) -> Path:
     )
 
 
+def _trait_module_summary_path(report_config: QuickModeConfig, trait: str) -> Path:
+    return (
+        report_config.project_dir
+        / "trait_modules"
+        / (f"{report_config.project_name}_{trait}.module_summary.csv")
+    )
+
+
+def _trait_module_trace_path(report_config: QuickModeConfig, trait: str) -> Path:
+    return (
+        report_config.project_dir
+        / "trait_modules"
+        / (f"{report_config.project_name}_{trait}.module_trace.csv")
+    )
+
+
 def _trait_module_columns(trait: str) -> tuple[str, str, str]:
     return (
         f"{trait}_trait_module",
@@ -1407,6 +1424,34 @@ def _merge_trait_module_metadata(
         logger.info(f"Added trait-module report columns for {trait} from {path}")
 
     return _format_trait_module_columns(out, report_config.trait_name_list)
+
+
+def _trait_module_records(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    df = pd.read_csv(path)
+    return json.loads(df.to_json(orient="records"))
+
+
+def _write_trait_module_js(js_data_dir: Path, payload: dict):
+    js_content = f"window.GSMAP_TRAIT_MODULES = {json.dumps(payload, separators=(',', ':'))};"
+    with open(js_data_dir / "trait_modules.js", "w", encoding="utf-8") as f:
+        f.write(js_content)
+
+
+def _export_trait_module_js(report_config: QuickModeConfig, js_data_dir: Path):
+    payload = {}
+    for trait in report_config.trait_name_list:
+        summary_records = _trait_module_records(_trait_module_summary_path(report_config, trait))
+        trace_records = _trait_module_records(_trait_module_trace_path(report_config, trait))
+        if summary_records or trace_records:
+            payload[trait] = {
+                "summary": summary_records,
+                "trace": trace_records,
+            }
+
+    _write_trait_module_js(js_data_dir, payload)
+    logger.info(f"Exported trait module diagnostics for {len(payload)} traits")
 
 
 def _prepare_manhattan_for_trait(
@@ -1894,6 +1939,8 @@ def export_data_as_js_modules(data_dir: Path):
     _export_cauchy_js(data_dir, js_data_dir)
     _export_manhattan_js(data_dir, js_data_dir)
     _export_umap_js(data_dir, js_data_dir, meta)
+    if not (js_data_dir / "trait_modules.js").exists():
+        _write_trait_module_js(js_data_dir, {})
     _export_report_meta_js(data_dir, js_data_dir, meta)
 
     logger.info(f"JS modules exported to {js_data_dir}")
