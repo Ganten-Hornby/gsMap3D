@@ -101,6 +101,9 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "mean_specificity": [0.91],
             "conditional_ldsc_neg_log10_p": [4.2],
             "conditional_ldsc_p": [6.3e-5],
+            "stability_profile_similarity": [0.96],
+            "stability_assignment_fraction": [0.94],
+            "stability_null_pvalue": [0.02],
             "specificity_enrichment": [2.3],
             "specificity_null_pvalue": [0.01],
             "max_profile_similarity": [0.0],
@@ -118,6 +121,9 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "remaining_cells_after": [8, 8],
             "conditional_ldsc_neg_log10_p": [4.2, None],
             "conditional_ldsc_p": [6.3e-5, None],
+            "stability_profile_similarity": [0.96, None],
+            "stability_assignment_fraction": [0.94, None],
+            "stability_null_pvalue": [0.02, None],
         }
     ).to_csv(module_dir / "module_report_IQ.module_trace.csv", index=False)
     pd.DataFrame(
@@ -142,8 +148,10 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     assert data["IQ"]["summary"][0]["module"] == 1
     assert data["IQ"]["summary"][0]["specificity_enrichment"] == 2.3
     assert data["IQ"]["summary"][0]["conditional_ldsc_neg_log10_p"] == 4.2
+    assert data["IQ"]["summary"][0]["stability_profile_similarity"] == 0.96
     assert data["IQ"]["trace"][0]["decision"] == "accepted"
     assert data["IQ"]["trace"][1]["reason"] == "min_module_cells"
     assert data["IQ"]["trace"][0]["conditional_ldsc_p"] == 6.3e-05
+    assert data["IQ"]["trace"][0]["stability_null_pvalue"] == 0.02
     assert data["IQ"]["genes"][0]["gene"] == "GENE1"
     assert data["IQ"]["genes"][1]["rank"] == 2

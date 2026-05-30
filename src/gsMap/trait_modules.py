@@ -34,6 +34,9 @@ MODULE_SUMMARY_COLUMNS = [
     "conditional_ldsc_beta",
     "conditional_ldsc_se",
     "conditional_ldsc_z",
+    "stability_profile_similarity",
+    "stability_assignment_fraction",
+    "stability_null_pvalue",
     "mean_specificity",
     "background_mean_specificity",
     "specificity_enrichment",
@@ -61,6 +64,9 @@ MODULE_TRACE_COLUMNS = [
     "conditional_ldsc_beta",
     "conditional_ldsc_se",
     "conditional_ldsc_z",
+    "stability_profile_similarity",
+    "stability_assignment_fraction",
+    "stability_null_pvalue",
     "mean_specificity",
     "background_mean_specificity",
     "specificity_enrichment",
@@ -87,6 +93,23 @@ class ModuleResult:
     conditional_ldsc_z: float = float("nan")
     conditional_ldsc_p: float = float("nan")
     conditional_ldsc_neg_log10_p: float = float("nan")
+    stability_profile_similarity: float = float("nan")
+    stability_assignment_fraction: float = float("nan")
+    stability_null_pvalue: float = float("nan")
+
+
+@dataclass
+class ModuleStabilityResult:
+    profile_similarity: float = float("nan")
+    assignment_fraction: float = float("nan")
+    null_pvalue: float = float("nan")
+
+    def as_columns(self) -> dict[str, float]:
+        return {
+            "stability_profile_similarity": self.profile_similarity,
+            "stability_assignment_fraction": self.assignment_fraction,
+            "stability_null_pvalue": self.null_pvalue,
+        }
 
 
 @dataclass
@@ -332,6 +355,10 @@ def _conditional_neg_log10_p_proxy(
 
 def _trace_conditional_ldsc_empty() -> dict[str, float]:
     return ConditionalLDSCResult().as_columns()
+
+
+def _trace_module_stability_empty() -> dict[str, float]:
+    return ModuleStabilityResult().as_columns()
 
 
 def _read_report_meta(config: TraitModuleConfig) -> dict:
@@ -607,6 +634,95 @@ def _module_specificity_scores(matrix: np.ndarray, profile: np.ndarray) -> np.nd
     return (normalized @ profile_norm).astype(np.float32)
 
 
+def _profile_cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
+    left = np.maximum(left, 0.0)
+    right = np.maximum(right, 0.0)
+    left_norm = float(np.linalg.norm(left))
+    right_norm = float(np.linalg.norm(right))
+    if left_norm <= 1e-8 or right_norm <= 1e-8:
+        return 0.0
+    return float(np.dot(left, right) / (left_norm * right_norm))
+
+
+def _profile_from_indices(residual: np.ndarray, module_idx: np.ndarray, marker_mask: np.ndarray):
+    profile = np.zeros(residual.shape[1], dtype=np.float32)
+    if module_idx.size == 0 or not np.any(marker_mask):
+        return profile
+    profile[marker_mask] = np.maximum(residual[module_idx][:, marker_mask], 0.0).mean(axis=0)
+    return profile
+
+
+def _module_assignment_fraction(
+    residual: np.ndarray,
+    module_idx: np.ndarray,
+    profile: np.ndarray,
+    similarity_threshold: float,
+) -> float:
+    if module_idx.size == 0:
+        return float("nan")
+    specificity = _module_specificity_scores(residual[module_idx], profile)
+    return float(np.mean(specificity >= similarity_threshold))
+
+
+def _module_stability(
+    residual: np.ndarray,
+    module_idx: np.ndarray,
+    candidate_profile: np.ndarray,
+    remaining_before_mask: np.ndarray,
+    top_n: int,
+    similarity_threshold: float,
+    n_iterations: int,
+    sample_fraction: float,
+    rng: np.random.Generator,
+) -> ModuleStabilityResult:
+    if n_iterations <= 0:
+        return ModuleStabilityResult()
+    if module_idx.size < 2:
+        return ModuleStabilityResult()
+
+    marker_mask = _top_specificity_mask(candidate_profile, top_n)
+    if not np.any(marker_mask):
+        return ModuleStabilityResult()
+
+    sample_size = max(1, int(np.ceil(module_idx.size * sample_fraction)))
+    sample_size = min(sample_size, module_idx.size)
+
+    profile_similarities = []
+    assignment_fractions = []
+    for _ in range(n_iterations):
+        sample_idx = rng.choice(module_idx, size=sample_size, replace=False)
+        sampled_profile = _profile_from_indices(residual, sample_idx, marker_mask)
+        profile_similarities.append(_profile_cosine_similarity(sampled_profile, candidate_profile))
+        assignment_fractions.append(
+            _module_assignment_fraction(
+                residual, module_idx, sampled_profile, similarity_threshold
+            )
+        )
+
+    observed_profile_similarity = float(np.mean(profile_similarities))
+    observed_assignment_fraction = float(np.mean(assignment_fractions))
+
+    remaining_idx = np.flatnonzero(remaining_before_mask)
+    background_idx = np.setdiff1d(remaining_idx, module_idx, assume_unique=False)
+    if background_idx.size < sample_size:
+        null_pvalue = float("nan")
+    else:
+        n_extreme = 0
+        for _ in range(n_iterations):
+            null_idx = rng.choice(background_idx, size=sample_size, replace=False)
+            null_profile = _profile_from_indices(residual, null_idx, marker_mask)
+            null_similarity = _profile_cosine_similarity(null_profile, candidate_profile)
+            if null_similarity >= observed_profile_similarity:
+                n_extreme += 1
+        null_pvalue = float((n_extreme + 1) / (n_iterations + 1))
+
+    return ModuleStabilityResult(
+        profile_similarity=observed_profile_similarity,
+        assignment_fraction=observed_assignment_fraction,
+        null_pvalue=null_pvalue,
+    )
+
+
 def _specificity_empirical_pvalue(
     observed_specificity: np.ndarray,
     background_specificity: np.ndarray,
@@ -704,6 +820,7 @@ def discover_trait_modules_with_trace(
     weights = ldsc.loc[cells, "neg_log10_p"].to_numpy(dtype=np.float32)
     conditional_weights = _conditional_neg_log10_p_proxy(weights, residual, search_residual, n_top)
     conditional_ldsc_context = _prepare_conditional_ldsc_context(config, gene_names)
+    stability_rng = np.random.default_rng(config.random_seed + 7919)
 
     remaining_mask = np.ones(len(cells), dtype=bool)
     assigned_module = np.full(len(cells), -1, dtype=int)
@@ -750,6 +867,7 @@ def discover_trait_modules_with_trace(
                     "specificity_enrichment": float("nan"),
                     "specificity_null_pvalue": float("nan"),
                     **_trace_conditional_ldsc_empty(),
+                    **_trace_module_stability_empty(),
                 }
             )
             logger.info(
@@ -773,6 +891,17 @@ def discover_trait_modules_with_trace(
             config.specificity_null_iterations,
             null_rng,
         )
+        stability = _module_stability(
+            residual=residual,
+            module_idx=module_idx,
+            candidate_profile=profile,
+            remaining_before_mask=remaining_mask.copy(),
+            top_n=n_top,
+            similarity_threshold=config.module_similarity_threshold,
+            n_iterations=config.module_stability_iterations,
+            sample_fraction=config.module_stability_sample_fraction,
+            rng=stability_rng,
+        )
         max_profile_similarity, most_similar_module = _profile_similarity_to_accepted(
             profile, module_results
         )
@@ -791,6 +920,16 @@ def discover_trait_modules_with_trace(
             most_similar_module > 0
             and max_profile_similarity > config.max_module_profile_similarity
         )
+        fails_stability = config.require_module_stability and (
+            not np.isfinite(stability.profile_similarity)
+            or not np.isfinite(stability.assignment_fraction)
+            or stability.profile_similarity < config.min_module_stability_profile_similarity
+            or stability.assignment_fraction < config.min_module_stability_assignment_fraction
+            or (
+                np.isfinite(stability.null_pvalue)
+                and stability.null_pvalue > config.max_module_stability_null_pvalue
+            )
+        )
         fails_conditional_ldsc = (
             config.require_conditional_ldsc
             and conditional_ldsc_context is not None
@@ -799,7 +938,13 @@ def discover_trait_modules_with_trace(
                 or conditional_ldsc.p > config.conditional_ldsc_pvalue_threshold
             )
         )
-        if fails_enrichment or fails_null or fails_profile_similarity or fails_conditional_ldsc:
+        if (
+            fails_enrichment
+            or fails_null
+            or fails_profile_similarity
+            or fails_stability
+            or fails_conditional_ldsc
+        ):
             remaining_mask[module_idx] = False
             rejection_reasons = []
             rejection_messages = []
@@ -821,6 +966,14 @@ def discover_trait_modules_with_trace(
                     f"max_profile_similarity={max_profile_similarity:.3f} to module "
                     f"{most_similar_module} above "
                     f"max_module_profile_similarity={config.max_module_profile_similarity:.3f}"
+                )
+            if fails_stability:
+                rejection_reasons.append("module_stability")
+                rejection_messages.append(
+                    "module stability below thresholds "
+                    f"(profile_similarity={stability.profile_similarity:.3f}, "
+                    f"assignment_fraction={stability.assignment_fraction:.3f}, "
+                    f"null_pvalue={stability.null_pvalue:.3f})"
                 )
             if fails_conditional_ldsc:
                 rejection_reasons.append("conditional_ldsc_pvalue")
@@ -850,6 +1003,7 @@ def discover_trait_modules_with_trace(
                     "specificity_enrichment": specificity_enrichment,
                     "specificity_null_pvalue": specificity_null_pvalue,
                     **conditional_ldsc.as_columns(),
+                    **stability.as_columns(),
                     "max_profile_similarity": max_profile_similarity,
                     "most_similar_module": most_similar_module,
                 }
@@ -884,6 +1038,7 @@ def discover_trait_modules_with_trace(
                 "specificity_enrichment": specificity_enrichment,
                 "specificity_null_pvalue": specificity_null_pvalue,
                 **conditional_ldsc.as_columns(),
+                **stability.as_columns(),
                 "max_profile_similarity": max_profile_similarity,
                 "most_similar_module": most_similar_module,
             }
@@ -906,6 +1061,9 @@ def discover_trait_modules_with_trace(
                 conditional_ldsc_z=conditional_ldsc.z,
                 conditional_ldsc_p=conditional_ldsc.p,
                 conditional_ldsc_neg_log10_p=conditional_ldsc.neg_log10_p,
+                stability_profile_similarity=stability.profile_similarity,
+                stability_assignment_fraction=stability.assignment_fraction,
+                stability_null_pvalue=stability.null_pvalue,
             )
         )
         logger.info(
@@ -961,6 +1119,9 @@ def discover_trait_modules_with_trace(
                 "conditional_ldsc_beta": result.conditional_ldsc_beta,
                 "conditional_ldsc_se": result.conditional_ldsc_se,
                 "conditional_ldsc_z": result.conditional_ldsc_z,
+                "stability_profile_similarity": result.stability_profile_similarity,
+                "stability_assignment_fraction": result.stability_assignment_fraction,
+                "stability_null_pvalue": result.stability_null_pvalue,
                 "mean_specificity": float(cell_df.loc[result.cells, "module_specificity"].mean()),
                 "background_mean_specificity": result.background_specificity_mean,
                 "specificity_enrichment": result.specificity_enrichment,

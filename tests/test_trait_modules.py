@@ -5,10 +5,12 @@ import pandas as pd
 from gsMap.config import TraitModuleConfig
 from gsMap.trait_modules import (
     ConditionalLDSCResult,
+    ModuleStabilityResult,
     _condition_residual_on_profile,
     _conditional_neg_log10_p_proxy,
     _fit_conditional_ldsc,
     _module_from_best_seed,
+    _module_stability,
     _top_positive_sum,
     discover_trait_modules,
     discover_trait_modules_with_trace,
@@ -236,6 +238,32 @@ def test_conditional_ldsc_fit_recovers_candidate_signal():
     assert result.neg_log10_p > 1.0
 
 
+def test_module_stability_detects_reproducible_profile():
+    rng = np.random.default_rng(11)
+    residual = np.full((30, 20), 0.1, dtype=np.float32)
+    residual[:10, :5] = 2.1
+    module_idx = np.arange(10)
+    profile = np.zeros(20, dtype=np.float32)
+    profile[:5] = 2.1
+    remaining_mask = np.ones(30, dtype=bool)
+
+    stability = _module_stability(
+        residual=residual,
+        module_idx=module_idx,
+        candidate_profile=profile,
+        remaining_before_mask=remaining_mask,
+        top_n=5,
+        similarity_threshold=0.95,
+        n_iterations=50,
+        sample_fraction=0.5,
+        rng=rng,
+    )
+
+    assert stability.profile_similarity > 0.99
+    assert stability.assignment_fraction > 0.99
+    assert stability.null_pvalue <= 0.05
+
+
 def test_module_specificity_uses_module_marker_subspace(tmp_path):
     n_cells = 20
     n_genes = 100
@@ -443,6 +471,52 @@ def test_specificity_null_rejects_common_background_program(tmp_path):
     assert trace_df.loc[0, "specificity_null_pvalue"] > 0.05
 
 
+def test_require_module_stability_rejects_unstable_candidate(tmp_path, monkeypatch):
+    n_cells = 30
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 2.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "module_stability_gate_test", "IQ", marker_scores, p_values
+    )
+
+    monkeypatch.setattr(
+        "gsMap.trait_modules._module_stability",
+        lambda **kwargs: ModuleStabilityResult(
+            profile_similarity=0.2,
+            assignment_fraction=0.3,
+            null_pvalue=0.9,
+        ),
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="module_stability_gate_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+        min_specificity_enrichment=0.0,
+        specificity_null_iterations=0,
+        require_module_stability=True,
+    )
+
+    cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+
+    assert cell_df["trait_module"].tolist() == [-1] * 10
+    assert summary_df.empty
+    assert trace_df["decision"].tolist() == ["rejected"]
+    assert trace_df["reason"].tolist() == ["module_stability"]
+    assert trace_df.loc[0, "stability_profile_similarity"] == 0.2
+
+
 def test_conditional_ldsc_diagnostics_do_not_gate_by_default(tmp_path, monkeypatch):
     n_cells = 30
     n_genes = 20
@@ -642,6 +716,9 @@ def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
         "conditional_ldsc_beta",
         "conditional_ldsc_se",
         "conditional_ldsc_z",
+        "stability_profile_similarity",
+        "stability_assignment_fraction",
+        "stability_null_pvalue",
         "mean_specificity",
         "background_mean_specificity",
         "specificity_enrichment",

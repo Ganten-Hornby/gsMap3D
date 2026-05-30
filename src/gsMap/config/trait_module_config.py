@@ -139,6 +139,73 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 0.9
 
+    module_stability_iterations: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Number of split-half resampling iterations used to estimate module "
+                "marker-profile stability. Set to 0 to disable."
+            ),
+            min=0,
+        ),
+    ] = 100
+
+    module_stability_sample_fraction: Annotated[
+        float,
+        typer.Option(
+            help="Fraction of candidate module cells sampled in each stability iteration.",
+            min=0.05,
+            max=1.0,
+        ),
+    ] = 0.5
+
+    require_module_stability: Annotated[
+        bool,
+        typer.Option(
+            "--require-module-stability/--diagnose-module-stability",
+            help=(
+                "Reject candidate modules whose split-half marker-profile stability "
+                "does not pass the configured stability thresholds."
+            ),
+        ),
+    ] = False
+
+    min_module_stability_profile_similarity: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Minimum split-half profile cosine similarity allowed when "
+                "--require-module-stability is enabled."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.8
+
+    min_module_stability_assignment_fraction: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Minimum fraction of candidate cells recovered by split-half profiles "
+                "when --require-module-stability is enabled."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.8
+
+    max_module_stability_null_pvalue: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Maximum empirical p-value from random equal-size seed-cell groups "
+                "allowed when --require-module-stability is enabled."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.05
+
     run_conditional_ldsc: Annotated[
         bool,
         typer.Option(

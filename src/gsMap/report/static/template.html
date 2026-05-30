@@ -895,6 +895,7 @@
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Cells</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Mean -log10P</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Cond LDSC -log10P</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Stability</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Specificity</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Background</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Enrichment</th>
@@ -910,6 +911,7 @@
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.n_cells"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.mean_neg_log10_p != null ? row.mean_neg_log10_p.toFixed(2) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.conditional_ldsc_neg_log10_p != null ? row.conditional_ldsc_neg_log10_p.toFixed(2) : 'N/A'"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.stability_profile_similarity != null ? row.stability_profile_similarity.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.mean_specificity != null ? row.mean_specificity.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.background_mean_specificity != null ? row.background_mean_specificity.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.specificity_enrichment != null ? row.specificity_enrichment.toFixed(2) : 'N/A'"></td>
@@ -933,6 +935,7 @@
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Remaining</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Cond -log10P</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Cond LDSC -log10P</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Stability</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Enrichment</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Null P</th>
                                     </tr>
@@ -947,6 +950,7 @@
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.remaining_cells_before + ' -> ' + row.remaining_cells_after"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.mean_conditional_neg_log10_p != null ? row.mean_conditional_neg_log10_p.toFixed(2) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.conditional_ldsc_neg_log10_p != null ? row.conditional_ldsc_neg_log10_p.toFixed(2) : 'N/A'"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.stability_profile_similarity != null ? row.stability_profile_similarity.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.specificity_enrichment != null ? row.specificity_enrichment.toFixed(2) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.specificity_null_pvalue != null ? row.specificity_null_pvalue.toFixed(3) : 'N/A'"></td>
                                         </tr>
