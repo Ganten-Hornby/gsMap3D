@@ -13,6 +13,7 @@ After running `gsMap3D`, the output is organized under `{workdir}/{project_name}
 ├── find_latent_representations/    # Step 1: Latent embeddings
 ├── latent_to_gene/                 # Step 2: Gene specificity scores
 ├── spatial_ldsc/                   # Step 3: Spatial LDSC results
+├── trait_modules/                  # Optional trait module discovery outputs
 ├── cauchy_combination/             # Step 4: Region-level statistics
 ├── report_data/                    # Processed data for analysis
 └── gsmap_web_report/               # Interactive web report
@@ -186,6 +187,115 @@ This directory contains the cell-level trait association results from stratified
 spot,beta,se,z,p,neg_log10_p
 AAACAACGAATAGTTC-1|Cortex_151507,9.28e-09,3.58e-09,2.593,0.00476,2.323
 AAACAAGTATCTCCCA-1|Cortex_151507,2.91e-09,1.89e-09,1.535,0.0624,1.205
+```
+
+______________________________________________________________________
+
+## Trait Module Discovery
+
+**Directory:** `trait_modules/`
+
+This optional directory is created by `gsmap trait-modules`. The command uses
+spatial LDSC results and marker scores to find trait-associated cell modules with
+distinct marker-score profiles. It is designed as a fast approximation for
+iterating on independent trait-cell hypotheses; module-level conditional LDSC can
+be enabled as an additional diagnostic or gate.
+
+### Files
+
+| File                                        | Description                                      |
+| ------------------------------------------- | ------------------------------------------------ |
+| `{project_name}_{trait}.cell_modules.csv`   | Per-seed-cell module assignment and specificity  |
+| `{project_name}_{trait}.module_summary.csv` | Accepted module-level diagnostics                |
+| `{project_name}_{trait}.module_genes.csv`   | Ranked marker genes for each accepted module     |
+| `{project_name}_{trait}.module_pairs.csv`   | Pairwise diagnostics between accepted modules    |
+| `{project_name}_{trait}.module_trace.csv`   | Iteration-by-iteration candidate decisions       |
+| `{project_name}_{trait}.run_summary.csv`    | Run-level resolution and seed-cell status counts |
+
+### cell_modules.csv
+
+This file contains one row per significant seed cell used by the module search.
+When report data are regenerated, these columns are merged into
+`report_data/spot_metadata.csv` with trait-specific prefixes such as
+`{trait}_trait_module` and `{trait}_module_specificity`.
+
+| Column               | Type   | Description                                                    |
+| -------------------- | ------ | -------------------------------------------------------------- |
+| `spot`               | string | Spot identifier matched to the spatial LDSC result             |
+| `trait_module`       | int    | Accepted module ID, or `-1` for cells not assigned to a module |
+| `module_specificity` | float  | Similarity or specificity score for the assigned module        |
+| `is_module_cell`     | bool   | Whether the seed cell is assigned to an accepted module        |
+| `module_status`      | string | `assigned`, `rejected`, or `unresolved`                        |
+| `module_reason`      | string | Reason for assignment, rejection, or unresolved status         |
+
+### module_summary.csv
+
+The module summary reports the main evidence used to evaluate whether a
+candidate represents a distinct trait-associated regulatory mechanism.
+
+| Column group            | Key columns                                                                                                |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Signal contribution     | `n_cells`, `module_signal_fraction`, `cumulative_signal_fraction`, `residual_signal_fraction_after_module` |
+| Evidence status         | `module_evidence_score`, `module_evidence_status`                                                          |
+| Trait association       | `mean_neg_log10_p`, `max_neg_log10_p`                                                                      |
+| Conditional LDSC        | `conditional_ldsc_p`, `conditional_ldsc_neg_log10_p`, `conditional_ldsc_beta`, `conditional_ldsc_z`        |
+| Stability diagnostics   | `stability_profile_similarity`, `stability_assignment_fraction`, `stability_null_pvalue`                   |
+| Specificity diagnostics | `mean_specificity`, `background_mean_specificity`, `specificity_enrichment`, `specificity_null_pvalue`     |
+| Distinctness            | `max_profile_similarity`, `most_similar_module`                                                            |
+
+### module_genes.csv
+
+Ranked marker genes for each accepted module.
+
+| Column   | Type   | Description                               |
+| -------- | ------ | ----------------------------------------- |
+| `trait`  | string | Trait name                                |
+| `module` | int    | Module ID                                 |
+| `rank`   | int    | Rank within the module marker profile     |
+| `gene`   | string | Gene symbol                               |
+| `score`  | float  | Marker-profile score used for the ranking |
+
+### module_pairs.csv
+
+Pairwise module diagnostics help check whether accepted modules use different
+marker programs rather than near-duplicate gene-correlation patterns.
+
+| Column                       | Description                                                         |
+| ---------------------------- | ------------------------------------------------------------------- |
+| `module_a`, `module_b`       | Module pair being compared                                          |
+| `profile_similarity`         | Cosine similarity between full module marker profiles               |
+| `profile_distinct`           | Whether the pair passes the configured profile-similarity threshold |
+| `marker_jaccard`             | Jaccard overlap between top marker gene sets                        |
+| `marker_overlap_null_pvalue` | Hypergeometric p-value for top-marker overlap                       |
+| `shared_top_genes`           | Semicolon-delimited shared top marker genes                         |
+| `module_a_only_top_genes`    | Top marker genes specific to module A                               |
+| `module_b_only_top_genes`    | Top marker genes specific to module B                               |
+| `module_a_signal_fraction`   | Fraction of seed-cell signal captured by module A                   |
+| `module_b_signal_fraction`   | Fraction of seed-cell signal captured by module B                   |
+| `module_a_evidence_status`   | Evidence label for module A                                         |
+| `module_b_evidence_status`   | Evidence label for module B                                         |
+
+### module_trace.csv
+
+The trace records every candidate evaluated during the iterative search,
+including accepted and rejected candidates. Useful fields include `iteration`,
+`decision`, `reason`, `candidate_signal_fraction`,
+`residual_signal_fraction_before`, `residual_signal_fraction_after`,
+`module_evidence_status`, specificity metrics, stability metrics, conditional
+LDSC metrics, and the most similar previously accepted module.
+
+### run_summary.csv
+
+The run summary has one row per trait-module run. It reports the number of seed
+cells, accepted modules, assigned/rejected/unresolved seed cells, accepted signal
+fraction, residual signal fraction, and a `resolution_status` label such as
+`single_module_dominant`, `multi_module_resolved`, `partially_resolved`, or
+`weakly_resolved`.
+
+```{note}
+Trait module files are picked up by report data generation. After running
+`gsmap trait-modules`, regenerate the report data or rerun the report step to
+enable UMAP and spatial coloring by module specificity.
 ```
 
 ______________________________________________________________________

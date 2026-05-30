@@ -19,6 +19,7 @@ gsmap [OPTIONS] COMMAND [ARGS]...
 - `find-latent`: Find latent representations of each spot...
 - `latent-to-gene`: Estimate gene marker scores for each spot...
 - `spatial-ldsc`: Run spatial LDSC analysis for genetic...
+- `trait-modules`: Discover fast independent trait modules from LDSC...
 - `cauchy-combination`: Run Cauchy combination test to combine...
 - `ldscore-weight-matrix`: Compute LD score weight matrices for...
 - `format-sumstats`: Format GWAS summary statistics for gsMap...
@@ -243,6 +244,77 @@ gsmap spatial-ldsc [OPTIONS]
 - `--marker-score-feather-path FILE`: Path to marker score feather file
 - `--marker-score-h5ad-path FILE`: Path to marker score h5ad file
 - `--marker-score-format [memmap|feather|h5ad]`: Format of marker scores
+- `--help`: Show this message and exit.
+
+## `gsmap trait-modules`
+
+Discover fast independent trait modules from per-cell LDSC results and marker scores.
+
+This prototype is an approximation layer for identifying distinct trait-associated
+cell programs. It starts from cells passing the trait p-value threshold, groups
+them by marker-score specificity, accepts modules with evidence for a distinct
+marker profile, and iteratively removes or conditions on accepted modules so
+later rounds must explain residual marker signal.
+
+The command writes CSV files under `{workdir}/{project_name}/trait_modules/` by
+default. When the report data are regenerated, these files are used to color UMAP
+and spatial plots by module specificity for each trait.
+
+```{note}
+Trait modules are evidence for distinct marker-score mechanisms among
+trait-associated cells. They should not be interpreted as proof of causal or
+fully conditional genetic independence without additional validation.
+```
+
+**Usage**:
+
+```console
+gsmap trait-modules [OPTIONS]
+```
+
+**Options**:
+
+- `--workdir DIRECTORY`: Path to the working directory [required]
+- `--project-name TEXT`: Name of the project [required]
+- `--trait-name TEXT`: Trait to analyze [required]
+- `--ldsc-result-path FILE`: Path to a spatial LDSC result CSV/CSV.GZ. Defaults to the project LDSC result.
+- `--marker-score-h5ad-path FILE`: Optional marker-score h5ad with cells as obs and genes as var. If omitted, uses `latent_to_gene/marker_scores.dat` with project metadata.
+- `--memmap-tmp-dir DIRECTORY`: Temporary directory for marker-score memmap access.
+- `--pvalue-threshold FLOAT RANGE`: Cell-level LDSC p-value threshold used to seed trait modules. [default: 0.05; 0.0\<=x\<=1.0]
+- `--top-gene-fraction FLOAT RANGE`: Fraction of genes retained per cell to represent marker specificity. [default: 0.05; 0.001\<=x\<=1.0]
+- `--max-marker-genes INTEGER RANGE`: Maximum marker genes retained per cell. [default: 200; x>=5]
+- `--min-module-cells INTEGER RANGE`: Minimum cells required for an independent module. [default: 10; x>=2]
+- `--max-modules INTEGER RANGE`: Maximum independent modules to report. [default: 10; x>=1]
+- `--module-similarity-threshold FLOAT RANGE`: Minimum cosine similarity to assign an unclaimed significant cell to a module. [default: 0.95; 0.0\<=x\<=1.0]
+- `--min-specificity-enrichment FLOAT RANGE`: Minimum module specificity enrichment over background required to accept a candidate. Set to `0` to report all candidates. [default: 1.5; x>=0.0]
+- `--specificity-null-iterations INTEGER RANGE`: Same-size random background draws used to estimate an empirical specificity p-value. Set to `0` to disable. [default: 100; x>=0]
+- `--max-specificity-null-pvalue FLOAT RANGE`: Maximum empirical background-null p-value allowed for accepted modules. [default: 0.05; 0.0\<=x\<=1.0]
+- `--max-module-profile-similarity FLOAT RANGE`: Maximum cosine similarity to any accepted module before rejecting a candidate as a duplicate mechanism. [default: 0.9; 0.0\<=x\<=1.0]
+- `--min-module-evidence-score FLOAT RANGE`: Diagnostic threshold used to label module evidence as weak, moderate, or strong. This does not gate discovery. [default: 0.65; 0.0\<=x\<=1.0]
+- `--module-stability-iterations INTEGER RANGE`: Split-half resampling iterations used to estimate marker-profile stability. Set to `0` to disable. [default: 100; x>=0]
+- `--module-stability-sample-fraction FLOAT RANGE`: Fraction of candidate module cells sampled in each stability iteration. [default: 0.5; 0.05\<=x\<=1.0]
+- `--require-module-stability / --diagnose-module-stability`: Reject candidate modules that fail configured stability thresholds, or only report stability diagnostics. [default: diagnose-module-stability]
+- `--min-module-stability-profile-similarity FLOAT RANGE`: Minimum split-half profile cosine similarity when module stability is required. [default: 0.8; 0.0\<=x\<=1.0]
+- `--min-module-stability-assignment-fraction FLOAT RANGE`: Minimum fraction of candidate cells recovered by split-half profiles when module stability is required. [default: 0.8; 0.0\<=x\<=1.0]
+- `--max-module-stability-null-pvalue FLOAT RANGE`: Maximum empirical p-value from random equal-size seed-cell groups when module stability is required. [default: 0.05; 0.0\<=x\<=1.0]
+- `--run-conditional-ldsc / --skip-conditional-ldsc`: Run a module-level conditional S-LDSC approximation for each candidate. [default: skip-conditional-ldsc]
+- `--require-conditional-ldsc / --diagnose-conditional-ldsc`: Reject candidate modules that fail the conditional LDSC p-value threshold, or only report diagnostics. Enabling this also enables `--run-conditional-ldsc`. [default: diagnose-conditional-ldsc]
+- `--conditional-ldsc-pvalue-threshold FLOAT RANGE`: Maximum module-level conditional LDSC p-value when conditional LDSC is required. [default: 0.05; 0.0\<=x\<=1.0]
+- `--conditional-ldsc-n-blocks INTEGER RANGE`: Number of jackknife blocks for module-level conditional LDSC. [default: 200; x>=2]
+- `--conditional-chisq-max INTEGER`: Maximum GWAS chi-square value for module-level conditional LDSC. If omitted, uses the spatial-LDSC default rule.
+- `--conditional-sumstats-file FILE`: GWAS summary statistics for module-level conditional LDSC. If omitted, `trait-modules` tries to read the path from `gsmap_web_report/report_meta.json`.
+- `--conditional-snp-gene-weight-adata-path FILE`: SNP-gene weight matrix for module-level conditional LDSC. If omitted, `trait-modules` tries to read the path from `gsmap_web_report/report_meta.json`.
+- `--conditional-w-ld-dir DIRECTORY`: Directory containing LDSC regression weight files for module-level conditional LDSC. If omitted, `trait-modules` tries report metadata first, then `project_dir/generate_ldscore/w_ld`.
+- `--conditional-additional-baseline-h5ad-path-list FILE`: Additional baseline h5ad files for module-level conditional LDSC.
+- `--recompute-background-after-modules / --fixed-background-after-modules`: Raise the per-gene search background using accepted module marker scores before later module discovery. [default: recompute-background-after-modules]
+- `--iterative-background-quantile FLOAT RANGE`: Quantile of accepted module-cell marker scores used as the iterative search background. [default: 0.5; 0.0\<=x\<=1.0]
+- `--condition-on-claimed-modules / --no-module-conditioning`: Project accepted module marker profiles out of later iterations so follow-up modules must use residual marker signal. [default: condition-on-claimed-modules]
+- `--background-scope [all|seeds]`: Cells used to estimate marker-score background. [default: all]
+- `--background-sample-size INTEGER RANGE`: Maximum number of cells sampled to estimate global marker-score background. [default: 50000; x>=1]
+- `--background-quantile FLOAT RANGE`: Background marker-score quantile subtracted from selected cells each iteration. [default: 0.5; 0.0\<=x\<=1.0]
+- `--random-seed INTEGER`: Random seed used when sampling cells for background estimation. [default: 0]
+- `--min-positive-beta / --allow-negative-beta`: Require positive LDSC beta for module seed cells. [default: min-positive-beta]
+- `--output-dir DIRECTORY`: Output directory for trait-module CSV files. Defaults to `project_dir/trait_modules`.
 - `--help`: Show this message and exit.
 
 ## `gsmap cauchy-combination`

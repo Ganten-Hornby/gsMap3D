@@ -57,6 +57,58 @@ The custom GSS file must be in **h5ad format** with:
 The gene names in your custom GSS (`.var_names`) must overlap with the gene names in the SNP-to-gene weight matrix (`--snp-gene-weight-adata-path`). Only overlapping genes will be used for the spatial-LDSC analysis.
 ```
 
+## Trait module discovery
+
+After running spatial LDSC, use `gsmap trait-modules` to identify significant
+cells that share a distinct marker-score program for one trait. This is useful
+when a trait may have multiple cell states or cell types with different core
+regulatory mechanisms.
+
+```bash
+gsmap trait-modules \
+    --workdir "/path/to/workdir" \
+    --project-name "my_project" \
+    --trait-name "IQ" \
+    --pvalue-threshold 0.05 \
+    --min-module-cells 10 \
+    --max-modules 10
+```
+
+The command first selects significant seed cells, compares their marker-score
+specificity against the background, accepts modules with distinct marker
+profiles, and then updates the residual search space before the next iteration.
+By default, accepted modules update the per-gene background and are projected out
+of later rounds with `--recompute-background-after-modules` and
+`--condition-on-claimed-modules`.
+
+For stricter validation, enable stability or conditional LDSC gates:
+
+```bash
+gsmap trait-modules \
+    --workdir "/path/to/workdir" \
+    --project-name "my_project" \
+    --trait-name "IQ" \
+    --require-module-stability \
+    --run-conditional-ldsc
+```
+
+```{note}
+Trait modules are a fast approximation for distinct marker-score mechanisms
+among trait-associated cells. Treat them as hypotheses to validate, not as proof
+of fully independent causal cell types.
+```
+
+The outputs are written to `{workdir}/{project_name}/trait_modules/`. Regenerate
+the report data after running the command so the UMAP and spatial views can color
+cells by module specificity:
+
+```bash
+gsmap quick-mode \
+    --workdir "/path/to/workdir" \
+    --project-name "my_project" \
+    --start-step report
+```
+
 ## Scalability & Performance
 
 For tips on optimizing performance for large-scale datasets—including speed optimization, GPU/TPU acceleration, JAX memory management, and handling million-scale spatial omics data—see the [Scalability](scalability.md) guide.
