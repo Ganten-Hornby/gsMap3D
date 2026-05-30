@@ -29,6 +29,7 @@ MODULE_SUMMARY_COLUMNS = [
     "mean_specificity",
     "background_mean_specificity",
     "specificity_enrichment",
+    "specificity_null_pvalue",
 ]
 
 MODULE_GENE_COLUMNS = ["trait", "module", "rank", "gene", "score"]
@@ -43,6 +44,7 @@ class ModuleResult:
     mean_neg_log10_p: float
     background_specificity_mean: float
     specificity_enrichment: float
+    specificity_null_pvalue: float
 
 
 def _read_ldsc_result(path) -> pd.DataFrame:
@@ -228,6 +230,28 @@ def _module_specificity_scores(matrix: np.ndarray, profile: np.ndarray) -> np.nd
     return (normalized @ profile_norm).astype(np.float32)
 
 
+def _specificity_empirical_pvalue(
+    observed_specificity: np.ndarray,
+    background_specificity: np.ndarray,
+    n_iterations: int,
+    rng: np.random.Generator,
+) -> float:
+    if n_iterations <= 0:
+        return float("nan")
+    if observed_specificity.size == 0 or background_specificity.size == 0:
+        return 1.0
+
+    observed_mean = float(observed_specificity.mean())
+    sample_size = observed_specificity.size
+    replace = background_specificity.size < sample_size
+    n_extreme = 0
+    for _ in range(n_iterations):
+        null_sample = rng.choice(background_specificity, size=sample_size, replace=replace)
+        if float(null_sample.mean()) >= observed_mean:
+            n_extreme += 1
+    return float((n_extreme + 1) / (n_iterations + 1))
+
+
 def discover_trait_modules(
     config: TraitModuleConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -272,6 +296,7 @@ def discover_trait_modules(
         condition_on_claimed_modules=config.condition_on_claimed_modules,
     )
     weights = ldsc.loc[cells, "neg_log10_p"].to_numpy(dtype=np.float32)
+    null_rng = np.random.default_rng(config.random_seed + 1729)
     n_top = min(
         config.max_marker_genes,
         max(1, int(np.ceil(residual.shape[1] * config.top_gene_fraction))),
@@ -307,12 +332,33 @@ def discover_trait_modules(
         specificity_enrichment = float(cell_specificity.mean()) / max(
             background_specificity_mean, 1e-8
         )
-        if specificity_enrichment < config.min_specificity_enrichment:
+        specificity_null_pvalue = _specificity_empirical_pvalue(
+            cell_specificity,
+            background_specificity,
+            config.specificity_null_iterations,
+            null_rng,
+        )
+        fails_enrichment = specificity_enrichment < config.min_specificity_enrichment
+        fails_null = (
+            config.specificity_null_iterations > 0
+            and specificity_null_pvalue > config.max_specificity_null_pvalue
+        )
+        if fails_enrichment or fails_null:
             remaining_mask[module_idx] = False
+            rejection_reasons = []
+            if fails_enrichment:
+                rejection_reasons.append(
+                    f"specificity_enrichment={specificity_enrichment:.3f} "
+                    f"below min_specificity_enrichment={config.min_specificity_enrichment:.3f}"
+                )
+            if fails_null:
+                rejection_reasons.append(
+                    f"specificity_null_pvalue={specificity_null_pvalue:.3f} "
+                    f"above max_specificity_null_pvalue={config.max_specificity_null_pvalue:.3f}"
+                )
             logger.info(
                 f"Rejected module candidate before module {module_id}: "
-                f"specificity_enrichment={specificity_enrichment:.3f} "
-                f"below min_specificity_enrichment={config.min_specificity_enrichment:.3f}; "
+                f"{'; '.join(rejection_reasons)}; "
                 f"removed {len(module_cells)} background-like cells from later searches."
             )
             if remaining_mask.sum() < config.min_module_cells:
@@ -332,11 +378,14 @@ def discover_trait_modules(
                 mean_neg_log10_p=float(ldsc.loc[module_cells, "neg_log10_p"].mean()),
                 background_specificity_mean=background_specificity_mean,
                 specificity_enrichment=specificity_enrichment,
+                specificity_null_pvalue=specificity_null_pvalue,
             )
         )
         logger.info(
             f"Module {module_id}: {len(module_cells)} cells, "
-            f"mean -log10(p)={module_results[-1].mean_neg_log10_p:.3f}"
+            f"mean -log10(p)={module_results[-1].mean_neg_log10_p:.3f}, "
+            f"specificity_enrichment={specificity_enrichment:.3f}, "
+            f"specificity_null_pvalue={specificity_null_pvalue:.3f}"
         )
 
         claimed_module_indices.append(module_idx.copy())
@@ -378,6 +427,7 @@ def discover_trait_modules(
                 "mean_specificity": float(cell_df.loc[result.cells, "module_specificity"].mean()),
                 "background_mean_specificity": result.background_specificity_mean,
                 "specificity_enrichment": result.specificity_enrichment,
+                "specificity_null_pvalue": result.specificity_null_pvalue,
             }
         )
 

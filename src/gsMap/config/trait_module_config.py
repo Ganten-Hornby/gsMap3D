@@ -104,6 +104,29 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 1.5
 
+    specificity_null_iterations: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Number of same-size random background draws used to estimate an "
+                "empirical p-value for module specificity. Set to 0 to disable."
+            ),
+            min=0,
+        ),
+    ] = 100
+
+    max_specificity_null_pvalue: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Maximum empirical background-null p-value allowed when accepting "
+                "a candidate module."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.05
+
     recompute_background_after_modules: Annotated[
         bool,
         typer.Option(

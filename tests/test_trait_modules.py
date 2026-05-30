@@ -238,9 +238,14 @@ def test_module_summary_reports_background_specificity_enrichment(tmp_path):
 
     _, summary_df, _ = discover_trait_modules(config)
 
-    assert {"background_mean_specificity", "specificity_enrichment"} <= set(summary_df.columns)
+    assert {
+        "background_mean_specificity",
+        "specificity_enrichment",
+        "specificity_null_pvalue",
+    } <= set(summary_df.columns)
     assert summary_df.loc[0, "mean_specificity"] > summary_df.loc[0, "background_mean_specificity"]
     assert summary_df.loc[0, "specificity_enrichment"] > 1.0
+    assert summary_df.loc[0, "specificity_null_pvalue"] <= 0.05
 
 
 def test_background_like_candidate_is_rejected_before_distinct_module(tmp_path):
@@ -324,6 +329,42 @@ def test_iterative_background_removes_claimed_program_variants(tmp_path):
     assert set(genes_df.loc[genes_df["module"] == 2, "gene"]) == set(genes[10:15])
 
 
+def test_specificity_null_rejects_common_background_program(tmp_path):
+    n_cells = 100
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:90, :5] = 2.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "specificity_null_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="specificity_null_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+        background_quantile=0.0,
+        min_specificity_enrichment=1.0,
+        specificity_null_iterations=200,
+        max_specificity_null_pvalue=0.05,
+    )
+
+    cell_df, summary_df, genes_df = discover_trait_modules(config)
+
+    assert cell_df["trait_module"].tolist() == [-1] * 10
+    assert summary_df.empty
+    assert genes_df.empty
+
+
 def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
     n_cells = 50
     n_genes = 20
@@ -364,6 +405,7 @@ def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
         "mean_specificity",
         "background_mean_specificity",
         "specificity_enrichment",
+        "specificity_null_pvalue",
     ]
     assert summary_df.empty
     assert list(genes_df.columns) == ["trait", "module", "rank", "gene", "score"]
