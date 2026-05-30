@@ -493,6 +493,17 @@ def test_iterative_background_removes_claimed_program_variants(tmp_path):
     assert (
         accepted_trace["mean_conditional_neg_log10_p"] <= accepted_trace["mean_neg_log10_p"]
     ).all()
+    assert accepted_trace["candidate_signal_fraction"].between(0, 1).all()
+    assert accepted_trace["accepted_signal_fraction"].is_monotonic_increasing
+    assert accepted_trace["residual_signal_fraction_after"].is_monotonic_decreasing
+    assert (
+        summary_df["module_signal_fraction"].tolist()
+        == accepted_trace["candidate_signal_fraction"].tolist()
+    )
+    assert (
+        summary_df["cumulative_signal_fraction"].tolist()
+        == accepted_trace["accepted_signal_fraction"].tolist()
+    )
 
 
 def test_specificity_null_rejects_common_background_program(tmp_path):
@@ -772,6 +783,9 @@ def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
         "trait",
         "module",
         "n_cells",
+        "module_signal_fraction",
+        "cumulative_signal_fraction",
+        "residual_signal_fraction_after_module",
         "module_evidence_score",
         "module_evidence_status",
         "mean_neg_log10_p",

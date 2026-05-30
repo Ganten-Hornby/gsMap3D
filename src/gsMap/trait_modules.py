@@ -29,6 +29,9 @@ MODULE_SUMMARY_COLUMNS = [
     "trait",
     "module",
     "n_cells",
+    "module_signal_fraction",
+    "cumulative_signal_fraction",
+    "residual_signal_fraction_after_module",
     "module_evidence_score",
     "module_evidence_status",
     "mean_neg_log10_p",
@@ -57,6 +60,10 @@ MODULE_TRACE_COLUMNS = [
     "candidate_module",
     "decision",
     "reason",
+    "candidate_signal_fraction",
+    "accepted_signal_fraction",
+    "residual_signal_fraction_before",
+    "residual_signal_fraction_after",
     "module_evidence_score",
     "module_evidence_status",
     "candidate_n_cells",
@@ -94,6 +101,9 @@ class ModuleResult:
     specificity_null_pvalue: float
     max_profile_similarity: float
     most_similar_module: int
+    module_signal_fraction: float = float("nan")
+    cumulative_signal_fraction: float = float("nan")
+    residual_signal_fraction_after_module: float = float("nan")
     module_evidence_score: float = float("nan")
     module_evidence_status: str = "unknown"
     conditional_ldsc_beta: float = float("nan")
@@ -953,6 +963,11 @@ def discover_trait_modules_with_trace(
     remaining_mask = np.ones(len(cells), dtype=bool)
     assigned_module = np.full(len(cells), -1, dtype=int)
     module_specificity = np.zeros(len(cells), dtype=np.float32)
+    total_trait_signal = max(float(weights.sum()), 1e-8)
+    accepted_signal_fraction = 0.0
+    residual_signal_fraction = (
+        float(conditional_weights[remaining_mask].sum()) / total_trait_signal
+    )
     module_results: list[ModuleResult] = []
     trace_rows = []
     iteration = 0
@@ -961,6 +976,7 @@ def discover_trait_modules_with_trace(
         iteration += 1
         module_id = len(module_results) + 1
         remaining_before = int(remaining_mask.sum())
+        residual_signal_fraction_before = residual_signal_fraction
         module_idx, profile, specificity = _module_from_best_seed(
             residual=search_residual,
             remaining_mask=remaining_mask,
@@ -984,6 +1000,10 @@ def discover_trait_modules_with_trace(
                     "candidate_module": module_id,
                     "decision": "stopped",
                     "reason": "min_module_cells",
+                    "candidate_signal_fraction": float("nan"),
+                    "accepted_signal_fraction": accepted_signal_fraction,
+                    "residual_signal_fraction_before": residual_signal_fraction_before,
+                    "residual_signal_fraction_after": residual_signal_fraction_before,
                     "candidate_n_cells": int(module_idx.size),
                     "remaining_cells_before": remaining_before,
                     "remaining_cells_after": remaining_before,
@@ -1040,6 +1060,9 @@ def discover_trait_modules_with_trace(
             conditional_ldsc, candidate_annotation = conditional_ldsc_context.fit_profile(
                 profile, accepted_module_annotations
             )
+        candidate_signal_fraction = (
+            float(conditional_weights[module_idx].sum()) / total_trait_signal
+        )
         fails_enrichment = specificity_enrichment < config.min_specificity_enrichment
         fails_null = (
             config.specificity_null_iterations > 0
@@ -1095,6 +1118,9 @@ def discover_trait_modules_with_trace(
             or fails_conditional_ldsc
         ):
             remaining_mask[module_idx] = False
+            residual_signal_fraction_after = (
+                float(conditional_weights[remaining_mask].sum()) / total_trait_signal
+            )
             rejection_reasons = []
             rejection_messages = []
             if fails_enrichment:
@@ -1141,6 +1167,10 @@ def discover_trait_modules_with_trace(
                     "candidate_module": module_id,
                     "decision": "rejected",
                     "reason": ",".join(rejection_reasons),
+                    "candidate_signal_fraction": candidate_signal_fraction,
+                    "accepted_signal_fraction": accepted_signal_fraction,
+                    "residual_signal_fraction_before": residual_signal_fraction_before,
+                    "residual_signal_fraction_after": residual_signal_fraction_after,
                     "candidate_n_cells": int(module_idx.size),
                     "remaining_cells_before": remaining_before,
                     "remaining_cells_after": int(remaining_mask.sum()),
@@ -1164,6 +1194,7 @@ def discover_trait_modules_with_trace(
                 f"{'; '.join(rejection_messages)}; "
                 f"removed {len(module_cells)} background-like cells from later searches."
             )
+            residual_signal_fraction = residual_signal_fraction_after
             if remaining_mask.sum() < config.min_module_cells:
                 break
             continue
@@ -1171,6 +1202,10 @@ def discover_trait_modules_with_trace(
         assigned_module[module_idx] = module_id
         module_specificity[module_idx] = cell_specificity
         remaining_mask[module_idx] = False
+        accepted_signal_fraction += candidate_signal_fraction
+        residual_signal_fraction_after = (
+            float(conditional_weights[remaining_mask].sum()) / total_trait_signal
+        )
         trace_rows.append(
             {
                 "trait": config.trait_name,
@@ -1178,6 +1213,10 @@ def discover_trait_modules_with_trace(
                 "candidate_module": module_id,
                 "decision": "accepted",
                 "reason": "accepted",
+                "candidate_signal_fraction": candidate_signal_fraction,
+                "accepted_signal_fraction": accepted_signal_fraction,
+                "residual_signal_fraction_before": residual_signal_fraction_before,
+                "residual_signal_fraction_after": residual_signal_fraction_after,
                 "candidate_n_cells": int(module_idx.size),
                 "remaining_cells_before": remaining_before,
                 "remaining_cells_after": int(remaining_mask.sum()),
@@ -1209,6 +1248,9 @@ def discover_trait_modules_with_trace(
                 specificity_null_pvalue=specificity_null_pvalue,
                 max_profile_similarity=max_profile_similarity,
                 most_similar_module=most_similar_module,
+                module_signal_fraction=candidate_signal_fraction,
+                cumulative_signal_fraction=accepted_signal_fraction,
+                residual_signal_fraction_after_module=residual_signal_fraction_after,
                 module_evidence_score=module_evidence_score,
                 module_evidence_status=module_evidence_status,
                 conditional_ldsc_beta=conditional_ldsc.beta,
@@ -1245,7 +1287,18 @@ def discover_trait_modules_with_trace(
             conditional_weights = _conditional_neg_log10_p_proxy(
                 weights, residual, search_residual, n_top
             )
+            residual_signal_fraction = (
+                float(conditional_weights[remaining_mask].sum()) / total_trait_signal
+            )
+            if trace_rows:
+                trace_rows[-1]["residual_signal_fraction_after"] = residual_signal_fraction
+                if module_results:
+                    module_results[
+                        -1
+                    ].residual_signal_fraction_after_module = residual_signal_fraction
             logger.info(f"Updated residual search space after accepting module {module_id}")
+        else:
+            residual_signal_fraction = residual_signal_fraction_after
 
         if remaining_mask.sum() < config.min_module_cells:
             break
@@ -1267,6 +1320,11 @@ def discover_trait_modules_with_trace(
                 "trait": config.trait_name,
                 "module": result.module_id,
                 "n_cells": len(result.cells),
+                "module_signal_fraction": result.module_signal_fraction,
+                "cumulative_signal_fraction": result.cumulative_signal_fraction,
+                "residual_signal_fraction_after_module": (
+                    result.residual_signal_fraction_after_module
+                ),
                 "module_evidence_score": result.module_evidence_score,
                 "module_evidence_status": result.module_evidence_status,
                 "mean_neg_log10_p": result.mean_neg_log10_p,

@@ -893,6 +893,8 @@
                                     <tr>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Module</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Cells</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Signal</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Residual</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Evidence</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Mean -log10P</th>
@@ -911,6 +913,8 @@
                                         <tr>
                                             <td class="px-3 py-2 text-sm font-medium text-gray-900" x-text="row.module"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.n_cells"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.module_signal_fraction != null ? (row.module_signal_fraction * 100).toFixed(1) + '%' : 'N/A'"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.residual_signal_fraction_after_module != null ? (row.residual_signal_fraction_after_module * 100).toFixed(1) + '%' : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.module_evidence_score != null ? row.module_evidence_score.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.module_evidence_status || 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.mean_neg_log10_p != null ? row.mean_neg_log10_p.toFixed(2) : 'N/A'"></td>
@@ -935,6 +939,8 @@
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Iteration</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Decision</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reason</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Candidate Signal</th>
+                                        <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Residual Signal</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Evidence</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                                         <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Candidate Cells</th>
@@ -952,6 +958,8 @@
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.iteration"></td>
                                             <td class="px-3 py-2 text-sm font-medium" x-text="row.decision"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.reason"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.candidate_signal_fraction != null ? (row.candidate_signal_fraction * 100).toFixed(1) + '%' : 'N/A'"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.residual_signal_fraction_after != null ? (row.residual_signal_fraction_after * 100).toFixed(1) + '%' : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.module_evidence_score != null ? row.module_evidence_score.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.module_evidence_status || 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.candidate_n_cells"></td>

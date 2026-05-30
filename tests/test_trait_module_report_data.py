@@ -98,6 +98,9 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "trait": ["IQ"],
             "module": [1],
             "n_cells": [12],
+            "module_signal_fraction": [0.62],
+            "cumulative_signal_fraction": [0.62],
+            "residual_signal_fraction_after_module": [0.18],
             "module_evidence_score": [0.87],
             "module_evidence_status": ["strong"],
             "mean_specificity": [0.91],
@@ -118,6 +121,10 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "iteration": [1, 2],
             "decision": ["accepted", "stopped"],
             "reason": ["accepted", "min_module_cells"],
+            "candidate_signal_fraction": [0.62, None],
+            "accepted_signal_fraction": [0.62, 0.62],
+            "residual_signal_fraction_before": [1.0, 0.18],
+            "residual_signal_fraction_after": [0.18, 0.18],
             "module_evidence_score": [0.87, None],
             "module_evidence_status": ["strong", "not_evaluated"],
             "candidate_n_cells": [12, 1],
@@ -151,12 +158,16 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
 
     assert data["IQ"]["summary"][0]["module"] == 1
     assert data["IQ"]["summary"][0]["specificity_enrichment"] == 2.3
+    assert data["IQ"]["summary"][0]["module_signal_fraction"] == 0.62
+    assert data["IQ"]["summary"][0]["residual_signal_fraction_after_module"] == 0.18
     assert data["IQ"]["summary"][0]["module_evidence_score"] == 0.87
     assert data["IQ"]["summary"][0]["module_evidence_status"] == "strong"
     assert data["IQ"]["summary"][0]["conditional_ldsc_neg_log10_p"] == 4.2
     assert data["IQ"]["summary"][0]["stability_profile_similarity"] == 0.96
     assert data["IQ"]["trace"][0]["decision"] == "accepted"
     assert data["IQ"]["trace"][1]["reason"] == "min_module_cells"
+    assert data["IQ"]["trace"][0]["candidate_signal_fraction"] == 0.62
+    assert data["IQ"]["trace"][0]["residual_signal_fraction_after"] == 0.18
     assert data["IQ"]["trace"][0]["module_evidence_score"] == 0.87
     assert data["IQ"]["trace"][0]["module_evidence_status"] == "strong"
     assert data["IQ"]["trace"][0]["conditional_ldsc_p"] == 6.3e-05
