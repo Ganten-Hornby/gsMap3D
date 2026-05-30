@@ -24,6 +24,10 @@ logger = logging.getLogger("gsMap.trait_modules")
 
 MODULE_EVIDENCE_STRONG_THRESHOLD = 0.85
 
+CELL_MODULE_STATUS_ASSIGNED = "assigned"
+CELL_MODULE_STATUS_REJECTED = "rejected"
+CELL_MODULE_STATUS_UNRESOLVED = "unresolved"
+
 
 MODULE_SUMMARY_COLUMNS = [
     "trait",
@@ -1019,6 +1023,8 @@ def discover_trait_modules_with_trace(
     remaining_mask = np.ones(len(cells), dtype=bool)
     assigned_module = np.full(len(cells), -1, dtype=int)
     module_specificity = np.zeros(len(cells), dtype=np.float32)
+    cell_module_status = np.full(len(cells), CELL_MODULE_STATUS_UNRESOLVED, dtype=object)
+    cell_module_reason = np.full(len(cells), "not_selected", dtype=object)
     total_trait_signal = max(float(weights.sum()), 1e-8)
     accepted_signal_fraction = 0.0
     residual_signal_fraction = (
@@ -1041,6 +1047,8 @@ def discover_trait_modules_with_trace(
             similarity_threshold=config.module_similarity_threshold,
         )
         if module_idx.size < config.min_module_cells:
+            unresolved_idx = np.flatnonzero(remaining_mask)
+            cell_module_reason[unresolved_idx] = "min_module_cells"
             mean_neg_log10_p = (
                 float(ldsc.loc[cells[module_idx], "neg_log10_p"].mean())
                 if module_idx.size
@@ -1231,13 +1239,16 @@ def discover_trait_modules_with_trace(
                     )
                 else:
                     rejection_messages.append("conditional_ldsc_p is unavailable")
+            rejection_reason = ",".join(rejection_reasons)
+            cell_module_status[module_idx] = CELL_MODULE_STATUS_REJECTED
+            cell_module_reason[module_idx] = rejection_reason
             trace_rows.append(
                 {
                     "trait": config.trait_name,
                     "iteration": iteration,
                     "candidate_module": module_id,
                     "decision": "rejected",
-                    "reason": ",".join(rejection_reasons),
+                    "reason": rejection_reason,
                     "candidate_signal_fraction": candidate_signal_fraction,
                     "accepted_signal_fraction": accepted_signal_fraction,
                     "residual_signal_fraction_before": residual_signal_fraction_before,
@@ -1272,6 +1283,8 @@ def discover_trait_modules_with_trace(
 
         assigned_module[module_idx] = module_id
         module_specificity[module_idx] = cell_specificity
+        cell_module_status[module_idx] = CELL_MODULE_STATUS_ASSIGNED
+        cell_module_reason[module_idx] = "accepted"
         remaining_mask[module_idx] = False
         accepted_signal_fraction += candidate_signal_fraction
         residual_signal_fraction_after = (
@@ -1378,6 +1391,8 @@ def discover_trait_modules_with_trace(
     cell_df["trait_module"] = assigned_module
     cell_df["module_specificity"] = module_specificity
     cell_df["is_module_cell"] = cell_df["trait_module"] > 0
+    cell_df["module_status"] = cell_module_status
+    cell_df["module_reason"] = cell_module_reason
 
     summaries = []
     gene_rows = []

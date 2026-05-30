@@ -478,6 +478,11 @@ def test_background_like_candidate_is_rejected_before_distinct_module(tmp_path):
     assert summary_df["n_cells"].tolist() == [10]
     assert set(cell_df.loc[cell_df["trait_module"] == 1, "spot"]) == set(cells[10:20])
     assert set(cell_df.loc[cell_df["trait_module"] == -1, "spot"]) == set(cells[:10])
+    assert set(cell_df.loc[cell_df["module_status"] == "rejected", "spot"]) == set(cells[:10])
+    assert set(
+        cell_df.loc[cell_df["module_reason"] == "min_specificity_enrichment", "spot"]
+    ) == set(cells[:10])
+    assert set(cell_df.loc[cell_df["module_status"] == "assigned", "spot"]) == set(cells[10:20])
     assert set(genes_df["gene"]) == set(genes[10:15])
     assert summary_df.loc[0, "specificity_enrichment"] > 1.5
     assert trace_df["decision"].tolist() == ["rejected", "accepted"]
@@ -863,6 +868,8 @@ def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
 
     assert cell_df["trait_module"].tolist() == [-1] * 10
     assert not cell_df["is_module_cell"].any()
+    assert cell_df["module_status"].tolist() == ["unresolved"] * 10
+    assert cell_df["module_reason"].tolist() == ["min_module_cells"] * 10
     assert list(summary_df.columns) == [
         "trait",
         "module",

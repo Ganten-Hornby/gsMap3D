@@ -30,6 +30,8 @@ def test_merge_trait_module_metadata_adds_trait_specific_columns(tmp_path):
             "trait_module": [2, 1],
             "module_specificity": [0.9234, 0.5123],
             "is_module_cell": [True, True],
+            "module_status": ["assigned", "rejected"],
+            "module_reason": ["accepted", "specificity_null_pvalue"],
         }
     ).to_csv(module_dir / "module_report_IQ.cell_modules.csv", index=False)
 
@@ -47,6 +49,12 @@ def test_merge_trait_module_metadata_adds_trait_specific_columns(tmp_path):
     assert merged["IQ_module_specificity"].iloc[[0, 2]].tolist() == [0.923, 0.512]
     assert np.isnan(merged["IQ_module_specificity"].iloc[1])
     assert merged["IQ_is_module_cell"].tolist() == [True, False, True]
+    assert merged["IQ_module_status"].tolist() == ["assigned", "unresolved", "rejected"]
+    assert merged["IQ_module_reason"].tolist() == [
+        "accepted",
+        "not_selected",
+        "specificity_null_pvalue",
+    ]
 
 
 def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
@@ -66,6 +74,8 @@ def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
             "IQ_trait_module": [2, -1],
             "IQ_module_specificity": [0.9234, None],
             "IQ_is_module_cell": ["True", "False"],
+            "IQ_module_status": ["assigned", "rejected"],
+            "IQ_module_reason": ["accepted", "module_profile_similarity"],
         }
     ).to_csv(data_dir / "spot_metadata.csv", index=False)
 
@@ -87,6 +97,8 @@ def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
     assert data["IQ_trait_module"] == [2, -1]
     assert data["IQ_module_specificity"] == [0.923, None]
     assert data["IQ_is_module_cell"] == [True, False]
+    assert data["IQ_module_status"] == ["assigned", "rejected"]
+    assert data["IQ_module_reason"] == ["accepted", "module_profile_similarity"]
 
 
 def test_export_trait_module_js_includes_summary_and_trace(tmp_path):

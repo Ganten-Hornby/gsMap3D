@@ -1355,11 +1355,13 @@ def _trait_module_run_summary_path(report_config: QuickModeConfig, trait: str) -
     )
 
 
-def _trait_module_columns(trait: str) -> tuple[str, str, str]:
+def _trait_module_columns(trait: str) -> tuple[str, str, str, str, str]:
     return (
         f"{trait}_trait_module",
         f"{trait}_module_specificity",
         f"{trait}_is_module_cell",
+        f"{trait}_module_status",
+        f"{trait}_module_reason",
     )
 
 
@@ -1372,7 +1374,9 @@ def _trait_module_columns_for_traits(df: pd.DataFrame, traits: list[str]) -> lis
 
 def _format_trait_module_columns(df: pd.DataFrame, traits: list[str]) -> pd.DataFrame:
     for trait in traits:
-        module_col, specificity_col, is_cell_col = _trait_module_columns(trait)
+        module_col, specificity_col, is_cell_col, status_col, reason_col = _trait_module_columns(
+            trait
+        )
         if module_col in df.columns:
             df[module_col] = df[module_col].fillna(-1).astype(int)
         if specificity_col in df.columns:
@@ -1384,6 +1388,10 @@ def _format_trait_module_columns(df: pd.DataFrame, traits: list[str]) -> pd.Data
                 df[is_cell_col] = (
                     df[is_cell_col].astype("string").str.lower().isin(["true", "1", "yes"])
                 )
+        if status_col in df.columns:
+            df[status_col] = df[status_col].fillna("unresolved").astype(str)
+        if reason_col in df.columns:
+            df[reason_col] = df[reason_col].fillna("not_selected").astype(str)
     return df
 
 
@@ -1417,7 +1425,9 @@ def _merge_trait_module_metadata(
         if not path.exists():
             continue
 
-        module_col, specificity_col, is_cell_col = _trait_module_columns(trait)
+        module_col, specificity_col, is_cell_col, status_col, reason_col = _trait_module_columns(
+            trait
+        )
         module_df = pd.read_csv(path)
         required = {"spot", "trait_module", "module_specificity", "is_module_cell"}
         missing = required.difference(module_df.columns)
@@ -1427,13 +1437,18 @@ def _merge_trait_module_metadata(
             )
             continue
 
-        module_df = module_df[list(required)].copy()
+        optional = ["module_status", "module_reason"]
+        module_df = module_df[
+            list(required) + [col for col in optional if col in module_df]
+        ].copy()
         module_df["spot"] = module_df["spot"].astype(str)
         module_df = module_df.rename(
             columns={
                 "trait_module": module_col,
                 "module_specificity": specificity_col,
                 "is_module_cell": is_cell_col,
+                "module_status": status_col,
+                "module_reason": reason_col,
             }
         )
         out = out.merge(module_df, on="spot", how="left")
@@ -2055,7 +2070,9 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
                 data_struct[trait] = [
                     round(v, 1) if pd.notna(v) else None for v in sample_df[trait]
                 ]
-            module_col, specificity_col, is_cell_col = _trait_module_columns(trait)
+            module_col, specificity_col, is_cell_col, status_col, reason_col = (
+                _trait_module_columns(trait)
+            )
             if module_col in sample_df.columns:
                 data_struct[module_col] = [
                     int(v) if pd.notna(v) else -1 for v in sample_df[module_col]
@@ -2068,6 +2085,10 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
                 data_struct[is_cell_col] = [
                     bool(v) if pd.notna(v) else False for v in sample_df[is_cell_col].astype(bool)
                 ]
+            if status_col in sample_df.columns:
+                data_struct[status_col] = sample_df[status_col].tolist()
+            if reason_col in sample_df.columns:
+                data_struct[reason_col] = sample_df[reason_col].tolist()
 
         # Create safe filename (replace non-alphanumeric chars)
         safe_name = "".join(c if c.isalnum() else "_" for c in sample_name)

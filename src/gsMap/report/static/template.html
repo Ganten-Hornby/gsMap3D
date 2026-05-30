@@ -1520,6 +1520,8 @@
                     if (this.traitColorMode === 'module_specificity' && this.hasTraitModuleData(trait)) {
                         const specificityCol = `${trait}_module_specificity`;
                         const moduleCol = `${trait}_trait_module`;
+                        const statusCol = `${trait}_module_status`;
+                        const reasonCol = `${trait}_module_reason`;
                         const specificityValues = data[specificityCol] || data.spot.map(() => 0);
                         const moduleValues = data[moduleCol] || data.spot.map(() => -1);
                         const selectedModule = Number(this.selectedTraitModule);
@@ -1534,6 +1536,8 @@
                             label: hasModuleFilter ? `Module ${selectedModule} specificity ${trait}` : `Module specificity ${trait}`,
                             moduleCol: moduleCol,
                             specificityCol: specificityCol,
+                            statusCol: statusCol,
+                            reasonCol: reasonCol,
                             selectedModule: hasModuleFilter ? selectedModule : -1,
                             isModuleMode: true
                         };
@@ -1543,6 +1547,8 @@
                         label: `-log10(p) ${trait}`,
                         moduleCol: null,
                         specificityCol: null,
+                        statusCol: null,
+                        reasonCol: null,
                         isModuleMode: false
                     };
                 },
@@ -2159,7 +2165,11 @@
                         if (colorSpec.isModuleMode) {
                             const moduleVal = this.umapData[colorSpec.moduleCol]?.[i];
                             const specificityVal = this.umapData[colorSpec.specificityCol]?.[i];
+                            const statusVal = this.umapData[colorSpec.statusCol]?.[i];
+                            const reasonVal = this.umapData[colorSpec.reasonCol]?.[i];
                             text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                            text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
+                            text += `<br><b>Module reason:</b> ${reasonVal || 'N/A'}`;
                             text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
                             if (colorSpec.selectedModule > 0) {
                                 text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
@@ -2406,7 +2416,11 @@
                             if (colorSpec.isModuleMode) {
                                 const moduleVal = data[colorSpec.moduleCol]?.[i];
                                 const specificityVal = data[colorSpec.specificityCol]?.[i];
+                                const statusVal = data[colorSpec.statusCol]?.[i];
+                                const reasonVal = data[colorSpec.reasonCol]?.[i];
                                 text += `<br><b>Module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                                text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
+                                text += `<br><b>Module reason:</b> ${reasonVal || 'N/A'}`;
                                 text += `<br><b>Module specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
                                 if (colorSpec.selectedModule > 0) {
                                     text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
