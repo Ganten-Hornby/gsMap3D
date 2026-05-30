@@ -887,6 +887,28 @@
                     </div>
                     <div x-show="selectedTraitModuleSummary().length > 0" class="border-t border-gray-200 p-4">
                         <h3 class="font-medium text-gray-700 mb-3" x-text="'Trait Modules: ' + selectedTrait"></h3>
+                        <div x-show="selectedTraitModuleRunSummary()" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Resolution</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="formatModuleStatus(selectedTraitModuleRunSummary()?.resolution_status)"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Modules</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="selectedTraitModuleRunSummary()?.n_modules ?? 'N/A'"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Cells</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="selectedTraitModuleRunSummary()?.n_module_cells ?? 'N/A'"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Accepted Signal</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="formatPercent(selectedTraitModuleRunSummary()?.accepted_signal_fraction)"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Residual Signal</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="formatPercent(selectedTraitModuleRunSummary()?.residual_signal_fraction)"></p>
+                            </div>
+                        </div>
                         <div class="overflow-x-auto custom-scrollbar mb-4">
                             <table class="min-w-full divide-y divide-gray-200">
                                 <thead class="bg-gray-50">
@@ -913,8 +935,8 @@
                                         <tr>
                                             <td class="px-3 py-2 text-sm font-medium text-gray-900" x-text="row.module"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.n_cells"></td>
-                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.module_signal_fraction != null ? (row.module_signal_fraction * 100).toFixed(1) + '%' : 'N/A'"></td>
-                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.residual_signal_fraction_after_module != null ? (row.residual_signal_fraction_after_module * 100).toFixed(1) + '%' : 'N/A'"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="formatPercent(row.module_signal_fraction)"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="formatPercent(row.residual_signal_fraction_after_module)"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.module_evidence_score != null ? row.module_evidence_score.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.module_evidence_status || 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.mean_neg_log10_p != null ? row.mean_neg_log10_p.toFixed(2) : 'N/A'"></td>
@@ -958,8 +980,8 @@
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.iteration"></td>
                                             <td class="px-3 py-2 text-sm font-medium" x-text="row.decision"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.reason"></td>
-                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.candidate_signal_fraction != null ? (row.candidate_signal_fraction * 100).toFixed(1) + '%' : 'N/A'"></td>
-                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.residual_signal_fraction_after != null ? (row.residual_signal_fraction_after * 100).toFixed(1) + '%' : 'N/A'"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="formatPercent(row.candidate_signal_fraction)"></td>
+                                            <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="formatPercent(row.residual_signal_fraction_after)"></td>
                                             <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.module_evidence_score != null ? row.module_evidence_score.toFixed(3) : 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.module_evidence_status || 'N/A'"></td>
                                             <td class="px-3 py-2 text-sm text-gray-600" x-text="row.candidate_n_cells"></td>
@@ -1458,6 +1480,10 @@
                     return this.traitModuleData?.[this.selectedTrait]?.summary || [];
                 },
 
+                selectedTraitModuleRunSummary() {
+                    return this.traitModuleData?.[this.selectedTrait]?.run_summary || null;
+                },
+
                 selectedTraitModuleTrace() {
                     return this.traitModuleData?.[this.selectedTrait]?.trace || [];
                 },
@@ -1480,6 +1506,14 @@
                         .map(row => row.module)
                         .filter(moduleId => moduleId !== null && moduleId !== undefined)
                         .sort((a, b) => a - b);
+                },
+
+                formatPercent(value) {
+                    return value !== null && value !== undefined ? `${(value * 100).toFixed(1)}%` : 'N/A';
+                },
+
+                formatModuleStatus(value) {
+                    return value ? value.replaceAll('_', ' ') : 'N/A';
                 },
 
                 getTraitColorSpec(data, trait) {

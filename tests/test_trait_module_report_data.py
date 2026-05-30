@@ -139,6 +139,19 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     ).to_csv(module_dir / "module_report_IQ.module_trace.csv", index=False)
     pd.DataFrame(
         {
+            "trait": ["IQ"],
+            "n_seed_cells": [20],
+            "n_modules": [1],
+            "n_module_cells": [12],
+            "module_cell_fraction": [0.6],
+            "top_module_signal_fraction": [0.62],
+            "accepted_signal_fraction": [0.62],
+            "residual_signal_fraction": [0.18],
+            "resolution_status": ["single_module_dominant"],
+        }
+    ).to_csv(module_dir / "module_report_IQ.run_summary.csv", index=False)
+    pd.DataFrame(
+        {
             "trait": ["IQ", "IQ"],
             "module": [1, 1],
             "rank": [1, 2],
@@ -164,6 +177,8 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     assert data["IQ"]["summary"][0]["module_evidence_status"] == "strong"
     assert data["IQ"]["summary"][0]["conditional_ldsc_neg_log10_p"] == 4.2
     assert data["IQ"]["summary"][0]["stability_profile_similarity"] == 0.96
+    assert data["IQ"]["run_summary"]["resolution_status"] == "single_module_dominant"
+    assert data["IQ"]["run_summary"]["accepted_signal_fraction"] == 0.62
     assert data["IQ"]["trace"][0]["decision"] == "accepted"
     assert data["IQ"]["trace"][1]["reason"] == "min_module_cells"
     assert data["IQ"]["trace"][0]["candidate_signal_fraction"] == 0.62

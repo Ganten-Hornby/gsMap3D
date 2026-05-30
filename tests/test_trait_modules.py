@@ -13,9 +13,11 @@ from gsMap.trait_modules import (
     _module_from_best_seed,
     _module_stability,
     _top_positive_sum,
+    _trait_resolution_status,
     discover_trait_modules,
     discover_trait_modules_with_trace,
     run_trait_module_discovery,
+    summarize_trait_module_run,
 )
 
 
@@ -325,6 +327,45 @@ def test_module_evidence_marks_rejected_candidate_as_failed_gate(tmp_path):
 
     assert np.isfinite(score)
     assert status == "failed_gate"
+
+
+def test_trait_resolution_status_classifies_signal_patterns():
+    assert (
+        _trait_resolution_status(
+            n_modules=0,
+            top_module_signal_fraction=0.0,
+            accepted_signal_fraction=0.0,
+            residual_signal_fraction=1.0,
+        )
+        == "no_modules"
+    )
+    assert (
+        _trait_resolution_status(
+            n_modules=1,
+            top_module_signal_fraction=0.8,
+            accepted_signal_fraction=0.8,
+            residual_signal_fraction=0.1,
+        )
+        == "single_module_dominant"
+    )
+    assert (
+        _trait_resolution_status(
+            n_modules=2,
+            top_module_signal_fraction=0.55,
+            accepted_signal_fraction=0.85,
+            residual_signal_fraction=0.1,
+        )
+        == "multi_module_resolved"
+    )
+    assert (
+        _trait_resolution_status(
+            n_modules=2,
+            top_module_signal_fraction=0.4,
+            accepted_signal_fraction=0.6,
+            residual_signal_fraction=0.35,
+        )
+        == "partially_resolved"
+    )
 
 
 def test_module_specificity_uses_module_marker_subspace(tmp_path):
@@ -886,6 +927,59 @@ def test_module_trace_reports_stop_condition(tmp_path):
     assert trace_df["remaining_cells_after"].tolist() == [0]
 
 
+def test_summarize_trait_module_run_reports_resolution_status(tmp_path):
+    n_cells = 50
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 3.1
+    marker_scores[10:20, 10:15] = 3.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-12
+    p_values[10:20] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "run_summary_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="run_summary_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=3,
+        max_marker_genes=5,
+    )
+
+    cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+    run_summary = summarize_trait_module_run(config, cell_df, summary_df, trace_df)
+
+    assert list(run_summary.columns) == [
+        "trait",
+        "n_seed_cells",
+        "n_modules",
+        "n_module_cells",
+        "module_cell_fraction",
+        "top_module_signal_fraction",
+        "accepted_signal_fraction",
+        "residual_signal_fraction",
+        "resolution_status",
+    ]
+    assert run_summary.loc[0, "n_modules"] == 2
+    assert run_summary.loc[0, "n_module_cells"] == 20
+    assert (
+        run_summary.loc[0, "accepted_signal_fraction"]
+        == summary_df.loc[1, "cumulative_signal_fraction"]
+    )
+    assert run_summary.loc[0, "resolution_status"] in {
+        "multi_module_resolved",
+        "partially_resolved",
+    }
+
+
 def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
     n_cells = 30
     n_genes = 20
@@ -914,5 +1008,8 @@ def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
     run_trait_module_discovery(config)
 
     trace_df = pd.read_csv(config.module_trace_path)
+    run_summary_df = pd.read_csv(config.run_summary_path)
     assert trace_df["decision"].tolist() == ["accepted"]
     assert trace_df["candidate_n_cells"].tolist() == [10]
+    assert run_summary_df["n_modules"].tolist() == [1]
+    assert run_summary_df["resolution_status"].tolist() == ["single_module_dominant"]

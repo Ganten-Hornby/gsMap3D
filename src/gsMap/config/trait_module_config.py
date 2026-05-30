@@ -433,6 +433,10 @@ class TraitModuleConfig(ConfigWithAutoPaths):
     def module_trace_path(self) -> Path:
         return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.module_trace.csv"
 
+    @property
+    def run_summary_path(self) -> Path:
+        return self.trait_module_dir / f"{self.project_name}_{self.trait_name}.run_summary.csv"
+
     def __post_init__(self):
         super().__post_init__()
         if self.require_conditional_ldsc:

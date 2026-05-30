@@ -54,6 +54,18 @@ MODULE_SUMMARY_COLUMNS = [
 
 MODULE_GENE_COLUMNS = ["trait", "module", "rank", "gene", "score"]
 
+MODULE_RUN_COLUMNS = [
+    "trait",
+    "n_seed_cells",
+    "n_modules",
+    "n_module_cells",
+    "module_cell_fraction",
+    "top_module_signal_fraction",
+    "accepted_signal_fraction",
+    "residual_signal_fraction",
+    "resolution_status",
+]
+
 MODULE_TRACE_COLUMNS = [
     "trait",
     "iteration",
@@ -910,6 +922,24 @@ def _module_evidence(
     return score, status
 
 
+def _trait_resolution_status(
+    *,
+    n_modules: int,
+    top_module_signal_fraction: float,
+    accepted_signal_fraction: float,
+    residual_signal_fraction: float,
+) -> str:
+    if n_modules == 0:
+        return "no_modules"
+    if accepted_signal_fraction < 0.5:
+        return "weakly_resolved"
+    if residual_signal_fraction > 0.25:
+        return "partially_resolved"
+    if n_modules == 1 or top_module_signal_fraction >= 0.75:
+        return "single_module_dominant"
+    return "multi_module_resolved"
+
+
 def _profile_similarity_to_accepted(
     profile: np.ndarray, module_results: list[ModuleResult]
 ) -> tuple[float, int]:
@@ -1416,16 +1446,62 @@ def discover_trait_modules(
     return cell_df, summary_df, genes_df
 
 
+def summarize_trait_module_run(
+    config: TraitModuleConfig,
+    cell_df: pd.DataFrame,
+    summary_df: pd.DataFrame,
+    trace_df: pd.DataFrame,
+) -> pd.DataFrame:
+    n_seed_cells = int(len(cell_df))
+    n_modules = int(len(summary_df))
+    n_module_cells = int(cell_df["is_module_cell"].sum()) if "is_module_cell" in cell_df else 0
+    module_cell_fraction = n_module_cells / max(n_seed_cells, 1)
+    top_module_signal_fraction = (
+        float(summary_df["module_signal_fraction"].max()) if n_modules else 0.0
+    )
+    accepted_signal_fraction = (
+        float(summary_df["cumulative_signal_fraction"].iloc[-1]) if n_modules else 0.0
+    )
+    residual_trace = trace_df["residual_signal_fraction_after"].dropna()
+    residual_signal_fraction = float(residual_trace.iloc[-1]) if not residual_trace.empty else 1.0
+    resolution_status = _trait_resolution_status(
+        n_modules=n_modules,
+        top_module_signal_fraction=top_module_signal_fraction,
+        accepted_signal_fraction=accepted_signal_fraction,
+        residual_signal_fraction=residual_signal_fraction,
+    )
+
+    return pd.DataFrame(
+        [
+            {
+                "trait": config.trait_name,
+                "n_seed_cells": n_seed_cells,
+                "n_modules": n_modules,
+                "n_module_cells": n_module_cells,
+                "module_cell_fraction": module_cell_fraction,
+                "top_module_signal_fraction": top_module_signal_fraction,
+                "accepted_signal_fraction": accepted_signal_fraction,
+                "residual_signal_fraction": residual_signal_fraction,
+                "resolution_status": resolution_status,
+            }
+        ],
+        columns=MODULE_RUN_COLUMNS,
+    )
+
+
 def run_trait_module_discovery(config: TraitModuleConfig):
     cell_df, summary_df, genes_df, trace_df = discover_trait_modules_with_trace(config)
+    run_summary_df = summarize_trait_module_run(config, cell_df, summary_df, trace_df)
     config.trait_module_dir.mkdir(parents=True, exist_ok=True)
 
     cell_df.to_csv(config.cell_modules_path, index=False)
     summary_df.to_csv(config.module_summary_path, index=False)
     genes_df.to_csv(config.module_genes_path, index=False)
     trace_df.to_csv(config.module_trace_path, index=False)
+    run_summary_df.to_csv(config.run_summary_path, index=False)
 
     logger.info(f"Saved cell module assignments to {config.cell_modules_path}")
     logger.info(f"Saved module summary to {config.module_summary_path}")
     logger.info(f"Saved module marker genes to {config.module_genes_path}")
     logger.info(f"Saved module iteration trace to {config.module_trace_path}")
+    logger.info(f"Saved trait module run summary to {config.run_summary_path}")
