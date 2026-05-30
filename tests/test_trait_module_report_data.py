@@ -186,6 +186,8 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
             "max_allowed_profile_similarity": [0.9],
             "profile_distinct": [True],
             "marker_jaccard": [0.1],
+            "marker_gene_universe_size": [100],
+            "marker_overlap_null_pvalue": [0.12],
             "shared_marker_count": [1],
             "module_a_marker_count": [5],
             "module_b_marker_count": [6],
@@ -236,4 +238,5 @@ def test_export_trait_module_js_includes_summary_and_trace(tmp_path):
     assert data["IQ"]["pairs"][0]["module_a"] == 1
     assert data["IQ"]["pairs"][0]["module_b"] == 2
     assert data["IQ"]["pairs"][0]["profile_distinct"] is True
+    assert data["IQ"]["pairs"][0]["marker_overlap_null_pvalue"] == 0.12
     assert data["IQ"]["pairs"][0]["shared_top_genes"] == "GENE2"

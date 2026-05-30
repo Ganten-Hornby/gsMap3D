@@ -975,6 +975,7 @@
                                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Profile Similarity</th>
                                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Distinct</th>
                                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Marker Jaccard</th>
+                                            <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Overlap Null P</th>
                                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Shared Genes</th>
                                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Module A Only</th>
                                             <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Module B Only</th>
@@ -989,6 +990,7 @@
                                                 <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.profile_similarity != null ? row.profile_similarity.toFixed(3) : 'N/A'"></td>
                                                 <td class="px-3 py-2 text-sm text-gray-600" x-text="row.profile_distinct === true ? 'yes' : 'no'"></td>
                                                 <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="row.marker_jaccard != null ? row.marker_jaccard.toFixed(3) : 'N/A'"></td>
+                                                <td class="px-3 py-2 text-sm font-mono text-gray-600" x-text="formatPValue(row.marker_overlap_null_pvalue)"></td>
                                                 <td class="px-3 py-2 text-sm text-gray-600" x-text="formatGeneList(row.shared_top_genes)"></td>
                                                 <td class="px-3 py-2 text-sm text-gray-600" x-text="formatGeneList(row.module_a_only_top_genes, 4)"></td>
                                                 <td class="px-3 py-2 text-sm text-gray-600" x-text="formatGeneList(row.module_b_only_top_genes, 4)"></td>
@@ -1569,6 +1571,12 @@
 
                 formatPercent(value) {
                     return value !== null && value !== undefined ? `${(value * 100).toFixed(1)}%` : 'N/A';
+                },
+
+                formatPValue(value) {
+                    if (value === null || value === undefined || Number.isNaN(Number(value))) return 'N/A';
+                    const numeric = Number(value);
+                    return numeric < 0.001 ? numeric.toExponential(2) : numeric.toFixed(3);
                 },
 
                 formatCountPercent(count, fraction) {

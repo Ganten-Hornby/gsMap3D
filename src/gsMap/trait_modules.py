@@ -15,7 +15,7 @@ from pathlib import Path
 import anndata as ad
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import hypergeom, norm
 
 from gsMap.config import TraitModuleConfig
 from gsMap.spatial_ldsc.io import _read_sumstats, _read_w_ld, load_marker_scores_memmap_format
@@ -66,6 +66,8 @@ MODULE_PAIR_COLUMNS = [
     "max_allowed_profile_similarity",
     "profile_distinct",
     "marker_jaccard",
+    "marker_gene_universe_size",
+    "marker_overlap_null_pvalue",
     "shared_marker_count",
     "module_a_marker_count",
     "module_b_marker_count",
@@ -1010,6 +1012,48 @@ def _format_gene_set(genes: list[str]) -> str:
     return ";".join(genes)
 
 
+def _marker_gene_universe_size(
+    profile_by_module: dict[int, np.ndarray | dict[str, float]],
+) -> int | None:
+    profile_sizes = [
+        int(profile.size)
+        for profile in profile_by_module.values()
+        if isinstance(profile, np.ndarray)
+    ]
+    if profile_sizes:
+        return max(profile_sizes)
+    return None
+
+
+def _marker_overlap_null_pvalue(
+    *,
+    shared_marker_count: int,
+    module_a_marker_count: int,
+    module_b_marker_count: int,
+    marker_gene_universe_size: int | None,
+) -> float:
+    if marker_gene_universe_size is None:
+        return float("nan")
+    if (
+        marker_gene_universe_size <= 0
+        or module_a_marker_count <= 0
+        or module_b_marker_count <= 0
+        or module_a_marker_count > marker_gene_universe_size
+        or module_b_marker_count > marker_gene_universe_size
+    ):
+        return float("nan")
+    if shared_marker_count <= 0:
+        return 1.0
+    return float(
+        hypergeom.sf(
+            shared_marker_count - 1,
+            marker_gene_universe_size,
+            module_a_marker_count,
+            module_b_marker_count,
+        )
+    )
+
+
 def _trait_module_pair_rows(
     config: TraitModuleConfig,
     summary_by_module: dict[int, dict],
@@ -1020,6 +1064,7 @@ def _trait_module_pair_rows(
     if len(modules) < 2:
         return pd.DataFrame(columns=MODULE_PAIR_COLUMNS)
 
+    marker_gene_universe_size = _marker_gene_universe_size(profile_by_module)
     rows = []
     for module_a_pos, module_a in enumerate(modules[:-1]):
         for module_b in modules[module_a_pos + 1 :]:
@@ -1030,6 +1075,12 @@ def _trait_module_pair_rows(
             shared = gene_set_a.intersection(gene_set_b)
             union = gene_set_a.union(gene_set_b)
             marker_jaccard = len(shared) / len(union) if union else 0.0
+            marker_overlap_null_pvalue = _marker_overlap_null_pvalue(
+                shared_marker_count=len(shared),
+                module_a_marker_count=len(gene_set_a),
+                module_b_marker_count=len(gene_set_b),
+                marker_gene_universe_size=marker_gene_universe_size,
+            )
             profile_a = profile_by_module.get(module_a, {})
             profile_b = profile_by_module.get(module_b, {})
             if isinstance(profile_a, np.ndarray) and isinstance(profile_b, np.ndarray):
@@ -1050,6 +1101,8 @@ def _trait_module_pair_rows(
                     "max_allowed_profile_similarity": config.max_module_profile_similarity,
                     "profile_distinct": bool(profile_distinct),
                     "marker_jaccard": marker_jaccard,
+                    "marker_gene_universe_size": marker_gene_universe_size,
+                    "marker_overlap_null_pvalue": marker_overlap_null_pvalue,
                     "shared_marker_count": len(shared),
                     "module_a_marker_count": len(gene_set_a),
                     "module_b_marker_count": len(gene_set_b),

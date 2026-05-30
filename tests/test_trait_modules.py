@@ -1044,6 +1044,8 @@ def test_summarize_trait_module_pairs_reports_distinct_marker_programs(tmp_path)
         "max_allowed_profile_similarity",
         "profile_distinct",
         "marker_jaccard",
+        "marker_gene_universe_size",
+        "marker_overlap_null_pvalue",
         "shared_marker_count",
         "module_a_marker_count",
         "module_b_marker_count",
@@ -1062,6 +1064,8 @@ def test_summarize_trait_module_pairs_reports_distinct_marker_programs(tmp_path)
     assert pair_df.loc[0, "profile_distinct"]
     assert pair_df.loc[0, "shared_marker_count"] == 1
     assert pair_df.loc[0, "marker_jaccard"] == 0.2
+    assert pd.isna(pair_df.loc[0, "marker_gene_universe_size"])
+    assert pd.isna(pair_df.loc[0, "marker_overlap_null_pvalue"])
     assert pair_df.loc[0, "shared_top_genes"] == "G2"
     assert pair_df.loc[0, "module_a_only_top_genes"] == "G1;G3"
     assert pair_df.loc[0, "module_b_only_top_genes"] == "G4;G5"
@@ -1129,6 +1133,8 @@ def test_trait_module_pairs_from_results_use_full_profiles(tmp_path):
     assert pair_df.loc[0, "profile_similarity"] > 0.1
     assert pair_df.loc[0, "profile_distinct"]
     assert pair_df.loc[0, "marker_jaccard"] == 0.0
+    assert pair_df.loc[0, "marker_gene_universe_size"] == 6
+    assert pair_df.loc[0, "marker_overlap_null_pvalue"] == 1.0
     assert pair_df.loc[0, "module_a_marker_count"] == 2
     assert pair_df.loc[0, "module_b_marker_count"] == 2
     assert pair_df.loc[0, "module_a_signal_fraction"] == 0.6
@@ -1176,6 +1182,8 @@ def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
         "max_allowed_profile_similarity",
         "profile_distinct",
         "marker_jaccard",
+        "marker_gene_universe_size",
+        "marker_overlap_null_pvalue",
         "shared_marker_count",
         "module_a_marker_count",
         "module_b_marker_count",
