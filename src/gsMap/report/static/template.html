@@ -180,6 +180,9 @@
                                 x-text="mode.label"></option>
                         </template>
                     </select>
+                    <p class="mt-2 text-xs"
+                        :class="hasTraitModuleData(selectedTrait) ? 'text-gray-500' : 'text-amber-700'"
+                        x-text="traitModuleAvailabilityText()"></p>
                 </div>
 
                 <div x-show="traitColorMode === 'module_specificity' && selectedTraitModules().length > 0">
@@ -1525,6 +1528,18 @@
 
                 selectedTraitModuleRunSummary() {
                     return this.traitModuleData?.[this.selectedTrait]?.run_summary || null;
+                },
+
+                traitModuleAvailabilityText() {
+                    if (!this.hasTraitModuleData(this.selectedTrait)) {
+                        return 'Module specificity is unavailable for this trait.';
+                    }
+                    const summary = this.selectedTraitModuleRunSummary();
+                    if (!summary || summary.n_modules === undefined || summary.n_modules === null) {
+                        return 'Module specificity is available for this trait.';
+                    }
+                    const assigned = summary.n_assigned_seed_cells ?? summary.n_module_cells ?? 'N/A';
+                    return `${summary.n_modules} module(s), ${assigned} assigned seed cells.`;
                 },
 
                 selectedTraitModuleTrace() {
