@@ -20,6 +20,20 @@ from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 logger = logging.getLogger("gsMap.trait_modules")
 
 
+MODULE_SUMMARY_COLUMNS = [
+    "trait",
+    "module",
+    "n_cells",
+    "mean_neg_log10_p",
+    "max_neg_log10_p",
+    "mean_specificity",
+    "background_mean_specificity",
+    "specificity_enrichment",
+]
+
+MODULE_GENE_COLUMNS = ["trait", "module", "rank", "gene", "score"]
+
+
 @dataclass
 class ModuleResult:
     module_id: int
@@ -231,7 +245,8 @@ def discover_trait_modules(
     module_specificity = np.zeros(len(cells), dtype=np.float32)
     module_results: list[ModuleResult] = []
 
-    for module_id in range(1, config.max_modules + 1):
+    while len(module_results) < config.max_modules:
+        module_id = len(module_results) + 1
         module_idx, profile, specificity = _module_from_best_seed(
             residual=search_residual,
             remaining_mask=remaining_mask,
@@ -255,6 +270,17 @@ def discover_trait_modules(
         specificity_enrichment = float(cell_specificity.mean()) / max(
             background_specificity_mean, 1e-8
         )
+        if specificity_enrichment < config.min_specificity_enrichment:
+            remaining_mask[module_idx] = False
+            logger.info(
+                f"Rejected module candidate before module {module_id}: "
+                f"specificity_enrichment={specificity_enrichment:.3f} "
+                f"below min_specificity_enrichment={config.min_specificity_enrichment:.3f}; "
+                f"removed {len(module_cells)} background-like cells from later searches."
+            )
+            if remaining_mask.sum() < config.min_module_cells:
+                break
+            continue
 
         assigned_module[module_idx] = module_id
         module_specificity[module_idx] = cell_specificity
@@ -319,8 +345,8 @@ def discover_trait_modules(
                 }
             )
 
-    summary_df = pd.DataFrame(summaries)
-    genes_df = pd.DataFrame(gene_rows)
+    summary_df = pd.DataFrame(summaries, columns=MODULE_SUMMARY_COLUMNS)
+    genes_df = pd.DataFrame(gene_rows, columns=MODULE_GENE_COLUMNS)
     return cell_df.reset_index(drop=True), summary_df, genes_df
 
 

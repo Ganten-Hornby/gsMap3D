@@ -93,6 +93,17 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 0.95
 
+    min_specificity_enrichment: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Minimum mean module specificity divided by background mean specificity "
+                "required to accept a candidate module. Set to 0 to report all candidates."
+            ),
+            min=0.0,
+        ),
+    ] = 1.5
+
     condition_on_claimed_modules: Annotated[
         bool,
         typer.Option(
