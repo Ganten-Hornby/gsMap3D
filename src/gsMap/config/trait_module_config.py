@@ -2,7 +2,7 @@
 Configuration for trait module discovery.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -138,6 +138,102 @@ class TraitModuleConfig(ConfigWithAutoPaths):
             max=1.0,
         ),
     ] = 0.9
+
+    run_conditional_ldsc: Annotated[
+        bool,
+        typer.Option(
+            "--run-conditional-ldsc/--skip-conditional-ldsc",
+            help=(
+                "Run a module-level conditional S-LDSC approximation for each candidate. "
+                "The candidate module is tested as one LD-score annotation conditioned on "
+                "baseline annotations and previously accepted module annotations."
+            ),
+        ),
+    ] = False
+
+    conditional_ldsc_pvalue_threshold: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Maximum module-level conditional LDSC p-value allowed when "
+                "--run-conditional-ldsc is enabled."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.05
+
+    conditional_ldsc_n_blocks: Annotated[
+        int,
+        typer.Option(
+            help="Number of jackknife blocks for module-level conditional LDSC.",
+            min=2,
+        ),
+    ] = 200
+
+    conditional_chisq_max: Annotated[
+        int | None,
+        typer.Option(
+            help=(
+                "Maximum GWAS chi-square value for module-level conditional LDSC. "
+                "If omitted, uses the same default rule as spatial-ldsc."
+            ),
+        ),
+    ] = None
+
+    conditional_sumstats_file: Annotated[
+        Path | None,
+        typer.Option(
+            help=(
+                "GWAS summary statistics for module-level conditional LDSC. If omitted, "
+                "trait-modules tries to read the path from gsmap_web_report/report_meta.json."
+            ),
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None
+
+    conditional_snp_gene_weight_adata_path: Annotated[
+        Path | None,
+        typer.Option(
+            help=(
+                "SNP-gene weight matrix for module-level conditional LDSC. If omitted, "
+                "trait-modules tries to read the path from gsmap_web_report/report_meta.json."
+            ),
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = None
+
+    conditional_w_ld_dir: Annotated[
+        Path | None,
+        typer.Option(
+            help=(
+                "Directory containing LDSC regression weight files for module-level "
+                "conditional LDSC. If omitted, trait-modules tries report metadata first, "
+                "then project_dir/generate_ldscore/w_ld."
+            ),
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            resolve_path=True,
+        ),
+    ] = None
+
+    conditional_additional_baseline_h5ad_path_list: Annotated[
+        list[Path],
+        typer.Option(
+            help="Additional baseline h5ad files for module-level conditional LDSC.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
+    ] = field(default_factory=list)
 
     recompute_background_after_modules: Annotated[
         bool,

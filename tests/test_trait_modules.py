@@ -4,8 +4,10 @@ import pandas as pd
 
 from gsMap.config import TraitModuleConfig
 from gsMap.trait_modules import (
+    ConditionalLDSCResult,
     _condition_residual_on_profile,
     _conditional_neg_log10_p_proxy,
+    _fit_conditional_ldsc,
     _module_from_best_seed,
     _top_positive_sum,
     discover_trait_modules,
@@ -204,6 +206,34 @@ def test_conditional_neg_log10_p_proxy_uses_retained_marker_signal():
 
     assert conditional[0] == 0.0
     np.testing.assert_allclose(conditional[1], 8.0 * 6.0 / 7.0, rtol=1e-6)
+
+
+def test_conditional_ldsc_fit_recovers_candidate_signal():
+    rng = np.random.default_rng(7)
+    n_snps = 80
+    candidate = rng.uniform(0.2, 2.0, n_snps).astype(np.float32)
+    baseline = rng.uniform(0.1, 1.0, (n_snps, 2)).astype(np.float32)
+    baseline_sum = baseline.sum(axis=1)
+    sample_size = np.full(n_snps, 1000.0, dtype=np.float32)
+    regression_weights = np.ones(n_snps, dtype=np.float32)
+    chisq = (1.0 + 0.7 * candidate + baseline @ np.array([0.2, -0.1])).astype(np.float32)
+
+    result = _fit_conditional_ldsc(
+        candidate_annotation=candidate,
+        conditioning_annotations=[],
+        baseline_ld=baseline,
+        baseline_ld_sum=baseline_sum,
+        chisq=chisq,
+        sample_size=sample_size,
+        regression_weights=regression_weights,
+        nbar=1000.0,
+        n_blocks=8,
+    )
+
+    assert result.beta > 0
+    assert result.z > 0
+    assert result.p < 0.05
+    assert result.neg_log10_p > 1.0
 
 
 def test_module_specificity_uses_module_marker_subspace(tmp_path):
@@ -413,6 +443,62 @@ def test_specificity_null_rejects_common_background_program(tmp_path):
     assert trace_df.loc[0, "specificity_null_pvalue"] > 0.05
 
 
+def test_conditional_ldsc_gate_rejects_candidate(tmp_path, monkeypatch):
+    n_cells = 30
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 2.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "conditional_ldsc_gate_test", "IQ", marker_scores, p_values
+    )
+
+    class FakeConditionalLDSCContext:
+        def fit_profile(self, profile, conditioning_annotations):
+            return (
+                ConditionalLDSCResult(
+                    beta=0.1,
+                    se=0.1,
+                    z=1.0,
+                    p=0.75,
+                    neg_log10_p=-np.log10(0.75),
+                ),
+                np.ones(5, dtype=np.float32),
+            )
+
+    monkeypatch.setattr(
+        "gsMap.trait_modules._prepare_conditional_ldsc_context",
+        lambda config, gene_names: FakeConditionalLDSCContext(),
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="conditional_ldsc_gate_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+        min_specificity_enrichment=0.0,
+        specificity_null_iterations=0,
+        run_conditional_ldsc=True,
+        conditional_ldsc_pvalue_threshold=0.05,
+    )
+
+    cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+
+    assert cell_df["trait_module"].tolist() == [-1] * 10
+    assert summary_df.empty
+    assert trace_df["decision"].tolist() == ["rejected"]
+    assert trace_df["reason"].tolist() == ["conditional_ldsc_pvalue"]
+    assert trace_df.loc[0, "conditional_ldsc_p"] == 0.75
+
+
 def test_profile_similarity_rejects_duplicate_mechanism(tmp_path):
     n_cells = 50
     n_genes = 20
@@ -493,6 +579,11 @@ def test_all_background_like_candidates_keep_empty_output_schema(tmp_path):
         "n_cells",
         "mean_neg_log10_p",
         "max_neg_log10_p",
+        "conditional_ldsc_neg_log10_p",
+        "conditional_ldsc_p",
+        "conditional_ldsc_beta",
+        "conditional_ldsc_se",
+        "conditional_ldsc_z",
         "mean_specificity",
         "background_mean_specificity",
         "specificity_enrichment",
