@@ -30,6 +30,8 @@ MODULE_SUMMARY_COLUMNS = [
     "background_mean_specificity",
     "specificity_enrichment",
     "specificity_null_pvalue",
+    "max_profile_similarity",
+    "most_similar_module",
 ]
 
 MODULE_GENE_COLUMNS = ["trait", "module", "rank", "gene", "score"]
@@ -49,6 +51,8 @@ MODULE_TRACE_COLUMNS = [
     "background_mean_specificity",
     "specificity_enrichment",
     "specificity_null_pvalue",
+    "max_profile_similarity",
+    "most_similar_module",
 ]
 
 
@@ -62,6 +66,8 @@ class ModuleResult:
     background_specificity_mean: float
     specificity_enrichment: float
     specificity_null_pvalue: float
+    max_profile_similarity: float
+    most_similar_module: int
 
 
 def _read_ldsc_result(path) -> pd.DataFrame:
@@ -269,6 +275,28 @@ def _specificity_empirical_pvalue(
     return float((n_extreme + 1) / (n_iterations + 1))
 
 
+def _profile_similarity_to_accepted(
+    profile: np.ndarray, module_results: list[ModuleResult]
+) -> tuple[float, int]:
+    profile = np.maximum(profile, 0.0)
+    profile_norm = float(np.linalg.norm(profile))
+    if profile_norm <= 1e-8 or not module_results:
+        return 0.0, -1
+
+    max_similarity = 0.0
+    most_similar_module = -1
+    for result in module_results:
+        accepted_profile = np.maximum(result.profile, 0.0)
+        accepted_norm = float(np.linalg.norm(accepted_profile))
+        if accepted_norm <= 1e-8:
+            continue
+        similarity = float(np.dot(profile, accepted_profile) / (profile_norm * accepted_norm))
+        if similarity > max_similarity:
+            max_similarity = similarity
+            most_similar_module = result.module_id
+    return max_similarity, most_similar_module
+
+
 def discover_trait_modules_with_trace(
     config: TraitModuleConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -383,12 +411,19 @@ def discover_trait_modules_with_trace(
             config.specificity_null_iterations,
             null_rng,
         )
+        max_profile_similarity, most_similar_module = _profile_similarity_to_accepted(
+            profile, module_results
+        )
         fails_enrichment = specificity_enrichment < config.min_specificity_enrichment
         fails_null = (
             config.specificity_null_iterations > 0
             and specificity_null_pvalue > config.max_specificity_null_pvalue
         )
-        if fails_enrichment or fails_null:
+        fails_profile_similarity = (
+            most_similar_module > 0
+            and max_profile_similarity > config.max_module_profile_similarity
+        )
+        if fails_enrichment or fails_null or fails_profile_similarity:
             remaining_mask[module_idx] = False
             rejection_reasons = []
             rejection_messages = []
@@ -403,6 +438,13 @@ def discover_trait_modules_with_trace(
                 rejection_messages.append(
                     f"specificity_null_pvalue={specificity_null_pvalue:.3f} "
                     f"above max_specificity_null_pvalue={config.max_specificity_null_pvalue:.3f}"
+                )
+            if fails_profile_similarity:
+                rejection_reasons.append("module_profile_similarity")
+                rejection_messages.append(
+                    f"max_profile_similarity={max_profile_similarity:.3f} to module "
+                    f"{most_similar_module} above "
+                    f"max_module_profile_similarity={config.max_module_profile_similarity:.3f}"
                 )
             trace_rows.append(
                 {
@@ -420,6 +462,8 @@ def discover_trait_modules_with_trace(
                     "background_mean_specificity": background_specificity_mean,
                     "specificity_enrichment": specificity_enrichment,
                     "specificity_null_pvalue": specificity_null_pvalue,
+                    "max_profile_similarity": max_profile_similarity,
+                    "most_similar_module": most_similar_module,
                 }
             )
             logger.info(
@@ -450,6 +494,8 @@ def discover_trait_modules_with_trace(
                 "background_mean_specificity": background_specificity_mean,
                 "specificity_enrichment": specificity_enrichment,
                 "specificity_null_pvalue": specificity_null_pvalue,
+                "max_profile_similarity": max_profile_similarity,
+                "most_similar_module": most_similar_module,
             }
         )
 
@@ -463,6 +509,8 @@ def discover_trait_modules_with_trace(
                 background_specificity_mean=background_specificity_mean,
                 specificity_enrichment=specificity_enrichment,
                 specificity_null_pvalue=specificity_null_pvalue,
+                max_profile_similarity=max_profile_similarity,
+                most_similar_module=most_similar_module,
             )
         )
         logger.info(
@@ -512,6 +560,8 @@ def discover_trait_modules_with_trace(
                 "background_mean_specificity": result.background_specificity_mean,
                 "specificity_enrichment": result.specificity_enrichment,
                 "specificity_null_pvalue": result.specificity_null_pvalue,
+                "max_profile_similarity": result.max_profile_similarity,
+                "most_similar_module": result.most_similar_module,
             }
         )
 

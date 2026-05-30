@@ -127,6 +127,18 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 0.05
 
+    max_module_profile_similarity: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Maximum cosine similarity to any accepted module profile before "
+                "rejecting a candidate as a duplicate mechanism."
+            ),
+            min=0.0,
+            max=1.0,
+        ),
+    ] = 0.9
+
     recompute_background_after_modules: Annotated[
         bool,
         typer.Option(
