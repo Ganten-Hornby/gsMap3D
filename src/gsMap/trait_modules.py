@@ -62,6 +62,10 @@ MODULE_SPECIFICITY_BASE_COLUMNS = [
     "spot",
     "best_trait_module",
     "best_module_specificity",
+    "second_best_trait_module",
+    "second_best_module_specificity",
+    "module_specificity_margin",
+    "module_specificity_ratio",
 ]
 
 MODULE_PAIR_COLUMNS = [
@@ -765,12 +769,32 @@ def _module_specificity_table(
     module_ids = np.array([result.module_id for result in module_results], dtype=int)
     best_modules = module_ids[best_pos]
     best_modules = np.where(best_scores > 0.0, best_modules, -1)
+    if score_matrix.shape[1] > 1:
+        second_score_matrix = score_matrix.copy()
+        second_score_matrix[np.arange(score_matrix.shape[0]), best_pos] = -np.inf
+        second_pos = np.argmax(second_score_matrix, axis=1)
+        second_best_scores = score_matrix[np.arange(score_matrix.shape[0]), second_pos]
+        second_best_modules = module_ids[second_pos]
+        second_best_modules = np.where(second_best_scores > 0.0, second_best_modules, -1)
+    else:
+        second_best_scores = np.zeros(score_matrix.shape[0], dtype=np.float32)
+        second_best_modules = np.full(score_matrix.shape[0], -1, dtype=int)
+    specificity_margin = np.maximum(best_scores - second_best_scores, 0.0)
+    specificity_ratio = np.full(score_matrix.shape[0], np.nan, dtype=np.float32)
+    has_second_best = (best_scores > 0.0) & (second_best_scores > 0.0)
+    specificity_ratio[has_second_best] = (
+        best_scores[has_second_best] / second_best_scores[has_second_best]
+    )
 
     df = pd.DataFrame(
         {
             "spot": spot_names.astype(str),
             "best_trait_module": best_modules,
             "best_module_specificity": best_scores.astype(np.float32),
+            "second_best_trait_module": second_best_modules,
+            "second_best_module_specificity": second_best_scores.astype(np.float32),
+            "module_specificity_margin": specificity_margin.astype(np.float32),
+            "module_specificity_ratio": specificity_ratio.astype(np.float32),
         }
     )
     for column, values in module_scores.items():

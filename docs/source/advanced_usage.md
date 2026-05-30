@@ -98,8 +98,11 @@ among trait-associated cells. Treat them as hypotheses to validate, not as proof
 of fully independent causal cell types.
 ```
 
-The outputs are written to `{workdir}/{project_name}/trait_modules/`. Regenerate
-the report data after running the command so the UMAP and spatial views can color
+The outputs are written to `{workdir}/{project_name}/trait_modules/`.
+`module_specificity.csv` includes the best module, second-best module, and
+best-vs-second specificity margin for each spot so ambiguous cells can be
+separated from cells with a uniquely dominant module profile. Regenerate the
+report data after running the command so the UMAP and spatial views can color
 cells by module specificity:
 
 ```bash

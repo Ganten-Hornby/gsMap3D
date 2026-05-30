@@ -404,6 +404,52 @@ def test_module_specificity_uses_module_marker_subspace(tmp_path):
     assert assigned["module_specificity"].min() > 0.99
 
 
+def test_module_specificity_reports_second_best_and_uniqueness_margin(tmp_path):
+    n_cells = 30
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 3.1
+    marker_scores[10:20, 5:10] = 3.1
+    marker_scores[20, :5] = 3.1
+    marker_scores[20, 5:10] = 3.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:20] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "specificity_margin_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="specificity_margin_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=2,
+        max_marker_genes=5,
+    )
+
+    run_trait_module_discovery(config)
+    specificity_df = pd.read_csv(config.module_specificity_path)
+
+    ambiguous = specificity_df.loc[specificity_df["spot"] == "cell_20"].iloc[0]
+    assert ambiguous["best_trait_module"] in {1, 2}
+    assert ambiguous["second_best_trait_module"] in {1, 2}
+    assert ambiguous["best_trait_module"] != ambiguous["second_best_trait_module"]
+    assert ambiguous["best_module_specificity"] > 0.99
+    assert ambiguous["second_best_module_specificity"] > 0.99
+    assert ambiguous["module_specificity_margin"] < 1e-6
+    assert ambiguous["module_specificity_ratio"] == 1.0
+
+    unique = specificity_df.loc[specificity_df["spot"] == "cell_0"].iloc[0]
+    assert unique["second_best_trait_module"] == -1
+    assert unique["module_specificity_margin"] > 0.99
+    assert pd.isna(unique["module_specificity_ratio"])
+
+
 def test_module_summary_reports_background_specificity_enrichment(tmp_path):
     n_cells = 40
     n_genes = 20
@@ -1179,6 +1225,10 @@ def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
         "spot",
         "best_trait_module",
         "best_module_specificity",
+        "second_best_trait_module",
+        "second_best_module_specificity",
+        "module_specificity_margin",
+        "module_specificity_ratio",
         "module_1_specificity",
     ]
     assert len(specificity_df) == n_cells

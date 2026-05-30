@@ -262,13 +262,19 @@ Per-cell specificity scores for each accepted module. Unlike
 `cell_modules.csv`, this table includes all cells available in the marker-score
 matrix, not only significant seed cells. The report uses these columns to color
 UMAP and spatial plots by best-module specificity or by one selected module.
+The second-best and margin fields help distinguish uniquely module-specific
+cells from cells that are similarly compatible with multiple accepted modules.
 
-| Column                    | Type   | Description                                            |
-| ------------------------- | ------ | ------------------------------------------------------ |
-| `spot`                    | string | Spot identifier                                        |
-| `best_trait_module`       | int    | Module with the highest specificity score for the spot |
-| `best_module_specificity` | float  | Highest module specificity score for the spot          |
-| `module_{n}_specificity`  | float  | Specificity score for accepted module `n`              |
+| Column                           | Type   | Description                                               |
+| -------------------------------- | ------ | --------------------------------------------------------- |
+| `spot`                           | string | Spot identifier                                           |
+| `best_trait_module`              | int    | Module with the highest specificity score for the spot    |
+| `best_module_specificity`        | float  | Highest module specificity score for the spot             |
+| `second_best_trait_module`       | int    | Runner-up module by specificity, or `-1` if none is found |
+| `second_best_module_specificity` | float  | Runner-up module specificity score                        |
+| `module_specificity_margin`      | float  | Difference between best and second-best specificity       |
+| `module_specificity_ratio`       | float  | Best divided by second-best specificity when defined      |
+| `module_{n}_specificity`         | float  | Specificity score for accepted module `n`                 |
 
 ### module_pairs.csv
 

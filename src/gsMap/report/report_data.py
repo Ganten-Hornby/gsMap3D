@@ -860,6 +860,8 @@ def _prepare_3d_visualization(
             col
             for col in _trait_module_specificity_columns(metadata, trait)
             if col != f"{trait}_best_trait_module"
+            and col != f"{trait}_second_best_trait_module"
+            and not col.endswith("_ratio")
         ]
         if module_cols:
             trait_module_3d_cols[trait] = module_cols
@@ -1498,6 +1500,10 @@ def _trait_module_specificity_columns(df: pd.DataFrame, trait: str) -> list[str]
     exact = {
         f"{trait}_best_trait_module",
         f"{trait}_best_module_specificity",
+        f"{trait}_second_best_trait_module",
+        f"{trait}_second_best_module_specificity",
+        f"{trait}_module_specificity_margin",
+        f"{trait}_module_specificity_ratio",
     }
     return [
         col

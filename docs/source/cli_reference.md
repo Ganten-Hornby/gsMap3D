@@ -258,7 +258,9 @@ later rounds must explain residual marker signal.
 
 The command writes CSV files under `{workdir}/{project_name}/trait_modules/` by
 default. When the report data are regenerated, these files are used to color UMAP
-and spatial plots by module specificity for each trait.
+and spatial plots by module specificity for each trait. The per-cell specificity
+table also reports the second-best module and the best-vs-second specificity
+margin, which helps flag cells that are not uniquely assigned to one module.
 
 ```{note}
 Trait modules are evidence for distinct marker-score mechanisms among

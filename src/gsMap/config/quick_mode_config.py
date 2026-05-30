@@ -314,7 +314,11 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
                     module_cols = []
 
                 for col in module_cols:
-                    if col == "spot" or col == "best_trait_module":
+                    if col in {
+                        "spot",
+                        "best_trait_module",
+                        "second_best_trait_module",
+                    } or col.endswith("_ratio"):
                         continue
                     safe_suffix = "".join(c if c.isalnum() else "_" for c in col)
                     module_3d_html = (

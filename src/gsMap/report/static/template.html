@@ -1623,6 +1623,10 @@
                         const seedSpecificityCol = `${trait}_module_specificity`;
                         const bestSpecificityCol = `${trait}_best_module_specificity`;
                         const bestModuleCol = `${trait}_best_trait_module`;
+                        const secondBestModuleCol = `${trait}_second_best_trait_module`;
+                        const secondBestSpecificityCol = `${trait}_second_best_module_specificity`;
+                        const specificityMarginCol = `${trait}_module_specificity_margin`;
+                        const specificityRatioCol = `${trait}_module_specificity_ratio`;
                         const moduleCol = `${trait}_trait_module`;
                         const statusCol = `${trait}_module_status`;
                         const reasonCol = `${trait}_module_reason`;
@@ -1646,6 +1650,10 @@
                             specificityCol: selectedSpecificityCol,
                             bestSpecificityCol: bestSpecificityCol,
                             bestModuleCol: bestModuleCol,
+                            secondBestModuleCol: secondBestModuleCol,
+                            secondBestSpecificityCol: secondBestSpecificityCol,
+                            specificityMarginCol: specificityMarginCol,
+                            specificityRatioCol: specificityRatioCol,
                             statusCol: statusCol,
                             reasonCol: reasonCol,
                             moduleValues: moduleValues,
@@ -2279,16 +2287,24 @@
                         if (colorSpec.isModuleMode) {
                             const moduleVal = this.umapData[colorSpec.moduleCol]?.[i];
                             const bestModuleVal = this.umapData[colorSpec.bestModuleCol]?.[i];
+                            const secondBestModuleVal = this.umapData[colorSpec.secondBestModuleCol]?.[i];
                             const specificityVal = this.umapData[colorSpec.specificityCol]?.[i];
                             const seedSpecificityVal = this.umapData[colorSpec.seedSpecificityCol]?.[i];
+                            const secondBestSpecificityVal = this.umapData[colorSpec.secondBestSpecificityCol]?.[i];
+                            const specificityMarginVal = this.umapData[colorSpec.specificityMarginCol]?.[i];
+                            const specificityRatioVal = this.umapData[colorSpec.specificityRatioCol]?.[i];
                             const statusVal = this.umapData[colorSpec.statusCol]?.[i];
                             const reasonVal = this.umapData[colorSpec.reasonCol]?.[i];
                             text += `<br><b>Seed module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
                             text += `<br><b>Best specificity module:</b> ${bestModuleVal != null && bestModuleVal >= 0 ? bestModuleVal : 'None'}`;
+                            text += `<br><b>Second specificity module:</b> ${secondBestModuleVal != null && secondBestModuleVal >= 0 ? secondBestModuleVal : 'None'}`;
                             text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
                             text += `<br><b>Module reason:</b> ${reasonVal || 'N/A'}`;
                             text += `<br><b>Plotted specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
                             text += `<br><b>Seed specificity:</b> ${typeof seedSpecificityVal === 'number' ? seedSpecificityVal.toFixed(3) : 'N/A'}`;
+                            text += `<br><b>Second specificity:</b> ${typeof secondBestSpecificityVal === 'number' ? secondBestSpecificityVal.toFixed(3) : 'N/A'}`;
+                            text += `<br><b>Specificity margin:</b> ${typeof specificityMarginVal === 'number' ? specificityMarginVal.toFixed(3) : 'N/A'}`;
+                            text += `<br><b>Specificity ratio:</b> ${typeof specificityRatioVal === 'number' ? specificityRatioVal.toFixed(2) : 'N/A'}`;
                             if (colorSpec.selectedModule > 0) {
                                 text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
                             }
@@ -2534,16 +2550,24 @@
                             if (colorSpec.isModuleMode) {
                                 const moduleVal = data[colorSpec.moduleCol]?.[i];
                                 const bestModuleVal = data[colorSpec.bestModuleCol]?.[i];
+                                const secondBestModuleVal = data[colorSpec.secondBestModuleCol]?.[i];
                                 const specificityVal = data[colorSpec.specificityCol]?.[i];
                                 const seedSpecificityVal = data[colorSpec.seedSpecificityCol]?.[i];
+                                const secondBestSpecificityVal = data[colorSpec.secondBestSpecificityCol]?.[i];
+                                const specificityMarginVal = data[colorSpec.specificityMarginCol]?.[i];
+                                const specificityRatioVal = data[colorSpec.specificityRatioCol]?.[i];
                                 const statusVal = data[colorSpec.statusCol]?.[i];
                                 const reasonVal = data[colorSpec.reasonCol]?.[i];
                                 text += `<br><b>Seed module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
                                 text += `<br><b>Best specificity module:</b> ${bestModuleVal != null && bestModuleVal >= 0 ? bestModuleVal : 'None'}`;
+                                text += `<br><b>Second specificity module:</b> ${secondBestModuleVal != null && secondBestModuleVal >= 0 ? secondBestModuleVal : 'None'}`;
                                 text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
                                 text += `<br><b>Module reason:</b> ${reasonVal || 'N/A'}`;
                                 text += `<br><b>Plotted specificity:</b> ${typeof specificityVal === 'number' ? specificityVal.toFixed(3) : 'N/A'}`;
                                 text += `<br><b>Seed specificity:</b> ${typeof seedSpecificityVal === 'number' ? seedSpecificityVal.toFixed(3) : 'N/A'}`;
+                                text += `<br><b>Second specificity:</b> ${typeof secondBestSpecificityVal === 'number' ? secondBestSpecificityVal.toFixed(3) : 'N/A'}`;
+                                text += `<br><b>Specificity margin:</b> ${typeof specificityMarginVal === 'number' ? specificityMarginVal.toFixed(3) : 'N/A'}`;
+                                text += `<br><b>Specificity ratio:</b> ${typeof specificityRatioVal === 'number' ? specificityRatioVal.toFixed(2) : 'N/A'}`;
                                 if (colorSpec.selectedModule > 0) {
                                     text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
                                 }

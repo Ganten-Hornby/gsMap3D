@@ -47,6 +47,10 @@ def test_merge_trait_module_metadata_adds_trait_specific_columns(tmp_path):
             "spot": ["cell_1", "cell_2", "cell_3"],
             "best_trait_module": [2, 2, 1],
             "best_module_specificity": [0.9234, 0.2211, 0.5123],
+            "second_best_trait_module": [1, 1, 2],
+            "second_best_module_specificity": [0.1234, 0.1111, 0.1122],
+            "module_specificity_margin": [0.8, 0.11, 0.4],
+            "module_specificity_ratio": [7.482982, 1.990099, 4.565954],
             "module_1_specificity": [0.1234, 0.1111, 0.5123],
             "module_2_specificity": [0.9234, 0.2211, 0.1122],
         }
@@ -67,6 +71,10 @@ def test_merge_trait_module_metadata_adds_trait_specific_columns(tmp_path):
     assert np.isnan(merged["IQ_module_specificity"].iloc[1])
     assert merged["IQ_best_trait_module"].tolist() == [2, 2, 1]
     assert merged["IQ_best_module_specificity"].tolist() == [0.923, 0.221, 0.512]
+    assert merged["IQ_second_best_trait_module"].tolist() == [1, 1, 2]
+    assert merged["IQ_second_best_module_specificity"].tolist() == [0.123, 0.111, 0.112]
+    assert merged["IQ_module_specificity_margin"].tolist() == [0.8, 0.11, 0.4]
+    assert merged["IQ_module_specificity_ratio"].tolist() == [7.483, 1.99, 4.566]
     assert merged["IQ_module_1_specificity"].tolist() == [0.123, 0.111, 0.512]
     assert merged["IQ_module_2_specificity"].tolist() == [0.923, 0.221, 0.112]
     assert merged["IQ_is_module_cell"].tolist() == [True, False, True]
@@ -96,6 +104,10 @@ def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
             "IQ_module_specificity": [0.9234, None],
             "IQ_best_trait_module": [2, 2],
             "IQ_best_module_specificity": [0.9234, 0.2211],
+            "IQ_second_best_trait_module": [1, 1],
+            "IQ_second_best_module_specificity": [0.1234, 0.1111],
+            "IQ_module_specificity_margin": [0.8, 0.11],
+            "IQ_module_specificity_ratio": [7.482982, 1.990099],
             "IQ_module_1_specificity": [0.1234, 0.1111],
             "IQ_module_2_specificity": [0.9234, 0.2211],
             "IQ_is_module_cell": ["True", "False"],
@@ -123,6 +135,10 @@ def test_export_per_sample_spatial_js_includes_trait_module_columns(tmp_path):
     assert data["IQ_module_specificity"] == [0.923, None]
     assert data["IQ_best_trait_module"] == [2, 2]
     assert data["IQ_best_module_specificity"] == [0.923, 0.221]
+    assert data["IQ_second_best_trait_module"] == [1, 1]
+    assert data["IQ_second_best_module_specificity"] == [0.123, 0.111]
+    assert data["IQ_module_specificity_margin"] == [0.8, 0.11]
+    assert data["IQ_module_specificity_ratio"] == [7.483, 1.99]
     assert data["IQ_module_1_specificity"] == [0.123, 0.111]
     assert data["IQ_module_2_specificity"] == [0.923, 0.221]
     assert data["IQ_is_module_cell"] == [True, False]
@@ -305,6 +321,10 @@ def test_prepare_3d_visualization_writes_trait_module_specificity_views(tmp_path
             "IQ": [3.2, 0.4, 1.1],
             "IQ_best_trait_module": [1, -1, 2],
             "IQ_best_module_specificity": [0.9, 0.0, 0.8],
+            "IQ_second_best_trait_module": [2, -1, 1],
+            "IQ_second_best_module_specificity": [0.1, 0.0, 0.2],
+            "IQ_module_specificity_margin": [0.8, 0.0, 0.6],
+            "IQ_module_specificity_ratio": [9.0, None, 4.0],
             "IQ_module_1_specificity": [0.9, 0.0, 0.2],
             "IQ_module_2_specificity": [0.1, 0.0, 0.8],
             "annotation": ["A", "B", "A"],
@@ -337,12 +357,17 @@ def test_prepare_3d_visualization_writes_trait_module_specificity_views(tmp_path
     assert result == "spatial_3d/spatial_3d_anno_annotation.html"
     assert (web_3d / "spatial_3d_trait_IQ.html").exists()
     assert (web_3d / "spatial_3d_trait_module_IQ_best_module_specificity.html").exists()
+    assert (web_3d / "spatial_3d_trait_module_IQ_module_specificity_margin.html").exists()
     assert (web_3d / "spatial_3d_trait_module_IQ_module_1_specificity.html").exists()
     assert (web_3d / "spatial_3d_trait_module_IQ_module_2_specificity.html").exists()
+    assert not (web_3d / "spatial_3d_trait_module_IQ_second_best_trait_module.html").exists()
+    assert not (web_3d / "spatial_3d_trait_module_IQ_module_specificity_ratio.html").exists()
     continuous_keys = [call["keys"][0] for call in calls if call["keys"][0] != "annotation"]
     assert continuous_keys == [
         "IQ",
         "IQ_best_module_specificity",
+        "IQ_second_best_module_specificity",
+        "IQ_module_specificity_margin",
         "IQ_module_1_specificity",
         "IQ_module_2_specificity",
     ]
@@ -398,6 +423,10 @@ def test_report_missing_files_requires_trait_module_3d_views(tmp_path):
             "spot": ["cell_1"],
             "best_trait_module": [1],
             "best_module_specificity": [0.9],
+            "second_best_trait_module": [-1],
+            "second_best_module_specificity": [0.0],
+            "module_specificity_margin": [0.9],
+            "module_specificity_ratio": [None],
             "module_1_specificity": [0.9],
         }
     ).to_csv(module_dir / "module_report_IQ.module_specificity.csv", index=False)
@@ -420,6 +449,18 @@ def test_report_missing_files_requires_trait_module_3d_views(tmp_path):
     assert (
         spatial_3d_dir / "spatial_3d_trait_module_IQ_best_module_specificity.html"
     ) in missing_web_files
+    assert (
+        spatial_3d_dir / "spatial_3d_trait_module_IQ_second_best_module_specificity.html"
+    ) in missing_web_files
+    assert (
+        spatial_3d_dir / "spatial_3d_trait_module_IQ_module_specificity_margin.html"
+    ) in missing_web_files
+    assert (
+        spatial_3d_dir / "spatial_3d_trait_module_IQ_second_best_trait_module.html"
+    ) not in missing_web_files
+    assert (
+        spatial_3d_dir / "spatial_3d_trait_module_IQ_module_specificity_ratio.html"
+    ) not in missing_web_files
     assert (
         spatial_3d_dir / "spatial_3d_trait_module_IQ_module_1_specificity.html"
     ) in missing_web_files
@@ -480,6 +521,10 @@ def test_report_missing_files_marks_trait_module_outputs_as_stale_inputs(tmp_pat
             "spot": ["cell_1"],
             "best_trait_module": [1],
             "best_module_specificity": [0.9],
+            "second_best_trait_module": [-1],
+            "second_best_module_specificity": [0.0],
+            "module_specificity_margin": [0.9],
+            "module_specificity_ratio": [None],
             "module_1_specificity": [0.9],
         }
     ).to_csv(specificity_path, index=False)
