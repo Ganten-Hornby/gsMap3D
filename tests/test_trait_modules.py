@@ -33,7 +33,7 @@ def _write_trait_module_inputs(
 ):
     project_dir = tmp_path / project_name
     ldsc_dir = project_dir / "spatial_ldsc"
-    ldsc_dir.mkdir(parents=True)
+    ldsc_dir.mkdir(parents=True, exist_ok=True)
 
     cells = [f"cell_{i}" for i in range(marker_scores.shape[0])]
     genes = [f"gene_{i}" for i in range(marker_scores.shape[1])]
@@ -133,6 +133,63 @@ def test_discover_trait_modules_uses_global_background_for_pure_signal(tmp_path)
     assert summary_df["n_cells"].tolist() == [20]
     assert set(cell_df.loc[cell_df["trait_module"] == 1, "spot"]) == set(cells[:20])
     assert set(genes_df["gene"]) == set(genes[:5])
+
+
+def test_trait_modules_contrast_single_and_multi_trait_mechanisms(tmp_path):
+    n_cells = 90
+    n_genes = 30
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:15, :5] = 3.1
+    marker_scores[15:30, 10:15] = 3.1
+    marker_scores[30:45, 20:25] = 3.1
+
+    single_trait_p = np.full(n_cells, 0.9)
+    single_trait_p[:15] = 1e-10
+    multi_trait_p = np.full(n_cells, 0.9)
+    multi_trait_p[:15] = 1e-10
+    multi_trait_p[15:30] = 1e-8
+
+    project_name = "trait_mechanism_contrast_test"
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, project_name, "PURE", marker_scores, single_trait_p
+    )
+    _write_trait_module_inputs(tmp_path, project_name, "MIXED", marker_scores, multi_trait_p)
+
+    def run_trait(trait_name: str):
+        config = TraitModuleConfig(
+            workdir=tmp_path,
+            project_name=project_name,
+            trait_name=trait_name,
+            marker_score_h5ad_path=marker_path,
+            pvalue_threshold=0.01,
+            top_gene_fraction=0.2,
+            min_module_cells=5,
+            module_similarity_threshold=0.95,
+            max_modules=4,
+            max_marker_genes=5,
+            module_stability_iterations=0,
+        )
+        cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+        return (
+            cell_df,
+            summary_df,
+            summarize_trait_module_run(config, cell_df, summary_df, trace_df),
+        )
+
+    single_cells, single_summary, single_run = run_trait("PURE")
+    multi_cells, multi_summary, multi_run = run_trait("MIXED")
+
+    assert single_summary["n_cells"].tolist() == [15]
+    assert single_run.loc[0, "resolution_status"] == "single_module_dominant"
+    assert single_run.loc[0, "n_unique_module_cells"] == 15
+    assert single_cells["trait_module"].value_counts().to_dict() == {1: 15}
+
+    assert multi_summary["n_cells"].tolist() == [15, 15]
+    assert multi_run.loc[0, "resolution_status"] == "multi_module_resolved"
+    assert multi_run.loc[0, "n_unique_module_cells"] == 30
+    assert multi_cells["trait_module"].value_counts().to_dict() == {1: 15, 2: 15}
+    assert multi_summary.loc[0, "module_signal_fraction"] < 0.75
+    assert multi_summary.loc[1, "cumulative_signal_fraction"] > 0.95
 
 
 def test_condition_residual_on_profile_removes_claimed_program_only():
@@ -884,6 +941,68 @@ def test_require_conditional_ldsc_gate_rejects_candidate(tmp_path, monkeypatch):
     assert trace_df["decision"].tolist() == ["rejected"]
     assert trace_df["reason"].tolist() == ["conditional_ldsc_pvalue"]
     assert trace_df.loc[0, "conditional_ldsc_p"] == 0.75
+
+
+def test_conditional_ldsc_conditions_later_modules_on_accepted_annotations(tmp_path, monkeypatch):
+    n_cells = 40
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 3.1
+    marker_scores[10:20, 10:15] = 3.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:10] = 1e-12
+    p_values[10:20] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "conditional_ldsc_iteration_test", "IQ", marker_scores, p_values
+    )
+
+    class FakeConditionalLDSCContext:
+        def __init__(self):
+            self.conditioning_lengths = []
+
+        def fit_profile(self, profile, conditioning_annotations):
+            self.conditioning_lengths.append(len(conditioning_annotations))
+            return (
+                ConditionalLDSCResult(
+                    beta=0.2,
+                    se=0.05,
+                    z=4.0,
+                    p=1e-4,
+                    neg_log10_p=4.0,
+                ),
+                np.full(5, len(self.conditioning_lengths), dtype=np.float32),
+            )
+
+    fake_context = FakeConditionalLDSCContext()
+    monkeypatch.setattr(
+        "gsMap.trait_modules._prepare_conditional_ldsc_context",
+        lambda config, gene_names: fake_context,
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="conditional_ldsc_iteration_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        max_modules=3,
+        max_marker_genes=5,
+        min_specificity_enrichment=0.0,
+        specificity_null_iterations=0,
+        module_stability_iterations=0,
+        run_conditional_ldsc=True,
+    )
+
+    _, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+
+    assert summary_df["n_cells"].tolist() == [10, 10]
+    assert fake_context.conditioning_lengths == [0, 1]
+    assert trace_df["decision"].tolist() == ["accepted", "accepted"]
+    assert trace_df["conditional_ldsc_p"].tolist() == [1e-4, 1e-4]
 
 
 def test_profile_similarity_rejects_duplicate_mechanism(tmp_path):
