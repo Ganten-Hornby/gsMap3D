@@ -98,6 +98,8 @@ MODULE_RUN_COLUMNS = [
     "n_modules",
     "n_module_cells",
     "module_cell_fraction",
+    "n_unique_module_cells",
+    "unique_module_cell_fraction",
     "n_assigned_seed_cells",
     "assigned_seed_cell_fraction",
     "n_rejected_seed_cells",
@@ -802,6 +804,56 @@ def _module_specificity_table(
     return df[columns]
 
 
+def _module_specificity_diagnostics(
+    residual: np.ndarray,
+    module_results: list[ModuleResult],
+    assigned_module: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    n_cells = residual.shape[0]
+    assigned_specificity = np.zeros(n_cells, dtype=np.float32)
+    second_best_specificity = np.zeros(n_cells, dtype=np.float32)
+    specificity_margin = np.zeros(n_cells, dtype=np.float32)
+    specificity_ratio = np.full(n_cells, np.nan, dtype=np.float32)
+    if not module_results:
+        return (
+            assigned_specificity,
+            second_best_specificity,
+            specificity_margin,
+            specificity_ratio,
+        )
+
+    module_ids = np.array([result.module_id for result in module_results], dtype=int)
+    score_matrix = np.column_stack(
+        [_module_specificity_scores(residual, result.profile) for result in module_results]
+    )
+    for module_id in np.unique(assigned_module):
+        if module_id <= 0:
+            continue
+        module_positions = np.flatnonzero(module_ids == module_id)
+        if module_positions.size == 0:
+            continue
+        module_pos = module_positions[0]
+        cell_idx = np.flatnonzero(assigned_module == module_id)
+        assigned_specificity[cell_idx] = score_matrix[cell_idx, module_pos]
+        if score_matrix.shape[1] > 1:
+            competitor_scores = score_matrix[cell_idx].copy()
+            competitor_scores[:, module_pos] = -np.inf
+            second_best_specificity[cell_idx] = np.max(competitor_scores, axis=1)
+
+    second_best_specificity = np.maximum(second_best_specificity, 0.0)
+    specificity_margin = np.maximum(assigned_specificity - second_best_specificity, 0.0)
+    has_second_best = (assigned_specificity > 0.0) & (second_best_specificity > 0.0)
+    specificity_ratio[has_second_best] = (
+        assigned_specificity[has_second_best] / second_best_specificity[has_second_best]
+    )
+    return (
+        assigned_specificity,
+        second_best_specificity,
+        specificity_margin,
+        specificity_ratio,
+    )
+
+
 def _module_specificity_table_from_marker_adata(
     marker_adata,
     base_background: np.ndarray,
@@ -1373,7 +1425,6 @@ def _discover_trait_modules_with_trace_and_pairs(
 
     remaining_mask = np.ones(len(cells), dtype=bool)
     assigned_module = np.full(len(cells), -1, dtype=int)
-    module_specificity = np.zeros(len(cells), dtype=np.float32)
     cell_module_status = np.full(len(cells), CELL_MODULE_STATUS_UNRESOLVED, dtype=object)
     cell_module_reason = np.full(len(cells), "not_selected", dtype=object)
     total_trait_signal = max(float(weights.sum()), 1e-8)
@@ -1633,7 +1684,6 @@ def _discover_trait_modules_with_trace_and_pairs(
             continue
 
         assigned_module[module_idx] = module_id
-        module_specificity[module_idx] = cell_specificity
         cell_module_status[module_idx] = CELL_MODULE_STATUS_ASSIGNED
         cell_module_reason[module_idx] = "accepted"
         remaining_mask[module_idx] = False
@@ -1739,9 +1789,18 @@ def _discover_trait_modules_with_trace_and_pairs(
             break
 
     cell_df = ldsc.loc[cells].copy()
+    assigned_specificity, second_best_specificity, specificity_margin, specificity_ratio = (
+        _module_specificity_diagnostics(residual, module_results, assigned_module)
+    )
     cell_df["trait_module"] = assigned_module
-    cell_df["module_specificity"] = module_specificity
+    cell_df["module_specificity"] = assigned_specificity
+    cell_df["second_best_module_specificity"] = second_best_specificity
+    cell_df["module_specificity_margin"] = specificity_margin
+    cell_df["module_specificity_ratio"] = specificity_ratio
     cell_df["is_module_cell"] = cell_df["trait_module"] > 0
+    cell_df["is_unique_module_cell"] = cell_df["is_module_cell"] & (
+        cell_df["module_specificity_margin"] >= config.min_module_specificity_margin
+    )
     cell_df["module_status"] = cell_module_status
     cell_df["module_reason"] = cell_module_reason
 
@@ -1861,6 +1920,10 @@ def summarize_trait_module_run(
     n_modules = int(len(summary_df))
     n_module_cells = int(cell_df["is_module_cell"].sum()) if "is_module_cell" in cell_df else 0
     module_cell_fraction = n_module_cells / max(n_seed_cells, 1)
+    n_unique_module_cells = (
+        int(cell_df["is_unique_module_cell"].sum()) if "is_unique_module_cell" in cell_df else 0
+    )
+    unique_module_cell_fraction = n_unique_module_cells / max(n_seed_cells, 1)
     if "module_status" in cell_df:
         status_counts = cell_df["module_status"].value_counts()
         n_assigned_seed_cells = int(status_counts.get(CELL_MODULE_STATUS_ASSIGNED, 0))
@@ -1897,6 +1960,8 @@ def summarize_trait_module_run(
                 "n_modules": n_modules,
                 "n_module_cells": n_module_cells,
                 "module_cell_fraction": module_cell_fraction,
+                "n_unique_module_cells": n_unique_module_cells,
+                "unique_module_cell_fraction": unique_module_cell_fraction,
                 "n_assigned_seed_cells": n_assigned_seed_cells,
                 "assigned_seed_cell_fraction": assigned_seed_cell_fraction,
                 "n_rejected_seed_cells": n_rejected_seed_cells,

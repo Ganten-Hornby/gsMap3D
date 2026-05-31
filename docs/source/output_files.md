@@ -220,14 +220,18 @@ When report data are regenerated, these columns are merged into
 `report_data/spot_metadata.csv` with trait-specific prefixes such as
 `{trait}_trait_module` and `{trait}_module_specificity`.
 
-| Column               | Type   | Description                                                    |
-| -------------------- | ------ | -------------------------------------------------------------- |
-| `spot`               | string | Spot identifier matched to the spatial LDSC result             |
-| `trait_module`       | int    | Accepted module ID, or `-1` for cells not assigned to a module |
-| `module_specificity` | float  | Similarity or specificity score for the assigned module        |
-| `is_module_cell`     | bool   | Whether the seed cell is assigned to an accepted module        |
-| `module_status`      | string | `assigned`, `rejected`, or `unresolved`                        |
-| `module_reason`      | string | Reason for assignment, rejection, or unresolved status         |
+| Column                           | Type   | Description                                                          |
+| -------------------------------- | ------ | -------------------------------------------------------------------- |
+| `spot`                           | string | Spot identifier matched to the spatial LDSC result                   |
+| `trait_module`                   | int    | Accepted module ID, or `-1` for cells not assigned to a module       |
+| `module_specificity`             | float  | Similarity or specificity score for the assigned module              |
+| `second_best_module_specificity` | float  | Best specificity among other accepted modules                        |
+| `module_specificity_margin`      | float  | Assigned module specificity minus second-best module specificity     |
+| `module_specificity_ratio`       | float  | Assigned module specificity divided by second-best specificity       |
+| `is_module_cell`                 | bool   | Whether the seed cell is assigned to an accepted module              |
+| `is_unique_module_cell`          | bool   | Whether the assigned module passes the configured specificity margin |
+| `module_status`                  | string | `assigned`, `rejected`, or `unresolved`                              |
+| `module_reason`                  | string | Reason for assignment, rejection, or unresolved status               |
 
 ### module_summary.csv
 
@@ -308,8 +312,9 @@ LDSC metrics, and the most similar previously accepted module.
 ### run_summary.csv
 
 The run summary has one row per trait-module run. It reports the number of seed
-cells, accepted modules, assigned/rejected/unresolved seed cells, accepted signal
-fraction, residual signal fraction, and a `resolution_status` label such as
+cells, accepted modules, assigned and uniquely module-specific seed cells,
+assigned/rejected/unresolved seed-cell status counts, accepted signal fraction,
+residual signal fraction, and a `resolution_status` label such as
 `single_module_dominant`, `multi_module_resolved`, `partially_resolved`, or
 `weakly_resolved`.
 

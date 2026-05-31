@@ -450,6 +450,49 @@ def test_module_specificity_reports_second_best_and_uniqueness_margin(tmp_path):
     assert pd.isna(unique["module_specificity_ratio"])
 
 
+def test_ambiguous_seed_cell_is_not_unique_module_cell(tmp_path):
+    n_cells = 30
+    n_genes = 20
+    marker_scores = np.full((n_cells, n_genes), 0.1, dtype=np.float32)
+    marker_scores[:10, :5] = 3.1
+    marker_scores[10:20, 5:10] = 3.1
+    marker_scores[20, :5] = 3.1
+    marker_scores[20, 5:10] = 3.1
+
+    p_values = np.full(n_cells, 0.9)
+    p_values[:21] = 1e-8
+    _, _, marker_path = _write_trait_module_inputs(
+        tmp_path, "unique_cell_test", "IQ", marker_scores, p_values
+    )
+
+    config = TraitModuleConfig(
+        workdir=tmp_path,
+        project_name="unique_cell_test",
+        trait_name="IQ",
+        marker_score_h5ad_path=marker_path,
+        pvalue_threshold=0.01,
+        top_gene_fraction=0.25,
+        min_module_cells=5,
+        module_similarity_threshold=0.95,
+        min_module_specificity_margin=0.05,
+        max_modules=2,
+        max_marker_genes=5,
+    )
+
+    cell_df, summary_df, _, trace_df = discover_trait_modules_with_trace(config)
+    run_summary = summarize_trait_module_run(config, cell_df, summary_df, trace_df)
+
+    ambiguous_seed = cell_df.loc[cell_df["spot"] == "cell_20"].iloc[0]
+    assert ambiguous_seed["is_module_cell"]
+    assert not ambiguous_seed["is_unique_module_cell"]
+    assert ambiguous_seed["module_specificity_margin"] < 1e-6
+    assert ambiguous_seed["module_specificity_ratio"] == 1.0
+    assert cell_df["is_module_cell"].sum() == 21
+    assert cell_df["is_unique_module_cell"].sum() == 20
+    assert run_summary.loc[0, "n_module_cells"] == 21
+    assert run_summary.loc[0, "n_unique_module_cells"] == 20
+
+
 def test_module_summary_reports_background_specificity_enrichment(tmp_path):
     n_cells = 40
     n_genes = 20
@@ -1019,6 +1062,8 @@ def test_summarize_trait_module_run_reports_resolution_status(tmp_path):
         "n_modules",
         "n_module_cells",
         "module_cell_fraction",
+        "n_unique_module_cells",
+        "unique_module_cell_fraction",
         "n_assigned_seed_cells",
         "assigned_seed_cell_fraction",
         "n_rejected_seed_cells",
@@ -1032,6 +1077,7 @@ def test_summarize_trait_module_run_reports_resolution_status(tmp_path):
     ]
     assert run_summary.loc[0, "n_modules"] == 2
     assert run_summary.loc[0, "n_module_cells"] == 20
+    assert run_summary.loc[0, "n_unique_module_cells"] == 20
     assert run_summary.loc[0, "n_assigned_seed_cells"] == 20
     assert run_summary.loc[0, "assigned_seed_cell_fraction"] == 1.0
     assert run_summary.loc[0, "n_rejected_seed_cells"] == 0
@@ -1220,6 +1266,7 @@ def test_run_trait_module_discovery_writes_trace_csv(tmp_path):
     assert trace_df["decision"].tolist() == ["accepted"]
     assert trace_df["candidate_n_cells"].tolist() == [10]
     assert run_summary_df["n_modules"].tolist() == [1]
+    assert run_summary_df["n_unique_module_cells"].tolist() == [10]
     assert run_summary_df["resolution_status"].tolist() == ["single_module_dominant"]
     assert list(specificity_df.columns) == [
         "spot",

@@ -1469,17 +1469,21 @@ def _trait_module_outputs_newer_than(
     )
 
 
-def _trait_module_assignment_columns(trait: str) -> tuple[str, str, str, str, str]:
-    return (
+def _trait_module_assignment_columns(trait: str) -> list[str]:
+    return [
         f"{trait}_trait_module",
         f"{trait}_module_specificity",
+        f"{trait}_assigned_second_best_module_specificity",
+        f"{trait}_assigned_module_specificity_margin",
+        f"{trait}_assigned_module_specificity_ratio",
         f"{trait}_is_module_cell",
+        f"{trait}_is_unique_module_cell",
         f"{trait}_module_status",
         f"{trait}_module_reason",
-    )
+    ]
 
 
-def _trait_module_columns(trait: str) -> tuple[str, str, str, str, str]:
+def _trait_module_columns(trait: str) -> list[str]:
     return _trait_module_assignment_columns(trait)
 
 
@@ -1524,13 +1528,29 @@ def _trait_module_columns_for_traits(df: pd.DataFrame, traits: list[str]) -> lis
 
 def _format_trait_module_columns(df: pd.DataFrame, traits: list[str]) -> pd.DataFrame:
     for trait in traits:
-        module_col, specificity_col, is_cell_col, status_col, reason_col = _trait_module_columns(
-            trait
-        )
+        (
+            module_col,
+            specificity_col,
+            seed_second_best_col,
+            seed_margin_col,
+            seed_ratio_col,
+            is_cell_col,
+            is_unique_cell_col,
+            status_col,
+            reason_col,
+        ) = _trait_module_columns(trait)
         if module_col in df.columns:
             df[module_col] = df[module_col].fillna(-1).astype(int)
-        if specificity_col in df.columns:
-            df[specificity_col] = pd.to_numeric(df[specificity_col], errors="coerce").round(3)
+        for seed_specificity_col in [
+            specificity_col,
+            seed_second_best_col,
+            seed_margin_col,
+            seed_ratio_col,
+        ]:
+            if seed_specificity_col in df.columns:
+                df[seed_specificity_col] = pd.to_numeric(
+                    df[seed_specificity_col], errors="coerce"
+                ).round(3)
         for module_specificity_col in _trait_module_specificity_columns(df, trait):
             if module_specificity_col in {module_col, specificity_col}:
                 continue
@@ -1550,6 +1570,13 @@ def _format_trait_module_columns(df: pd.DataFrame, traits: list[str]) -> pd.Data
             else:
                 df[is_cell_col] = (
                     df[is_cell_col].astype("string").str.lower().isin(["true", "1", "yes"])
+                )
+        if is_unique_cell_col in df.columns:
+            if pd.api.types.is_bool_dtype(df[is_unique_cell_col]):
+                df[is_unique_cell_col] = df[is_unique_cell_col].fillna(False)
+            else:
+                df[is_unique_cell_col] = (
+                    df[is_unique_cell_col].astype("string").str.lower().isin(["true", "1", "yes"])
                 )
         if status_col in df.columns:
             df[status_col] = df[status_col].fillna("unresolved").astype(str)
@@ -1607,9 +1634,17 @@ def _merge_trait_module_metadata(
     for trait in report_config.trait_name_list:
         path = _trait_module_cell_path(report_config, trait)
         if path.exists():
-            module_col, specificity_col, is_cell_col, status_col, reason_col = (
-                _trait_module_assignment_columns(trait)
-            )
+            (
+                module_col,
+                specificity_col,
+                seed_second_best_col,
+                seed_margin_col,
+                seed_ratio_col,
+                is_cell_col,
+                is_unique_cell_col,
+                status_col,
+                reason_col,
+            ) = _trait_module_assignment_columns(trait)
             module_df = pd.read_csv(path)
             required = {"spot", "trait_module", "module_specificity", "is_module_cell"}
             missing = required.difference(module_df.columns)
@@ -1618,7 +1653,14 @@ def _merge_trait_module_metadata(
                     f"Skipping trait module file {path}; missing columns: {sorted(missing)}"
                 )
             else:
-                optional = ["module_status", "module_reason"]
+                optional = [
+                    "second_best_module_specificity",
+                    "module_specificity_margin",
+                    "module_specificity_ratio",
+                    "is_unique_module_cell",
+                    "module_status",
+                    "module_reason",
+                ]
                 module_df = module_df[
                     list(required) + [col for col in optional if col in module_df]
                 ].copy()
@@ -1627,7 +1669,11 @@ def _merge_trait_module_metadata(
                     columns={
                         "trait_module": module_col,
                         "module_specificity": specificity_col,
+                        "second_best_module_specificity": seed_second_best_col,
+                        "module_specificity_margin": seed_margin_col,
+                        "module_specificity_ratio": seed_ratio_col,
                         "is_module_cell": is_cell_col,
+                        "is_unique_module_cell": is_unique_cell_col,
                         "module_status": status_col,
                         "module_reason": reason_col,
                     }
@@ -2275,20 +2321,40 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
                 data_struct[trait] = [
                     round(v, 1) if pd.notna(v) else None for v in sample_df[trait]
                 ]
-            module_col, specificity_col, is_cell_col, status_col, reason_col = (
-                _trait_module_columns(trait)
-            )
+            (
+                module_col,
+                specificity_col,
+                seed_second_best_col,
+                seed_margin_col,
+                seed_ratio_col,
+                is_cell_col,
+                is_unique_cell_col,
+                status_col,
+                reason_col,
+            ) = _trait_module_columns(trait)
             if module_col in sample_df.columns:
                 data_struct[module_col] = [
                     int(v) if pd.notna(v) else -1 for v in sample_df[module_col]
                 ]
-            if specificity_col in sample_df.columns:
-                data_struct[specificity_col] = [
-                    round(v, 3) if pd.notna(v) else None for v in sample_df[specificity_col]
-                ]
+            for seed_specificity_col in [
+                specificity_col,
+                seed_second_best_col,
+                seed_margin_col,
+                seed_ratio_col,
+            ]:
+                if seed_specificity_col in sample_df.columns:
+                    data_struct[seed_specificity_col] = [
+                        round(v, 3) if pd.notna(v) else None
+                        for v in sample_df[seed_specificity_col]
+                    ]
             if is_cell_col in sample_df.columns:
                 data_struct[is_cell_col] = [
                     bool(v) if pd.notna(v) else False for v in sample_df[is_cell_col].astype(bool)
+                ]
+            if is_unique_cell_col in sample_df.columns:
+                data_struct[is_unique_cell_col] = [
+                    bool(v) if pd.notna(v) else False
+                    for v in sample_df[is_unique_cell_col].astype(bool)
                 ]
             if status_col in sample_df.columns:
                 data_struct[status_col] = sample_df[status_col].tolist()

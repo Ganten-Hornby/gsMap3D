@@ -896,6 +896,10 @@
                                 <p class="text-sm font-semibold text-gray-900" x-text="selectedTraitModuleRunSummary()?.n_module_cells ?? 'N/A'"></p>
                             </div>
                             <div class="p-3 bg-gray-50 rounded-lg">
+                                <p class="text-xs uppercase text-gray-500">Unique Cells</p>
+                                <p class="text-sm font-semibold text-gray-900" x-text="formatCountPercent(selectedTraitModuleRunSummary()?.n_unique_module_cells, selectedTraitModuleRunSummary()?.unique_module_cell_fraction)"></p>
+                            </div>
+                            <div class="p-3 bg-gray-50 rounded-lg">
                                 <p class="text-xs uppercase text-gray-500">Assigned Seeds</p>
                                 <p class="text-sm font-semibold text-gray-900" x-text="formatCountPercent(selectedTraitModuleRunSummary()?.n_assigned_seed_cells, selectedTraitModuleRunSummary()?.assigned_seed_cell_fraction)"></p>
                             </div>
@@ -1627,7 +1631,10 @@
                         const secondBestSpecificityCol = `${trait}_second_best_module_specificity`;
                         const specificityMarginCol = `${trait}_module_specificity_margin`;
                         const specificityRatioCol = `${trait}_module_specificity_ratio`;
+                        const assignedSpecificityMarginCol = `${trait}_assigned_module_specificity_margin`;
+                        const assignedSpecificityRatioCol = `${trait}_assigned_module_specificity_ratio`;
                         const moduleCol = `${trait}_trait_module`;
+                        const isUniqueModuleCellCol = `${trait}_is_unique_module_cell`;
                         const statusCol = `${trait}_module_status`;
                         const reasonCol = `${trait}_module_reason`;
                         const selectedModule = Number(this.selectedTraitModule);
@@ -1654,6 +1661,9 @@
                             secondBestSpecificityCol: secondBestSpecificityCol,
                             specificityMarginCol: specificityMarginCol,
                             specificityRatioCol: specificityRatioCol,
+                            assignedSpecificityMarginCol: assignedSpecificityMarginCol,
+                            assignedSpecificityRatioCol: assignedSpecificityRatioCol,
+                            isUniqueModuleCellCol: isUniqueModuleCellCol,
                             statusCol: statusCol,
                             reasonCol: reasonCol,
                             moduleValues: moduleValues,
@@ -2293,9 +2303,13 @@
                             const secondBestSpecificityVal = this.umapData[colorSpec.secondBestSpecificityCol]?.[i];
                             const specificityMarginVal = this.umapData[colorSpec.specificityMarginCol]?.[i];
                             const specificityRatioVal = this.umapData[colorSpec.specificityRatioCol]?.[i];
+                            const assignedSpecificityMarginVal = this.umapData[colorSpec.assignedSpecificityMarginCol]?.[i];
+                            const assignedSpecificityRatioVal = this.umapData[colorSpec.assignedSpecificityRatioCol]?.[i];
+                            const isUniqueModuleCellVal = this.umapData[colorSpec.isUniqueModuleCellCol]?.[i];
                             const statusVal = this.umapData[colorSpec.statusCol]?.[i];
                             const reasonVal = this.umapData[colorSpec.reasonCol]?.[i];
                             text += `<br><b>Seed module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                            text += `<br><b>Unique module cell:</b> ${isUniqueModuleCellVal === true ? 'Yes' : 'No'}`;
                             text += `<br><b>Best specificity module:</b> ${bestModuleVal != null && bestModuleVal >= 0 ? bestModuleVal : 'None'}`;
                             text += `<br><b>Second specificity module:</b> ${secondBestModuleVal != null && secondBestModuleVal >= 0 ? secondBestModuleVal : 'None'}`;
                             text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
@@ -2305,6 +2319,8 @@
                             text += `<br><b>Second specificity:</b> ${typeof secondBestSpecificityVal === 'number' ? secondBestSpecificityVal.toFixed(3) : 'N/A'}`;
                             text += `<br><b>Specificity margin:</b> ${typeof specificityMarginVal === 'number' ? specificityMarginVal.toFixed(3) : 'N/A'}`;
                             text += `<br><b>Specificity ratio:</b> ${typeof specificityRatioVal === 'number' ? specificityRatioVal.toFixed(2) : 'N/A'}`;
+                            text += `<br><b>Assigned module margin:</b> ${typeof assignedSpecificityMarginVal === 'number' ? assignedSpecificityMarginVal.toFixed(3) : 'N/A'}`;
+                            text += `<br><b>Assigned module ratio:</b> ${typeof assignedSpecificityRatioVal === 'number' ? assignedSpecificityRatioVal.toFixed(2) : 'N/A'}`;
                             if (colorSpec.selectedModule > 0) {
                                 text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
                             }
@@ -2556,9 +2572,13 @@
                                 const secondBestSpecificityVal = data[colorSpec.secondBestSpecificityCol]?.[i];
                                 const specificityMarginVal = data[colorSpec.specificityMarginCol]?.[i];
                                 const specificityRatioVal = data[colorSpec.specificityRatioCol]?.[i];
+                                const assignedSpecificityMarginVal = data[colorSpec.assignedSpecificityMarginCol]?.[i];
+                                const assignedSpecificityRatioVal = data[colorSpec.assignedSpecificityRatioCol]?.[i];
+                                const isUniqueModuleCellVal = data[colorSpec.isUniqueModuleCellCol]?.[i];
                                 const statusVal = data[colorSpec.statusCol]?.[i];
                                 const reasonVal = data[colorSpec.reasonCol]?.[i];
                                 text += `<br><b>Seed module:</b> ${moduleVal != null && moduleVal >= 0 ? moduleVal : 'None'}`;
+                                text += `<br><b>Unique module cell:</b> ${isUniqueModuleCellVal === true ? 'Yes' : 'No'}`;
                                 text += `<br><b>Best specificity module:</b> ${bestModuleVal != null && bestModuleVal >= 0 ? bestModuleVal : 'None'}`;
                                 text += `<br><b>Second specificity module:</b> ${secondBestModuleVal != null && secondBestModuleVal >= 0 ? secondBestModuleVal : 'None'}`;
                                 text += `<br><b>Module status:</b> ${statusVal || 'N/A'}`;
@@ -2568,6 +2588,8 @@
                                 text += `<br><b>Second specificity:</b> ${typeof secondBestSpecificityVal === 'number' ? secondBestSpecificityVal.toFixed(3) : 'N/A'}`;
                                 text += `<br><b>Specificity margin:</b> ${typeof specificityMarginVal === 'number' ? specificityMarginVal.toFixed(3) : 'N/A'}`;
                                 text += `<br><b>Specificity ratio:</b> ${typeof specificityRatioVal === 'number' ? specificityRatioVal.toFixed(2) : 'N/A'}`;
+                                text += `<br><b>Assigned module margin:</b> ${typeof assignedSpecificityMarginVal === 'number' ? assignedSpecificityMarginVal.toFixed(3) : 'N/A'}`;
+                                text += `<br><b>Assigned module ratio:</b> ${typeof assignedSpecificityRatioVal === 'number' ? assignedSpecificityRatioVal.toFixed(2) : 'N/A'}`;
                                 if (colorSpec.selectedModule > 0) {
                                     text += `<br><b>Selected module:</b> ${colorSpec.selectedModule}`;
                                 }

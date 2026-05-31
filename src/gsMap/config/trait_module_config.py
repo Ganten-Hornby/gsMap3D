@@ -93,6 +93,18 @@ class TraitModuleConfig(ConfigWithAutoPaths):
         ),
     ] = 0.95
 
+    min_module_specificity_margin: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Minimum difference between the assigned module specificity and the "
+                "next-best accepted module specificity for a seed cell to be labeled "
+                "as uniquely module-specific."
+            ),
+            min=0.0,
+        ),
+    ] = 0.05
+
     min_specificity_enrichment: Annotated[
         float,
         typer.Option(

@@ -101,9 +101,10 @@ of fully independent causal cell types.
 The outputs are written to `{workdir}/{project_name}/trait_modules/`.
 `module_specificity.csv` includes the best module, second-best module, and
 best-vs-second specificity margin for each spot so ambiguous cells can be
-separated from cells with a uniquely dominant module profile. Regenerate the
-report data after running the command so the UMAP and spatial views can color
-cells by module specificity:
+separated from cells with a uniquely dominant module profile. Seed cells in
+`cell_modules.csv` are additionally labeled with `is_unique_module_cell` using
+`--min-module-specificity-margin`. Regenerate the report data after running the
+command so the UMAP and spatial views can color cells by module specificity:
 
 ```bash
 gsmap quick-mode \
