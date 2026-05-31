@@ -317,6 +317,9 @@ class ParallelLDScoreComputer:
         self.use_gpu_ldscore = False
         self.processor.defer_ldscore_to_compute = False
         self.gpu_ldscore_backend = None
+        self.torch = None
+        self.torch_device = None
+        self.torch_sparse_weight = None
         self.cupy = None
         self.cupy_sparse_weight = None
         self.jax_sparse_weight = None
@@ -341,19 +344,25 @@ class ParallelLDScoreComputer:
                 f"{backend!r}; using CPU sparse multiplication"
             )
             return
-        if backend not in {"auto", "cupy", "jax"}:
+        if backend not in {"auto", "torch", "cupy", "jax"}:
             logger.warning(
-                "Unknown GSMAP_GPU_LDSCORE_BACKEND=%r; expected auto, cupy, jax, or cpu. "
+                "Unknown GSMAP_GPU_LDSCORE_BACKEND=%r; expected auto, torch, cupy, jax, or cpu. "
                 "Using auto.",
                 backend,
             )
             backend = "auto"
 
+        if backend in {"auto", "torch"} and self._prepare_torch_ldscore_state(sparse_weight):
+            return
         if backend in {"auto", "cupy"} and self._prepare_cupy_ldscore_state(sparse_weight):
             return
         if backend in {"auto", "jax"} and self._prepare_jax_ldscore_state(sparse_weight):
             return
-        if backend == "cupy":
+        if backend == "torch":
+            logger.warning(
+                "Requested PyTorch LD-score backend is unavailable; using CPU sparse multiplication"
+            )
+        elif backend == "cupy":
             logger.warning("Requested CuPy LD-score backend is unavailable; using CPU sparse multiplication")
         elif backend == "jax":
             logger.warning(
@@ -363,6 +372,60 @@ class ParallelLDScoreComputer:
             logger.warning(
                 "No GPU LD-score backend could be initialized; using CPU sparse multiplication"
             )
+
+    def _prepare_torch_ldscore_state(self, sparse_weight) -> bool:
+        """Prepare PyTorch CSR state for GPU sparse LD-score construction."""
+        try:
+            import torch
+        except Exception as e:  # noqa: BLE001
+            logger.info("PyTorch LD-score backend unavailable: %s: %s", type(e).__name__, e)
+            return False
+
+        if not torch.cuda.is_available():
+            logger.info("PyTorch LD-score backend unavailable: torch.cuda is not available")
+            return False
+
+        try:
+            start_time = time.time()
+            device = torch.device("cuda:0")
+            crow = torch.as_tensor(
+                sparse_weight.indptr.astype(np.int64, copy=False), device=device
+            )
+            col = torch.as_tensor(
+                sparse_weight.indices.astype(np.int64, copy=False), device=device
+            )
+            values = torch.as_tensor(
+                sparse_weight.data.astype(np.float32, copy=False), device=device
+            )
+            self.torch_sparse_weight = torch.sparse_csr_tensor(
+                crow,
+                col,
+                values,
+                size=sparse_weight.shape,
+                dtype=torch.float32,
+                device=device,
+            )
+            torch.cuda.synchronize()
+            self.torch = torch
+            self.torch_device = device
+            self.use_gpu_ldscore = True
+            self.gpu_ldscore_backend = "torch"
+            self.processor.defer_ldscore_to_compute = True
+            logger.info(
+                "Prepared PyTorch GPU SNP-gene sparse matrix for LD-score construction "
+                f"in {time.time() - start_time:.2f}s"
+            )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Could not initialize PyTorch LD-score backend. Reason: %s: %s",
+                type(e).__name__,
+                e,
+            )
+            self.torch = None
+            self.torch_device = None
+            self.torch_sparse_weight = None
+            return False
 
     def _prepare_cupy_ldscore_state(self, sparse_weight) -> bool:
         """Prepare CuPy CSR state for GPU sparse LD-score construction."""
@@ -461,7 +524,18 @@ class ParallelLDScoreComputer:
 
                 # Convert or construct LD scores for JAX regression.
                 if item.get("marker_score_chunk") is not None:
-                    if self.gpu_ldscore_backend == "cupy":
+                    if self.gpu_ldscore_backend == "torch":
+                        marker_score_gpu = self.torch.as_tensor(
+                            item["marker_score_chunk"],
+                            dtype=self.torch.float32,
+                            device=self.torch_device,
+                        )
+                        ldscore_gpu = self.torch.sparse.mm(
+                            self.torch_sparse_weight, marker_score_gpu
+                        )
+                        self.torch.cuda.synchronize()
+                        spatial_ld_jax = jax.dlpack.from_dlpack(ldscore_gpu)
+                    elif self.gpu_ldscore_backend == "cupy":
                         marker_score_gpu = self.cupy.asarray(
                             item["marker_score_chunk"], dtype=self.cupy.float32
                         )
