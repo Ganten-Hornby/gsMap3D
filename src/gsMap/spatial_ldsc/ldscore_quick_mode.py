@@ -24,6 +24,7 @@ from rich.progress import (
 
 from gsMap.config import SpatialLDSCConfig
 
+from .chunk_source import SpatialLDChunkSource
 from .io import prepare_trait_data
 from .pipeline import ParallelLDScoreComputer, ParallelLDScoreReader
 from .result_writer import ResultWriter
@@ -81,6 +82,7 @@ class SpatialLDSCProcessor:
         self.data_truncated = None
 
         self.result_writer = None
+        self.chunk_source = None
         self.defer_ldscore_to_compute = False
 
         if ldscore_adata is not None:
@@ -240,6 +242,20 @@ class SpatialLDSCProcessor:
             output_dir=self.output_dir,
             n_spots=self.n_spots,
         )
+        self.chunk_source = SpatialLDChunkSource(
+            mode=self.mode,
+            chunk_starts=self.chunk_starts,
+            chunk_size=self.chunk_size,
+            cell_end=self._cell_end,
+            sample_start_offset=self.sample_start_offset,
+            spot_indices=self.spot_indices,
+            spot_names_filtered=self.spot_names_filtered,
+            ldscore_adata=self.ldscore_adata,
+            ldscore_snp_positions=getattr(self, "ldscore_snp_positions", None),
+            marker_score_adata=self.marker_score_adata,
+            marker_score_gene_indices=self.marker_score_gene_indices,
+            snp_gene_weight_sparse=getattr(self, "snp_gene_weight_sparse", None),
+        )
 
     def _fetch_ldscore_chunk(self, chunk_index: int) -> tuple[np.ndarray, pd.Index, int, int]:
         """
@@ -248,64 +264,18 @@ class SpatialLDSCProcessor:
         Returns:
             Tuple of (ldscore_array, spot_names, absolute_start, absolute_end)
         """
-        if chunk_index >= len(self.chunk_starts):
-            raise ValueError(f"Invalid chunk index {chunk_index}")
-
-        start = self.chunk_starts[chunk_index]
-        end = min(start + self.chunk_size, self._cell_end)
-
-        # Calculate absolute positions
-        memmap_start = self.sample_start_offset + start
-        memmap_end = self.sample_start_offset + end
-
-        # Get spot names and absolute positions (common to both modes)
-        spot_names = pd.Index(self.spot_names_filtered[start:end])
-        absolute_start = self.spot_indices[start] if start < len(self.spot_indices) else start
-        absolute_end = self.spot_indices[end - 1] + 1 if end > 0 else absolute_start
-
-        if self.mode == "direct_ldscore":
-            # Read the contiguous cell-column slice across all SNPs, then filter rows.
-            # Reading a contiguous column range first avoids slow HDF5 fancy row indexing.
-            chunk_raw = self.ldscore_adata.X[:, memmap_start:memmap_end]
-            # scipy sparse matrices cannot be converted with np.asarray() — use toarray()
-            if hasattr(chunk_raw, "toarray"):
-                chunk_all_snps = chunk_raw.toarray()
-            else:
-                chunk_all_snps = np.asarray(chunk_raw)
-            # (n_snps_total, n_cells_chunk)
-            ldscore_chunk = chunk_all_snps[self.ldscore_snp_positions, :]
-        else:
-            # Load chunk from marker_score_adata. In GPU mode the compute worker
-            # multiplies by the sparse SNP-gene matrix on device, avoiding a
-            # CPU sparse-dense multiply and host transfer of the LD-score chunk.
-            mk_score_chunk = self.marker_score_adata.X[
-                memmap_start:memmap_end, self.marker_score_gene_indices
-            ]
-            mk_score_chunk = mk_score_chunk.T.astype(np.float32)
-            if self.defer_ldscore_to_compute:
-                return (
-                    None,
-                    spot_names,
-                    absolute_start,
-                    absolute_end,
-                    mk_score_chunk,
-                )
-
-            ldscore_chunk = self._compute_ldscore_from_marker_chunk(mk_score_chunk)
-
-        return (
-            ldscore_chunk.astype(np.float32, copy=False),
-            spot_names,
-            absolute_start,
-            absolute_end,
+        if self.chunk_source is None:
+            raise RuntimeError("Chunk source is not initialized; call setup_trait first")
+        return self.chunk_source.fetch_chunk(
+            chunk_index=chunk_index,
+            defer_ldscore_to_compute=self.defer_ldscore_to_compute,
         )
 
     def _compute_ldscore_from_marker_chunk(self, marker_score_chunk: np.ndarray) -> np.ndarray:
         """Compute SNP x spot LD scores from a gene x spot marker-score chunk on CPU."""
-        ldscore_chunk = self.snp_gene_weight_sparse @ marker_score_chunk
-        if hasattr(ldscore_chunk, "toarray"):
-            ldscore_chunk = ldscore_chunk.toarray()
-        return ldscore_chunk.astype(np.float32, copy=False)
+        if self.chunk_source is None:
+            raise RuntimeError("Chunk source is not initialized; call setup_trait first")
+        return self.chunk_source.compute_ldscore_from_marker_chunk(marker_score_chunk)
 
     def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
         """
