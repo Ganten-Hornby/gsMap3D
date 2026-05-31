@@ -16,13 +16,20 @@ import time
 from abc import ABC, abstractmethod
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 logger = logging.getLogger("gsMap.spatial_ldsc.ldscore_backend")
 
 CPU_BACKEND_VALUES = {"0", "false", "off", "disable", "disabled", "cpu"}
-GPU_BACKEND_VALUES = {"auto", "torch", "jax"}
+GPU_BACKEND_VALUES = {"auto", "torch"}
+
+
+def is_gpu_memory_error(exc: BaseException) -> bool:
+    """Return True for common CUDA out-of-memory exceptions."""
+    message = str(exc).lower()
+    return "out of memory" in message or (
+        "cuda" in message and "memory" in message
+    )
 
 
 class LDScoreBackend(ABC):
@@ -33,6 +40,9 @@ class LDScoreBackend(ABC):
     @abstractmethod
     def compute(self, marker_score_chunk: np.ndarray):
         """Return a JAX array with shape SNP x cell."""
+
+    def close(self):
+        """Release backend-owned GPU state."""
 
 
 class TorchLDScoreBackend(LDScoreBackend):
@@ -51,23 +61,33 @@ class TorchLDScoreBackend(LDScoreBackend):
         if not torch.cuda.is_available():
             raise RuntimeError("torch.cuda is not available")
 
-        start_time = time.time()
-        device = torch.device("cuda:0")
-        crow = torch.as_tensor(sparse_weight.indptr.astype(np.int64, copy=False), device=device)
-        col = torch.as_tensor(sparse_weight.indices.astype(np.int64, copy=False), device=device)
-        values = torch.as_tensor(sparse_weight.data.astype(np.float32, copy=False), device=device)
-        self.sparse_weight = torch.sparse_csr_tensor(
-            crow,
-            col,
-            values,
-            size=sparse_weight.shape,
-            dtype=torch.float32,
-            device=device,
-        )
-        torch.cuda.synchronize()
         self.torch = torch
-        self.device = device
+        self.device = torch.device("cuda:0")
+        self.sparse_weight = None
         self._last_output = None
+        start_time = time.time()
+        try:
+            crow = torch.as_tensor(
+                sparse_weight.indptr.astype(np.int64, copy=False), device=self.device
+            )
+            col = torch.as_tensor(
+                sparse_weight.indices.astype(np.int64, copy=False), device=self.device
+            )
+            values = torch.as_tensor(
+                sparse_weight.data.astype(np.float32, copy=False), device=self.device
+            )
+            self.sparse_weight = torch.sparse_csr_tensor(
+                crow,
+                col,
+                values,
+                size=sparse_weight.shape,
+                dtype=torch.float32,
+                device=self.device,
+            )
+            torch.cuda.synchronize()
+        except Exception:
+            self.close()
+            raise
         logger.info(
             "Prepared PyTorch GPU SNP-gene sparse matrix for LD-score construction "
             f"in {time.time() - start_time:.2f}s"
@@ -84,33 +104,27 @@ class TorchLDScoreBackend(LDScoreBackend):
         self._last_output = ldscore_gpu
         return jax.dlpack.from_dlpack(ldscore_gpu)
 
-
-class JaxSparseLDScoreBackend(LDScoreBackend):
-    """JAX sparse BCOO backend for dependency-light GPU fallback."""
-
-    name = "jax"
-
-    def __init__(self, sparse_weight):
-        from jax.experimental import sparse as jsparse
-
-        start_time = time.time()
-        jax_sparse_weight = jsparse.BCOO.from_scipy_sparse(sparse_weight)
-        self.sparse_weight = jax.device_put(jax_sparse_weight)
-        self.sparse_weight.data.block_until_ready()
-        logger.info(
-            "Prepared JAX sparse GPU SNP-gene matrix for LD-score construction "
-            f"in {time.time() - start_time:.2f}s"
-        )
-
-    def compute(self, marker_score_chunk: np.ndarray):
-        marker_score_jax = jnp.asarray(marker_score_chunk, dtype=jnp.float32)
-        return self.sparse_weight @ marker_score_jax
+    def close(self):
+        self._last_output = None
+        self.sparse_weight = None
+        if getattr(self, "torch", None) is not None and self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
 
 
 def _try_backend(backend_cls: type[LDScoreBackend], sparse_weight) -> LDScoreBackend | None:
     try:
         return backend_cls(sparse_weight)
     except Exception as e:  # noqa: BLE001
+        if is_gpu_memory_error(e):
+            logger.warning(
+                "Could not initialize %s LD-score backend because GPU memory is insufficient. "
+                "Falling back to CPU/SciPy LD-score construction while keeping the shared "
+                "--use-gpu JAX regression path. Reduce --spots-per-chunk-quick-mode, "
+                "set GSMAP_DISABLE_GPU_LDSCORE=1, or use --no-gpu if regression also runs "
+                "out of memory.",
+                backend_cls.name,
+            )
+            return None
         logger.warning(
             "Could not initialize %s LD-score backend. Reason: %s: %s",
             backend_cls.name,
@@ -122,11 +136,9 @@ def _try_backend(backend_cls: type[LDScoreBackend], sparse_weight) -> LDScoreBac
 
 def _backend_candidates(requested_backend: str) -> list[type[LDScoreBackend]]:
     if requested_backend == "auto":
-        return [TorchLDScoreBackend, JaxSparseLDScoreBackend]
+        return [TorchLDScoreBackend]
     if requested_backend == "torch":
         return [TorchLDScoreBackend]
-    if requested_backend == "jax":
-        return [JaxSparseLDScoreBackend]
     return []
 
 
@@ -153,7 +165,7 @@ def select_gpu_ldscore_backend(sparse_weight) -> LDScoreBackend | None:
         return None
     if requested_backend not in GPU_BACKEND_VALUES:
         logger.warning(
-            "Unknown GSMAP_GPU_LDSCORE_BACKEND=%r; expected auto, torch, jax, or cpu. "
+            "Unknown GSMAP_GPU_LDSCORE_BACKEND=%r; expected auto, torch, or cpu. "
             "Using auto.",
             requested_backend,
         )

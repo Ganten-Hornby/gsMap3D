@@ -34,7 +34,7 @@ from statsmodels.stats.multitest import multipletests
 from gsMap.config import SpatialLDSCConfig
 
 from .io import prepare_trait_data
-from .ldscore_backend import select_gpu_ldscore_backend
+from .ldscore_backend import is_gpu_memory_error, select_gpu_ldscore_backend
 
 logger = logging.getLogger("gsMap.spatial_ldsc_processor")
 
@@ -318,6 +318,7 @@ class ParallelLDScoreComputer:
         self.processor.defer_ldscore_to_compute = False
         self.gpu_ldscore_backend = None
         self.ldscore_backend = None
+        self.ldscore_backend_lock = threading.Lock()
 
         if self.processor.mode != "weight_matrix" or jax.default_backend() != "gpu":
             return
@@ -331,6 +332,32 @@ class ParallelLDScoreComputer:
             self.use_gpu_ldscore = True
             self.gpu_ldscore_backend = self.ldscore_backend.name
             self.processor.defer_ldscore_to_compute = True
+
+    def _construct_spatial_ld_from_marker_chunk(self, marker_score_chunk: np.ndarray):
+        """Construct a JAX LD-score chunk from marker scores."""
+        backend = self.ldscore_backend
+        if backend is not None:
+            try:
+                return backend.compute(marker_score_chunk)
+            except Exception as e:  # noqa: BLE001
+                if not is_gpu_memory_error(e):
+                    raise
+                with self.ldscore_backend_lock:
+                    if self.ldscore_backend is backend:
+                        logger.warning(
+                            "GPU LD-score construction failed because GPU memory is insufficient. "
+                            "Falling back to CPU/SciPy LD-score construction for remaining chunks "
+                            "while keeping the shared --use-gpu JAX regression path. Reduce "
+                            "--spots-per-chunk-quick-mode, set GSMAP_DISABLE_GPU_LDSCORE=1, "
+                            "or use --no-gpu if regression also runs out of memory."
+                        )
+                        backend.close()
+                        self.ldscore_backend = None
+                        self.use_gpu_ldscore = False
+                        self.gpu_ldscore_backend = None
+
+        ldscore = self.processor._compute_ldscore_from_marker_chunk(marker_score_chunk)
+        return jnp.asarray(ldscore, dtype=jnp.float32)
 
     def _start_workers(self):
         """Start compute worker threads"""
@@ -367,15 +394,9 @@ class ParallelLDScoreComputer:
 
                 # Convert or construct LD scores for JAX regression.
                 if item.get("marker_score_chunk") is not None:
-                    if self.ldscore_backend is not None:
-                        spatial_ld_jax = self.ldscore_backend.compute(
-                            item["marker_score_chunk"]
-                        )
-                    else:
-                        ldscore = self.processor._compute_ldscore_from_marker_chunk(
-                            item["marker_score_chunk"]
-                        )
-                        spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
+                    spatial_ld_jax = self._construct_spatial_ld_from_marker_chunk(
+                        item["marker_score_chunk"]
+                    )
                 else:
                     spatial_ld_jax = jnp.asarray(item["ldscore"], dtype=jnp.float32)
 
