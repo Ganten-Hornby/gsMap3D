@@ -152,7 +152,7 @@ def process_chunk_jit(
 
 
 @partial(jit, static_argnums=(0,))
-def process_chunk_batched_jit(
+def process_chunk_batched_lowmem_jit(
     n_blocks: int,
     spatial_ld: jnp.ndarray,
     baseline_ld_sum: jnp.ndarray,
@@ -163,112 +163,280 @@ def process_chunk_batched_jit(
     Nbar: float,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Process an entire chunk of spots with JIT compilation and BATCHED matrix operations.
+    Process an entire chunk with batched normal-equation accumulation.
 
-    OPTIMIZATION: Uses batched matrix operations instead of vmap to improve GPU utilization.
-    All spots are processed simultaneously using efficient matrix operations.
-
-    Args:
-        n_blocks: Number of jackknife blocks
-        spatial_ld: (n_snps, n_spots) array of spatial LD scores
-        baseline_ld_sum: (n_snps,) baseline LD scores summed
-        chisq: (n_snps,) chi-squared statistics
-        N: (n_snps,) sample sizes
-        baseline_ann: (n_snps, n_baseline_features) baseline annotations
-        w_ld: (n_snps,) regression weights
-        Nbar: Average sample size
-
-    Returns:
-        betas: (n_spots,) regression coefficients
-        ses: (n_spots,) standard errors
+    This is algebraically equivalent to constructing the weighted design tensor
+    [spatial_ld, baseline_ann] * weights for every spot, but avoids materializing
+    the large (n_snps, n_spots, n_features) tensor.
     """
     n_snps, n_spots = spatial_ld.shape
-    baseline_ann.shape[1]
+    n_baseline = baseline_ann.shape[1]
 
-    # Compute x_tot for all spots: (n_snps, n_spots)
     x_tot = spatial_ld + baseline_ld_sum.reshape(-1, 1)
 
-    # Compute hsq for each spot: (n_spots,)
-    # hsq = 10000 * (mean(chisq) - 1) / mean(x_tot * N)
-    N_expanded = N.reshape(-1, 1)  # (n_snps, 1)
-    x_tot_N = x_tot * N_expanded  # (n_snps, n_spots)
+    N_expanded = N.reshape(-1, 1)
     mean_chisq = jnp.mean(chisq)
-    mean_x_tot_N = jnp.mean(x_tot_N, axis=0)  # (n_spots,)
-    hsq = 10000.0 * (mean_chisq - 1.0) / mean_x_tot_N  # (n_spots,)
+    mean_x_tot_N = jnp.mean(x_tot * N_expanded, axis=0)
+    hsq = 10000.0 * (mean_chisq - 1.0) / mean_x_tot_N
     hsq = jnp.clip(hsq, 0.0, 1.0)
 
-    # Compute weights for all spots: (n_snps, n_spots)
     ld_clip = jnp.maximum(x_tot, 1.0)
     w_ld_clip = jnp.maximum(w_ld.reshape(-1, 1), 1.0)
-    c = (hsq.reshape(1, -1) * N_expanded) / 10000.0  # (n_snps, n_spots)
+    c = (hsq.reshape(1, -1) * N_expanded) / 10000.0
     weights = jnp.sqrt(1.0 / (2 * jnp.square(1.0 + c * ld_clip) * w_ld_clip))
+    weights_scaled = weights / jnp.sum(weights, axis=0, keepdims=True)
+    weights_sq = jnp.square(weights_scaled)
 
-    # Normalize weights per spot
-    weights_sum = jnp.sum(weights, axis=0, keepdims=True)  # (1, n_spots)
-    weights_scaled = weights / weights_sum  # (n_snps, n_spots)
-
-    # Prepare features for all spots
-    # x_focal shape: (n_snps, n_spots, 1 + n_baseline_features)
-    spatial_weighted = (spatial_ld * weights_scaled)[..., None]  # (n_snps, n_spots, 1)
-    baseline_weighted = (
-        baseline_ann[:, None, :] * weights_scaled[..., None]
-    )  # (n_snps, n_spots, n_baseline)
-    x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
-
-    # y_weighted: (n_snps, n_spots, 1)
-    y_weighted = (chisq.reshape(-1, 1) * weights_scaled)[..., None]
-
-    # Reshape for block computation
     block_size = n_snps // n_blocks
     n_snps_used = block_size * n_blocks
 
-    # Truncate to block-aligned size
+    spatial_blocks = spatial_ld[:n_snps_used].reshape(n_blocks, block_size, n_spots)
+    baseline_blocks = baseline_ann[:n_snps_used].reshape(n_blocks, block_size, n_baseline)
+    chisq_blocks = chisq[:n_snps_used].reshape(n_blocks, block_size)
+    weights_sq_blocks = weights_sq[:n_snps_used].reshape(n_blocks, block_size, n_spots)
+
+    # Weighted normal equations for each jackknife block and spot.
+    # Feature 0 is the spatial LD score; remaining features are baseline terms.
+    spatial_xty = jnp.einsum(
+        "nbs,nb,nbs->ns", spatial_blocks, chisq_blocks, weights_sq_blocks
+    )
+    baseline_xty = jnp.einsum(
+        "nbk,nb,nbs->nsk", baseline_blocks, chisq_blocks, weights_sq_blocks
+    )
+    xty_blocks = jnp.concatenate([spatial_xty[..., None], baseline_xty], axis=-1)
+
+    spatial_spatial = jnp.einsum(
+        "nbs,nbs,nbs->ns", spatial_blocks, spatial_blocks, weights_sq_blocks
+    )
+    spatial_baseline = jnp.einsum(
+        "nbs,nbk,nbs->nsk", spatial_blocks, baseline_blocks, weights_sq_blocks
+    )
+    baseline_baseline = jnp.einsum(
+        "nbk,nbl,nbs->nskl", baseline_blocks, baseline_blocks, weights_sq_blocks
+    )
+
+    top_row = jnp.concatenate(
+        [spatial_spatial[..., None, None], spatial_baseline[..., None, :]], axis=-1
+    )
+    bottom_rows = jnp.concatenate([spatial_baseline[..., :, None], baseline_baseline], axis=-1)
+    xtx_blocks = jnp.concatenate([top_row, bottom_rows], axis=-2)
+
+    xty_total = jnp.sum(xty_blocks, axis=0)
+    xtx_total = jnp.sum(xtx_blocks, axis=0)
+
+    est = jnp.linalg.solve(xtx_total, xty_total[..., None]).squeeze(-1)
+
+    xty_del = xty_total - xty_blocks
+    xtx_del = xtx_total - xtx_blocks
+    delete_ests = jnp.linalg.solve(xtx_del, xty_del[..., None]).squeeze(-1)
+
+    spatial_pseudovalues = n_blocks * est[:, 0] - (n_blocks - 1) * delete_ests[:, :, 0]
+    spatial_jknife_est = jnp.mean(spatial_pseudovalues, axis=0)
+    spatial_centered = spatial_pseudovalues - spatial_jknife_est
+    spatial_jknife_se = jnp.sqrt(
+        jnp.sum(jnp.square(spatial_centered), axis=0) / (n_blocks * (n_blocks - 1))
+    )
+
+    return spatial_jknife_est / Nbar, spatial_jknife_se / Nbar
+
+
+@partial(jit, static_argnums=(0,))
+def process_chunk_batched_fullsolve_jit(
+    n_blocks: int,
+    spatial_ld: jnp.ndarray,
+    baseline_ld_sum: jnp.ndarray,
+    chisq: jnp.ndarray,
+    N: jnp.ndarray,
+    baseline_ann: jnp.ndarray,
+    w_ld: jnp.ndarray,
+    Nbar: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Process an entire chunk with batched matrix operations.
+
+    This kernel materializes the weighted design tensor. It is fastest on GPUs
+    when the chunk fits comfortably in device memory because XLA can fuse the
+    tensor construction with the block normal-equation reductions.
+    """
+    n_snps, n_spots = spatial_ld.shape
+
+    x_tot = spatial_ld + baseline_ld_sum.reshape(-1, 1)
+
+    N_expanded = N.reshape(-1, 1)
+    x_tot_N = x_tot * N_expanded
+    mean_chisq = jnp.mean(chisq)
+    mean_x_tot_N = jnp.mean(x_tot_N, axis=0)
+    hsq = 10000.0 * (mean_chisq - 1.0) / mean_x_tot_N
+    hsq = jnp.clip(hsq, 0.0, 1.0)
+
+    ld_clip = jnp.maximum(x_tot, 1.0)
+    w_ld_clip = jnp.maximum(w_ld.reshape(-1, 1), 1.0)
+    c = (hsq.reshape(1, -1) * N_expanded) / 10000.0
+    weights = jnp.sqrt(1.0 / (2 * jnp.square(1.0 + c * ld_clip) * w_ld_clip))
+
+    weights_sum = jnp.sum(weights, axis=0, keepdims=True)
+    weights_scaled = weights / weights_sum
+
+    spatial_weighted = (spatial_ld * weights_scaled)[..., None]
+    baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]
+    x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
+
+    y_weighted = (chisq.reshape(-1, 1) * weights_scaled)[..., None]
+
+    block_size = n_snps // n_blocks
+    n_snps_used = block_size * n_blocks
+
     x_focal = x_focal[:n_snps_used]
     y_weighted = y_weighted[:n_snps_used]
 
-    # Reshape: (n_blocks, block_size, n_spots, n_features)
     x_blocks = x_focal.reshape(n_blocks, block_size, n_spots, -1)
     y_blocks = y_weighted.reshape(n_blocks, block_size, n_spots, 1)
 
-    # Compute block XtY and XtX for all spots simultaneously
-    # xty_blocks: (n_blocks, n_spots, n_features)
     xty_blocks = jnp.einsum("nbsf,nbs->nsf", x_blocks, y_blocks.squeeze(-1))
-
-    # xtx_blocks: (n_blocks, n_spots, n_features, n_features)
     xtx_blocks = jnp.einsum("nbsf,nbsg->nsfg", x_blocks, x_blocks)
 
-    # Total across blocks
-    xty_total = jnp.sum(xty_blocks, axis=0)  # (n_spots, n_features)
-    xtx_total = jnp.sum(xtx_blocks, axis=0)  # (n_spots, n_features, n_features)
+    xty_total = jnp.sum(xty_blocks, axis=0)
+    xtx_total = jnp.sum(xtx_blocks, axis=0)
 
-    # Solve for all spots: (n_spots, n_features)
     est = jnp.linalg.solve(xtx_total, xty_total[..., None]).squeeze(-1)
 
-    # Delete-one estimates: (n_blocks, n_spots, n_features)
-    xty_del = xty_total - xty_blocks  # (n_blocks, n_spots, n_features)
-    xtx_del = xtx_total - xtx_blocks  # (n_blocks, n_spots, n_features, n_features)
+    xty_del = xty_total - xty_blocks
+    xtx_del = xtx_total - xtx_blocks
     delete_ests = jnp.linalg.solve(xtx_del, xty_del[..., None]).squeeze(-1)
 
-    # Pseudovalues: (n_blocks, n_spots, n_features)
     pseudovalues = n_blocks * est - (n_blocks - 1) * delete_ests
+    jknife_est = jnp.mean(pseudovalues, axis=0)
 
-    # Jackknife estimates per spot
-    jknife_est = jnp.mean(pseudovalues, axis=0)  # (n_spots, n_features)
-
-    # Jackknife covariance for each spot
-    # Center pseudovalues
-    pseudo_centered = pseudovalues - jknife_est  # broadcast (n_blocks, n_spots, n_features)
-
-    # Covariance: (n_spots, n_features, n_features)
-    jknife_cov = jnp.einsum("nsf,nsg->sfg", pseudo_centered, pseudo_centered) / (
-        n_blocks * (n_blocks - 1)
+    pseudo_centered = pseudovalues - jknife_est
+    spatial_jknife_se = jnp.sqrt(
+        jnp.sum(jnp.square(pseudo_centered[:, :, 0]), axis=0) / (n_blocks * (n_blocks - 1))
     )
 
-    # Extract diagonal for SE: (n_spots, n_features)
-    jknife_se = jnp.sqrt(jnp.diagonal(jknife_cov, axis1=1, axis2=2))
+    return jknife_est[:, 0] / Nbar, spatial_jknife_se / Nbar
 
-    # Return spatial coefficient (first feature) for all spots
-    return jknife_est[:, 0] / Nbar, jknife_se[:, 0] / Nbar
+
+@partial(jit, static_argnums=(0,))
+def process_chunk_batched_materialized_jit(
+    n_blocks: int,
+    spatial_ld: jnp.ndarray,
+    baseline_ld_sum: jnp.ndarray,
+    chisq: jnp.ndarray,
+    N: jnp.ndarray,
+    baseline_ann: jnp.ndarray,
+    w_ld: jnp.ndarray,
+    Nbar: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Fast materialized kernel that solves only the spatial coefficient.
+
+    Given weighted normal equations for [spatial, baseline], the spatial
+    coefficient is computed by residualizing against the baseline block:
+
+        beta = (d - b' C^-1 e) / (a - b' C^-1 b)
+
+    This avoids solving all coefficients for every delete-one jackknife
+    replicate while preserving the same regression target.
+    """
+    n_snps, n_spots = spatial_ld.shape
+
+    x_tot = spatial_ld + baseline_ld_sum.reshape(-1, 1)
+
+    N_expanded = N.reshape(-1, 1)
+    x_tot_N = x_tot * N_expanded
+    mean_chisq = jnp.mean(chisq)
+    mean_x_tot_N = jnp.mean(x_tot_N, axis=0)
+    hsq = 10000.0 * (mean_chisq - 1.0) / mean_x_tot_N
+    hsq = jnp.clip(hsq, 0.0, 1.0)
+
+    ld_clip = jnp.maximum(x_tot, 1.0)
+    w_ld_clip = jnp.maximum(w_ld.reshape(-1, 1), 1.0)
+    c = (hsq.reshape(1, -1) * N_expanded) / 10000.0
+    weights = jnp.sqrt(1.0 / (2 * jnp.square(1.0 + c * ld_clip) * w_ld_clip))
+
+    weights_sum = jnp.sum(weights, axis=0, keepdims=True)
+    weights_scaled = weights / weights_sum
+
+    spatial_weighted = (spatial_ld * weights_scaled)[..., None]
+    baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]
+    x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
+
+    y_weighted = (chisq.reshape(-1, 1) * weights_scaled)[..., None]
+
+    block_size = n_snps // n_blocks
+    n_snps_used = block_size * n_blocks
+
+    x_focal = x_focal[:n_snps_used]
+    y_weighted = y_weighted[:n_snps_used]
+
+    x_blocks = x_focal.reshape(n_blocks, block_size, n_spots, -1)
+    y_blocks = y_weighted.reshape(n_blocks, block_size, n_spots, 1)
+
+    xty_blocks = jnp.einsum("nbsf,nbs->nsf", x_blocks, y_blocks.squeeze(-1))
+    xtx_blocks = jnp.einsum("nbsf,nbsg->nsfg", x_blocks, x_blocks)
+
+    xty_total = jnp.sum(xty_blocks, axis=0)
+    xtx_total = jnp.sum(xtx_blocks, axis=0)
+
+    def spatial_coef(xtx, xty):
+        a = xtx[..., 0, 0]
+        b = xtx[..., 1:, 0]
+        c_mat = xtx[..., 1:, 1:]
+        d = xty[..., 0]
+        e = xty[..., 1:]
+        rhs = jnp.stack([e, b], axis=-1)
+        solved = jnp.linalg.solve(c_mat, rhs)
+        c_inv_e = solved[..., 0]
+        c_inv_b = solved[..., 1]
+        numerator = d - jnp.sum(b * c_inv_e, axis=-1)
+        denominator = a - jnp.sum(b * c_inv_b, axis=-1)
+        return numerator / denominator
+
+    est_spatial = spatial_coef(xtx_total, xty_total)
+
+    xty_del = xty_total - xty_blocks
+    xtx_del = xtx_total - xtx_blocks
+    delete_spatial = spatial_coef(xtx_del, xty_del)
+
+    spatial_pseudovalues = n_blocks * est_spatial - (n_blocks - 1) * delete_spatial
+    spatial_jknife_est = jnp.mean(spatial_pseudovalues, axis=0)
+    spatial_centered = spatial_pseudovalues - spatial_jknife_est
+    spatial_jknife_se = jnp.sqrt(
+        jnp.sum(jnp.square(spatial_centered), axis=0) / (n_blocks * (n_blocks - 1))
+    )
+
+    return spatial_jknife_est / Nbar, spatial_jknife_se / Nbar
+
+
+def _estimate_available_device_gb() -> float | None:
+    """Best-effort estimate of JAX device memory available to this process."""
+    try:
+        stats = jax.devices()[0].memory_stats()
+        if not stats:
+            return None
+        limit = stats.get("bytes_limit")
+        in_use = stats.get("bytes_in_use", 0)
+        if limit is None:
+            return None
+        return max(limit - in_use, 0) / (1024**3)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@partial(jit, static_argnums=(0,))
+def process_chunk_batched_jit(
+    n_blocks: int,
+    spatial_ld: jnp.ndarray,
+    baseline_ld_sum: jnp.ndarray,
+    chisq: jnp.ndarray,
+    N: jnp.ndarray,
+    baseline_ann: jnp.ndarray,
+    w_ld: jnp.ndarray,
+    Nbar: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Backward-compatible alias for the fastest batched implementation."""
+    return process_chunk_batched_fullsolve_jit(
+        n_blocks, spatial_ld, baseline_ld_sum, chisq, N, baseline_ann, w_ld, Nbar
+    )
 
 
 def wrapper_of_process_chunk_jit(*args, **kwargs):
@@ -300,18 +468,23 @@ def wrapper_of_process_chunk_jit(*args, **kwargs):
     # Peak memory estimate: x_blocks shape = (n_snps, n_spots, n_features) × float32
     est_gb = n_snps * n_spots * n_features * 4 / (1024**3)
 
-    # Use the fast batched kernel only when the estimated allocation fits comfortably.
-    # On GPU use a tighter bound (2 GB) because JAX pre-allocates most of the device
-    # memory as its pool, XLA kernel caches from earlier traits persist in the pool,
-    # and a single compute worker is used (cap above), so we have only one stream
-    # of allocations but less headroom than the nominal pool size suggests.
-    # On CPU the OS can page, so a generous 8 GB bound is fine.
+    # Use the fast materialized kernel when the estimated allocation fits.
+    # The previous fixed 2 GB GPU cap forced A100-class devices into the slow
+    # one-cell fallback for moderate chunks. Scale the cap with the actual JAX
+    # memory limit while keeping a conservative ceiling for other workloads.
     is_gpu = jax.default_backend() == "gpu"
-    _SAFE_GB = 2.0 if is_gpu else 8.0
+    if is_gpu:
+        available_gb = _estimate_available_device_gb()
+        _SAFE_GB = 2.0 if available_gb is None else min(max(available_gb * 0.30, 2.0), 10.0)
+    else:
+        _SAFE_GB = 8.0
     if est_gb <= _SAFE_GB:
-        return process_chunk_batched_jit(*args, **kwargs)
+        return process_chunk_batched_fullsolve_jit(*args, **kwargs)
 
-    # Insert batch_size=1 between n_blocks and spatial_ld for process_chunk_jit
+    if is_gpu:
+        return process_chunk_batched_lowmem_jit(*args, **kwargs)
+
+    # Insert batch_size=1 between n_blocks and spatial_ld for the CPU fallback.
     return process_chunk_jit(n_blocks, 1, *args[1:], **kwargs)
 
 
@@ -444,7 +617,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     h, rem = divmod(elapsed_time, 3600)
                     m, s = divmod(rem, 60)
                     logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.error(f"Error processing trait {trait_name}: {e}")
                     continue  # Move on to the next trait even if this one fails
 

@@ -4,6 +4,7 @@ Unified spatial LDSC processor combining chunk production, parallel loading, and
 
 import gc
 import logging
+import os
 import queue
 import threading
 import time
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import anndata as ad
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
@@ -159,9 +161,12 @@ class ParallelLDScoreReader:
                 start_time = time.time()
 
                 # Fetch the chunk using processor's method
-                ldscore, spot_names, abs_start, abs_end = self.processor._fetch_ldscore_chunk(
-                    chunk_idx
-                )
+                fetched = self.processor._fetch_ldscore_chunk(chunk_idx)
+                marker_score_chunk = None
+                if len(fetched) == 4:
+                    ldscore, spot_names, abs_start, abs_end = fetched
+                else:
+                    ldscore, spot_names, abs_start, abs_end, marker_score_chunk = fetched
 
                 # Track throughput
                 elapsed = time.time() - start_time
@@ -176,6 +181,7 @@ class ParallelLDScoreReader:
                         "spot_names": spot_names,
                         "abs_start": abs_start,
                         "abs_end": abs_end,
+                        "marker_score_chunk": marker_score_chunk,
                         "worker_id": worker_id,
                         "success": True,
                     }
@@ -273,6 +279,7 @@ class ParallelLDScoreComputer:
 
         # Prepare static JAX arrays
         self._prepare_jax_arrays()
+        self._prepare_gpu_ldscore_state()
 
         # Start worker threads
         self.workers = []
@@ -305,6 +312,47 @@ class ParallelLDScoreComputer:
         del baseline_ann
         gc.collect()
 
+    def _prepare_gpu_ldscore_state(self):
+        """Prepare optional GPU sparse state for weight-matrix LD-score construction."""
+        self.use_gpu_ldscore = False
+        self.processor.defer_ldscore_to_compute = False
+        self.cupy = None
+        self.cupy_sparse_weight = None
+
+        if self.processor.mode != "weight_matrix" or jax.default_backend() != "gpu":
+            return
+        if os.environ.get("GSMAP_DISABLE_GPU_LDSCORE") == "1":
+            logger.info(
+                "GPU LD-score construction disabled by GSMAP_DISABLE_GPU_LDSCORE=1; "
+                "using CPU sparse multiplication"
+            )
+            return
+
+        try:
+            import cupy as cp
+            import cupyx.scipy.sparse as cpsp
+
+            sparse_weight = self.processor.snp_gene_weight_sparse
+            if sparse_weight is None:
+                return
+
+            start_time = time.time()
+            self.cupy_sparse_weight = cpsp.csr_matrix(sparse_weight)
+            cp.cuda.Stream.null.synchronize()
+            self.cupy = cp
+            self.use_gpu_ldscore = True
+            self.processor.defer_ldscore_to_compute = True
+            logger.info(
+                "Prepared GPU SNP-gene sparse matrix for LD-score construction "
+                f"in {time.time() - start_time:.2f}s"
+            )
+        except Exception as e:  # noqa: BLE001
+            self.use_gpu_ldscore = False
+            logger.warning(
+                "Could not initialize GPU LD-score construction; falling back to CPU sparse "
+                f"multiplication. Reason: {type(e).__name__}: {e}"
+            )
+
     def _start_workers(self):
         """Start compute worker threads"""
         for i in range(self.num_workers):
@@ -331,7 +379,6 @@ class ParallelLDScoreComputer:
 
                 # Unpack data
                 chunk_idx = item["chunk_idx"]
-                ldscore = item["ldscore"]
                 spot_names = item["spot_names"]
                 abs_start = item["abs_start"]
                 abs_end = item["abs_end"]
@@ -339,8 +386,22 @@ class ParallelLDScoreComputer:
                 # Track timing
                 start_time = time.time()
 
-                # Convert to JAX and process
-                spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
+                # Convert or construct LD scores for JAX regression.
+                if item.get("marker_score_chunk") is not None:
+                    if self.use_gpu_ldscore:
+                        marker_score_gpu = self.cupy.asarray(
+                            item["marker_score_chunk"], dtype=self.cupy.float32
+                        )
+                        ldscore_gpu = self.cupy_sparse_weight @ marker_score_gpu
+                        self.cupy.cuda.Stream.null.synchronize()
+                        spatial_ld_jax = jax.dlpack.from_dlpack(ldscore_gpu)
+                    else:
+                        ldscore = self.processor._compute_ldscore_from_marker_chunk(
+                            item["marker_score_chunk"]
+                        )
+                        spatial_ld_jax = jnp.asarray(ldscore, dtype=jnp.float32)
+                else:
+                    spatial_ld_jax = jnp.asarray(item["ldscore"], dtype=jnp.float32)
 
                 # Process with batched JIT function (no batch_size needed - processes all spots at once)
                 betas, ses = self.process_chunk_jit_fn(
@@ -474,6 +535,7 @@ class SpatialLDSCProcessor:
         self.processed_chunks = set()
         self.min_spot_start = float("inf")
         self.max_spot_end = 0
+        self.defer_ldscore_to_compute = False
 
         if ldscore_adata is not None:
             # ── Direct ldscore mode ──────────────────────────────────────────
@@ -665,17 +727,23 @@ class SpatialLDSCProcessor:
             # (n_snps_total, n_cells_chunk)
             ldscore_chunk = chunk_all_snps[self.ldscore_snp_positions, :]
         else:
-            # Load chunk from marker_score_adata and compute LD scores
+            # Load chunk from marker_score_adata. In GPU mode the compute worker
+            # multiplies by the sparse SNP-gene matrix on device, avoiding a
+            # CPU sparse-dense multiply and host transfer of the LD-score chunk.
             mk_score_chunk = self.marker_score_adata.X[
                 memmap_start:memmap_end, self.marker_score_gene_indices
             ]
             mk_score_chunk = mk_score_chunk.T.astype(np.float32)
+            if self.defer_ldscore_to_compute:
+                return (
+                    None,
+                    spot_names,
+                    absolute_start,
+                    absolute_end,
+                    mk_score_chunk,
+                )
 
-            # Compute LD scores via sparse matrix multiplication
-            ldscore_chunk = self.snp_gene_weight_sparse @ mk_score_chunk
-
-            if hasattr(ldscore_chunk, "toarray"):
-                ldscore_chunk = ldscore_chunk.toarray()
+            ldscore_chunk = self._compute_ldscore_from_marker_chunk(mk_score_chunk)
 
         return (
             ldscore_chunk.astype(np.float32, copy=False),
@@ -683,6 +751,13 @@ class SpatialLDSCProcessor:
             absolute_start,
             absolute_end,
         )
+
+    def _compute_ldscore_from_marker_chunk(self, marker_score_chunk: np.ndarray) -> np.ndarray:
+        """Compute SNP x spot LD scores from a gene x spot marker-score chunk on CPU."""
+        ldscore_chunk = self.snp_gene_weight_sparse @ marker_score_chunk
+        if hasattr(ldscore_chunk, "toarray"):
+            ldscore_chunk = ldscore_chunk.toarray()
+        return ldscore_chunk.astype(np.float32, copy=False)
 
     def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
         """
@@ -874,6 +949,20 @@ class SpatialLDSCProcessor:
             n_cells_total, _ = computer.get_stats()
             overall_speed = n_cells_total / total_elapsed if total_elapsed > 0 else 0
             logger.info(f"Processing complete. Overall speed: {overall_speed:,.0f} cells/s")
+            reader_label = (
+                "Marker-score read throughput"
+                if getattr(computer, "use_gpu_ldscore", False)
+                else "LD-score read/construct throughput"
+            )
+            logger.info(
+                f"{reader_label}: {reader.throughput.total_batches} chunks, "
+                f"avg {reader.throughput.average_time:.3f}s/chunk"
+            )
+            logger.info(
+                "LDSC regression throughput: "
+                f"{computer.throughput.total_batches} chunks, "
+                f"avg {computer.throughput.average_time:.3f}s/chunk"
+            )
 
             # Note: mkscore_memmap is NOT closed here to allow reuse across multiple traits.
             # It will be closed by the caller after all traits are processed.
