@@ -8,6 +8,18 @@ import scipy.sparse
 logger = logging.getLogger(__name__)
 
 
+def _ensure_ruranges_overlap_api():
+    """Restore the ruranges API shape expected by pyranges1 when needed."""
+    try:
+        import ruranges
+        import ruranges.numpy as ruranges_numpy
+    except ImportError:
+        return
+
+    if not hasattr(ruranges, "overlaps") and hasattr(ruranges_numpy, "overlaps"):
+        ruranges.overlaps = ruranges_numpy.overlaps
+
+
 def create_snp_feature_map(
     bim_df: pd.DataFrame,
     mapping_type: str,
@@ -139,6 +151,7 @@ def create_snp_feature_map(
             df_features["Chromosome"].astype(str).str.replace("chr", "", case=False)
         )
 
+        _ensure_ruranges_overlap_api()
         pr_bim = pr.PyRanges(bim_pr_df)
 
         # 3. Pre-calculate TSS
