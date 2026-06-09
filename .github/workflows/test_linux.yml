@@ -47,7 +47,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system -e ".[tests]"
+          # `tests` is a dependency-group (PEP 735); CPU torch since the runner has no GPU.
+          uv pip install --system --torch-backend=cpu -e . --group tests
 
       - name: Build distribution packages
         run: |
