@@ -33,7 +33,6 @@ from .trait_data import prepare_snp_data_for_blocks
 logger = logging.getLogger("gsMap.spatial_ldsc_processor")
 
 
-
 class SpatialLDSCProcessor:
     """
     Unified processor for spatial LDSC that combines:

@@ -27,9 +27,7 @@ GPU_BACKEND_VALUES = {"auto", "torch"}
 def is_gpu_memory_error(exc: BaseException) -> bool:
     """Return True for common CUDA out-of-memory exceptions."""
     message = str(exc).lower()
-    return "out of memory" in message or (
-        "cuda" in message and "memory" in message
-    )
+    return "out of memory" in message or ("cuda" in message and "memory" in message)
 
 
 class LDScoreBackend(ABC):
@@ -165,8 +163,7 @@ def select_gpu_ldscore_backend(sparse_weight) -> LDScoreBackend | None:
         return None
     if requested_backend not in GPU_BACKEND_VALUES:
         logger.warning(
-            "Unknown GSMAP_GPU_LDSCORE_BACKEND=%r; expected auto, torch, or cpu. "
-            "Using auto.",
+            "Unknown GSMAP_GPU_LDSCORE_BACKEND=%r; expected auto, torch, or cpu. Using auto.",
             requested_backend,
         )
         requested_backend = "auto"

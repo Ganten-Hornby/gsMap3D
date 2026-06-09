@@ -239,7 +239,7 @@ class ParallelLDScoreComputer:
         if backend is not None:
             try:
                 return backend.compute(marker_score_chunk)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 if not is_gpu_memory_error(e):
                     raise
                 with self.ldscore_backend_lock:
