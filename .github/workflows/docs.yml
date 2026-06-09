@@ -34,7 +34,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system '.[doc]'
+          # `doc` is a dependency-group (PEP 735); torch is pinned to the CPU
+          # wheel since the docs runner has no GPU.
+          uv pip install --system --torch-backend=cpu . --group doc
 
       - name: Build documentation
         working-directory: ./docs

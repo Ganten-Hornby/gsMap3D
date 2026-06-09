@@ -177,12 +177,8 @@ def process_chunk_batched_lowmem_jit(
 
     # Weighted normal equations for each jackknife block and spot.
     # Feature 0 is the spatial LD score; remaining features are baseline terms.
-    spatial_xty = jnp.einsum(
-        "nbs,nb,nbs->ns", spatial_blocks, chisq_blocks, weights_sq_blocks
-    )
-    baseline_xty = jnp.einsum(
-        "nbk,nb,nbs->nsk", baseline_blocks, chisq_blocks, weights_sq_blocks
-    )
+    spatial_xty = jnp.einsum("nbs,nb,nbs->ns", spatial_blocks, chisq_blocks, weights_sq_blocks)
+    baseline_xty = jnp.einsum("nbk,nb,nbs->nsk", baseline_blocks, chisq_blocks, weights_sq_blocks)
     xty_blocks = jnp.concatenate([spatial_xty[..., None], baseline_xty], axis=-1)
 
     spatial_spatial = jnp.einsum(

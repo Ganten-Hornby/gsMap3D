@@ -164,7 +164,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     h, rem = divmod(elapsed_time, 3600)
                     m, s = divmod(rem, 60)
                     logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  isolate per-trait failures
                     logger.error(f"Error processing trait {trait_name}: {e}")
                     continue  # Move on to the next trait even if this one fails
 

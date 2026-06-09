@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
 
-from gsMap.config import SpatialLDSCConfig
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from gsMap.config import SpatialLDSCConfig
 
 logger = logging.getLogger("gsMap.spatial_ldsc.result_writer")
 

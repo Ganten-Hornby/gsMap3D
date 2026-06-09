@@ -33,7 +33,6 @@ from .trait_data import prepare_snp_data_for_blocks
 logger = logging.getLogger("gsMap.spatial_ldsc_processor")
 
 
-
 class SpatialLDSCProcessor:
     """
     Unified processor for spatial LDSC that combines:
@@ -295,16 +294,22 @@ class SpatialLDSCProcessor:
             num_workers=self.config.ldsc_read_workers,
         )
 
-        # On GPU, JAX handles device parallelism internally; using more than one
-        # Python compute thread causes cuSolver handle-pool race conditions and
-        # excessive GPU memory pressure.  Cap to 1 worker on GPU.
-        effective_compute_workers = (
-            1 if _jax.default_backend() == "gpu" else self.config.ldsc_compute_workers
-        )
+        # JAX already parallelizes a single regression across all cores/devices
+        # internally (CPU via XLA's intra-op pool, GPU on-device). Dispatching the
+        # same jitted computation from many Python compute threads buys no real
+        # throughput and is actively harmful:
+        #   - GPU: cuSolver handle-pool races and excess device memory pressure.
+        #   - CPU: many threads each blocking in block_until_ready() starve XLA's
+        #     bounded CPU thread pool on low-core machines (e.g. 2-core CI),
+        #     deadlocking the pipeline.
+        # So use a single compute worker on every backend; the reader pool stays
+        # multi-threaded, preserving I/O overlap.
+        effective_compute_workers = 1
         if effective_compute_workers != self.config.ldsc_compute_workers:
             logger.info(
-                f"GPU backend detected: capping ldsc_compute_workers to 1 "
-                f"(configured: {self.config.ldsc_compute_workers})"
+                f"Capping ldsc_compute_workers to 1 for {_jax.default_backend()} backend "
+                f"(configured: {self.config.ldsc_compute_workers}); JAX parallelizes "
+                f"each regression internally"
             )
 
         computer = ParallelLDScoreComputer(

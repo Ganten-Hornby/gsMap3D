@@ -79,6 +79,9 @@ class MemMapDense:
         self.write_queue = queue.Queue(maxsize=100)
         self.writer_threads = []
         self.stop_writer = threading.Event()
+        # First exception raised by any writer thread, surfaced on close/mark_complete
+        # so a failed write cannot silently wedge write_queue.join() forever.
+        self.writer_error: BaseException | None = None
 
         if mode in ("w", "r+"):
             self._start_writer_threads()
@@ -223,8 +226,20 @@ class MemMapDense:
             while not self.stop_writer.is_set():
                 try:
                     item = self.write_queue.get(timeout=1)
+                except queue.Empty:
+                    continue
+
+                # Once an item is dequeued we MUST call task_done() for it on
+                # every path, or write_queue.join() blocks forever. A write error
+                # is recorded and the queue drained (without writing) so join()
+                # can return and the error is surfaced on close/mark_complete.
+                try:
                     if item is None:
                         break
+                    if self.writer_error is not None:
+                        # A sibling worker already failed; stop writing but keep
+                        # draining so join() completes.
+                        continue
                     data, row_indices, col_slice = item
 
                     # Write data with thread safety using shared memmap
@@ -245,13 +260,12 @@ class MemMapDense:
                             self.memmap.flush()
                             last_flush_time = time.time()
                             logger.debug(f"Worker 0 flushed memmap at {last_flush_time:.2f}")
-
-                    self.write_queue.task_done()
-                except queue.Empty:
-                    continue
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error(f"Writer thread {worker_id} error: {e}")
-                    raise
+                    if self.writer_error is None:
+                        self.writer_error = e
+                finally:
+                    self.write_queue.task_done()
 
         # Start multiple writer threads
         for i in range(self.num_write_workers):
@@ -311,6 +325,13 @@ class MemMapDense:
             if self.writer_threads and not self.write_queue.empty():
                 logger.info("Waiting for remaining writes before marking complete...")
                 self.write_queue.join()
+
+            # A failed background write must not be silently marked complete.
+            if self.writer_error is not None:
+                raise RuntimeError(
+                    "Background memmap write failed; refusing to mark incomplete data "
+                    f"as complete: {self.writer_error}"
+                ) from self.writer_error
 
             # Flush memory map to disk
             logger.info("Flushing memmap to disk...")
