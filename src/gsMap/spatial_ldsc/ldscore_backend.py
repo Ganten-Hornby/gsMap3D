@@ -39,7 +39,7 @@ class LDScoreBackend(ABC):
     def compute(self, marker_score_chunk: np.ndarray):
         """Return a JAX array with shape SNP x cell."""
 
-    def close(self):
+    def close(self):  # noqa: B027  optional hook; only GPU backends override it
         """Release backend-owned GPU state."""
 
 
