@@ -3,6 +3,7 @@ Unified spatial LDSC processor combining chunk production, parallel loading, and
 """
 
 import logging
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -276,6 +277,59 @@ class SpatialLDSCProcessor:
             raise RuntimeError("Chunk source is not initialized; call setup_trait first")
         return self.chunk_source.compute_ldscore_from_marker_chunk(marker_score_chunk)
 
+    def _resolve_compute_workers(self, backend: str) -> int:
+        """Decide how many compute (regression) worker threads to run.
+
+        Each compute worker dispatches a jitted regression and then blocks in
+        ``block_until_ready()``. JAX/XLA already parallelizes a *single* regression
+        across cores (CPU intra-op pool) or on-device (GPU), so the workers buy
+        throughput only by overlapping Python-side overhead (host<->device array
+        conversion, the lock-guarded result accumulation) with JAX compute — not by
+        parallelizing the math itself. The right count is therefore backend- and
+        core-dependent:
+
+        * **GPU** — a single on-device queue already saturates the device; extra
+          workers add cuSolver handle-pool races and device-memory pressure. Pin to 1.
+        * **CPU** — extra workers help on many-core hosts, but each one occupies a
+          core while blocked. If the worker count approaches/exceeds the available
+          cores, XLA's bounded intra-op pool is starved and the pipeline deadlocks
+          (observed on 2-core CI). So cap at ``cpu_count // 2`` (>=1), which leaves
+          headroom for the intra-op pool and reader threads, and naturally collapses
+          to 1 on a 2-core box.
+
+        ``GSMAP_LDSC_FORCE_COMPUTE_WORKERS`` overrides the heuristic for power users
+        and benchmarking (use with care — it can reintroduce the deadlock on few-core
+        machines).
+        """
+        configured = self.config.ldsc_compute_workers
+
+        forced = os.environ.get("GSMAP_LDSC_FORCE_COMPUTE_WORKERS")
+        if forced is not None:
+            n = max(1, int(forced))
+            logger.warning(
+                f"GSMAP_LDSC_FORCE_COMPUTE_WORKERS={forced}: forcing {n} compute "
+                f"worker(s), bypassing the safety cap (backend={backend})"
+            )
+            return n
+
+        if backend == "gpu":
+            cap = 1
+        else:
+            try:
+                n_cores = len(os.sched_getaffinity(0))
+            except AttributeError:  # not available on all platforms
+                n_cores = os.cpu_count() or 1
+            cap = max(1, n_cores // 2)
+
+        effective = min(configured, cap)
+        if effective != configured:
+            logger.info(
+                f"Capping ldsc_compute_workers {configured} -> {effective} for "
+                f"{backend} backend; JAX parallelizes each regression internally "
+                f"(override with GSMAP_LDSC_FORCE_COMPUTE_WORKERS)"
+            )
+        return effective
+
     def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
         """
         Process all chunks using parallel reader-computer pipeline.
@@ -294,29 +348,26 @@ class SpatialLDSCProcessor:
             num_workers=self.config.ldsc_read_workers,
         )
 
-        # JAX already parallelizes a single regression across all cores/devices
-        # internally (CPU via XLA's intra-op pool, GPU on-device). Dispatching the
-        # same jitted computation from many Python compute threads buys no real
-        # throughput and is actively harmful:
-        #   - GPU: cuSolver handle-pool races and excess device memory pressure.
-        #   - CPU: many threads each blocking in block_until_ready() starve XLA's
-        #     bounded CPU thread pool on low-core machines (e.g. 2-core CI),
-        #     deadlocking the pipeline.
-        # So use a single compute worker on every backend; the reader pool stays
-        # multi-threaded, preserving I/O overlap.
-        effective_compute_workers = 1
-        if effective_compute_workers != self.config.ldsc_compute_workers:
-            logger.info(
-                f"Capping ldsc_compute_workers to 1 for {_jax.default_backend()} backend "
-                f"(configured: {self.config.ldsc_compute_workers}); JAX parallelizes "
-                f"each regression internally"
-            )
+        backend = _jax.default_backend()
+        effective_compute_workers = self._resolve_compute_workers(backend)
+
+        # On GPU a single stream already saturates the device and extra compute
+        # threads only add cuSolver-handle contention, so instead of more workers
+        # we double-buffer: one worker dispatches `pipeline_depth` chunks ahead and
+        # blocks lazily, overlapping the (large) host->device LD-score upload and
+        # result copy-back with on-device compute. Benchmarked ~1.25x over the
+        # block-after-dispatch path. CPU keeps the multi-worker threads (depth 0),
+        # which win there by running concurrent regressions across idle cores.
+        pipeline_depth = 0
+        if backend == "gpu":
+            pipeline_depth = max(0, int(os.environ.get("GSMAP_LDSC_GPU_PIPELINE_DEPTH", "2")))
 
         computer = ParallelLDScoreComputer(
             processor=self,
             process_chunk_jit_fn=process_chunk_jit_fn,
             num_workers=effective_compute_workers,
             input_queue=reader.result_queue,  # Connect reader output to computer input
+            pipeline_depth=pipeline_depth,
         )
 
         try:

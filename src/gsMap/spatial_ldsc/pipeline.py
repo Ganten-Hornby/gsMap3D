@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 import traceback
+from collections import deque
 from dataclasses import dataclass
 
 import jax
@@ -170,10 +171,17 @@ class ParallelLDScoreComputer:
         process_chunk_jit_fn,
         num_workers: int = 4,
         input_queue: queue.Queue = None,
+        pipeline_depth: int = 0,
     ):
         self.processor = processor
         self.process_chunk_jit_fn = process_chunk_jit_fn
         self.num_workers = num_workers
+        # pipeline_depth > 0 => single-thread async double-buffering: dispatch up to
+        # `depth` extra chunks ahead and block lazily, overlapping host<->device
+        # transfer and result copy-back with on-device compute. Used on GPU, where
+        # one stream saturates the device (extra threads only add cuSolver-handle
+        # contention). 0 => the classic block-after-each path (used by CPU threads).
+        self.pipeline_depth = pipeline_depth
         self.compute_queue = input_queue if input_queue else queue.Queue(maxsize=num_workers * 2)
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
@@ -260,11 +268,80 @@ class ParallelLDScoreComputer:
         return jnp.asarray(ldscore, dtype=jnp.float32)
 
     def _start_workers(self):
+        target = (
+            self._compute_worker_pipelined if self.pipeline_depth > 0 else self._compute_worker
+        )
         for i in range(self.num_workers):
-            worker = threading.Thread(target=self._compute_worker, args=(i,), daemon=True)
+            worker = threading.Thread(target=target, args=(i,), daemon=True)
             worker.start()
             self.workers.append(worker)
-        logger.info(f"Started {self.num_workers} compute workers")
+        mode = (
+            f"double-buffer depth={self.pipeline_depth}"
+            if self.pipeline_depth > 0
+            else "block-after-dispatch"
+        )
+        logger.info(f"Started {self.num_workers} compute worker(s) [{mode}]")
+
+    def _dispatch_chunk(self, item):
+        """Construct spatial LD and async-dispatch the regression (no block).
+
+        Returns a pending tuple to be finalized later, or None if the upstream
+        read failed for this chunk.
+        """
+        if not item.get("success", False):
+            logger.error(f"Skipping chunk {item.get('chunk_idx')} due to read error")
+            return None
+
+        chunk_idx = item["chunk_idx"]
+        spot_names = item["spot_names"]
+        abs_start = item["abs_start"]
+        abs_end = item["abs_end"]
+        start_time = time.time()
+
+        if item.get("marker_score_chunk") is not None:
+            spatial_ld_jax = self._construct_spatial_ld_from_marker_chunk(
+                item["marker_score_chunk"]
+            )
+        else:
+            spatial_ld_jax = jnp.asarray(item["ldscore"], dtype=jnp.float32)
+
+        betas, ses = self.process_chunk_jit_fn(
+            self.processor.config.n_blocks,
+            spatial_ld_jax,
+            self.baseline_ld_sum_jax,
+            self.chisq_jax,
+            self.N_jax,
+            self.baseline_ann_jax,
+            self.w_ld_jax,
+            self.Nbar,
+        )
+        return (chunk_idx, spot_names, abs_start, abs_end, betas, ses, spatial_ld_jax, start_time)
+
+    def _finalize_chunk(self, pending):
+        """Block on a dispatched chunk, copy back, accumulate, and update stats."""
+        chunk_idx, spot_names, abs_start, abs_end, betas, ses, spatial_ld_jax, start_time = pending
+
+        betas.block_until_ready()
+        ses.block_until_ready()
+
+        betas_np = np.array(betas)
+        ses_np = np.array(ses)
+        elapsed = time.time() - start_time
+        n_cells_in_chunk = abs_end - abs_start
+
+        with self.throughput_lock:
+            self.throughput.record_batch(elapsed)
+
+        with self.stats_lock:
+            self.total_cells_processed += n_cells_in_chunk
+            self.total_chunks_processed += 1
+
+        with self.results_lock:
+            self.processor._add_chunk_result(
+                chunk_idx, betas_np, ses_np, spot_names, abs_start, abs_end
+            )
+
+        del spatial_ld_jax, betas, ses
 
     def _compute_worker(self, worker_id: int):
         logger.debug(f"Compute worker {worker_id} started")
@@ -275,55 +352,10 @@ class ParallelLDScoreComputer:
                 if item is None:
                     break
 
-                if not item.get("success", False):
-                    logger.error(f"Skipping chunk {item.get('chunk_idx')} due to read error")
+                pending = self._dispatch_chunk(item)
+                if pending is None:
                     continue
-
-                chunk_idx = item["chunk_idx"]
-                spot_names = item["spot_names"]
-                abs_start = item["abs_start"]
-                abs_end = item["abs_end"]
-                start_time = time.time()
-
-                if item.get("marker_score_chunk") is not None:
-                    spatial_ld_jax = self._construct_spatial_ld_from_marker_chunk(
-                        item["marker_score_chunk"]
-                    )
-                else:
-                    spatial_ld_jax = jnp.asarray(item["ldscore"], dtype=jnp.float32)
-
-                betas, ses = self.process_chunk_jit_fn(
-                    self.processor.config.n_blocks,
-                    spatial_ld_jax,
-                    self.baseline_ld_sum_jax,
-                    self.chisq_jax,
-                    self.N_jax,
-                    self.baseline_ann_jax,
-                    self.w_ld_jax,
-                    self.Nbar,
-                )
-
-                betas.block_until_ready()
-                ses.block_until_ready()
-
-                betas_np = np.array(betas)
-                ses_np = np.array(ses)
-                elapsed = time.time() - start_time
-                n_cells_in_chunk = abs_end - abs_start
-
-                with self.throughput_lock:
-                    self.throughput.record_batch(elapsed)
-
-                with self.stats_lock:
-                    self.total_cells_processed += n_cells_in_chunk
-                    self.total_chunks_processed += 1
-
-                with self.results_lock:
-                    self.processor._add_chunk_result(
-                        chunk_idx, betas_np, ses_np, spot_names, abs_start, abs_end
-                    )
-
-                del spatial_ld_jax, betas, ses
+                self._finalize_chunk(pending)
 
             except queue.Empty:
                 continue
@@ -335,6 +367,51 @@ class ParallelLDScoreComputer:
                 break
 
         logger.debug(f"Compute worker {worker_id} stopped")
+
+    def _compute_worker_pipelined(self, worker_id: int):
+        """Single-thread async double-buffer: dispatch up to `pipeline_depth`
+        chunks ahead, block lazily on the oldest. Overlaps host<->device transfer
+        and result copy-back with on-device compute without extra threads (so no
+        cuSolver-handle contention). Drains in-flight work when the input queue
+        runs dry so the monitor's chunk counter can reach total_chunks.
+        """
+        logger.debug(f"Pipelined compute worker {worker_id} started (depth={self.pipeline_depth})")
+        inflight: deque = deque()
+
+        try:
+            while not self.stop_workers.is_set():
+                try:
+                    item = self.compute_queue.get(timeout=0.1)
+                except queue.Empty:
+                    # Input drained: drain one in-flight chunk so stats advance
+                    # (otherwise the last `depth` chunks would never be counted
+                    # and the monitor loop would spin forever).
+                    if inflight:
+                        self._finalize_chunk(inflight.popleft())
+                    continue
+
+                if item is None:
+                    break
+
+                pending = self._dispatch_chunk(item)
+                if pending is not None:
+                    inflight.append(pending)
+                if len(inflight) > self.pipeline_depth:
+                    self._finalize_chunk(inflight.popleft())
+
+            # Drain whatever is still in flight before exiting.
+            while inflight:
+                self._finalize_chunk(inflight.popleft())
+
+        except Exception as e:  # noqa: BLE001
+            error_trace = traceback.format_exc()
+            logger.error(
+                f"Pipelined compute worker {worker_id} error: {e}\nTraceback:\n{error_trace}"
+            )
+            self.exception_queue.put((worker_id, e, error_trace))
+            self.has_error.set()
+
+        logger.debug(f"Pipelined compute worker {worker_id} stopped")
 
     def get_queue_size(self):
         return self.compute_queue.qsize()
