@@ -187,7 +187,12 @@ class FindLatentCoreConfig:
         ),
     ] = None
 
-    species: str | None = None
+    species: Annotated[
+        str | None,
+        typer.Option(
+            help="Species-symbol column in the homolog file (for example MOUSE_GENE_SYM)"
+        ),
+    ] = None
 
     latent_representation_niche: Annotated[
         str, typer.Option(help="Key for spatial niche embedding in obsm")
