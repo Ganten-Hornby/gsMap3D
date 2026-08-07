@@ -12,9 +12,44 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from gsMap.config import FindLatentRepresentationsConfig
 
-from .gnn.gcn import GCN, build_spatial_graph
+from .gnn.gcn import GCN, SpatialGraph, build_graph_for_mode
 
 logger = logging.getLogger(__name__)
+
+
+def propagate_spatial_features(
+    expression: torch.Tensor,
+    coords: np.ndarray,
+    stable_ids: np.ndarray,
+    params,
+    gcov: GCN,
+) -> tuple[torch.Tensor, SpatialGraph]:
+    """Construct the configured graph and propagate one expression block."""
+
+    graph = build_graph_for_mode(
+        coords=coords,
+        stable_ids=stable_ids,
+        mode=params.graph_mode,
+        n_neighbors=params.n_neighbors,
+        radius=params.graph_radius,
+        sigma=params.graph_sigma,
+    )
+    if params.graph_mode.lower() == "no_graph":
+        return expression.repeat(1, params.K), graph
+
+    edge_index = torch.from_numpy(graph.edges.T).long()
+    edge_weight = None
+    if graph.weights is not None:
+        edge_weight = torch.from_numpy(graph.weights).to(dtype=expression.dtype)
+    return (
+        gcov(
+            expression,
+            edge_index,
+            edge_weight,
+            legacy_normalization=params.graph_mode.lower() in {"legacy_bug", "legacy_symmetric"},
+        ),
+        graph,
+    )
 
 
 def convert_to_human_genes(adata, gene_homolog_dict: dict, species: str = None):
@@ -664,33 +699,35 @@ class TrainingData:
         expression_array = torch.Tensor(concatenated_adata[:, hvg].X.toarray())
         logger.info(f"Expression array shape: {expression_array.shape}")
 
-        # Process each batch separately for GCN (since spatial graphs are sample-specific)
-        expression_array_gcn_list = []
+        # Process each batch separately for GCN (since spatial graphs are sample-specific).
+        # Scatter each result back to its original global row indices so an
+        # arbitrary interleaving of batch rows cannot change feature alignment.
+        expression_array_gcn = torch.empty(
+            (expression_array.size(0), expression_array.size(1) * self.params.K),
+            dtype=expression_array.dtype,
+        )
 
         for batch_id in concatenated_adata.obs["batch_id"].unique():
             batch_mask = concatenated_adata.obs["batch_id"] == batch_id
             batch_adata = concatenated_adata[batch_mask]
-            batch_expression = expression_array[batch_mask.values]
+            batch_indices = np.flatnonzero(batch_mask.to_numpy())
+            batch_expression = expression_array[batch_indices]
 
             logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
 
-            # Build spatial graph for this batch
-            edge = build_spatial_graph(
-                coords=np.array(batch_adata.obsm[self.params.spatial_key]),
-                n_neighbors=self.params.n_neighbors,
+            batch_expression_gcn, graph = propagate_spatial_features(
+                expression=batch_expression,
+                coords=np.asarray(batch_adata.obsm[self.params.spatial_key]),
+                stable_ids=batch_adata.obs_names.to_numpy(),
+                params=self.params,
+                gcov=self.gcov,
             )
-            edge = torch.from_numpy(edge.T).long()
-
-            # Apply GCN to this batch
-            batch_expression_gcn = self.gcov(batch_expression, edge)
-            expression_array_gcn_list.append(batch_expression_gcn)
+            expression_array_gcn[batch_indices] = batch_expression_gcn
 
             logger.info(
-                f"Graph for {batch_id} has {edge.size(1)} edges, {batch_adata.n_obs} cells."
+                f"Graph for {batch_id} has {graph.edges.shape[0]} directed edges, "
+                f"{batch_adata.n_obs} cells."
             )
-
-        # Concatenate GCN results in the same order as the original data
-        expression_array_gcn = torch.cat(expression_array_gcn_list, dim=0)
 
         # Convert batch labels to numeric codes
         batch_codes = pd.Categorical(batch_labels).codes
@@ -702,8 +739,8 @@ class TrainingData:
         # Store results
         self.expression_merge = expression_array
         self.expression_gcn_merge = expression_array_gcn
-        self.batch_merge = torch.Tensor(batch_codes)
-        self.label_merge = torch.Tensor(label_codes).long()
+        self.batch_merge = torch.from_numpy(np.array(batch_codes, copy=True)).float()
+        self.label_merge = torch.from_numpy(np.array(label_codes, copy=True)).long()
 
         if self.params.annotation is not None:
             self.label_name = cat_labels.categories.take(np.unique(cat_labels.codes)).to_list()
@@ -754,12 +791,16 @@ class InferenceData:
         expression_array = torch.Tensor(adata[:, self.hvg].X.toarray())
 
         # Graph convolution of expression array
-        edge = build_spatial_graph(
-            coords=np.array(adata.obsm[self.params.spatial_key]),
-            n_neighbors=self.params.n_neighbors,
+        expression_array_gcn, graph = propagate_spatial_features(
+            expression=expression_array,
+            coords=np.asarray(adata.obsm[self.params.spatial_key]),
+            stable_ids=adata.obs_names.to_numpy(),
+            params=self.params,
+            gcov=self.gcov,
         )
-        edge = torch.from_numpy(edge.T).long()
-        expression_array_gcn = self.gcov(expression_array, edge)
+        logger.info(
+            f"Graph for {st_name} has {graph.edges.shape[0]} directed edges, {adata.n_obs} cells."
+        )
 
         # Build batch vector as one-hot encoding
         n_cell = adata.n_obs

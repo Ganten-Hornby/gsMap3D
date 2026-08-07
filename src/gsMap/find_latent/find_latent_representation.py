@@ -69,7 +69,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         training info, outputs, and annotation info
     """
     logger.info(f"Project dir: {config.project_dir}")
-    set_seed(2024)
+    set_seed(config.random_seed)
 
     # Find the hvg
     hvg, n_cell_used, gene_homolog_dict = find_common_hvg(config.sample_h5ad_dict, config)

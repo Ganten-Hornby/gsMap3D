@@ -31,8 +31,30 @@ class FindLatentModelConfig:
 
     # Feature extraction parameters
     n_neighbors: Annotated[
-        int, typer.Option(help="Number of neighbors for LGCN", min=1, max=50)
+        int,
+        typer.Option(help="Number of external neighbors for corrected LGCN graphs", min=1, max=50),
     ] = 10
+
+    graph_mode: Annotated[
+        str,
+        typer.Option(
+            help=(
+                "Spatial graph mode: symmetric_knn (default), radius, weighted_radius, "
+                "no_graph, or revision-only legacy_bug/legacy_symmetric"
+            ),
+            case_sensitive=False,
+        ),
+    ] = "symmetric_knn"
+
+    graph_radius: Annotated[
+        float | None,
+        typer.Option(help="Physical radius for radius graph modes", min=0.0),
+    ] = None
+
+    graph_sigma: Annotated[
+        float | None,
+        typer.Option(help="Gaussian sigma for weighted-radius edges", min=0.0),
+    ] = None
 
     K: Annotated[int, typer.Option(help="Graph convolution depth for LGCN", min=1, max=10)] = 3
 
@@ -82,6 +104,10 @@ class FindLatentModelConfig:
     ] = 100
 
     patience: Annotated[int, typer.Option(help="Early stopping patience", min=1, max=50)] = 10
+
+    random_seed: Annotated[
+        int, typer.Option(help="Random seed for training and sampling", min=0)
+    ] = 2024
 
     two_stage: Annotated[
         bool,
@@ -188,6 +214,35 @@ class FindLatentRepresentationsConfig(
 
     def __post_init__(self):
         super().__post_init__()
+
+        self.graph_mode = self.graph_mode.lower()
+        allowed_graph_modes = {
+            "symmetric_knn",
+            "radius",
+            "weighted_radius",
+            "no_graph",
+            "legacy_bug",
+            "legacy_symmetric",
+        }
+        if self.graph_mode not in allowed_graph_modes:
+            raise ValueError(
+                f"Unknown graph_mode {self.graph_mode!r}; expected one of "
+                f"{sorted(allowed_graph_modes)}"
+            )
+        if self.graph_mode in {"radius", "weighted_radius"} and (
+            self.graph_radius is None or self.graph_radius <= 0
+        ):
+            raise ValueError(f"A positive graph_radius is required for {self.graph_mode}")
+        if self.graph_mode == "weighted_radius" and (
+            self.graph_sigma is None or self.graph_sigma <= 0
+        ):
+            raise ValueError("A positive graph_sigma is required for weighted_radius")
+        if self.graph_mode.startswith("legacy_"):
+            logger.warning(
+                "graph_mode=%s is retained only for revision impact analysis; "
+                "n_neighbors is interpreted as the historical KD-tree query count",
+                self.graph_mode,
+            )
 
         # Define input options
         input_options = {
