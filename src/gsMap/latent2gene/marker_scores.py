@@ -1003,6 +1003,40 @@ class MarkerScoreCalculator:
         logger.info(f"Processing {len(cell_types)} cell types")
         return cell_types
 
+    @staticmethod
+    def _clear_homogeneous_outputs(adata: ad.AnnData) -> None:
+        """Remove match outputs that must not survive a recalculation.
+
+        Rows with a missing annotation are intentionally skipped by marker-score
+        calculation. Clearing the complete output fields first prevents those
+        rows from retaining match indices from a previous ordinal/physical run.
+        """
+
+        obsm_keys = (
+            "gsMap_homo_indices",
+            "gsMap_homo_cell_sims",
+            "gsMap_homo_niche_sims",
+        )
+        obs_keys = (
+            "gsMap_homo_neighbor_count",
+            "gsMap_homo_cell_sims_median",
+            "gsMap_homo_niche_sims_median",
+        )
+        removed = []
+        for key in obsm_keys:
+            if key in adata.obsm:
+                del adata.obsm[key]
+                removed.append(f"obsm/{key}")
+        for key in obs_keys:
+            if key in adata.obs:
+                del adata.obs[key]
+                removed.append(f"obs/{key}")
+        if removed:
+            logger.info(
+                "Cleared stale homogeneous-match outputs before recalculation: %s",
+                ", ".join(removed),
+            )
+
     def _initialize_pipeline(
         self,
         rank_memmap: MemMapDense,
@@ -1188,8 +1222,10 @@ class MarkerScoreCalculator:
         if "gsMap_homo_indices" not in adata.obsm.keys() or (
             adata.obsm["gsMap_homo_indices"].shape[1] != neighbor_indices.shape[1]
         ):
-            adata.obsm["gsMap_homo_indices"] = np.zeros(
-                (adata.n_obs, neighbor_indices.shape[1]), dtype=neighbor_indices.dtype
+            adata.obsm["gsMap_homo_indices"] = np.full(
+                (adata.n_obs, neighbor_indices.shape[1]),
+                -1,
+                dtype=neighbor_indices.dtype,
             )
         if "gsMap_homo_cell_sims" not in adata.obsm.keys() or (
             adata.obsm["gsMap_homo_cell_sims"].shape[1] != neighbor_indices.shape[1]
@@ -1343,6 +1379,7 @@ class MarkerScoreCalculator:
         # Get cell types to process
         cell_types = self._get_cell_types(adata)
         annotation_key = self.config.annotation
+        self._clear_homogeneous_outputs(adata)
 
         # Display summary
         self._display_input_summary(adata, cell_types, n_cells, n_genes)
