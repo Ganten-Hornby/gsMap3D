@@ -21,7 +21,12 @@ from .decorators import dataclass_typer, show_banner, track_resource_usage
 # Migrated module configurations
 from .find_latent_config import FindLatentRepresentationsConfig
 from .format_sumstats_config import FormatSumstatsConfig
-from .latent2gene_config import DatasetType, LatentToGeneConfig, MarkerScoreCrossSliceStrategy
+from .latent2gene_config import (
+    CrossSliceSelectionMode,
+    DatasetType,
+    LatentToGeneConfig,
+    MarkerScoreCrossSliceStrategy,
+)
 from .ldscore_config import GenerateLDScoreConfig, LDScoreConfig
 from .quick_mode_config import QuickModeConfig
 from .report_config import ReportConfig
@@ -47,6 +52,7 @@ __all__ = [
     "FindLatentRepresentationsConfig",
     "LatentToGeneConfig",
     "DatasetType",
+    "CrossSliceSelectionMode",
     "MarkerScoreCrossSliceStrategy",
     "SpatialLDSCConfig",
     "ReportConfig",

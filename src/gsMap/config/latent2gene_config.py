@@ -30,6 +30,13 @@ class MarkerScoreCrossSliceStrategy(StrEnum):
     HIERARCHICAL_POOL = "hierarchical_pool"
 
 
+class CrossSliceSelectionMode(StrEnum):
+    """Rule used to choose which serial sections contribute candidates."""
+
+    ORDINAL = "ordinal"
+    PHYSICAL_WINDOW = "physical_window"
+
+
 @dataclass
 class LatentToGeneComputeConfig:
     """Compute configuration for latent-to-gene step."""
@@ -220,11 +227,42 @@ class LatentToGeneCoreConfig:
     n_adjacent_slices: Annotated[
         int,
         typer.Option(
-            help="Number of adjacent slices to search above and below (± n_adjacent_slices) in 3D space for each focal spot. Padding will be applied automatically.",
+            help="For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.",
             min=0,
-            max=5,
+            max=100,
         ),
     ] = 1
+
+    cross_slice_selection_mode: Annotated[
+        CrossSliceSelectionMode,
+        typer.Option(
+            help="How cross-section candidates are chosen: by ordinal input order (legacy) or by a measured physical z-distance window.",
+            case_sensitive=False,
+        ),
+    ] = CrossSliceSelectionMode.ORDINAL
+
+    cross_slice_max_distance: Annotated[
+        float | None,
+        typer.Option(
+            help="Maximum absolute physical z distance for physical-window section selection. Required when cross_slice_selection_mode=physical_window.",
+            min=0.0,
+        ),
+    ] = None
+
+    cross_slice_z_coordinate: Annotated[
+        int,
+        typer.Option(
+            help="Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.",
+        ),
+    ] = -1
+
+    cross_slice_z_scale: Annotated[
+        float,
+        typer.Option(
+            help="Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.",
+            min=0.0,
+        ),
+    ] = 1.0
 
     cross_slice_marker_score_strategy: Annotated[
         MarkerScoreCrossSliceStrategy,
@@ -432,15 +470,36 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
             f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors})"
         )
 
+        if self.cross_slice_selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
+            if self.cross_slice_max_distance is None or self.cross_slice_max_distance <= 0:
+                raise ValueError(
+                    "cross_slice_max_distance must be positive when "
+                    "cross_slice_selection_mode='physical_window'"
+                )
+            if self.cross_slice_z_scale <= 0:
+                raise ValueError(
+                    "cross_slice_z_scale must be positive when "
+                    "cross_slice_selection_mode='physical_window'"
+                )
+
         n_slices = 1 + self.n_adjacent_slices  # only focal + above slices
         assert n_slices <= len(self.sample_h5ad_dict), (
             f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). "
             f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce adjacent_slices."
         )
 
-        logger.info(
-            f"Dataset type is spatial3D, using adjacent_slices={self.n_adjacent_slices} for cross-slice search"
-        )
+        if self.cross_slice_selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
+            logger.info(
+                "Dataset type is spatial3D, selecting at most %s cross-sections within "
+                "a physical z distance of %s (z scale=%s)",
+                2 * self.n_adjacent_slices,
+                self.cross_slice_max_distance,
+                self.cross_slice_z_scale,
+            )
+        else:
+            logger.info(
+                f"Dataset type is spatial3D, using adjacent_slices={self.n_adjacent_slices} for cross-slice search"
+            )
         logger.info(
             "The Z axis order of slices is determined by the h5ad input order. Currently, the order is: "
         )

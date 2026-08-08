@@ -25,7 +25,7 @@ from rich.progress import (
 )
 from scipy.spatial import cKDTree
 
-from gsMap.config import DatasetType, LatentToGeneConfig
+from gsMap.config import CrossSliceSelectionMode, DatasetType, LatentToGeneConfig
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,12 @@ def find_spatial_neighbors_with_slices(
     k_central: int = 101,
     k_adjacent: int = 50,
     n_adjacent_slices: int = 1,
+    cross_slice_selection_mode: CrossSliceSelectionMode | str = (
+        CrossSliceSelectionMode.ORDINAL
+    ),
+    cross_slice_max_distance: float | None = None,
+    cross_slice_z_coordinate: int = -1,
+    cross_slice_z_scale: float = 1.0,
 ) -> tuple[np.ndarray, dict[int, np.ndarray]]:
     """
     Find spatial neighbors with slice-aware search for 3D data.
@@ -60,7 +66,14 @@ def find_spatial_neighbors_with_slices(
         high_quality_cell_mask: Boolean mask for high quality cells (defines the neighbor search pool)
         k_central: Number of neighbors to find on the central slice
         k_adjacent: Number of neighbors to find on each adjacent slice
-        n_adjacent_slices: Number of slices to search above and below
+        n_adjacent_slices: Number of slices to search above and below for ordinal
+            selection, or half the maximum number of physical-window sections.
+        cross_slice_selection_mode: Select sections by ordinal IDs (legacy) or
+            measured physical z distance.
+        cross_slice_max_distance: Maximum physical z distance when using
+            physical-window selection.
+        cross_slice_z_coordinate: Column in ``coords`` containing section z.
+        cross_slice_z_scale: Physical units per registered z-coordinate unit.
 
     Returns:
         Tuple of:
@@ -159,54 +172,94 @@ def find_spatial_neighbors_with_slices(
                     # f"Some neighbors will be invalid (-1)."
                 )
 
-    # Build a mapping of slice_id -> list of adjacent slice_ids to search
-    # This ensures all slices search the same total number of adjacent slices
+    selection_mode = CrossSliceSelectionMode(cross_slice_selection_mode)
+
+    # Build a mapping of slice_id -> list of adjacent slice_ids to search.
+    # The fixed number of slots keeps downstream array shapes unchanged. Physical
+    # selection pads missing slots instead of substituting a more distant plane.
     slice_adjacent_mapping = {}
     min_slice_id = min(unique_slice_ids)
     max_slice_id = max(unique_slice_ids)
 
+    slice_z_positions = None
+    if selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
+        if coords.ndim != 2 or coords.shape[1] < 3:
+            raise ValueError(
+                "physical_window cross-section selection requires a spatial key "
+                "with at least three coordinate columns"
+            )
+        if cross_slice_max_distance is None or cross_slice_max_distance <= 0:
+            raise ValueError(
+                "cross_slice_max_distance must be positive for physical_window selection"
+            )
+        if cross_slice_z_scale <= 0:
+            raise ValueError(
+                "cross_slice_z_scale must be positive for physical_window selection"
+            )
+        z_column = cross_slice_z_coordinate % coords.shape[1]
+        slice_z_positions = {
+            slice_id: float(
+                np.median(coords[slice_ids == slice_id, z_column])
+                * cross_slice_z_scale
+            )
+            for slice_id in unique_slice_ids
+        }
+        if not np.isfinite(list(slice_z_positions.values())).all():
+            raise ValueError("Non-finite physical z position detected")
+
     for slice_id in unique_slice_ids:
-        adjacent_slices = []
-
-        # Collect slices in both directions up to n_adjacent_slices
-        for offset in range(1, n_adjacent_slices + 1):
-            neg_slice = slice_id - offset
-            pos_slice = slice_id + offset
-            if neg_slice in slice_kdtrees:
-                adjacent_slices.append((neg_slice, offset, -1))  # (slice_id, offset, direction)
-            if pos_slice in slice_kdtrees:
-                adjacent_slices.append((pos_slice, offset, 1))
-
-        # If we don't have enough adjacent slices (2*n_adjacent_slices total), compensate
         target_count = 2 * n_adjacent_slices
-        if len(adjacent_slices) < target_count:
-            # Search deeper in available directions
-            extra_offset = n_adjacent_slices + 1
-            while len(adjacent_slices) < target_count and extra_offset <= max(
-                max_slice_id - min_slice_id, 10
-            ):
-                neg_slice = slice_id - extra_offset
-                pos_slice = slice_id + extra_offset
+        if selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
+            assert slice_z_positions is not None
+            focal_z = slice_z_positions[slice_id]
+            adjacent_slices = []
+            for candidate_slice in unique_slice_ids:
+                if candidate_slice == slice_id or candidate_slice not in slice_kdtrees:
+                    continue
+                delta = slice_z_positions[candidate_slice] - focal_z
+                distance = abs(delta)
+                if distance <= cross_slice_max_distance + 1e-9:
+                    adjacent_slices.append(
+                        (candidate_slice, distance, -1 if delta < 0 else 1)
+                    )
+            adjacent_slices.sort(key=lambda item: (item[1], item[2], item[0]))
+            adjacent_slices = adjacent_slices[:target_count]
+        else:
+            adjacent_slices = []
 
-                if neg_slice >= min_slice_id and neg_slice in slice_kdtrees:
-                    if not any(s[0] == neg_slice for s in adjacent_slices):
-                        adjacent_slices.append((neg_slice, extra_offset, -1))
-                        if len(adjacent_slices) >= target_count:
-                            break
+            # Collect slices in both directions up to n_adjacent_slices.
+            for offset in range(1, n_adjacent_slices + 1):
+                neg_slice = slice_id - offset
+                pos_slice = slice_id + offset
+                if neg_slice in slice_kdtrees:
+                    adjacent_slices.append((neg_slice, offset, -1))
+                if pos_slice in slice_kdtrees:
+                    adjacent_slices.append((pos_slice, offset, 1))
 
-                if pos_slice <= max_slice_id and pos_slice in slice_kdtrees:
-                    if not any(s[0] == pos_slice for s in adjacent_slices):
-                        adjacent_slices.append((pos_slice, extra_offset, 1))
-                        if len(adjacent_slices) >= target_count:
-                            break
+            # Preserve legacy boundary compensation for ordinal mode only.
+            if len(adjacent_slices) < target_count:
+                extra_offset = n_adjacent_slices + 1
+                while len(adjacent_slices) < target_count and extra_offset <= max(
+                    max_slice_id - min_slice_id, 10
+                ):
+                    neg_slice = slice_id - extra_offset
+                    pos_slice = slice_id + extra_offset
 
-                extra_offset += 1
+                    if neg_slice >= min_slice_id and neg_slice in slice_kdtrees:
+                        if not any(s[0] == neg_slice for s in adjacent_slices):
+                            adjacent_slices.append((neg_slice, extra_offset, -1))
+                            if len(adjacent_slices) >= target_count:
+                                break
 
-        # Sort adjacent slices: first by offset (closer slices first), then by direction
-        # This maintains consistency: [offset=1,dir=-1], [offset=1,dir=1], [offset=2,dir=-1], [offset=2,dir=1], ...
-        adjacent_slices.sort(
-            key=lambda x: (x[1], -x[2])
-        )  # Sort by offset, then direction (-1 before 1)
+                    if pos_slice <= max_slice_id and pos_slice in slice_kdtrees:
+                        if not any(s[0] == pos_slice for s in adjacent_slices):
+                            adjacent_slices.append((pos_slice, extra_offset, 1))
+                            if len(adjacent_slices) >= target_count:
+                                break
+
+                    extra_offset += 1
+
+            adjacent_slices.sort(key=lambda item: (item[1], item[2], item[0]))
 
         slice_adjacent_mapping[slice_id] = adjacent_slices
 
@@ -678,6 +731,10 @@ class ConnectivityMatrixBuilder:
                 k_central=k_central,
                 k_adjacent=k_adjacent,
                 n_adjacent_slices=n_adjacent_slices,
+                cross_slice_selection_mode=self.config.cross_slice_selection_mode,
+                cross_slice_max_distance=self.config.cross_slice_max_distance,
+                cross_slice_z_coordinate=self.config.cross_slice_z_coordinate,
+                cross_slice_z_scale=self.config.cross_slice_z_scale,
             )
 
         else:
@@ -694,6 +751,12 @@ class ConnectivityMatrixBuilder:
         k_central: int = 101,
         k_adjacent: int = 50,
         n_adjacent_slices: int = 1,
+        cross_slice_selection_mode: CrossSliceSelectionMode | str = (
+            CrossSliceSelectionMode.ORDINAL
+        ),
+        cross_slice_max_distance: float | None = None,
+        cross_slice_z_coordinate: int = -1,
+        cross_slice_z_scale: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Internal method for building spatial connectivity matrix.
@@ -708,6 +771,10 @@ class ConnectivityMatrixBuilder:
             k_central: Number of neighbors on central slice
             k_adjacent: Number of neighbors on adjacent slices for 3D data
             n_adjacent_slices: Number of slices to search above/below for 3D data
+            cross_slice_selection_mode: Ordinal or physical-window section selection.
+            cross_slice_max_distance: Physical z-distance cutoff for physical-window mode.
+            cross_slice_z_coordinate: Coordinate column containing section z.
+            cross_slice_z_scale: Physical units per registered z unit.
 
         Returns:
             Tuple of (neighbor_indices, cell_sims, niche_sims) arrays
@@ -729,6 +796,10 @@ class ConnectivityMatrixBuilder:
             k_central=k_central,
             k_adjacent=k_adjacent,
             n_adjacent_slices=n_adjacent_slices,
+            cross_slice_selection_mode=cross_slice_selection_mode,
+            cross_slice_max_distance=cross_slice_max_distance,
+            cross_slice_z_coordinate=cross_slice_z_coordinate,
+            cross_slice_z_scale=cross_slice_z_scale,
         )
 
         # Log statistics about neighbor pool cells per slice if available
