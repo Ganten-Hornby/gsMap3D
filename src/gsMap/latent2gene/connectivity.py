@@ -25,7 +25,12 @@ from rich.progress import (
 )
 from scipy.spatial import cKDTree
 
-from gsMap.config import CrossSliceSelectionMode, DatasetType, LatentToGeneConfig
+from gsMap.config import (
+    CrossSliceSelectionMode,
+    DatasetType,
+    HomogeneousSelectionMode,
+    LatentToGeneConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +46,7 @@ def find_spatial_neighbors_with_slices(
     k_central: int = 101,
     k_adjacent: int = 50,
     n_adjacent_slices: int = 1,
-    cross_slice_selection_mode: CrossSliceSelectionMode | str = (
-        CrossSliceSelectionMode.ORDINAL
-    ),
+    cross_slice_selection_mode: CrossSliceSelectionMode | str = (CrossSliceSelectionMode.ORDINAL),
     cross_slice_max_distance: float | None = None,
     cross_slice_z_coordinate: int = -1,
     cross_slice_z_scale: float = 1.0,
@@ -193,14 +196,11 @@ def find_spatial_neighbors_with_slices(
                 "cross_slice_max_distance must be positive for physical_window selection"
             )
         if cross_slice_z_scale <= 0:
-            raise ValueError(
-                "cross_slice_z_scale must be positive for physical_window selection"
-            )
+            raise ValueError("cross_slice_z_scale must be positive for physical_window selection")
         z_column = cross_slice_z_coordinate % coords.shape[1]
         slice_z_positions = {
             slice_id: float(
-                np.median(coords[slice_ids == slice_id, z_column])
-                * cross_slice_z_scale
+                np.median(coords[slice_ids == slice_id, z_column]) * cross_slice_z_scale
             )
             for slice_id in unique_slice_ids
         }
@@ -219,9 +219,7 @@ def find_spatial_neighbors_with_slices(
                 delta = slice_z_positions[candidate_slice] - focal_z
                 distance = abs(delta)
                 if distance <= cross_slice_max_distance + 1e-9:
-                    adjacent_slices.append(
-                        (candidate_slice, distance, -1 if delta < 0 else 1)
-                    )
+                    adjacent_slices.append((candidate_slice, distance, -1 if delta < 0 else 1))
             adjacent_slices.sort(key=lambda item: (item[1], item[2], item[0]))
             adjacent_slices = adjacent_slices[:target_count]
         else:
@@ -349,7 +347,7 @@ def find_spatial_neighbors_with_slices(
     return spatial_neighbors, neighbor_pool_per_slice
 
 
-@partial(jit, static_argnums=(5, 6))
+@partial(jit, static_argnums=(5, 6, 8))
 def _find_homogeneous_spot_dual_embedding_batch_jit(
     emb_niche_batch_norm: jnp.ndarray,  # (batch_size, d1)
     emb_indv_batch_norm: jnp.ndarray,  # (batch_size, d2)
@@ -359,9 +357,10 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
     homogeneous_neighbors: int,
     cell_embedding_similarity_threshold: float = 0.0,
     spatial_domain_similarity_threshold: float = 0.5,
+    hard_niche_filter: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Finds homogeneous neighbors using a soft priority (Bonus) system.
+    Find homogeneous neighbors with soft-priority or historical hard filtering.
 
     Returns:
         homogeneous_neighbors_array: Indices of selected neighbors (batch, homogeneous_neighbors)
@@ -385,14 +384,16 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
     # 2b. Niche (Spatial) Similarity
     niche_sims = jnp.einsum("bd,bkd->bk", emb_niche_batch_norm, spatial_emb_niche_norm)
 
-    # Step 3: Compute Ranking Score with Bonus
-    # Logic:
-    #   If niche_sim >= threshold: Score = cell_sim + 2.0
-    #   Else:                      Score = cell_sim
-    # This prioritizes niche matches first, then falls back to highest cell sim.
+    # Step 3: Compute the ranking score. The default soft-priority rule ranks
+    # niche-passing candidates first and then fills remaining slots. The
+    # historical rule ranks non-passing candidates at zero and, critically,
+    # gives any selected fallback slot zero marker-score weight.
     BONUS = 2.0
     pass_spatial_mask = niche_sims >= spatial_domain_similarity_threshold
-    ranking_score = cell_sims + jnp.where(pass_spatial_mask, BONUS, 0.0)
+    if hard_niche_filter:
+        ranking_score = jnp.where(pass_spatial_mask, cell_sims, 0.0)
+    else:
+        ranking_score = cell_sims + jnp.where(pass_spatial_mask, BONUS, 0.0)
 
     # Step 4: Mask Invalid Neighbors in Ranking
     # Force padding indices (original -1s) to the bottom of the list
@@ -408,6 +409,13 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
     homogeneous_neighbors_array = spatial_neighbors[batch_idx, top_homo_idx]
     selected_cell_sims = cell_sims[batch_idx, top_homo_idx]
     selected_niche_sims = niche_sims[batch_idx, top_homo_idx]
+
+    if hard_niche_filter:
+        selected_cell_sims = jnp.where(
+            selected_niche_sims >= spatial_domain_similarity_threshold,
+            selected_cell_sims,
+            0.0,
+        )
 
     # Step 6: Final Masking
     # If the selected neighbor is invalid (which happens if k1 < homogeneous_neighbors
@@ -432,6 +440,7 @@ def _find_homogeneous_3d_memory_efficient(
     n_adjacent_slices: int,
     cell_embedding_similarity_threshold: float,
     spatial_domain_similarity_threshold: float,
+    hard_niche_filter: bool,
     find_homogeneous_batch_size: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -450,6 +459,7 @@ def _find_homogeneous_3d_memory_efficient(
         n_adjacent_slices: Number of adjacent slices above and below
         cell_embedding_similarity_threshold: Minimum similarity threshold for cell embedding
         spatial_domain_similarity_threshold: Minimum similarity threshold for spatial domain embedding
+        hard_niche_filter: Give candidates below the niche threshold zero weight.
         find_homogeneous_batch_size: Batch size for processing
 
     Returns:
@@ -534,6 +544,7 @@ def _find_homogeneous_3d_memory_efficient(
                         homogeneous_neighbors=num_homogeneous_per_slice,
                         cell_embedding_similarity_threshold=cell_embedding_similarity_threshold,
                         spatial_domain_similarity_threshold=spatial_domain_similarity_threshold,
+                        hard_niche_filter=hard_niche_filter,
                     )
                 )
 
@@ -844,6 +855,10 @@ class ConnectivityMatrixBuilder:
                     n_adjacent_slices=n_adjacent_slices,
                     cell_embedding_similarity_threshold=self.config.cell_embedding_similarity_threshold,
                     spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold,
+                    hard_niche_filter=(
+                        self.config.homogeneous_selection_mode
+                        == HomogeneousSelectionMode.HARD_NICHE_FILTER
+                    ),
                     find_homogeneous_batch_size=self.find_homogeneous_batch_size,
                 )
             )
@@ -880,6 +895,10 @@ class ConnectivityMatrixBuilder:
                         homogeneous_neighbors=self.config.total_homogeneous_neighbor_per_cell,
                         cell_embedding_similarity_threshold=self.config.cell_embedding_similarity_threshold,
                         spatial_domain_similarity_threshold=self.config.spatial_domain_similarity_threshold,
+                        hard_niche_filter=(
+                            self.config.homogeneous_selection_mode
+                            == HomogeneousSelectionMode.HARD_NICHE_FILTER
+                        ),
                     )
                 )
 

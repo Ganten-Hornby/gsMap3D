@@ -24,6 +24,7 @@ from .format_sumstats_config import FormatSumstatsConfig
 from .latent2gene_config import (
     CrossSliceSelectionMode,
     DatasetType,
+    HomogeneousSelectionMode,
     LatentToGeneConfig,
     MarkerScoreCrossSliceStrategy,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "LatentToGeneConfig",
     "DatasetType",
     "CrossSliceSelectionMode",
+    "HomogeneousSelectionMode",
     "MarkerScoreCrossSliceStrategy",
     "SpatialLDSCConfig",
     "ReportConfig",

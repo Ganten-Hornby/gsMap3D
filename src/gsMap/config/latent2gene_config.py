@@ -37,6 +37,13 @@ class CrossSliceSelectionMode(StrEnum):
     PHYSICAL_WINDOW = "physical_window"
 
 
+class HomogeneousSelectionMode(StrEnum):
+    """How niche similarity constrains homogeneous-neighbor selection."""
+
+    SOFT_PRIORITY = "soft_priority"
+    HARD_NICHE_FILTER = "hard_niche_filter"
+
+
 @dataclass
 class LatentToGeneComputeConfig:
     """Compute configuration for latent-to-gene step."""
@@ -209,6 +216,19 @@ class LatentToGeneCoreConfig:
             help="Minimum similarity threshold for spatial domain embedding.", min=0.0, max=1.0
         ),
     ] = 0.6
+
+    homogeneous_selection_mode: Annotated[
+        HomogeneousSelectionMode,
+        typer.Option(
+            help=(
+                "How niche similarity is used: soft_priority ranks passing "
+                "neighbors first and fills remaining slots; hard_niche_filter "
+                "reproduces the historical rule by assigning zero marker-score "
+                "weight below the niche threshold."
+            ),
+            case_sensitive=False,
+        ),
+    ] = HomogeneousSelectionMode.SOFT_PRIORITY
 
     no_expression_fraction: Annotated[
         bool, typer.Option("--no-expression-fraction", help="Skip expression fraction filtering")
