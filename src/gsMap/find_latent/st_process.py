@@ -17,6 +17,14 @@ from .gnn.gcn import GCN, SpatialGraph, build_graph_for_mode
 logger = logging.getLogger(__name__)
 
 
+def _section_labels_for_graph(adata, params) -> np.ndarray | None:
+    """Extract section labels only for the section-aware graph mode."""
+
+    if params.graph_mode.lower() != "section_aware_3d":
+        return None
+    return adata.obs[params.graph_section_key].to_numpy()
+
+
 def propagate_spatial_features(
     expression: torch.Tensor,
     coords: np.ndarray,
@@ -26,6 +34,10 @@ def propagate_spatial_features(
     section_labels: np.ndarray | None = None,
 ) -> tuple[torch.Tensor, SpatialGraph]:
     """Construct the configured graph and propagate one expression block."""
+
+    if params.graph_mode.lower() == "section_aware_3d" and params.graph_z_scale != 1.0:
+        coords = np.array(coords, dtype=np.float64, copy=True)
+        coords[:, -1] *= params.graph_z_scale
 
     graph = build_graph_for_mode(
         coords=coords,
@@ -723,11 +735,7 @@ class TrainingData:
                 stable_ids=batch_adata.obs_names.to_numpy(),
                 params=self.params,
                 gcov=self.gcov,
-                section_labels=(
-                    batch_adata.obs[self.params.graph_section_key].to_numpy()
-                    if self.params.graph_mode.lower() == "section_aware_3d"
-                    else None
-                ),
+                section_labels=_section_labels_for_graph(batch_adata, self.params),
             )
             expression_array_gcn[batch_indices] = batch_expression_gcn
 
@@ -804,11 +812,7 @@ class InferenceData:
             stable_ids=adata.obs_names.to_numpy(),
             params=self.params,
             gcov=self.gcov,
-            section_labels=(
-                adata.obs[self.params.graph_section_key].to_numpy()
-                if self.params.graph_mode.lower() == "section_aware_3d"
-                else None
-            ),
+            section_labels=_section_labels_for_graph(adata, self.params),
         )
         logger.info(
             f"Graph for {st_name} has {graph.edges.shape[0]} directed edges, {adata.n_obs} cells."

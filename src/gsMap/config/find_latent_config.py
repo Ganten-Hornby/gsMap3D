@@ -64,6 +64,17 @@ class FindLatentModelConfig:
         ),
     ] = None
 
+    graph_z_scale: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Multiplier converting the stored z coordinate to the physical "
+                "XY units for section_aware_3d graphs"
+            ),
+            min=0.0,
+        ),
+    ] = 1.0
+
     K: Annotated[int, typer.Option(help="Graph convolution depth for LGCN", min=1, max=10)] = 3
 
     # Model parameters
@@ -253,6 +264,8 @@ class FindLatentRepresentationsConfig(
             raise ValueError("A positive graph_sigma is required for weighted_radius")
         if self.graph_mode == "section_aware_3d" and not self.graph_section_key:
             raise ValueError("graph_section_key is required for section_aware_3d mode")
+        if self.graph_mode == "section_aware_3d" and self.graph_z_scale <= 0:
+            raise ValueError("graph_z_scale must be positive for section_aware_3d mode")
         if self.graph_mode.startswith("legacy_"):
             logger.warning(
                 "graph_mode=%s is retained only for revision impact analysis; "
@@ -273,6 +286,10 @@ class FindLatentRepresentationsConfig(
         if not self.sample_h5ad_dict:
             raise ValueError(
                 "At least one of h5ad_yaml, h5ad_path, h5ad_list_file, or spe_file_list must be provided"
+            )
+        if self.graph_mode == "section_aware_3d" and len(self.sample_h5ad_dict) != 1:
+            raise ValueError(
+                "section_aware_3d currently requires all aligned sections in one H5AD file"
             )
 
         # Define required and optional fields for validation

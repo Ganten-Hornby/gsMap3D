@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import anndata
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sp
 import torch
 
@@ -207,6 +208,16 @@ def test_section_aware_3d_graph_is_bidirectional_and_permutation_invariant():
         workers=1,
     )
     assert reference_edges == _edge_id_set(permuted.edges, stable_ids[permutation])
+
+
+def test_section_aware_3d_graph_requires_exact_xyz_coordinates():
+    with pytest.raises(ValueError, match="exactly three XYZ"):
+        build_section_aware_3d_graph(
+            np.zeros((4, 4)),
+            np.asarray([0, 0, 1, 1]),
+            1,
+            stable_ids=np.asarray(["a", "b", "c", "d"]),
+        )
 
 
 def test_gcn_propagation_is_row_permutation_equivariant():

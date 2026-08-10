@@ -340,8 +340,8 @@ def build_section_aware_3d_graph(
     """
 
     coords = _validate_coordinates(coords)
-    if coords.shape[1] < 3:
-        raise ValueError("section-aware 3D graphs require at least three coordinate columns")
+    if coords.shape[1] != 3:
+        raise ValueError("section-aware 3D graphs require exactly three XYZ columns")
     if n_neighbors < 1:
         raise ValueError("n_neighbors must be at least 1")
 
