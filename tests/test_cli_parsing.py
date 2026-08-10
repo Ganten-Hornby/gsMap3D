@@ -94,6 +94,14 @@ def test_cli_version(cli_runner_local):
     assert "version" in result.output.lower() or "gsmap" in result.output.lower()
 
 
+def test_find_latent_exposes_section_aware_3d_graph_options(cli_runner_local):
+    result = cli_runner_local.invoke(app, ["find-latent", "--help"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0
+    assert "--graph-mode" in result.output
+    assert "--graph-section-key" in result.output
+
+
 @pytest.fixture
 def tutorial_files():
     """Markdown documentation files that may contain gsmap CLI examples."""

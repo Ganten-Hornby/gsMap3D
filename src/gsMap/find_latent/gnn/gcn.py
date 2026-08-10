@@ -269,6 +269,199 @@ def build_radius_spatial_graph(
     return SpatialGraph(edges.astype(np.int64, copy=False), weights)
 
 
+def _nearest_target_indices(
+    query_coords: np.ndarray,
+    target_coords: np.ndarray,
+    n_neighbors: int,
+    workers: int,
+) -> np.ndarray:
+    """Return cross-set KNNs with deterministic distance/ID tie-breaking."""
+
+    effective_k = min(n_neighbors, target_coords.shape[0])
+    if query_coords.shape[0] == 0 or effective_k == 0:
+        return np.empty((query_coords.shape[0], 0), dtype=np.int64)
+
+    candidate_k = min(target_coords.shape[0], max(effective_k + 2, 4 * effective_k))
+    tree = cKDTree(target_coords, balanced_tree=True, compact_nodes=True)
+    distances, indices = tree.query(query_coords, k=candidate_k, workers=workers)
+    if candidate_k == 1:
+        distances = distances[:, None]
+        indices = indices[:, None]
+
+    distances = np.asarray(distances, dtype=np.float64)
+    indices = np.asarray(indices, dtype=np.int64)
+    candidate_order = np.lexsort((indices, distances), axis=1)
+    sorted_indices = np.take_along_axis(indices, candidate_order, axis=1)
+    sorted_distances = np.take_along_axis(distances, candidate_order, axis=1)
+    selected = sorted_indices[:, :effective_k].copy()
+
+    if candidate_k < target_coords.shape[0]:
+        kth_distance = sorted_distances[:, effective_k - 1]
+        max_returned_distance = np.max(distances, axis=1)
+        unresolved = np.isclose(
+            kth_distance,
+            max_returned_distance,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+        for row in np.flatnonzero(unresolved):
+            radius = np.nextafter(kth_distance[row], np.inf)
+            candidates = np.asarray(tree.query_ball_point(query_coords[row], radius))
+            candidate_distances = np.linalg.norm(
+                target_coords[candidates] - query_coords[row], axis=1
+            )
+            order = np.lexsort((candidates, candidate_distances))
+            selected[row] = candidates[order[:effective_k]]
+
+    return selected
+
+
+def build_section_aware_3d_graph(
+    coords: np.ndarray,
+    section_labels: np.ndarray,
+    n_neighbors: int,
+    undirected: bool = True,
+    stable_ids: np.ndarray | None = None,
+    workers: int = -1,
+) -> SpatialGraph:
+    """Build a physical 3D graph using a within-section KNN scale.
+
+    Each spot first selects K external neighbors from its own section. The
+    distance to its farthest selected within-section neighbor is its local
+    physical radius. Cross-section edges connect the spot to every cell in the
+    immediately preceding or following physical section within that radius.
+    If neither neighboring section contains a cell within the radius, the spot
+    falls back to ``max(1, K // 2)`` nearest cells from *each* available
+    neighboring section.
+
+    Coordinates must already use a common physical scale, including a
+    calibrated z axis. Sections are ordered by their median final coordinate.
+    Self-loops are absent; the GCN normalization adds them separately.
+    """
+
+    coords = _validate_coordinates(coords)
+    if coords.shape[1] < 3:
+        raise ValueError("section-aware 3D graphs require at least three coordinate columns")
+    if n_neighbors < 1:
+        raise ValueError("n_neighbors must be at least 1")
+
+    section_labels = np.asarray(section_labels)
+    if section_labels.shape != (coords.shape[0],):
+        raise ValueError(
+            f"section_labels must have shape ({coords.shape[0]},), got {section_labels.shape}"
+        )
+    section_labels = section_labels.astype(str)
+    if coords.shape[0] <= 1:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+
+    canonical_coords, canonical_order = _canonicalize_nodes(coords, stable_ids)
+    canonical_sections = section_labels[canonical_order]
+    unique_sections = np.unique(canonical_sections)
+    section_z = np.asarray(
+        [
+            np.median(canonical_coords[canonical_sections == section, -1])
+            for section in unique_sections
+        ]
+    )
+    z_order = np.argsort(section_z, kind="stable")
+    ordered_sections = unique_sections[z_order]
+    ordered_z = section_z[z_order]
+    if ordered_z.size > 1 and np.any(np.isclose(np.diff(ordered_z), 0.0)):
+        raise ValueError("sections must have distinct median physical z coordinates")
+
+    within_edges: list[np.ndarray] = []
+    within_radii = np.zeros(coords.shape[0], dtype=np.float64)
+    section_indices: dict[str, np.ndarray] = {}
+    for section in ordered_sections:
+        global_indices = np.flatnonzero(canonical_sections == section)
+        section_indices[section] = global_indices
+        local_coords = canonical_coords[global_indices]
+        selected = _external_knn_indices(local_coords, n_neighbors, workers)
+        effective_k = selected.shape[1]
+        if effective_k == 0:
+            continue
+
+        sources = np.repeat(global_indices, effective_k)
+        targets = global_indices[selected.reshape(-1)]
+        within_edges.append(np.column_stack((sources, targets)))
+        selected_distances = np.linalg.norm(
+            local_coords[:, None, :] - local_coords[selected], axis=2
+        )
+        within_radii[global_indices] = np.max(selected_distances, axis=1)
+
+    cross_edges: list[np.ndarray] = []
+    fallback_k = max(1, n_neighbors // 2)
+    for position, section in enumerate(ordered_sections):
+        focal_indices = section_indices[section]
+        focal_coords = canonical_coords[focal_indices]
+        neighboring_sections = []
+        if position > 0:
+            neighboring_sections.append(ordered_sections[position - 1])
+        if position + 1 < ordered_sections.size:
+            neighboring_sections.append(ordered_sections[position + 1])
+        if not neighboring_sections:
+            continue
+
+        has_radius_neighbor = np.zeros(focal_indices.size, dtype=bool)
+        for neighbor_section in neighboring_sections:
+            target_indices = section_indices[neighbor_section]
+            target_coords = canonical_coords[target_indices]
+            tree = cKDTree(target_coords, balanced_tree=True, compact_nodes=True)
+            matches = tree.query_ball_point(
+                focal_coords,
+                within_radii[focal_indices],
+                workers=workers,
+                return_sorted=True,
+            )
+            counts = np.fromiter((len(match) for match in matches), dtype=np.int64)
+            has_radius_neighbor |= counts > 0
+            if counts.sum() == 0:
+                continue
+            matched_targets = np.concatenate(
+                [np.asarray(match, dtype=np.int64) for match in matches if len(match)]
+            )
+            cross_edges.append(
+                np.column_stack(
+                    (
+                        np.repeat(focal_indices, counts),
+                        target_indices[matched_targets],
+                    )
+                )
+            )
+
+        fallback_indices = focal_indices[~has_radius_neighbor]
+        fallback_coords = canonical_coords[fallback_indices]
+        for neighbor_section in neighboring_sections:
+            target_indices = section_indices[neighbor_section]
+            selected = _nearest_target_indices(
+                fallback_coords,
+                canonical_coords[target_indices],
+                fallback_k,
+                workers,
+            )
+            if selected.shape[1] == 0:
+                continue
+            cross_edges.append(
+                np.column_stack(
+                    (
+                        np.repeat(fallback_indices, selected.shape[1]),
+                        target_indices[selected.reshape(-1)],
+                    )
+                )
+            )
+
+    edge_blocks = within_edges + cross_edges
+    if not edge_blocks:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+
+    canonical_edges = np.concatenate(edge_blocks)
+    edges = canonical_order[canonical_edges]
+    if undirected:
+        edges = np.concatenate((edges, edges[:, ::-1]), axis=0)
+    edges = np.unique(edges, axis=0).astype(np.int64, copy=False)
+    return SpatialGraph(edges, None)
+
+
 def build_graph_for_mode(
     coords: np.ndarray,
     stable_ids: np.ndarray,
@@ -276,6 +469,7 @@ def build_graph_for_mode(
     n_neighbors: int,
     radius: float | None = None,
     sigma: float | None = None,
+    section_labels: np.ndarray | None = None,
 ) -> SpatialGraph:
     """Dispatch graph construction for production and revision experiment arms."""
 
@@ -297,11 +491,20 @@ def build_graph_for_mode(
             stable_ids=stable_ids,
             sigma=sigma if mode == "weighted_radius" else None,
         )
+    if mode == "section_aware_3d":
+        if section_labels is None:
+            raise ValueError("section_labels are required for section_aware_3d mode")
+        return build_section_aware_3d_graph(
+            coords,
+            section_labels,
+            n_neighbors,
+            stable_ids=stable_ids,
+        )
     if mode == "no_graph":
         return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
     raise ValueError(
         "graph_mode must be one of symmetric_knn, legacy_bug, "
-        "legacy_symmetric, radius, weighted_radius, or no_graph"
+        "legacy_symmetric, radius, weighted_radius, section_aware_3d, or no_graph"
     )
 
 

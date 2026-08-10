@@ -40,7 +40,8 @@ class FindLatentModelConfig:
         typer.Option(
             help=(
                 "Spatial graph mode: symmetric_knn (default), radius, weighted_radius, "
-                "no_graph, or revision-only legacy_bug/legacy_symmetric"
+                "section_aware_3d, no_graph, or revision-only "
+                "legacy_bug/legacy_symmetric"
             ),
             case_sensitive=False,
         ),
@@ -54,6 +55,13 @@ class FindLatentModelConfig:
     graph_sigma: Annotated[
         float | None,
         typer.Option(help="Gaussian sigma for weighted-radius edges", min=0.0),
+    ] = None
+
+    graph_section_key: Annotated[
+        str | None,
+        typer.Option(
+            help=("Observation column identifying physical sections for section_aware_3d graphs")
+        ),
     ] = None
 
     K: Annotated[int, typer.Option(help="Graph convolution depth for LGCN", min=1, max=10)] = 3
@@ -225,6 +233,7 @@ class FindLatentRepresentationsConfig(
             "symmetric_knn",
             "radius",
             "weighted_radius",
+            "section_aware_3d",
             "no_graph",
             "legacy_bug",
             "legacy_symmetric",
@@ -242,6 +251,8 @@ class FindLatentRepresentationsConfig(
             self.graph_sigma is None or self.graph_sigma <= 0
         ):
             raise ValueError("A positive graph_sigma is required for weighted_radius")
+        if self.graph_mode == "section_aware_3d" and not self.graph_section_key:
+            raise ValueError("graph_section_key is required for section_aware_3d mode")
         if self.graph_mode.startswith("legacy_"):
             logger.warning(
                 "graph_mode=%s is retained only for revision impact analysis; "
@@ -269,6 +280,15 @@ class FindLatentRepresentationsConfig(
             "data_layer": ("layers", self.data_layer, "Data layer"),
             "spatial_key": ("obsm", self.spatial_key, "Spatial key"),
         }
+
+        if self.graph_mode == "section_aware_3d":
+            if self.graph_section_key is None:
+                raise RuntimeError("graph_section_key validation was not applied")
+            required_fields["graph_section_key"] = (
+                "obs",
+                self.graph_section_key,
+                "Physical section labels",
+            )
 
         # Add annotation as required if provided
         if self.annotation:

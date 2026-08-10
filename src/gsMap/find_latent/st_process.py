@@ -23,6 +23,7 @@ def propagate_spatial_features(
     stable_ids: np.ndarray,
     params,
     gcov: GCN,
+    section_labels: np.ndarray | None = None,
 ) -> tuple[torch.Tensor, SpatialGraph]:
     """Construct the configured graph and propagate one expression block."""
 
@@ -33,6 +34,7 @@ def propagate_spatial_features(
         n_neighbors=params.n_neighbors,
         radius=params.graph_radius,
         sigma=params.graph_sigma,
+        section_labels=section_labels,
     )
     if params.graph_mode.lower() == "no_graph":
         return expression.repeat(1, params.K), graph
@@ -721,6 +723,11 @@ class TrainingData:
                 stable_ids=batch_adata.obs_names.to_numpy(),
                 params=self.params,
                 gcov=self.gcov,
+                section_labels=(
+                    batch_adata.obs[self.params.graph_section_key].to_numpy()
+                    if self.params.graph_mode.lower() == "section_aware_3d"
+                    else None
+                ),
             )
             expression_array_gcn[batch_indices] = batch_expression_gcn
 
@@ -797,6 +804,11 @@ class InferenceData:
             stable_ids=adata.obs_names.to_numpy(),
             params=self.params,
             gcov=self.gcov,
+            section_labels=(
+                adata.obs[self.params.graph_section_key].to_numpy()
+                if self.params.graph_mode.lower() == "section_aware_3d"
+                else None
+            ),
         )
         logger.info(
             f"Graph for {st_name} has {graph.edges.shape[0]} directed edges, {adata.n_obs} cells."

@@ -10,6 +10,7 @@ from gsMap.find_latent.gnn.gcn import (
     GCN,
     build_legacy_spatial_graph,
     build_radius_spatial_graph,
+    build_section_aware_3d_graph,
     build_spatial_graph,
 )
 from gsMap.find_latent.st_process import TrainingData
@@ -114,6 +115,98 @@ def test_weighted_radius_graph_has_symmetric_edges_and_weights():
     assert set(edge_weight) == {(0, 1), (1, 0)}
     assert np.isclose(edge_weight[(0, 1)], np.exp(-0.5))
     assert edge_weight[(0, 1)] == edge_weight[(1, 0)]
+
+
+def test_section_aware_3d_graph_uses_each_spots_within_section_knn_radius():
+    coords = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 0.0, 0.5],
+            [1.0, 0.0, 0.5],
+            [8.0, 0.0, 0.5],
+        ]
+    )
+    sections = np.asarray(["a", "a", "b", "b", "b"])
+    stable_ids = np.asarray(["a0", "a1", "b0", "b1", "b8"])
+
+    graph = build_section_aware_3d_graph(
+        coords,
+        sections,
+        n_neighbors=1,
+        stable_ids=stable_ids,
+        undirected=False,
+        workers=1,
+    )
+    edges = _edge_id_set(graph.edges, stable_ids)
+
+    # a0's within-section radius is 2. Both nearby spots in section b are
+    # inside that physical radius, whereas b8 is outside it.
+    assert ("a0", "b0") in edges
+    assert ("a0", "b1") in edges
+    assert ("a0", "b8") not in edges
+
+
+def test_section_aware_3d_graph_falls_back_to_half_k_per_neighboring_section():
+    coords = np.asarray(
+        [
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [2.0, 0.0, 10.0],
+            [-1.0, 0.0, 20.0],
+            [1.0, 0.0, 20.0],
+        ]
+    )
+    sections = np.asarray(["lower", "lower", "middle", "middle", "upper", "upper"])
+    stable_ids = np.asarray(["l-1", "l1", "m0", "m2", "u-1", "u1"])
+
+    graph = build_section_aware_3d_graph(
+        coords,
+        sections,
+        n_neighbors=2,
+        stable_ids=stable_ids,
+        undirected=False,
+        workers=1,
+    )
+    edges = _edge_id_set(graph.edges, stable_ids)
+
+    # No cross-section spot is inside m0's within-section radius (2), so the
+    # fallback contributes K/2=1 nearest spot from both adjacent sections.
+    assert ("m0", "l-1") in edges
+    assert ("m0", "u-1") in edges
+    assert ("m0", "l1") not in edges
+    assert ("m0", "u1") not in edges
+
+
+def test_section_aware_3d_graph_is_bidirectional_and_permutation_invariant():
+    coords = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0],
+            [1.0, 0.0, 4.0],
+            [2.0, 0.0, 4.0],
+        ]
+    )
+    sections = np.asarray([0, 0, 0, 1, 1, 1])
+    stable_ids = np.asarray(["a", "b", "c", "d", "e", "f"])
+    reference = build_section_aware_3d_graph(coords, sections, 2, stable_ids=stable_ids, workers=1)
+    reference_edges = _edge_id_set(reference.edges, stable_ids)
+
+    assert not np.any(reference.edges[:, 0] == reference.edges[:, 1])
+    assert all((target, source) in reference_edges for source, target in reference_edges)
+
+    permutation = np.asarray([4, 0, 5, 2, 1, 3])
+    permuted = build_section_aware_3d_graph(
+        coords[permutation],
+        sections[permutation],
+        2,
+        stable_ids=stable_ids[permutation],
+        workers=1,
+    )
+    assert reference_edges == _edge_id_set(permuted.edges, stable_ids[permutation])
 
 
 def test_gcn_propagation_is_row_permutation_equivariant():
