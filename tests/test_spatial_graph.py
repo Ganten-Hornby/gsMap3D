@@ -276,10 +276,10 @@ def test_gcn_does_not_materialize_edge_by_feature_messages():
 
 
 @pytest.mark.parametrize(
-    ("edge_weights", "legacy_normalization"),
-    [(None, False), ("weighted", False), (None, True)],
+    ("use_edge_weights", "legacy_normalization"),
+    [(False, False), (True, False), (False, True)],
 )
-def test_sparse_gcn_matches_edge_message_reference(edge_weights, legacy_normalization):
+def test_sparse_gcn_matches_edge_message_reference(use_edge_weights, legacy_normalization):
     torch.manual_seed(7)
     features = torch.randn(9, 5)
     edges = torch.asarray(
@@ -288,9 +288,7 @@ def test_sparse_gcn_matches_edge_message_reference(edge_weights, legacy_normaliz
             [1, 2, 2, 3, 4, 5, 6, 7, 8, 0, 4, 1],
         ]
     )
-    weights = (
-        torch.linspace(0.5, 1.6, edges.shape[1]) if edge_weights == "weighted" else None
-    )
+    weights = torch.linspace(0.5, 1.6, edges.shape[1]) if use_edge_weights else None
 
     if legacy_normalization:
         normalized_edges, _ = add_remaining_self_loops(edges, num_nodes=features.shape[0])
