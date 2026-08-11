@@ -23,8 +23,27 @@
     "spot_match_fraction": 1.0,
     "section_match_fraction": 1.0,
     "label_match_fraction": 1.0,
+    "heart_region_match_fraction": 1.0,
     "coordinate_match_fraction_at_1e-5": 1.0,
     "max_coordinate_absolute_difference": 0.0
+  },
+  "heart_region_annotation_audit": {
+    "annotation_key": "heart_region",
+    "excluded_value": "NA",
+    "n_total": 646893,
+    "n_defined": 44644,
+    "defined_fraction": 0.0690129588664586,
+    "category_counts": {
+      "LV/atrial region": 28931,
+      "Right/outflow tract region": 15713
+    },
+    "n_mapped_cardiomyocytes_among_defined": 16082,
+    "mapped_cardiomyocyte_fraction_among_defined": 0.36022757817399875
+  },
+  "sampling_audit": {
+    "global_metric_sample_size": 30000,
+    "heart_region_metric_sample_size": 30000,
+    "heart_region_umap_sample_size": 25000
   },
   "spatial_evaluation_audit": {
     "within_section_neighbors": 10,
@@ -43,28 +62,30 @@
       "procrustes_similarity": 0.2956655350182631,
       "knn_recall": 0.002362222222222222,
       "knn_jaccard": 0.0012285531837255975,
-      "old_label_purity": 0.10263333333333333,
-      "new_label_purity": 0.11084666666666666,
       "old_different_section_fraction": 0.9404933333333333,
       "new_different_section_fraction": 0.9018955555555556,
       "old_adjacent_section_fraction": 0.06229333333333333,
-      "new_adjacent_section_fraction": 0.10537333333333333
+      "new_adjacent_section_fraction": 0.10537333333333333,
+      "old_heart_region_purity": 0.5390377777777777,
+      "new_heart_region_purity": 0.5496466666666666
     },
     "emb_niche": {
       "linear_cka": 0.12977599320476452,
       "procrustes_similarity": 0.3160260100935538,
       "knn_recall": 0.005048888888888889,
       "knn_jaccard": 0.002632387408249477,
-      "old_label_purity": 0.10181555555555556,
-      "new_label_purity": 0.22141555555555556,
       "old_different_section_fraction": 0.9375333333333333,
       "new_different_section_fraction": 0.6579466666666667,
       "old_adjacent_section_fraction": 0.06347555555555555,
-      "new_adjacent_section_fraction": 0.19459333333333334
+      "new_adjacent_section_fraction": 0.19459333333333334,
+      "old_heart_region_purity": 0.5689422222222222,
+      "new_heart_region_purity": 0.7454644444444445
     }
   },
   "umap_audit": {
     "n_spots": 25000,
+    "annotation_key": "heart_region",
+    "excluded_annotation_value": "NA",
     "shared_axes_after_procrustes": true,
     "coordinate_backend": "umap.UMAP",
     "plot_backend": "scanpy.pl.umap",
@@ -81,10 +102,10 @@
       "low_memory": true
     },
     "emb_cell": {
-      "procrustes_similarity": 0.29685701059475694
+      "procrustes_similarity": 0.48692858575346804
     },
     "emb_niche": {
-      "procrustes_similarity": 0.3150853020437062
+      "procrustes_similarity": 0.4089856980775235
     }
   },
   "comparability_warning": "Descriptive comparison only: graph construction, annotation used for training, gene space, and two-stage training differ between runs."

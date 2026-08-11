@@ -37,6 +37,8 @@ METHOD_3D = "Section-aware 3D"
 COMPARISON = "2D vs 3D"
 REPRESENTATIONS = ("emb_cell", "emb_niche")
 RASTER_DPI = 320
+DOMAIN_KEY = "heart_region"
+DOMAIN_MISSING_LABEL = "NA"
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,8 @@ class EmbeddingData:
     ids: np.ndarray
     sections: np.ndarray
     labels: np.ndarray
+    domains: np.ndarray
+    cell_types: np.ndarray
     coordinates: np.ndarray
     embeddings: dict[str, np.ndarray]
 
@@ -63,7 +67,7 @@ class LatentMetricNames:
             k=k,
             recall=f"kNN recall@{k}",
             jaccard=f"kNN Jaccard@{k}",
-            label_purity=f"Label kNN purity@{k}",
+            label_purity=f"Heart-region kNN purity@{k}",
             different_section=f"Different-section latent kNN fraction@{k}",
             adjacent_section=f"Adjacent-section latent kNN fraction@{k}",
         )
@@ -111,12 +115,14 @@ def read_single_h5ad(path: Path, section_key: str) -> EmbeddingData:
         ids = _decode(handle["obs"]["_index"][:])
         sections = read_obs_column(handle, section_key)
         labels = read_obs_column(handle, "transf_anno_E95")
+        domains = read_obs_column(handle, DOMAIN_KEY)
+        cell_types = read_obs_column(handle, "mapped_celltype")
         coordinates = np.asarray(handle["obsm"]["3d_align_spatial"][:], dtype=np.float32)
         embeddings = {
             key: np.asarray(handle["obsm"][key][:], dtype=np.float32)
             for key in REPRESENTATIONS
         }
-    return EmbeddingData(ids, sections, labels, coordinates, embeddings)
+    return EmbeddingData(ids, sections, labels, domains, cell_types, coordinates, embeddings)
 
 
 def read_sectionwise_baseline(directory: Path) -> EmbeddingData:
@@ -128,6 +134,8 @@ def read_sectionwise_baseline(directory: Path) -> EmbeddingData:
         ids=np.concatenate([piece.ids for piece in pieces]),
         sections=np.concatenate([piece.sections for piece in pieces]),
         labels=np.concatenate([piece.labels for piece in pieces]),
+        domains=np.concatenate([piece.domains for piece in pieces]),
+        cell_types=np.concatenate([piece.cell_types for piece in pieces]),
         coordinates=np.concatenate([piece.coordinates for piece in pieces]),
         embeddings={
             key: np.concatenate([piece.embeddings[key] for piece in pieces])
@@ -149,6 +157,8 @@ def reorder_baseline_to_section_aware(
         ids=baseline.ids[order],
         sections=baseline.sections[order],
         labels=baseline.labels[order],
+        domains=baseline.domains[order],
+        cell_types=baseline.cell_types[order],
         coordinates=baseline.coordinates[order],
         embeddings={key: baseline.embeddings[key][order] for key in REPRESENTATIONS},
     )
@@ -162,10 +172,17 @@ def reorder_baseline_to_section_aware(
         "spot_match_fraction": float(len(order) / len(section_aware.ids)),
         "section_match_fraction": float(np.mean(baseline_sections == section_aware_sections)),
         "label_match_fraction": float(np.mean(reordered.labels == section_aware.labels)),
+        "heart_region_match_fraction": float(
+            np.mean(reordered.domains == section_aware.domains)
+        ),
         "coordinate_match_fraction_at_1e-5": float(np.mean(coordinate_delta <= 1e-5)),
         "max_coordinate_absolute_difference": float(np.max(coordinate_delta)),
     }
-    if audit["section_match_fraction"] != 1.0 or audit["coordinate_match_fraction_at_1e-5"] != 1.0:
+    if (
+        audit["section_match_fraction"] != 1.0
+        or audit["heart_region_match_fraction"] != 1.0
+        or audit["coordinate_match_fraction_at_1e-5"] != 1.0
+    ):
         raise ValueError(f"Matched spot metadata disagree: {audit}")
     return reordered, audit
 
@@ -191,6 +208,61 @@ def stratified_sample(labels: np.ndarray, size: int, seed: int) -> np.ndarray:
         result = np.concatenate([result, rng.choice(pool, size=missing, replace=False)])
     rng.shuffle(result)
     return result.astype(np.int64, copy=False)
+
+
+def eligible_stratified_sample(
+    labels: np.ndarray, excluded_label: str, size: int, seed: int
+) -> np.ndarray:
+    """Sample within defined labels and return indices into the original arrays."""
+    eligible = np.flatnonzero(labels != excluded_label)
+    if not len(eligible):
+        raise ValueError(f"No observations remain after excluding {excluded_label!r}")
+    local_sample = stratified_sample(labels[eligible], size, seed)
+    return eligible[local_sample]
+
+
+def domain_cell_type_composition(data: EmbeddingData) -> pd.DataFrame:
+    """Count mapped cell types in each defined heart-region annotation."""
+    defined = data.domains != DOMAIN_MISSING_LABEL
+    table = (
+        pd.DataFrame(
+            {
+                DOMAIN_KEY: data.domains[defined],
+                "mapped_celltype": data.cell_types[defined],
+            }
+        )
+        .value_counts(sort=False)
+        .rename("n")
+        .reset_index()
+    )
+    table["fraction_within_region"] = table["n"] / table.groupby(DOMAIN_KEY)["n"].transform(
+        "sum"
+    )
+    return table.sort_values([DOMAIN_KEY, "n"], ascending=[True, False]).reset_index(drop=True)
+
+
+def domain_annotation_audit(data: EmbeddingData) -> dict[str, Any]:
+    defined = data.domains != DOMAIN_MISSING_LABEL
+    cardiomyocyte = np.fromiter(
+        ("cardiomyocytes" in cell_type.lower() for cell_type in data.cell_types),
+        dtype=bool,
+        count=len(data.cell_types),
+    )
+    categories, counts = np.unique(data.domains[defined], return_counts=True)
+    n_defined = int(np.sum(defined))
+    n_cardiomyocyte = int(np.sum(defined & cardiomyocyte))
+    return {
+        "annotation_key": DOMAIN_KEY,
+        "excluded_value": DOMAIN_MISSING_LABEL,
+        "n_total": int(len(data.ids)),
+        "n_defined": n_defined,
+        "defined_fraction": float(n_defined / len(data.ids)),
+        "category_counts": {
+            str(category): int(count) for category, count in zip(categories, counts, strict=True)
+        },
+        "n_mapped_cardiomyocytes_among_defined": n_cardiomyocyte,
+        "mapped_cardiomyocyte_fraction_among_defined": float(n_cardiomyocyte / n_defined),
+    }
 
 
 def linear_cka(x: np.ndarray, y: np.ndarray) -> float:
@@ -293,6 +365,11 @@ def neighbor_metrics(
         "old_adjacent_section_fraction": old_adjacent,
         "new_adjacent_section_fraction": new_adjacent,
     }
+
+
+def label_purity(neighbors: np.ndarray, labels: np.ndarray) -> float:
+    """Return the mean fraction of external neighbors with the focal label."""
+    return float(np.mean(labels[neighbors] == labels[:, None]))
 
 
 def cosine_similarity_on_edges(embedding: np.ndarray, source: np.ndarray, target: np.ndarray) -> np.ndarray:
@@ -469,8 +546,8 @@ def plot_metric_summary(
     paired_panel(
         axes[0, 1],
         latent_metric_names.label_purity,
-        "B  Annotation structure",
-        "Same-label neighbor fraction",
+        "B  Heart-region structure (defined regions only)",
+        "Same-region neighbor fraction",
     )
     axes[0, 1].set_ylim(0, 1)
     paired_panel(
@@ -528,14 +605,14 @@ def plot_scanpy_umap_panel(
     """Plot precomputed shared-UMAP coordinates through Scanpy's UMAP API."""
     categories = list(colors)
     obs = pd.DataFrame(
-        {"transf_anno_E95": pd.Categorical(labels, categories=categories)},
+        {DOMAIN_KEY: pd.Categorical(labels, categories=categories)},
         index=pd.Index(np.arange(len(labels)).astype(str), name="spot"),
     )
     panel = ad.AnnData(obs=obs)
     panel.obsm["X_umap"] = np.asarray(coordinates, dtype=np.float32)
     sc.pl.umap(
         panel,
-        color="transf_anno_E95",
+        color=DOMAIN_KEY,
         palette=[colors[category] for category in categories],
         size=1.7,
         alpha=0.7,
@@ -563,11 +640,13 @@ def plot_shared_umap(
     seed: int,
     threads: int,
 ) -> dict[str, Any]:
-    labels = section_aware.labels[sample_indices]
+    labels = section_aware.domains[sample_indices]
     colors = categorical_colors(labels)
     fig, axes = plt.subplots(2, 2, figsize=(15, 11), constrained_layout=True)
     umap_audit: dict[str, Any] = {
         "n_spots": int(len(sample_indices)),
+        "annotation_key": DOMAIN_KEY,
+        "excluded_annotation_value": DOMAIN_MISSING_LABEL,
         "shared_axes_after_procrustes": True,
         "coordinate_backend": "umap.UMAP",
         "plot_backend": "scanpy.pl.umap",
@@ -635,8 +714,8 @@ def plot_shared_umap(
         markerscale=4,
     )
     fig.suptitle(
-        "Matched Mouse E9.5 latent spaces\n"
-        "Shared UMAP per representation after rotation/scale alignment; colors are transf_anno_E95",
+        "Mouse E9.5 heart-region latent spaces (defined regions only)\n"
+        "Shared UMAP per representation after rotation/scale alignment; colors are heart_region",
         fontsize=14,
     )
     for suffix in ("png", "pdf"):
@@ -658,6 +737,8 @@ def write_report(
     output_dir: Path,
     metrics: pd.DataFrame,
     audit: dict[str, Any],
+    domain_audit: dict[str, Any],
+    domain_composition: pd.DataFrame,
     spatial_audit: dict[str, Any],
     baseline_metadata: dict[str, Any],
     section_aware_metadata: dict[str, Any],
@@ -673,8 +754,9 @@ def write_report(
         "## Scope and comparability",
         "",
         f"All **{audit['n_matched_spots']:,} spots** were matched by globally unique observation ID. "
-        f"Section labels, `transf_anno_E95`, and 3D coordinates agree for "
-        f"{audit['section_match_fraction']:.1%}, {audit['label_match_fraction']:.1%}, and "
+        f"Section labels, `heart_region`, `transf_anno_E95`, and 3D coordinates agree for "
+        f"{audit['section_match_fraction']:.1%}, {audit['heart_region_match_fraction']:.1%}, "
+        f"{audit['label_match_fraction']:.1%}, and "
         f"{audit['coordinate_match_fraction_at_1e-5']:.1%} of matched spots, respectively.",
         "",
         "This is a descriptive comparison, **not an isolated graph-only ablation**. The uploaded baseline and "
@@ -688,9 +770,34 @@ def write_report(
         f"| Genes used/common | {baseline_metadata['training_info'].get('n_common_genes')} | {section_aware_metadata['training_info'].get('n_common_genes')} |",
         f"| Two-stage training | {config_2d.get('two_stage')} | {config_3d.get('two_stage')} |",
         "",
+        "## Heart-region annotation scope",
+        "",
+        f"`heart_region` is defined for **{domain_audit['n_defined']:,} / "
+        f"{domain_audit['n_total']:,} spots ({domain_audit['defined_fraction']:.2%})**. "
+        f"The two defined regions contain {domain_audit['category_counts']['LV/atrial region']:,} "
+        "LV/atrial observations and "
+        f"{domain_audit['category_counts']['Right/outflow tract region']:,} right/outflow-tract "
+        "observations. All heart-region purity and UMAP results below exclude `NA`.",
+        "",
+        f"This annotation is not restricted to cardiomyocytes: only "
+        f"{domain_audit['n_mapped_cardiomyocytes_among_defined']:,} / "
+        f"{domain_audit['n_defined']:,} defined observations "
+        f"({domain_audit['mapped_cardiomyocyte_fraction_among_defined']:.1%}) have a "
+        "`mapped_celltype` containing `cardiomyocytes`. The remainder includes "
+        "cardiopharyngeal mesoderm, primitive erythroid cells, endocardial cells, "
+        "proepicardium, and arterial endothelial cells.",
+        "",
+        "| heart_region | mapped_celltype | n | Fraction within region |",
+        "|---|---|---:|---:|",
+        *[
+            f"| {row.heart_region} | {row.mapped_celltype} | {row.n:,} | "
+            f"{row.fraction_within_region:.1%} |"
+            for row in domain_composition.itertuples(index=False)
+        ],
+        "",
         "## Metrics",
         "",
-        f"| Representation | Linear CKA | Procrustes similarity | {latent_metric_names.recall} | 2D label purity | 3D label purity | 2D different-section kNN | 3D different-section kNN |",
+        f"| Representation | Linear CKA | Procrustes similarity | {latent_metric_names.recall} | 2D heart-region purity | 3D heart-region purity | 2D different-section kNN | 3D different-section kNN |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for representation in REPRESENTATIONS:
@@ -717,9 +824,11 @@ def write_report(
             "",
             f"`{latent_metric_names.label_purity}` is the mean, across focal spots, of the "
             f"fraction of the {latent_metric_names.k} nearest latent neighbors carrying the same "
-            "`transf_anno_E95` label. It is a neighborhood-structure statistic, not prediction accuracy.",
+            "non-`NA` `heart_region` label. Both focal spots and the latent-neighbor candidate pool "
+            "are restricted to observations with a defined heart region. It is a neighborhood-structure "
+            "statistic, not prediction accuracy.",
             "",
-            f"For `emb_niche`, label purity changed from {niche_purity_2d:.2%} to "
+            f"For `emb_niche`, heart-region purity changed from {niche_purity_2d:.2%} to "
             f"{niche_purity_3d:.2%}: an absolute increase of {niche_purity_absolute_pp:.2f} "
             f"percentage points and a relative increase of {niche_purity_relative_percent:.1f}%. "
             f"This does not mean that purity is {niche_purity_relative_percent:.1f}%, and the descriptive comparison does not "
@@ -767,9 +876,10 @@ def write_report(
             "",
             "## Outputs",
             "",
-            "- `embedding_comparison_shared_umap.png` / `.pdf`: matched spots in a shared UMAP for each representation after orthogonal Procrustes alignment, plotted with `scanpy.pl.umap`.",
+            "- `embedding_comparison_shared_umap.png` / `.pdf`: non-`NA` heart-region spots in a shared UMAP for each representation after orthogonal Procrustes alignment, colored by `heart_region` and plotted with `scanpy.pl.umap`.",
             "- `embedding_comparison_metrics.png` / `.pdf`: compact metric summary.",
             "- `embedding_comparison_metrics.tsv`: tidy metric values.",
+            "- `heart_region_celltype_composition.tsv`: mapped cell-type composition within each defined heart region.",
             "- `embedding_comparison_summary.json`: matching, sampling, and spatial-evaluation audit data.",
             "",
         ]
@@ -784,8 +894,24 @@ def main() -> None:
     section_aware = read_single_h5ad(args.section_aware_h5ad, "section_id")
     baseline, match_audit = reorder_baseline_to_section_aware(baseline, section_aware)
     sample_indices = stratified_sample(section_aware.labels, args.sample_size, args.seed)
-    umap_indices = stratified_sample(section_aware.labels, args.umap_sample_size, args.seed + 1)
+    domain_sample_indices = eligible_stratified_sample(
+        section_aware.domains,
+        DOMAIN_MISSING_LABEL,
+        args.sample_size,
+        args.seed + 1,
+    )
+    umap_indices = eligible_stratified_sample(
+        section_aware.domains,
+        DOMAIN_MISSING_LABEL,
+        args.umap_sample_size,
+        args.seed + 2,
+    )
     latent_metric_names = LatentMetricNames.for_k(args.latent_neighbors)
+    domain_audit = domain_annotation_audit(section_aware)
+    domain_composition = domain_cell_type_composition(section_aware)
+    domain_composition.to_csv(
+        args.output_dir / "heart_region_celltype_composition.tsv", sep="\t", index=False
+    )
 
     within_source, within_target, cross_source, cross_target, spatial_audit = physical_evaluation_edges(
         section_aware.coordinates,
@@ -815,9 +941,28 @@ def main() -> None:
             section_aware.labels[sample_indices],
             section_aware.sections[sample_indices],
         )
+        old_domain_neighbors = approximate_neighbors(
+            old[domain_sample_indices], args.latent_neighbors, args.seed + 1, args.threads
+        )
+        new_domain_neighbors = approximate_neighbors(
+            new[domain_sample_indices], args.latent_neighbors, args.seed + 1, args.threads
+        )
+        domain_labels = section_aware.domains[domain_sample_indices]
+        old_domain_purity = label_purity(old_domain_neighbors, domain_labels)
+        new_domain_purity = label_purity(new_domain_neighbors, domain_labels)
         *_, procrustes_similarity = procrustes_fit(old_sample, new_sample)
         cka = linear_cka(old_sample, new_sample)
-        representation_audit[representation] = {"linear_cka": cka, "procrustes_similarity": procrustes_similarity, **local}
+        representation_audit[representation] = {
+            "linear_cka": cka,
+            "procrustes_similarity": procrustes_similarity,
+            **{
+                key: value
+                for key, value in local.items()
+                if key not in {"old_label_purity", "new_label_purity"}
+            },
+            "old_heart_region_purity": old_domain_purity,
+            "new_heart_region_purity": new_domain_purity,
+        }
 
         add_metric(metric_rows, representation, "Linear CKA", COMPARISON, cka, len(sample_indices))
         add_metric(
@@ -850,8 +995,8 @@ def main() -> None:
                 representation,
                 latent_metric_names.label_purity,
                 method,
-                local[f"{prefix}_label_purity"],
-                len(sample_indices),
+                old_domain_purity if prefix == "old" else new_domain_purity,
+                len(domain_sample_indices),
             )
             add_metric(
                 metric_rows,
@@ -916,6 +1061,12 @@ def main() -> None:
             "raster_dpi": RASTER_DPI,
         },
         "match_audit": match_audit,
+        "heart_region_annotation_audit": domain_audit,
+        "sampling_audit": {
+            "global_metric_sample_size": int(len(sample_indices)),
+            "heart_region_metric_sample_size": int(len(domain_sample_indices)),
+            "heart_region_umap_sample_size": int(len(umap_indices)),
+        },
         "spatial_evaluation_audit": spatial_audit,
         "representation_metrics": representation_audit,
         "umap_audit": umap_audit,
@@ -929,6 +1080,8 @@ def main() -> None:
         args.output_dir,
         metrics,
         match_audit,
+        domain_audit,
+        domain_composition,
         spatial_audit,
         baseline_metadata,
         section_aware_metadata,

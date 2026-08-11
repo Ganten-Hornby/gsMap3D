@@ -51,7 +51,7 @@ def test_umap_panel_is_plotted_through_scanpy(monkeypatch):
     )
 
     np.testing.assert_array_equal(recorded["coordinates"], coordinates)
-    assert recorded["color"] == "transf_anno_E95"
+    assert recorded["color"] == "heart_region"
     assert recorded["palette"] == ["#112233", "#445566"]
     assert all(collection.get_rasterized() for collection in axis.collections)
     plt.close(figure)
@@ -65,6 +65,25 @@ def test_latent_metric_names_follow_configured_neighbor_count():
     assert names.k == 7
     assert names.recall == "kNN recall@7"
     assert names.jaccard == "kNN Jaccard@7"
-    assert names.label_purity == "Label kNN purity@7"
+    assert names.label_purity == "Heart-region kNN purity@7"
     assert names.different_section == "Different-section latent kNN fraction@7"
     assert names.adjacent_section == "Adjacent-section latent kNN fraction@7"
+
+
+def test_eligible_stratified_sample_excludes_missing_domain():
+    comparison = load_comparison_module()
+    labels = np.asarray(["NA", "Left", "Right", "NA", "Left", "Right"], dtype=object)
+
+    indices = comparison.eligible_stratified_sample(labels, "NA", size=4, seed=7)
+
+    assert len(indices) == 4
+    assert set(labels[indices]) == {"Left", "Right"}
+    assert not np.any(labels[indices] == "NA")
+
+
+def test_label_purity_uses_the_supplied_domain_labels():
+    comparison = load_comparison_module()
+    labels = np.asarray(["Left", "Left", "Right"], dtype=object)
+    neighbors = np.asarray([[1], [2], [0]])
+
+    assert comparison.label_purity(neighbors, labels) == 1 / 3

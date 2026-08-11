@@ -2,7 +2,7 @@
 
 ## Scope and comparability
 
-All **646,893 spots** were matched by globally unique observation ID. Section labels, `transf_anno_E95`, and 3D coordinates agree for 100.0%, 100.0%, and 100.0% of matched spots, respectively.
+All **646,893 spots** were matched by globally unique observation ID. Section labels, `heart_region`, `transf_anno_E95`, and 3D coordinates agree for 100.0%, 100.0%, 100.0%, and 100.0% of matched spots, respectively.
 
 This is a descriptive comparison, **not an isolated graph-only ablation**. The uploaded baseline and section-aware run differ in additional settings:
 
@@ -14,16 +14,39 @@ This is a descriptive comparison, **not an isolated graph-only ablation**. The u
 | Genes used/common | 13581 | 17634 |
 | Two-stage training | True | False |
 
+## Heart-region annotation scope
+
+`heart_region` is defined for **44,644 / 646,893 spots (6.90%)**. The two defined regions contain 28,931 LV/atrial observations and 15,713 right/outflow-tract observations. All heart-region purity and UMAP results below exclude `NA`.
+
+This annotation is not restricted to cardiomyocytes: only 16,082 / 44,644 defined observations (36.0%) have a `mapped_celltype` containing `cardiomyocytes`. The remainder includes cardiopharyngeal mesoderm, primitive erythroid cells, endocardial cells, proepicardium, and arterial endothelial cells.
+
+| heart_region | mapped_celltype | n | Fraction within region |
+|---|---|---:|---:|
+| LV/atrial region | LV/atrioventricular canal/common atrium cardiomyocytes | 11,491 | 39.7% |
+| LV/atrial region | Cardiopharyngeal mesoderm | 4,372 | 15.1% |
+| LV/atrial region | Primitive erythroid cells | 4,167 | 14.4% |
+| LV/atrial region | Endocardial cells | 3,393 | 11.7% |
+| LV/atrial region | Proepicardium | 3,025 | 10.5% |
+| LV/atrial region | Arterial endothelial cells | 2,466 | 8.5% |
+| LV/atrial region | Second heart field-derived cardiomyocytes | 17 | 0.1% |
+| Right/outflow tract region | Second heart field-derived cardiomyocytes | 4,560 | 29.0% |
+| Right/outflow tract region | Primitive erythroid cells | 3,897 | 24.8% |
+| Right/outflow tract region | Cardiopharyngeal mesoderm | 3,296 | 21.0% |
+| Right/outflow tract region | Arterial endothelial cells | 1,450 | 9.2% |
+| Right/outflow tract region | Endocardial cells | 1,429 | 9.1% |
+| Right/outflow tract region | Proepicardium | 1,067 | 6.8% |
+| Right/outflow tract region | LV/atrioventricular canal/common atrium cardiomyocytes | 14 | 0.1% |
+
 ## Metrics
 
-| Representation | Linear CKA | Procrustes similarity | kNN recall@15 | 2D label purity | 3D label purity | 2D different-section kNN | 3D different-section kNN |
+| Representation | Linear CKA | Procrustes similarity | kNN recall@15 | 2D heart-region purity | 3D heart-region purity | 2D different-section kNN | 3D different-section kNN |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `emb_cell` | 0.1077 | 0.2957 | 0.0024 | 0.1026 | 0.1108 | 0.9405 | 0.9019 |
-| `emb_niche` | 0.1298 | 0.3160 | 0.0050 | 0.1018 | 0.2214 | 0.9375 | 0.6579 |
+| `emb_cell` | 0.1077 | 0.2957 | 0.0024 | 0.5390 | 0.5496 | 0.9405 | 0.9019 |
+| `emb_niche` | 0.1298 | 0.3160 | 0.0050 | 0.5689 | 0.7455 | 0.9375 | 0.6579 |
 
-`Label kNN purity@15` is the mean, across focal spots, of the fraction of the 15 nearest latent neighbors carrying the same `transf_anno_E95` label. It is a neighborhood-structure statistic, not prediction accuracy.
+`Heart-region kNN purity@15` is the mean, across focal spots, of the fraction of the 15 nearest latent neighbors carrying the same non-`NA` `heart_region` label. Both focal spots and the latent-neighbor candidate pool are restricted to observations with a defined heart region. It is a neighborhood-structure statistic, not prediction accuracy.
 
-For `emb_niche`, label purity changed from 10.18% to 22.14%: an absolute increase of 11.96 percentage points and a relative increase of 117.5%. This does not mean that purity is 117.5%, and the descriptive comparison does not isolate a causal effect of the 3D graph because other training settings also differ.
+For `emb_niche`, heart-region purity changed from 56.89% to 74.55%: an absolute increase of 17.65 percentage points and a relative increase of 31.0%. This does not mean that purity is 31.0%, and the descriptive comparison does not isolate a causal effect of the 3D graph because other training settings also differ.
 
 `kNN recall@15` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. Linear CKA and Procrustes similarity are invariant to arbitrary orthogonal rotations of the latent axes.
 
@@ -42,7 +65,8 @@ Higher spatial-edge cosine means a smoother latent representation along those ph
 
 ## Outputs
 
-- `embedding_comparison_shared_umap.png` / `.pdf`: matched spots in a shared UMAP for each representation after orthogonal Procrustes alignment, plotted with `scanpy.pl.umap`.
+- `embedding_comparison_shared_umap.png` / `.pdf`: non-`NA` heart-region spots in a shared UMAP for each representation after orthogonal Procrustes alignment, colored by `heart_region` and plotted with `scanpy.pl.umap`.
 - `embedding_comparison_metrics.png` / `.pdf`: compact metric summary.
 - `embedding_comparison_metrics.tsv`: tidy metric values.
+- `heart_region_celltype_composition.tsv`: mapped cell-type composition within each defined heart region.
 - `embedding_comparison_summary.json`: matching, sampling, and spatial-evaluation audit data.

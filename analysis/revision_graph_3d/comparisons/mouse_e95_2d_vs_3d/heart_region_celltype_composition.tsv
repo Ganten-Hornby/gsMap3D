@@ -1,0 +1,15 @@
+heart_region	mapped_celltype	n	fraction_within_region
+LV/atrial region	LV/atrioventricular canal/common atrium cardiomyocytes	11491	0.39718640904220387
+LV/atrial region	Cardiopharyngeal mesoderm	4372	0.15111817773322733
+LV/atrial region	Primitive erythroid cells	4167	0.1440323528395147
+LV/atrial region	Endocardial cells	3393	0.11727904324081435
+LV/atrial region	Proepicardium	3025	0.10455912343161315
+LV/atrial region	Arterial endothelial cells	2466	0.08523728872144067
+LV/atrial region	Second heart field-derived cardiomyocytes	17	0.0005876049911859251
+Right/outflow tract region	Second heart field-derived cardiomyocytes	4560	0.29020556227327693
+Right/outflow tract region	Primitive erythroid cells	3897	0.2480112009164386
+Right/outflow tract region	Cardiopharyngeal mesoderm	3296	0.20976261694138612
+Right/outflow tract region	Arterial endothelial cells	1450	0.09228027747724814
+Right/outflow tract region	Endocardial cells	1429	0.09094380449309489
+Right/outflow tract region	Proepicardium	1067	0.06790555590911984
+Right/outflow tract region	LV/atrioventricular canal/common atrium cardiomyocytes	14	0.0008909819894354992
