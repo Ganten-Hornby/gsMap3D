@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 import torch
+from torch.profiler import ProfilerActivity, profile
 
 from gsMap.find_latent.gnn.gcn import (
     GCN,
@@ -249,6 +250,27 @@ def test_gcn_normalization_on_two_node_graph():
     edges = torch.asarray([[0, 1], [1, 0]])
     result = GCN(K=1)(features, edges)
     torch.testing.assert_close(result, torch.asarray([[2.0], [2.0]]))
+
+
+def test_gcn_does_not_materialize_edge_by_feature_messages():
+    n_nodes = 128
+    fanout = 16
+    n_features = 64
+    features = torch.ones((n_nodes, n_features), dtype=torch.float32)
+    sources = torch.arange(n_nodes).repeat_interleave(fanout)
+    offsets = torch.arange(1, fanout + 1).repeat(n_nodes)
+    targets = (sources + offsets) % n_nodes
+    edges = torch.stack((sources, targets))
+    edge_message_bytes = edges.shape[1] * n_features * features.element_size()
+
+    with profile(activities=[ProfilerActivity.CPU], profile_memory=True) as profiler:
+        result = GCN(K=1)(features, edges)
+
+    largest_operator_allocation = max(
+        event.self_cpu_memory_usage for event in profiler.key_averages()
+    )
+    assert result.shape == features.shape
+    assert largest_operator_allocation < edge_message_bytes // 2
 
 
 def test_training_data_scatter_is_invariant_to_interleaved_batches():

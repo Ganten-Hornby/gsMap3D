@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from scipy.spatial import cKDTree
-from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch_geometric.utils import add_remaining_self_loops, degree
 
@@ -508,12 +507,13 @@ def build_graph_for_mode(
     )
 
 
-class GCN(MessagePassing):
+class GCN(torch.nn.Module):
     """Parameter-free K-hop GCN feature propagation."""
 
     def __init__(self, K: int = 1):
-        super().__init__(aggr="add")
+        super().__init__()
         self.K = K
+        self.flow = "source_to_target"
 
     def forward(
         self,
@@ -543,11 +543,17 @@ class GCN(MessagePassing):
                 dtype=x.dtype,
             )
 
+        adjacency = torch.sparse_coo_tensor(
+            edge_index.flip(0),
+            normalized_weight,
+            size=(x.size(0), x.size(0)),
+            device=x.device,
+            dtype=x.dtype,
+            check_invariants=True,
+        ).coalesce()
+
         xs = [x]
         for _ in range(self.K):
-            xs.append(self.propagate(edge_index, x=xs[-1], edge_weight=normalized_weight))
+            xs.append(torch.sparse.mm(adjacency, xs[-1]))
 
         return torch.cat(xs[1:], dim=1)
-
-    def message(self, x_j: torch.Tensor, edge_weight: torch.Tensor) -> torch.Tensor:
-        return edge_weight.view(-1, 1) * x_j
