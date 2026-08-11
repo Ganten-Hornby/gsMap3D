@@ -1,0 +1,73 @@
+representation	metric	method	value	n_observations
+emb_cell	Heart-region kNN purity@15	2D supervised	0.5244548632863811	98966
+emb_cell	ctype_user kNN purity@15	2D supervised	0.9050199058262434	98966
+emb_cell	Different-section embedding kNN fraction@15	2D supervised	0.9329971909544692	98966
+emb_cell	Adjacent-section share among embedding kNN@15	2D supervised	0.07806115231493645	98966
+emb_cell	Mean cosine on within-section physical edges	2D supervised	0.5404589317154014	98966
+emb_cell	Mean cosine on cross-section radius edges	2D supervised	0.4892936464907471	98966
+emb_cell	Heart-region kNN purity@15	3D supervised	0.48724006224359884	98966
+emb_cell	ctype_user kNN purity@15	3D supervised	0.9016530929814279	98966
+emb_cell	Different-section embedding kNN fraction@15	3D supervised	0.9356081886708567	98966
+emb_cell	Adjacent-section share among embedding kNN@15	3D supervised	0.07404428456911127	98966
+emb_cell	Mean cosine on within-section physical edges	3D supervised	0.5161273737648661	98966
+emb_cell	Mean cosine on cross-section radius edges	3D supervised	0.48230973740355265	98966
+emb_cell	Heart-region kNN purity@15	2D no annotation	0.4749051862929356	98966
+emb_cell	ctype_user kNN purity@15	2D no annotation	0.9022991060903071	98966
+emb_cell	Different-section embedding kNN fraction@15	2D no annotation	0.929240345169048	98966
+emb_cell	Adjacent-section share among embedding kNN@15	2D no annotation	0.07534372073910905	98966
+emb_cell	Mean cosine on within-section physical edges	2D no annotation	0.4417853151561443	98966
+emb_cell	Mean cosine on cross-section radius edges	2D no annotation	0.3895779954143255	98966
+emb_cell	Heart-region kNN purity@15	3D no annotation	0.47205302831275386	98966
+emb_cell	ctype_user kNN purity@15	3D no annotation	0.9017837775936517	98966
+emb_cell	Different-section embedding kNN fraction@15	3D no annotation	0.9296472189101981	98966
+emb_cell	Adjacent-section share among embedding kNN@15	3D no annotation	0.07556197751416312	98966
+emb_cell	Mean cosine on within-section physical edges	3D no annotation	0.36181706271453506	98966
+emb_cell	Mean cosine on cross-section radius edges	3D no annotation	0.30681682918786085	98966
+emb_cell	Linear CKA	supervised: 2D vs 3D	0.7006242048292146	98966
+emb_cell	Procrustes similarity	supervised: 2D vs 3D	0.786064937723517	98966
+emb_cell	kNN overlap@15	supervised: 2D vs 3D	0.03378331952387689	98966
+emb_cell	Linear CKA	no annotation: 2D vs 3D	0.9414000930796685	98966
+emb_cell	Procrustes similarity	no annotation: 2D vs 3D	0.9269789121968203	98966
+emb_cell	kNN overlap@15	no annotation: 2D vs 3D	0.2854764936106003	98966
+emb_cell	Linear CKA	2D: supervised vs no annotation	0.5629847157497995	98966
+emb_cell	Procrustes similarity	2D: supervised vs no annotation	0.7021608542375025	98966
+emb_cell	kNN overlap@15	2D: supervised vs no annotation	0.06393239429029499	98966
+emb_cell	Linear CKA	3D: supervised vs no annotation	0.4780317048451837	98966
+emb_cell	Procrustes similarity	3D: supervised vs no annotation	0.6429401561327048	98966
+emb_cell	kNN overlap@15	3D: supervised vs no annotation	0.04625157461485089	98966
+emb_niche	Heart-region kNN purity@15	2D supervised	0.9949039737552964	98966
+emb_niche	ctype_user kNN purity@15	2D supervised	0.9154059643379208	98966
+emb_niche	Different-section embedding kNN fraction@15	2D supervised	0.6741136686673538	98966
+emb_niche	Adjacent-section share among embedding kNN@15	2D supervised	0.13037878328584226	98966
+emb_niche	Mean cosine on within-section physical edges	2D supervised	0.9917424457505022	98966
+emb_niche	Mean cosine on cross-section radius edges	2D supervised	0.9683630539799838	98966
+emb_niche	Heart-region kNN purity@15	3D supervised	0.9974684908621816	98966
+emb_niche	ctype_user kNN purity@15	3D supervised	0.9117690250523749	98966
+emb_niche	Different-section embedding kNN fraction@15	3D supervised	0.7016510720853627	98966
+emb_niche	Adjacent-section share among embedding kNN@15	3D supervised	0.21980612870413407	98966
+emb_niche	Mean cosine on within-section physical edges	3D supervised	0.9923141678240627	98966
+emb_niche	Mean cosine on cross-section radius edges	3D supervised	0.9818808936218903	98966
+emb_niche	Heart-region kNN purity@15	2D no annotation	0.76278991438137	98966
+emb_niche	ctype_user kNN purity@15	2D no annotation	0.9149256647063975	98966
+emb_niche	Different-section embedding kNN fraction@15	2D no annotation	0.6524166548781063	98966
+emb_niche	Adjacent-section share among embedding kNN@15	2D no annotation	0.10641297684726742	98966
+emb_niche	Mean cosine on within-section physical edges	2D no annotation	0.820981731142318	98966
+emb_niche	Mean cosine on cross-section radius edges	2D no annotation	0.5159208230781169	98966
+emb_niche	Heart-region kNN purity@15	3D no annotation	0.7945961239213467	98966
+emb_niche	ctype_user kNN purity@15	3D no annotation	0.9145181173332255	98966
+emb_niche	Different-section embedding kNN fraction@15	3D no annotation	0.6863050609973795	98966
+emb_niche	Adjacent-section share among embedding kNN@15	3D no annotation	0.1745117851922209	98966
+emb_niche	Mean cosine on within-section physical edges	3D no annotation	0.8124231380057886	98966
+emb_niche	Mean cosine on cross-section radius edges	3D no annotation	0.6855702273450599	98966
+emb_niche	Linear CKA	supervised: 2D vs 3D	0.9572796452884955	98966
+emb_niche	Procrustes similarity	supervised: 2D vs 3D	0.9769826943631194	98966
+emb_niche	kNN overlap@15	supervised: 2D vs 3D	0.05027248415280668	98966
+emb_niche	Linear CKA	no annotation: 2D vs 3D	0.7450163409948547	98966
+emb_niche	Procrustes similarity	no annotation: 2D vs 3D	0.8252457784761817	98966
+emb_niche	kNN overlap@15	no annotation: 2D vs 3D	0.07571960740725771	98966
+emb_niche	Linear CKA	2D: supervised vs no annotation	0.30435409392404206	98966
+emb_niche	Procrustes similarity	2D: supervised vs no annotation	0.4745069789701093	98966
+emb_niche	kNN overlap@15	2D: supervised vs no annotation	0.07020256114894677	98966
+emb_niche	Linear CKA	3D: supervised vs no annotation	0.37553467055423906	98966
+emb_niche	Procrustes similarity	3D: supervised vs no annotation	0.5052512994921262	98966
+emb_niche	kNN overlap@15	3D: supervised vs no annotation	0.05139947052523089	98966

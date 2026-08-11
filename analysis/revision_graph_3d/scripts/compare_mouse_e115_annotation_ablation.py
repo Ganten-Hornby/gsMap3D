@@ -242,6 +242,60 @@ def write_report(
     heart_baseline: float,
     ctype_baseline: float,
 ) -> None:
+    niche_heart_2d = metric_value(
+        metrics, "emb_niche", f"Heart-region kNN purity@{k}", "2D no annotation"
+    )
+    niche_heart_3d = metric_value(
+        metrics, "emb_niche", f"Heart-region kNN purity@{k}", "3D no annotation"
+    )
+    niche_adjacent_2d = metric_value(
+        metrics,
+        "emb_niche",
+        f"Adjacent-section share among embedding kNN@{k}",
+        "2D no annotation",
+    )
+    niche_adjacent_3d = metric_value(
+        metrics,
+        "emb_niche",
+        f"Adjacent-section share among embedding kNN@{k}",
+        "3D no annotation",
+    )
+    niche_cross_2d = metric_value(
+        metrics,
+        "emb_niche",
+        "Mean cosine on cross-section radius edges",
+        "2D no annotation",
+    )
+    niche_cross_3d = metric_value(
+        metrics,
+        "emb_niche",
+        "Mean cosine on cross-section radius edges",
+        "3D no annotation",
+    )
+    cell_adjacent_2d = metric_value(
+        metrics,
+        "emb_cell",
+        f"Adjacent-section share among embedding kNN@{k}",
+        "2D no annotation",
+    )
+    cell_adjacent_3d = metric_value(
+        metrics,
+        "emb_cell",
+        f"Adjacent-section share among embedding kNN@{k}",
+        "3D no annotation",
+    )
+    cell_cross_2d = metric_value(
+        metrics,
+        "emb_cell",
+        "Mean cosine on cross-section radius edges",
+        "2D no annotation",
+    )
+    cell_cross_3d = metric_value(
+        metrics,
+        "emb_cell",
+        "Mean cosine on cross-section radius edges",
+        "3D no annotation",
+    )
     lines = [
         "# Mouse E11.5 annotation-supervision embedding ablation",
         "",
@@ -302,6 +356,41 @@ def write_report(
 
     lines.extend(
         [
+            "",
+            "## Main observations",
+            "",
+            f"- Without annotation supervision, `emb_niche` adjacent-section share rises "
+            f"from {niche_adjacent_2d:.2%} to {niche_adjacent_3d:.2%} "
+            f"({100 * (niche_adjacent_3d - niche_adjacent_2d):+.2f} percentage points; "
+            f"{niche_adjacent_3d / niche_adjacent_2d - 1:+.1%} relative). Its mean cosine "
+            f"on independently defined cross-section radius edges rises from "
+            f"{niche_cross_2d:.4f} to {niche_cross_3d:.4f} "
+            f"({niche_cross_3d - niche_cross_2d:+.4f} cosine units; "
+            f"{niche_cross_3d / niche_cross_2d - 1:+.1%} relative). The same directional "
+            "effect therefore does not require `heart_regions` as a training label.",
+            f"- Post-training `heart_regions` purity in the no-annotation `emb_niche` rises "
+            f"from {niche_heart_2d:.4f} to {niche_heart_3d:.4f} "
+            f"({100 * (niche_heart_3d - niche_heart_2d):+.2f} percentage points; "
+            f"{niche_heart_3d / niche_heart_2d - 1:+.1%} relative). This is independent of "
+            "the training objective but remains an internal annotation-structure summary, "
+            "not external biological validation.",
+            f"- The effect is specific to the niche representation. In no-annotation "
+            f"`emb_cell`, adjacent-section share changes only from {cell_adjacent_2d:.2%} "
+            f"to {cell_adjacent_3d:.2%} "
+            f"({100 * (cell_adjacent_3d - cell_adjacent_2d):+.2f} percentage points; "
+            f"{cell_adjacent_3d / cell_adjacent_2d - 1:+.1%} relative), while cross-section "
+            f"physical-edge cosine decreases from {cell_cross_2d:.4f} to "
+            f"{cell_cross_3d:.4f} ({cell_cross_3d - cell_cross_2d:+.4f} cosine units; "
+            f"{cell_cross_3d / cell_cross_2d - 1:+.1%} relative).",
+            f"- No-annotation 2D-versus-3D global agreement is higher for `emb_cell` "
+            f"(CKA {metric_value(metrics, 'emb_cell', 'Linear CKA', 'no annotation: 2D vs 3D'):.4f}; "
+            f"kNN overlap@{k} "
+            f"{metric_value(metrics, 'emb_cell', f'kNN overlap@{k}', 'no annotation: 2D vs 3D'):.4f}) "
+            f"than for `emb_niche` (CKA "
+            f"{metric_value(metrics, 'emb_niche', 'Linear CKA', 'no annotation: 2D vs 3D'):.4f}; "
+            f"kNN overlap@{k} "
+            f"{metric_value(metrics, 'emb_niche', f'kNN overlap@{k}', 'no annotation: 2D vs 3D'):.4f}), "
+            "showing that the 3D graph reorganizes local niche neighborhoods more strongly.",
             "",
             "## Evaluation notes",
             "",
