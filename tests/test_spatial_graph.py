@@ -7,6 +7,8 @@ import pytest
 import scipy.sparse as sp
 import torch
 from torch.profiler import ProfilerActivity, profile
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
+from torch_geometric.utils import add_remaining_self_loops, degree
 
 from gsMap.find_latent.gnn.gcn import (
     GCN,
@@ -271,6 +273,57 @@ def test_gcn_does_not_materialize_edge_by_feature_messages():
     )
     assert result.shape == features.shape
     assert largest_operator_allocation < edge_message_bytes // 2
+
+
+@pytest.mark.parametrize(
+    ("edge_weights", "legacy_normalization"),
+    [(None, False), ("weighted", False), (None, True)],
+)
+def test_sparse_gcn_matches_edge_message_reference(edge_weights, legacy_normalization):
+    torch.manual_seed(7)
+    features = torch.randn(9, 5)
+    edges = torch.asarray(
+        [
+            [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 3],
+            [1, 2, 2, 3, 4, 5, 6, 7, 8, 0, 4, 1],
+        ]
+    )
+    weights = (
+        torch.linspace(0.5, 1.6, edges.shape[1]) if edge_weights == "weighted" else None
+    )
+
+    if legacy_normalization:
+        normalized_edges, _ = add_remaining_self_loops(edges, num_nodes=features.shape[0])
+        source, target = normalized_edges
+        source_degree = degree(source, features.shape[0], dtype=features.dtype)
+        normalized_weights = (source_degree[source] * source_degree[target]).pow(-0.5)
+        normalized_weights[normalized_weights == float("inf")] = 0
+    else:
+        normalized_edges, normalized_weights = gcn_norm(
+            edges,
+            weights,
+            num_nodes=features.shape[0],
+            add_self_loops=True,
+            flow="source_to_target",
+            dtype=features.dtype,
+        )
+        source, target = normalized_edges
+
+    expected_hops = []
+    current = features
+    for _ in range(3):
+        messages = normalized_weights[:, None] * current[source]
+        current = torch.zeros_like(current).index_add_(0, target, messages)
+        expected_hops.append(current)
+
+    expected = torch.cat(expected_hops, dim=1)
+    actual = GCN(K=3)(
+        features,
+        edges,
+        weights,
+        legacy_normalization=legacy_normalization,
+    )
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_training_data_scatter_is_invariant_to_interleaved_batches():
