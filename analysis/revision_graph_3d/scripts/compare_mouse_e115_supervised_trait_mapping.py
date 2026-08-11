@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Compare Mouse E11.5 supervised 2D and 3D spatial trait mapping."""
 
-from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path

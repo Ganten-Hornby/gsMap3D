@@ -23,6 +23,13 @@ REPORT_SBATCH = (
     / "scripts"
     / "run_mouse_e115_supervised_trait_reports.sbatch"
 )
+COMPARISON_SCRIPT = (
+    PROJECT_ROOT
+    / "analysis"
+    / "revision_graph_3d"
+    / "scripts"
+    / "compare_mouse_e115_supervised_trait_mapping.py"
+)
 
 
 def test_trait_mapping_uses_one_quick_mode_pipeline():
@@ -38,6 +45,7 @@ def test_trait_mapping_uses_one_quick_mode_pipeline():
 
 def test_trait_mapping_scripts_do_not_add_future_annotations_compatibility():
     assert "from __future__ import annotations" not in PREPARATION_SCRIPT.read_text()
+    assert "from __future__ import annotations" not in COMPARISON_SCRIPT.read_text()
 
 
 def test_report_job_runs_both_arms_as_report_only_quick_mode():
