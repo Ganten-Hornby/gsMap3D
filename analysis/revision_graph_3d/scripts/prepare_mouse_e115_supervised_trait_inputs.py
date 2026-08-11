@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Prepare full-data, human-gene, per-section E11.5 trait-mapping inputs."""
 
-from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path

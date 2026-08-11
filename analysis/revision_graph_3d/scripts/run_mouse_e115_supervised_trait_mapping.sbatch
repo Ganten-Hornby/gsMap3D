@@ -85,9 +85,11 @@ nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv
     --manifest "${H5AD_MANIFEST}" \
     --audit "${INPUT_AUDIT}"
 
-"${GSMAP}" latent-to-gene \
+"${GSMAP}" quick-mode \
     --workdir "${WORKDIR}" \
     --project-name "${PROJECT_NAME}" \
+    --start-step latent2gene \
+    --stop-step cauchy \
     --dataset-type "${DATASET_TYPE}" \
     --h5ad-yaml "${H5AD_MANIFEST}" \
     --annotation heart_regions \
@@ -106,11 +108,7 @@ nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv
     --rank-read-workers 6 \
     --mkscore-compute-workers 2 \
     --mkscore-write-workers 2 \
-    "${LATENT_ARGS[@]}"
-
-"${GSMAP}" spatial-ldsc \
-    --workdir "${WORKDIR}" \
-    --project-name "${PROJECT_NAME}" \
+    "${LATENT_ARGS[@]}" \
     --sumstats-config-file "${TRAIT_MANIFEST}" \
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
@@ -118,9 +116,3 @@ nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv
     --ldsc-read-workers 5 \
     --ldsc-compute-workers 5 \
     --spots-per-chunk-quick-mode 50
-
-"${GSMAP}" cauchy-combination \
-    --workdir "${WORKDIR}" \
-    --project-name "${PROJECT_NAME}" \
-    --sumstats-config-file "${TRAIT_MANIFEST}" \
-    --annotation heart_regions
