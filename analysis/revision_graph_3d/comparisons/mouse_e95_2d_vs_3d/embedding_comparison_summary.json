@@ -1,0 +1,85 @@
+{
+  "inputs": {
+    "baseline_dir": "/storage/yangjianLab/lilounan/gsMap3D-scripts/20260107_gsmap_3d_report_all_collected/mouse_embryo/E9.5/find_latent_representations",
+    "section_aware_h5ad": "/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/runs/mouse_e95_section_aware_3d_k10/find_latent_representations/Mouse_E9.5_embryo_sectioned_add_latent.h5ad"
+  },
+  "parameters": {
+    "baseline_dir": "/storage/yangjianLab/lilounan/gsMap3D-scripts/20260107_gsmap_3d_report_all_collected/mouse_embryo/E9.5/find_latent_representations",
+    "section_aware_h5ad": "/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/runs/mouse_e95_section_aware_3d_k10/find_latent_representations/Mouse_E9.5_embryo_sectioned_add_latent.h5ad",
+    "output_dir": "/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/comparisons/mouse_e95_2d_vs_3d",
+    "sample_size": 30000,
+    "umap_sample_size": 25000,
+    "latent_neighbors": 15,
+    "spatial_neighbors": 10,
+    "cross_section_cap": 10,
+    "threads": 8,
+    "seed": 2024,
+    "raster_dpi": 320
+  },
+  "match_audit": {
+    "n_baseline_spots": 646893,
+    "n_section_aware_spots": 646893,
+    "n_matched_spots": 646893,
+    "spot_match_fraction": 1.0,
+    "section_match_fraction": 1.0,
+    "label_match_fraction": 1.0,
+    "coordinate_match_fraction_at_1e-5": 1.0,
+    "max_coordinate_absolute_difference": 0.0
+  },
+  "spatial_evaluation_audit": {
+    "n_focal_spots": 30000,
+    "n_within_section_directed_edges": 300000,
+    "n_cross_section_directed_edges": 304784,
+    "zero_cross_section_neighbor_fraction": 0.03623333333333333,
+    "within_section_radius_median": 40.39834071142189,
+    "within_section_radius_q25": 35.20410269003223,
+    "within_section_radius_q75": 48.11371273725941
+  },
+  "representation_metrics": {
+    "emb_cell": {
+      "linear_cka": 0.10770256336732292,
+      "procrustes_similarity": 0.2956655350182631,
+      "knn_recall": 0.002362222222222222,
+      "knn_jaccard": 0.0012285531837255975,
+      "old_label_purity": 0.10263333333333333,
+      "new_label_purity": 0.11084666666666666,
+      "old_different_section_fraction": 0.9404933333333333,
+      "new_different_section_fraction": 0.9018955555555556,
+      "old_adjacent_section_fraction": 0.06229333333333333,
+      "new_adjacent_section_fraction": 0.10537333333333333
+    },
+    "emb_niche": {
+      "linear_cka": 0.12977599320476452,
+      "procrustes_similarity": 0.3160260100935538,
+      "knn_recall": 0.005048888888888889,
+      "knn_jaccard": 0.002632387408249477,
+      "old_label_purity": 0.10181555555555556,
+      "new_label_purity": 0.22141555555555556,
+      "old_different_section_fraction": 0.9375333333333333,
+      "new_different_section_fraction": 0.6579466666666667,
+      "old_adjacent_section_fraction": 0.06347555555555555,
+      "new_adjacent_section_fraction": 0.19459333333333334
+    }
+  },
+  "umap_audit": {
+    "n_spots": 25000,
+    "shared_axes_after_procrustes": true,
+    "coordinate_backend": "umap.UMAP",
+    "plot_backend": "scanpy.pl.umap",
+    "scanpy_version": "1.12.1",
+    "parameters": {
+      "n_neighbors": 30,
+      "min_dist": 0.25,
+      "n_components": 2,
+      "metric": "cosine",
+      "random_state": 2024
+    },
+    "emb_cell": {
+      "procrustes_similarity": 0.29685701059475694
+    },
+    "emb_niche": {
+      "procrustes_similarity": 0.3150853020437062
+    }
+  },
+  "comparability_warning": "Descriptive comparison only: graph construction, annotation used for training, gene space, and two-stage training differ between runs."
+}
