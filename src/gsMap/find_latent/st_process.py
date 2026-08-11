@@ -563,6 +563,14 @@ def calculate_module_score(training_adata, annotation_key):
     # Ensure annotation is categorical
     adata.obs[annotation_key] = adata.obs[annotation_key].astype("category")
 
+    annotation_counts = adata.obs[annotation_key].value_counts()
+    eligible_annotations = annotation_counts[annotation_counts > 1].index.tolist()
+    if not eligible_annotations:
+        raise ValueError(
+            f"Cannot calculate module scores for '{annotation_key}': "
+            "no annotation has at least two observations."
+        )
+
     # Detect count data and normalize if needed
     is_count_data = _looks_like_count_matrix(adata.X)
     adata = normalize_for_analysis(adata, is_count_data, preserve_raw=True)
@@ -578,7 +586,12 @@ def calculate_module_score(training_adata, annotation_key):
             message="DataFrame is highly fragmented",
         )
         sc.tl.rank_genes_groups(
-            adata, groupby=annotation_key, method="wilcoxon", use_raw=False, n_genes=100
+            adata,
+            groupby=annotation_key,
+            groups=eligible_annotations,
+            method="wilcoxon",
+            use_raw=False,
+            n_genes=100,
         )
 
     logger.info("Calculating module scores for each annotation...")
@@ -588,6 +601,10 @@ def calculate_module_score(training_adata, annotation_key):
 
     # Calculate module score for each annotation
     for annotation in adata.obs[annotation_key].cat.categories:
+        if annotation not in eligible_annotations:
+            adata.obs[f"{annotation}_module_score"] = 0.0
+            continue
+
         # Get significant DEGs for this annotation
         annotation_genes = filter_significant_degs(deg_results, annotation, adata)
 
