@@ -62,6 +62,7 @@ def test_latent_metric_names_follow_configured_neighbor_count():
 
     names = comparison.LatentMetricNames.for_k(7)
 
+    assert names.k == 7
     assert names.recall == "kNN recall@7"
     assert names.jaccard == "kNN Jaccard@7"
     assert names.label_purity == "Label kNN purity@7"

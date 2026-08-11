@@ -50,6 +50,7 @@ class EmbeddingData:
 
 @dataclass(frozen=True)
 class LatentMetricNames:
+    k: int
     recall: str
     jaccard: str
     label_purity: str
@@ -59,6 +60,7 @@ class LatentMetricNames:
     @classmethod
     def for_k(cls, k: int) -> LatentMetricNames:
         return cls(
+            k=k,
             recall=f"kNN recall@{k}",
             jaccard=f"kNN Jaccard@{k}",
             label_purity=f"Label kNN purity@{k}",
@@ -381,6 +383,8 @@ def physical_evaluation_edges(
     cross_source = np.concatenate(cross_sources) if cross_sources else np.empty(0, dtype=np.int64)
     cross_target = np.concatenate(cross_targets) if cross_targets else np.empty(0, dtype=np.int64)
     audit = {
+        "within_section_neighbors": int(within_k),
+        "cross_section_candidate_cap_per_adjacent_section": int(cross_cap),
         "n_focal_spots": int(len(focal_indices)),
         "n_within_section_directed_edges": int(len(within_source)),
         "n_cross_section_directed_edges": int(len(cross_source)),
@@ -406,6 +410,23 @@ def add_metric(
     )
 
 
+def metric_value(
+    metrics: pd.DataFrame, representation: str, metric: str, method: str
+) -> float:
+    matches = metrics.loc[
+        (metrics.representation == representation)
+        & (metrics.metric == metric)
+        & (metrics.method == method),
+        "value",
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one metric row for {representation=}, {metric=}, {method=}; "
+            f"found {len(matches)}"
+        )
+    return float(matches.iloc[0])
+
+
 def plot_metric_summary(
     metrics: pd.DataFrame, output_dir: Path, latent_metric_names: LatentMetricNames
 ) -> None:
@@ -418,12 +439,7 @@ def plot_metric_summary(
     width = 0.34
     for offset, representation in zip((-width / 2, width / 2), REPRESENTATIONS, strict=True):
         values = [
-            metrics.loc[
-                (metrics.representation == representation)
-                & (metrics.metric == name)
-                & (metrics.method == COMPARISON),
-                "value",
-            ].iloc[0]
+            metric_value(metrics, representation, name, COMPARISON)
             for name in agreement_names
         ]
         ax.bar(x + offset, values, width, color=representation_colors[representation], label=representation)
@@ -441,12 +457,7 @@ def plot_metric_summary(
         width = 0.34
         for offset, method, color in [(-width / 2, METHOD_2D, "#8C8C8C"), (width / 2, METHOD_3D, "#6A3D9A")]:
             values = [
-                metrics.loc[
-                    (metrics.representation == representation)
-                    & (metrics.metric == metric)
-                    & (metrics.method == method),
-                    "value",
-                ].iloc[0]
+                metric_value(metrics, representation, metric, method)
                 for representation in REPRESENTATIONS
             ]
             ax.bar(x + offset, values, width, color=color, label=method)
@@ -482,12 +493,7 @@ def plot_metric_summary(
     ]
     for offset, method, representation, color in placements:
         values = [
-            metrics.loc[
-                (metrics.representation == representation)
-                & (metrics.metric == metric)
-                & (metrics.method == method),
-                "value",
-            ].iloc[0]
+            metric_value(metrics, representation, metric, method)
             for metric, _ in groups
         ]
         ax.bar(x + offset, values, width, color=color, label=f"{representation}: {method}")
@@ -572,6 +578,10 @@ def plot_shared_umap(
             "n_components": 2,
             "metric": "cosine",
             "random_state": seed,
+            "n_jobs_requested": threads,
+            "n_jobs_effective": 1,
+            "n_jobs_note": "umap-learn forces n_jobs=1 when random_state is set",
+            "low_memory": True,
         },
     }
     for row, representation in enumerate(REPRESENTATIONS):
@@ -653,16 +663,6 @@ def write_report(
     section_aware_metadata: dict[str, Any],
     latent_metric_names: LatentMetricNames,
 ) -> None:
-    def value(representation: str, metric: str, method: str) -> float:
-        return float(
-            metrics.loc[
-                (metrics.representation == representation)
-                & (metrics.metric == metric)
-                & (metrics.method == method),
-                "value",
-            ].iloc[0]
-        )
-
     config_2d = baseline_metadata["config"]
     config_3d = section_aware_metadata["config"]
     model_2d = baseline_metadata["model_info"]
@@ -696,20 +696,28 @@ def write_report(
     for representation in REPRESENTATIONS:
         lines.append(
             f"| `{representation}` | "
-            f"{value(representation, 'Linear CKA', COMPARISON):.4f} | "
-            f"{value(representation, 'Procrustes similarity', COMPARISON):.4f} | "
-            f"{value(representation, latent_metric_names.recall, COMPARISON):.4f} | "
-            f"{value(representation, latent_metric_names.label_purity, METHOD_2D):.4f} | "
-            f"{value(representation, latent_metric_names.label_purity, METHOD_3D):.4f} | "
-            f"{value(representation, latent_metric_names.different_section, METHOD_2D):.4f} | "
-            f"{value(representation, latent_metric_names.different_section, METHOD_3D):.4f} |"
+            f"{metric_value(metrics, representation, 'Linear CKA', COMPARISON):.4f} | "
+            f"{metric_value(metrics, representation, 'Procrustes similarity', COMPARISON):.4f} | "
+            f"{metric_value(metrics, representation, latent_metric_names.recall, COMPARISON):.4f} | "
+            f"{metric_value(metrics, representation, latent_metric_names.label_purity, METHOD_2D):.4f} | "
+            f"{metric_value(metrics, representation, latent_metric_names.label_purity, METHOD_3D):.4f} | "
+            f"{metric_value(metrics, representation, latent_metric_names.different_section, METHOD_2D):.4f} | "
+            f"{metric_value(metrics, representation, latent_metric_names.different_section, METHOD_3D):.4f} |"
         )
-    niche_purity_2d = value("emb_niche", latent_metric_names.label_purity, METHOD_2D)
-    niche_purity_3d = value("emb_niche", latent_metric_names.label_purity, METHOD_3D)
+    niche_purity_2d = metric_value(
+        metrics, "emb_niche", latent_metric_names.label_purity, METHOD_2D
+    )
+    niche_purity_3d = metric_value(
+        metrics, "emb_niche", latent_metric_names.label_purity, METHOD_3D
+    )
     niche_purity_absolute_pp = 100 * (niche_purity_3d - niche_purity_2d)
     niche_purity_relative_percent = 100 * (niche_purity_3d / niche_purity_2d - 1)
     lines.extend(
         [
+            "",
+            f"`{latent_metric_names.label_purity}` is the mean, across focal spots, of the "
+            f"fraction of the {latent_metric_names.k} nearest latent neighbors carrying the same "
+            "`transf_anno_E95` label. It is a neighborhood-structure statistic, not prediction accuracy.",
             "",
             f"For `emb_niche`, label purity changed from {niche_purity_2d:.2%} to "
             f"{niche_purity_3d:.2%}: an absolute increase of {niche_purity_absolute_pp:.2f} "
@@ -724,7 +732,11 @@ def write_report(
             "",
             f"The evaluation uses exactly {spatial_audit['n_within_section_directed_edges']:,} directed within-section edges "
             f"and {spatial_audit['n_cross_section_directed_edges']:,} directed cross-section edges. Cross-section candidates "
-            "are accepted only within each focal spot's 10th-within-section-neighbor radius; no edge is forced across a gap. "
+            f"are accepted only within the radius inferred from each focal spot's "
+            f"{spatial_audit['within_section_neighbors']}th external within-section neighbor, then capped at the "
+            f"{spatial_audit['cross_section_candidate_cap_per_adjacent_section']} nearest qualifying spots per adjacent section. "
+            "The radius matches the cross-section sampling scale to the within-section neighborhood; the cap only removes "
+            "excess qualifying spots and never creates an edge. No edge is forced across a gap. "
             f"The zero-cross-section-neighbor rate is {spatial_audit['zero_cross_section_neighbor_fraction']:.2%}.",
             "",
             "| Representation | Edge type | 2D mean cosine | 3D mean cosine |",
@@ -733,13 +745,19 @@ def write_report(
     )
     for representation in REPRESENTATIONS:
         for metric, label in [
-            ("Within-section physical edges", "Within-section 10-NN"),
-            ("Cross-section radius edges", "Adjacent-section, within radius"),
+            (
+                "Within-section physical edges",
+                f"Within-section {spatial_audit['within_section_neighbors']}-NN",
+            ),
+            (
+                "Cross-section radius edges",
+                "Adjacent-section, within radius and per-section cap",
+            ),
         ]:
             lines.append(
                 f"| `{representation}` | {label} | "
-                f"{value(representation, metric, METHOD_2D):.4f} | "
-                f"{value(representation, metric, METHOD_3D):.4f} |"
+                f"{metric_value(metrics, representation, metric, METHOD_2D):.4f} | "
+                f"{metric_value(metrics, representation, metric, METHOD_3D):.4f} |"
             )
     lines.extend(
         [

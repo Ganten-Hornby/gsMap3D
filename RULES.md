@@ -18,7 +18,7 @@
 - Original Mouse E9.5 section-wise 2D latent outputs: `/storage/yangjianLab/lilounan/gsMap3D-scripts/20260107_gsmap_3d_report_all_collected/mouse_embryo/E9.5/find_latent_representations`
 - Section-aware Mouse E9.5 3D latent output: `analysis/revision_graph_3d/runs/mouse_e95_section_aware_3d_k10/find_latent_representations/Mouse_E9.5_embryo_sectioned_add_latent.h5ad`
 - Mouse E9.5 comparison artifacts: `analysis/revision_graph_3d/comparisons/mouse_e95_2d_vs_3d`
-- Preferred native-Markdown Lark analysis report: `https://ucn9sfonejxs.feishu.cn/file/Avrfb8VUYoo1cpxWXWocm8KMnze` (file token `Avrfb8VUYoo1cpxWXWocm8KMnze`). Version `7672635513865506058` was fetched back byte-identically to the Scanpy-updated local report (SHA-256 `8435f42093fb71fcbf719fc44d93895e2406b015d21b40fda40c846567c49b5a`).
+- Preferred native-Markdown Lark analysis report: `https://ucn9sfonejxs.feishu.cn/file/Avrfb8VUYoo1cpxWXWocm8KMnze` (file token `Avrfb8VUYoo1cpxWXWocm8KMnze`). Version `7672638350251003061` was fetched back byte-identically to the Scanpy-updated local report (SHA-256 `fa6ef21a2263ceebbdefe3992ea806313da80b458ef080d7bec46965ac33a357`).
 - Legacy DOCX-import Lark analysis report: `https://www.feishu.cn/docx/Ria5dWAAQoiEB8xKcAgcFL1ansM`. Its dense inline figures are displayed too narrowly; retain it only as an earlier analysis handoff, not as the preferred report or the configured rebuttal/manuscript deliverable.
 - The manuscript/SI project root, render command, local deliverable, and sync target are not configured yet. Do not apply manuscript edits, render, or sync until those values are resolved.
 

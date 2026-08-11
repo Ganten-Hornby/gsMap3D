@@ -27,6 +27,8 @@
     "max_coordinate_absolute_difference": 0.0
   },
   "spatial_evaluation_audit": {
+    "within_section_neighbors": 10,
+    "cross_section_candidate_cap_per_adjacent_section": 10,
     "n_focal_spots": 30000,
     "n_within_section_directed_edges": 300000,
     "n_cross_section_directed_edges": 304784,
@@ -72,7 +74,11 @@
       "min_dist": 0.25,
       "n_components": 2,
       "metric": "cosine",
-      "random_state": 2024
+      "random_state": 2024,
+      "n_jobs_requested": 8,
+      "n_jobs_effective": 1,
+      "n_jobs_note": "umap-learn forces n_jobs=1 when random_state is set",
+      "low_memory": true
     },
     "emb_cell": {
       "procrustes_similarity": 0.29685701059475694

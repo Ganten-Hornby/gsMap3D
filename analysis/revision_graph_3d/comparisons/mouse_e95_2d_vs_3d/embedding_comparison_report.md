@@ -21,20 +21,22 @@ This is a descriptive comparison, **not an isolated graph-only ablation**. The u
 | `emb_cell` | 0.1077 | 0.2957 | 0.0024 | 0.1026 | 0.1108 | 0.9405 | 0.9019 |
 | `emb_niche` | 0.1298 | 0.3160 | 0.0050 | 0.1018 | 0.2214 | 0.9375 | 0.6579 |
 
+`Label kNN purity@15` is the mean, across focal spots, of the fraction of the 15 nearest latent neighbors carrying the same `transf_anno_E95` label. It is a neighborhood-structure statistic, not prediction accuracy.
+
 For `emb_niche`, label purity changed from 10.18% to 22.14%: an absolute increase of 11.96 percentage points and a relative increase of 117.5%. This does not mean that purity is 117.5%, and the descriptive comparison does not isolate a causal effect of the 3D graph because other training settings also differ.
 
 `kNN recall@15` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. Linear CKA and Procrustes similarity are invariant to arbitrary orthogonal rotations of the latent axes.
 
 ## Physical-neighborhood continuity
 
-The evaluation uses exactly 300,000 directed within-section edges and 304,784 directed cross-section edges. Cross-section candidates are accepted only within each focal spot's 10th-within-section-neighbor radius; no edge is forced across a gap. The zero-cross-section-neighbor rate is 3.62%.
+The evaluation uses exactly 300,000 directed within-section edges and 304,784 directed cross-section edges. Cross-section candidates are accepted only within the radius inferred from each focal spot's 10th external within-section neighbor, then capped at the 10 nearest qualifying spots per adjacent section. The radius matches the cross-section sampling scale to the within-section neighborhood; the cap only removes excess qualifying spots and never creates an edge. No edge is forced across a gap. The zero-cross-section-neighbor rate is 3.62%.
 
 | Representation | Edge type | 2D mean cosine | 3D mean cosine |
 |---|---|---:|---:|
 | `emb_cell` | Within-section 10-NN | 0.4846 | 0.5665 |
-| `emb_cell` | Adjacent-section, within radius | 0.4105 | 0.4921 |
+| `emb_cell` | Adjacent-section, within radius and per-section cap | 0.4105 | 0.4921 |
 | `emb_niche` | Within-section 10-NN | 0.6278 | 0.9440 |
-| `emb_niche` | Adjacent-section, within radius | 0.4947 | 0.8491 |
+| `emb_niche` | Adjacent-section, within radius and per-section cap | 0.4947 | 0.8491 |
 
 Higher spatial-edge cosine means a smoother latent representation along those physical edges. It is not, by itself, proof of better biological accuracy because excessive smoothing can also raise this score.
 
