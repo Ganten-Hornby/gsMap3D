@@ -9,22 +9,6 @@
 - Source review plan SHA-256: `b9660d97ba8fc3777c5cfa2655bd9af5270a5d85c0780c239e94febe3671edf8`
 - Working branch: `3d-graph-learning`
 - Authoritative revision worktree: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning`. Keep all revision code, analyses, logs, and artifacts in this worktree; do not create ad hoc alternative revision worktrees, use opaque scratch aliases such as `meta_lcl`, or place revision edits in the main worktree.
-- Primary dataset: `/storage/yangjianLab/lilounan/data/3dst/Fig4to6_3DHeart.h5ad`
-- Mouse E9.5 source dataset: `/storage/yangjianLab/lilounan/data/3dst/E9.5/Mouse_E9.5_embryo.h5ad`
-- Mouse E9.5 prepared section-aware input: `analysis/revision_graph_3d/inputs/Mouse_E9.5_embryo_sectioned.h5ad`
-- Mouse E9.5 physical-metadata audit: `analysis/revision_graph_3d/mouse_e95_physical_metadata_audit.md`
-- Manuscript-analysis provenance root: `/storage/yangjianLab/chenwenhao/01_Project/01_Research/202312_gsMap/experiment/20260107_gsmap_3d_report_all_collected`
-- Local collected-analysis root used by this revision: `/storage/yangjianLab/lilounan/gsMap3D-scripts/20260107_gsmap_3d_report_all_collected`
-- Original Mouse E9.5 section-wise 2D latent outputs: `/storage/yangjianLab/lilounan/gsMap3D-scripts/20260107_gsmap_3d_report_all_collected/mouse_embryo/E9.5/find_latent_representations`
-- Section-aware Mouse E9.5 3D latent output: `analysis/revision_graph_3d/runs/mouse_e95_section_aware_3d_k10/find_latent_representations/Mouse_E9.5_embryo_sectioned_add_latent.h5ad`
-- Mouse E9.5 comparison artifacts: `analysis/revision_graph_3d/comparisons/mouse_e95_2d_vs_3d`
-- Mouse E11.5 heart source dataset: `/storage/yangjianLab/lilounan/data/3dst/Mouse_E11.5_heart.h5ad`
-- Matched Mouse E11.5 heart outputs: `analysis/revision_graph_3d/runs/mouse_e115_heart_sectionwise_2d_k10` and `analysis/revision_graph_3d/runs/mouse_e115_heart_section_aware_3d_k10`
-- Mouse E11.5 heart comparison artifacts: `analysis/revision_graph_3d/comparisons/mouse_e115_heart_2d_vs_3d`
-- Mouse E11.5 no-annotation outputs: `analysis/revision_graph_3d/runs/mouse_e115_heart_sectionwise_2d_k10_no_annotation` and `analysis/revision_graph_3d/runs/mouse_e115_heart_section_aware_3d_k10_no_annotation`
-- Mouse E11.5 annotation-ablation artifacts: `analysis/revision_graph_3d/comparisons/mouse_e115_heart_annotation_ablation`
-- Preferred image-containing Lark analysis report: `https://ucn9sfonejxs.feishu.cn/docx/Ria5dWAAQoiEB8xKcAgcFL1ansM#doxcnYWYUf08rSeuTXcCjsh6cUb`. It contains one `Visualizations` section with exactly one metrics image (`L3upb4Bydo6OlKxPHrXccPHSnPh`) and one `heart_region` UMAP image (`X9fibiCuDoK9DjxNI7zcvvU7nPf`), displayed at 1000 pixels wide with neutral reader-facing headings, plus the corresponding vector PDFs as attachments. The 3,717- and 4,835-pixel-wide PNG source bytes and both PDFs were downloaded from Lark and verified byte-identical to the local artifacts after replacement.
-- Native-Markdown text copy: `https://ucn9sfonejxs.feishu.cn/file/Avrfb8VUYoo1cpxWXWocm8KMnze` (file token `Avrfb8VUYoo1cpxWXWocm8KMnze`). It is intentionally text-only because a native Drive Markdown file does not bundle local image assets; do not present it as the visual report. Version `7672651113581038822` was verified identical to the local heart-region report (SHA-256 `8de5afd62db58d8df0754fb1a83d9b0a8328d43b41035bf10c0999687aaf78dc`).
 - The manuscript/SI project root, render command, local deliverable, and sync target are not configured yet. Do not apply manuscript edits, render, or sync until those values are resolved.
 
 `REBUTTAL_WORKFLOW.sqlite` is the only task and dependency ledger. Do not create or maintain a Markdown task queue.
@@ -32,12 +16,11 @@
 ## Worktree, Environment, and Slurm Rules
 
 - Use the existing `${PROJECT_ROOT}/.venv`; do not create another virtual environment for revision work or for CUDA troubleshooting.
-- Keep PyTorch, DGL, and CUDA dependencies compatible with CUDA 12. The environment verified in this session uses PyTorch `2.11.0+cu128` with `torch.version.cuda == 12.8`. Do not introduce a CUDA 13 dependency unless a concrete package requires it, the requirement is verified on a GPU node, and the user explicitly approves the environment change.
+- Keep PyTorch, DGL, and CUDA dependencies compatible with CUDA 12. Do not introduce a new CUDA major-version dependency unless a concrete package requires it, the requirement is verified on a GPU node, and the user explicitly approves the environment change.
 - A login node is not evidence for CUDA or DGL GPU compatibility. Run CUDA health checks, GPU imports, and GPU smoke tests inside an allocated GPU node.
 - Submit computational workloads through Slurm with callback coverage; do not leave a raw `sbatch` job without a registered callback. Use scheduler/resource-database evidence for CPU and memory requests.
 - Omit a Codex-imposed `--time` limit unless the user explicitly asks for one or the scheduler requires it. Cluster or QoS defaults may still apply.
 - For repeated OOM failures, continue without asking the user to reconfirm the same recovery policy: raise memory using accounting evidence or implement a memory-bounded code fix. If memory use follows the allocation ceiling or a second enlarged request also OOMs, prefer a code fix over further blind escalation.
-- The successful sparse Mouse E9.5 embedding used 42.44 GiB host RAM on one L40S; use 64 GiB as the initial evidence-based memory request for an equivalent full embedding. The full 646,893-spot comparison completed as job `11903866` with 16.83 GiB peak host RAM; use 24 GiB for an equivalent full-celltype comparison. The exact full Mouse E11.5 heart comparison completed as job `11905571` with 2.08 GiB peak host RAM; use 4 GiB for an equivalent 98,966-spot comparison. Recalculate when workload shape changes.
 
 ## Focused Response Scope
 
@@ -79,7 +62,7 @@ Comments outside this scope are not to be added unless the user explicitly broad
 - The discoverable section-aware implementation is `build_section_aware_3d_graph` in `src/gsMap/find_latent/gnn/gcn.py`; `build_spatial_graph` delegates to it when `mode == "section_aware_3d"`. Do not hide a second implementation in an analysis script or another worktree.
 - Preserve propagation direction explicitly and cover unweighted, weighted, and legacy-normalized paths with numerical parity tests against an independent edge-message reference.
 - GCN propagation must remain sparse and memory-bounded. Do not materialize an edge-by-feature tensor or any dense equivalent proportional to `n_edges × feature_width`; use sparse aggregation such as indexed accumulation or sparse matrix multiplication.
-- A full exact-shape Mouse E9.5 run is required after a propagation-memory change. Synthetic parity and allocation-regression tests are necessary but do not substitute for the full run.
+- A full exact-shape representative real-data run is required after a propagation-memory change. Synthetic parity and allocation-regression tests are necessary but do not substitute for the full run.
 
 ## Analysis and Evidence Rules
 
@@ -90,19 +73,12 @@ Comments outside this scope are not to be added unless the user explicitly broad
 - Separate confirmed evidence, inference, planned experiments, limitations, and unresolved choices. Never report a planned analysis as completed.
 - Treat source datasets as read-only. Place new code, tests, logs, tables, and figures under project-controlled paths and attach them to the relevant SQLite task.
 - Reuse existing relevant work where verified, including commits `93e47ec`, `311801d`, `00701e6`, `86e392f`, and `6f88462`, but do not assume a commit fully answers a reviewer comment without an artifact-level audit.
-
-## Mouse E9.5 Embedding-Comparison Rules
-
-- Match section-wise 2D and section-aware 3D outputs by globally unique observation ID, never by row position. The current comparison verified exact matches for all 646,893 spots, section labels, `heart_region`, `transf_anno_E95`, and 3D coordinates.
-- Read only the required H5AD embeddings and metadata for comparisons; do not materialize the expression matrices. Use all in-scope observations for metrics and figures unless the user explicitly authorizes sampling.
-- Treat the uploaded original 2D versus current 3D result as descriptive, not as a graph-only ablation. Besides graph construction, the runs differ in training annotation (`mapped_celltype` versus `transf_anno_E95`), class count (54 versus 32), gene space (13,581 versus 17,634 common/used genes), and two-stage training (`True` versus `False`). A matched-settings 2D rerun is required before assigning differences causally to the 3D graph.
-- Define heart-region purity at `k=15` as the mean, across focal observations with `heart_region != "NA"`, of the fraction of the 15 nearest latent neighbors carrying the same non-`NA` `heart_region` label. Restrict both focal observations and the neighbor candidate pool to defined heart regions. It is a neighborhood-structure statistic, not prediction accuracy.
-- `heart_region` is defined for 44,644 of 646,893 observations (6.90%): 28,931 LV/atrial and 15,713 right/outflow-tract observations. It is not restricted to cardiomyocytes; only 16,082 defined observations (36.0%) have a `mapped_celltype` containing `cardiomyocytes`.
-- When reporting the observed full-data `emb_niche` heart-region-purity change, state both endpoints and both scales: `60.84% → 77.62%`, an absolute increase of `16.77` percentage points and a relative increase of `27.6%`. Do not imply causal improvement because the runs differ in graph construction and other training settings.
-- For the matched Mouse E11.5 heart experiment, both arms use all 98,966 observations, `heart_regions` as the explicit two-stage training annotation, and otherwise matched settings. Treat heart-region purity and separation as training-label fit, not independent validation. The current runs share seed, observation order, and model structure, so their train/validation split is expected to match, but split membership was not persisted and must not be described as independently audited.
-- For the matched Mouse E11.5 no-annotation ablation, both arms use all 98,966 observations and single-stage reconstruction without a training annotation. Treat post-training `heart_regions` statistics as independent of the training objective but still as internal annotation-structure summaries, not external validation. In `emb_niche`, adjacent-section share changes from 10.64% to 17.45% (+6.81 percentage points; +64.0% relative), cross-section physical-edge cosine changes from 0.5159 to 0.6856 (+0.1696 cosine units; +32.9% relative), and heart-region purity changes from 0.7628 to 0.7946 (+3.18 percentage points; +4.2% relative). The corresponding `emb_cell` adjacent-section share is nearly unchanged (7.53% to 7.56%; +0.02 percentage points; +0.3% relative), so describe the cross-section effect as niche-representation-specific.
-- Report latent-space agreement (for example linear CKA, Procrustes similarity, and kNN overlap), annotation-neighborhood structure, section mixing, and physical-edge continuity separately. Higher physical-edge cosine may also indicate oversmoothing and is not sufficient evidence of biological accuracy.
-- Construct the physical evaluation graph independently of the learned embedding. Infer each focal radius from its 10th external within-section neighbor, accept adjacent-section candidates only within that radius, and report the zero-cross-section-neighbor rate; never force evaluation edges across gaps.
+- Match comparison outputs by globally unique observation ID, never by row position.
+- Read only the embeddings and metadata required for a comparison; do not materialize expression matrices unnecessarily.
+- Attribute a difference causally to graph construction only when data, preprocessing, training objectives, annotations, model settings, seeds, and evaluation populations are matched or the remaining differences are explicitly controlled.
+- Define every label-neighborhood metric explicitly. Treat training-label separation as training fit, not independent validation; treat post-training labels as internal structure summaries unless an external validation design is present.
+- Report latent-space agreement, annotation-neighborhood structure, section mixing, and physical-edge continuity separately. Higher physical-edge cosine may also indicate oversmoothing and is not sufficient evidence of biological accuracy.
+- Construct physical evaluation edges independently of the learned embedding. Infer each focal radius from the configured external within-section-neighbor scale, accept cross-section candidates only within that physical radius, report the zero-cross-section-neighbor rate, and never force evaluation edges across gaps.
 
 ## Text Rules
 
@@ -124,7 +100,7 @@ Comments outside this scope are not to be added unless the user explicitly broad
 - Raster figures must be at least 300 DPI at their final physical display size. Export PNGs at 320 DPI to avoid the pixels-per-metre rounding that makes a nominal 300-DPI PNG inspect as `299.9994`; verify the stored metadata and pixel dimensions after generation. Keep PDF outputs vector where possible.
 - DPI metadata alone is insufficient. Verify effective DPI after placement using source pixels divided by the final display size, and inspect the actual delivered artifact rather than assuming the source setting survived conversion.
 - Plot every UMAP panel through Scanpy's `scanpy.pl.umap` using the stored or precomputed `X_umap` coordinates; do not bypass Scanpy with a raw Matplotlib scatter plot. Record the Scanpy version and the UMAP-coordinate settings in the analysis audit.
-- Lark DOCX import can preserve the original image bytes while displaying an inline image in a narrow block. In the current report the 3,717- and 4,835-pixel-wide PNGs are displayed at 1000 pixels wide, and their original bytes plus vector PDFs are retained. For Lark handoffs, split dense composites into individual panels or attach/link the original PNG and vector PDF if a 1000-pixel preview is still unreadable; do not duplicate the same plot under resolution- or software-based headings.
+- Lark DOCX import can preserve the original image bytes while displaying an inline image in a narrow block. For Lark handoffs, split dense composites into individual panels or attach/link the original PNG and vector PDF when the inline preview is unreadable; do not duplicate the same plot under resolution- or software-based headings.
 - Do not overwrite an approved rebuttal figure artifact. Register new or changed rebuttal-figure provenance through the Rebuttal Dragon figure-map workflow. Operational analysis figures that have not been promoted into the rebuttal remain attached to their SQLite workflow task and do not require figure-map registration yet.
 
 ## Render and Delivery Rules
