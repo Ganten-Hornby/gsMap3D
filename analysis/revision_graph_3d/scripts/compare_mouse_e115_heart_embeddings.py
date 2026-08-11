@@ -20,6 +20,7 @@ import scanpy as sc
 from matplotlib.colors import to_hex
 from matplotlib.lines import Line2D
 from pynndescent import NNDescent
+from scipy.spatial import cKDTree
 from umap import UMAP
 
 matplotlib.use("Agg")
@@ -48,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-3d", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--neighbors", type=int, default=15)
+    parser.add_argument("--spatial-neighbors", type=int, default=10)
     parser.add_argument("--threads", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 8)))
     parser.add_argument("--seed", type=int, default=2024)
     parser.add_argument("--graph-edges-2d", type=int, required=True)
@@ -224,6 +226,146 @@ def section_neighbor_fractions(
     return different, adjacent
 
 
+def physical_evaluation_edges(
+    coordinates: np.ndarray,
+    sections: np.ndarray,
+    within_k: int,
+    threads: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
+    """Construct an embedding-independent physical evaluation graph.
+
+    Each focal spot receives exactly ``within_k`` external neighbors from its
+    own section. Their farthest physical distance defines the focal radius;
+    every spot in the immediately adjacent sections inside that radius is a
+    cross-section edge. No fallback edge is forced across a physical gap.
+    """
+
+    if within_k < 1:
+        raise ValueError("within_k must be at least 1")
+    coordinates = np.asarray(coordinates, dtype=np.float64)
+    if coordinates.ndim != 2 or coordinates.shape[1] != 3:
+        raise ValueError("physical evaluation requires an (n, 3) coordinate matrix")
+    sections = np.asarray(sections)
+    if sections.shape != (len(coordinates),):
+        raise ValueError("sections must contain one label per coordinate row")
+
+    ordered_sections = sorted(
+        np.unique(sections),
+        key=lambda section: float(np.median(coordinates[sections == section, 2])),
+    )
+    positions_by_section = {
+        section: np.flatnonzero(sections == section) for section in ordered_sections
+    }
+    trees = {
+        section: cKDTree(coordinates[positions])
+        for section, positions in positions_by_section.items()
+    }
+    rank_by_section = {
+        section: rank for rank, section in enumerate(ordered_sections)
+    }
+    within_sources: list[np.ndarray] = []
+    within_targets: list[np.ndarray] = []
+    cross_sources: list[np.ndarray] = []
+    cross_targets: list[np.ndarray] = []
+    focal_has_cross = np.zeros(len(coordinates), dtype=bool)
+    all_radii = np.empty(len(coordinates), dtype=np.float64)
+
+    for section in ordered_sections:
+        positions = positions_by_section[section]
+        if len(positions) <= within_k:
+            raise ValueError(
+                f"Section {section!r} has fewer than {within_k + 1} observations"
+            )
+        distances, local_neighbors = trees[section].query(
+            coordinates[positions], k=within_k + 1, workers=threads
+        )
+        distances = np.asarray(distances)
+        local_neighbors = np.asarray(local_neighbors)
+        external_local = np.empty((len(positions), within_k), dtype=np.int64)
+        external_distances = np.empty((len(positions), within_k), dtype=np.float64)
+        for local_focal, (candidate_local, candidate_distances) in enumerate(
+            zip(local_neighbors, distances, strict=True)
+        ):
+            external = candidate_local != local_focal
+            if np.sum(external) < within_k:
+                raise RuntimeError("Physical KNN query did not return enough external neighbors")
+            external_local[local_focal] = candidate_local[external][:within_k]
+            external_distances[local_focal] = candidate_distances[external][:within_k]
+
+        radii = external_distances[:, -1]
+        all_radii[positions] = radii
+        within_sources.append(np.repeat(positions, within_k))
+        within_targets.append(positions[external_local.reshape(-1)])
+
+        section_rank = rank_by_section[section]
+        for adjacent_rank in (section_rank - 1, section_rank + 1):
+            if not 0 <= adjacent_rank < len(ordered_sections):
+                continue
+            adjacent = ordered_sections[adjacent_rank]
+            adjacent_positions = positions_by_section[adjacent]
+            candidates = trees[adjacent].query_ball_point(
+                coordinates[positions], r=radii, workers=threads
+            )
+            for local_focal, candidate_local in enumerate(candidates):
+                if not candidate_local:
+                    continue
+                targets = adjacent_positions[np.asarray(candidate_local, dtype=np.int64)]
+                source = positions[local_focal]
+                cross_sources.append(np.full(len(targets), source, dtype=np.int64))
+                cross_targets.append(targets)
+                focal_has_cross[source] = True
+
+    within_source = np.concatenate(within_sources)
+    within_target = np.concatenate(within_targets)
+    cross_source = (
+        np.concatenate(cross_sources) if cross_sources else np.empty(0, dtype=np.int64)
+    )
+    cross_target = (
+        np.concatenate(cross_targets) if cross_targets else np.empty(0, dtype=np.int64)
+    )
+    audit = {
+        "within_section_neighbors": int(within_k),
+        "n_focal_spots": int(len(coordinates)),
+        "n_within_section_directed_edges": int(len(within_source)),
+        "n_cross_section_directed_edges": int(len(cross_source)),
+        "zero_cross_section_neighbor_fraction": float(np.mean(~focal_has_cross)),
+        "within_section_radius_median": float(np.median(all_radii)),
+        "within_section_radius_q25": float(np.quantile(all_radii, 0.25)),
+        "within_section_radius_q75": float(np.quantile(all_radii, 0.75)),
+        "cross_section_fallback": False,
+    }
+    return within_source, within_target, cross_source, cross_target, audit
+
+
+def mean_cosine_similarity_on_edges(
+    embedding: np.ndarray,
+    source: np.ndarray,
+    target: np.ndarray,
+    chunk_size: int = 200_000,
+) -> float:
+    """Return edge-wise mean cosine similarity without materializing all pairs."""
+
+    if len(source) != len(target):
+        raise ValueError("source and target must have equal lengths")
+    if len(source) == 0:
+        return float("nan")
+    total = 0.0
+    for start in range(0, len(source), chunk_size):
+        stop = min(start + chunk_size, len(source))
+        left = embedding[source[start:stop]]
+        right = embedding[target[start:stop]]
+        numerator = np.einsum("ij,ij->i", left, right)
+        denominator = np.linalg.norm(left, axis=1) * np.linalg.norm(right, axis=1)
+        similarities = np.divide(
+            numerator,
+            denominator,
+            out=np.zeros_like(numerator),
+            where=denominator > 0,
+        )
+        total += float(np.sum(similarities, dtype=np.float64))
+    return total / len(source)
+
+
 def add_metric(
     rows: list[dict[str, Any]], representation: str, metric: str, method: str, value: float, n: int
 ) -> None:
@@ -254,11 +396,20 @@ def calculate_metrics(
     two_d: EmbeddingData,
     three_d: EmbeddingData,
     n_neighbors: int,
+    spatial_neighbors: int,
     seed: int,
     threads: int,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    audit: dict[str, Any] = {}
+    within_source, within_target, cross_source, cross_target, spatial_audit = (
+        physical_evaluation_edges(
+            three_d.coordinates,
+            three_d.sections,
+            spatial_neighbors,
+            threads,
+        )
+    )
+    audit: dict[str, Any] = {"physical_evaluation_graph": spatial_audit}
     n = len(two_d.ids)
     for offset, representation in enumerate(REPRESENTATIONS):
         old = two_d.embeddings[representation]
@@ -319,6 +470,27 @@ def calculate_metrics(
                 adjacent,
                 n,
             )
+            embedding = old if method == METHOD_2D else new
+            add_metric(
+                rows,
+                representation,
+                "Mean cosine on within-section physical edges",
+                method,
+                mean_cosine_similarity_on_edges(
+                    embedding, within_source, within_target
+                ),
+                len(within_source),
+            )
+            add_metric(
+                rows,
+                representation,
+                "Mean cosine on cross-section radius edges",
+                method,
+                mean_cosine_similarity_on_edges(
+                    embedding, cross_source, cross_target
+                ),
+                len(cross_source),
+            )
     return pd.DataFrame(rows), audit
 
 
@@ -362,8 +534,8 @@ def plot_metric_summary(
         ),
         (
             axes[1, 1],
-            f"Different-section latent kNN fraction@{k}",
-            "D  Cross-section latent neighbors",
+            f"Adjacent-section latent kNN fraction@{k}",
+            "D  Adjacent-section latent neighbors",
             None,
         ),
     ]
@@ -545,6 +717,7 @@ def write_report(
     output_dir: Path,
     metrics: pd.DataFrame,
     match_audit: dict[str, Any],
+    metric_audit: dict[str, Any],
     graph_edges_2d: int,
     graph_edges_3d: int,
     k: int,
@@ -558,6 +731,7 @@ def write_report(
         "",
         f"Both arms contain the same **{match_audit['n_matched_spots']:,} observations** and were trained with identical data, `heart_regions` annotation, two-stage objective, model settings, and random seed. The sectionwise-2D graph contains "
         f"{graph_edges_2d:,} directed edges; the section-aware-3D graph contains {graph_edges_3d:,}.",
+        "The identical seed and observation order make the train/validation split expected to match, but the split membership was not persisted, so it was not independently audited.",
         "",
         "All metrics and UMAP panels use every matched observation. No visualization or metric is downsampled.",
         "",
@@ -565,7 +739,7 @@ def write_report(
         "",
         "## Metrics",
         "",
-        f"| Representation | Linear CKA | Procrustes similarity | kNN overlap@{k} | 2D training-region purity | 3D training-region purity | 2D ctype purity | 3D ctype purity | 2D different-section kNN | 3D different-section kNN |",
+        f"| Representation | Linear CKA | Procrustes similarity | kNN overlap@{k} | 2D training-region purity | 3D training-region purity | 2D ctype purity | 3D ctype purity | 2D adjacent-section kNN | 3D adjacent-section kNN |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for representation in REPRESENTATIONS:
@@ -578,8 +752,8 @@ def write_report(
             f"{metric_value(metrics, representation, f'Training heart-region kNN purity@{k}', METHOD_3D):.4f} | "
             f"{metric_value(metrics, representation, f'ctype_user kNN purity@{k}', METHOD_2D):.4f} | "
             f"{metric_value(metrics, representation, f'ctype_user kNN purity@{k}', METHOD_3D):.4f} | "
-            f"{metric_value(metrics, representation, f'Different-section latent kNN fraction@{k}', METHOD_2D):.4f} | "
-            f"{metric_value(metrics, representation, f'Different-section latent kNN fraction@{k}', METHOD_3D):.4f} |"
+            f"{metric_value(metrics, representation, f'Adjacent-section latent kNN fraction@{k}', METHOD_2D):.4f} | "
+            f"{metric_value(metrics, representation, f'Adjacent-section latent kNN fraction@{k}', METHOD_3D):.4f} |"
         )
     lines.extend(
         [
@@ -587,6 +761,36 @@ def write_report(
             f"`kNN overlap@{k}` is the mean shared-neighbor fraction between the two fixed-size neighbor sets. It is symmetric and does not define either arm as a positive/reference class.",
             "",
             f"The independent frequency-matched same-label baseline is {heart_region_baseline:.4f} for `heart_regions` and {cell_type_baseline:.4f} for `ctype_user`. The latter purity is dominated by the `Cardiac muscle lineages` majority class (94.79% of observations), so values near 0.90 provide little evidence of cell-type structure beyond label frequency.",
+            "",
+            "## Physical-edge cosine similarity",
+            "",
+            f"An embedding-independent physical graph uses each spot's {metric_audit['physical_evaluation_graph']['within_section_neighbors']}th external within-section neighbor distance as its focal radius, then accepts every spot in the immediately adjacent sections within that radius. It contains {metric_audit['physical_evaluation_graph']['n_within_section_directed_edges']:,} directed within-section edges and {metric_audit['physical_evaluation_graph']['n_cross_section_directed_edges']:,} directed cross-section edges. No fallback edge is forced; {metric_audit['physical_evaluation_graph']['zero_cross_section_neighbor_fraction']:.2%} of focal spots have no qualifying cross-section neighbor.",
+            "",
+            "| Representation | Physical edge type | 2D mean cosine | 3D mean cosine |",
+            "|---|---|---:|---:|",
+        ]
+    )
+    for representation in REPRESENTATIONS:
+        for metric, edge_type in (
+            ("Mean cosine on within-section physical edges", "Within-section"),
+            ("Mean cosine on cross-section radius edges", "Cross-section radius"),
+        ):
+            lines.append(
+                f"| `{representation}` | {edge_type} | "
+                f"{metric_value(metrics, representation, metric, METHOD_2D):.4f} | "
+                f"{metric_value(metrics, representation, metric, METHOD_3D):.4f} |"
+            )
+    lines.extend(
+        [
+            "",
+            "Higher cosine means the embedding is smoother along these independently defined physical edges. It can also reflect oversmoothing and is not evidence of biological accuracy by itself.",
+            "",
+            "## Main observations",
+            "",
+            f"- `emb_niche` retains similar global geometry (CKA {metric_value(metrics, 'emb_niche', 'Linear CKA', COMPARISON):.4f}; Procrustes {metric_value(metrics, 'emb_niche', 'Procrustes similarity', COMPARISON):.4f}) while its exact kNN overlap is {metric_value(metrics, 'emb_niche', f'kNN overlap@{k}', COMPARISON):.2%}.",
+            f"- The adjacent-section fraction among `emb_niche` latent neighbors changes from {metric_value(metrics, 'emb_niche', f'Adjacent-section latent kNN fraction@{k}', METHOD_2D):.2%} to {metric_value(metrics, 'emb_niche', f'Adjacent-section latent kNN fraction@{k}', METHOD_3D):.2%}.",
+            f"- On independently defined cross-section radius edges, `emb_niche` mean cosine changes from {metric_value(metrics, 'emb_niche', 'Mean cosine on cross-section radius edges', METHOD_2D):.4f} to {metric_value(metrics, 'emb_niche', 'Mean cosine on cross-section radius edges', METHOD_3D):.4f}; `emb_cell` changes from {metric_value(metrics, 'emb_cell', 'Mean cosine on cross-section radius edges', METHOD_2D):.4f} to {metric_value(metrics, 'emb_cell', 'Mean cosine on cross-section radius edges', METHOD_3D):.4f}.",
+            "- Training-region purity is almost saturated for `emb_niche` in both arms and is not independent validation because `heart_regions` was the training target.",
             "",
             "## Outputs",
             "",
@@ -611,7 +815,12 @@ def main() -> None:
     match_audit = validate_match(two_d, three_d)
 
     metrics, metric_audit = calculate_metrics(
-        two_d, three_d, args.neighbors, args.seed, args.threads
+        two_d,
+        three_d,
+        args.neighbors,
+        args.spatial_neighbors,
+        args.seed,
+        args.threads,
     )
     heart_region_baseline = same_label_chance(three_d.heart_regions)
     cell_type_baseline = same_label_chance(three_d.cell_types)
@@ -657,6 +866,7 @@ def main() -> None:
         },
         "parameters": {
             "neighbors": args.neighbors,
+            "spatial_neighbors": args.spatial_neighbors,
             "seed": args.seed,
             "threads": args.threads,
             "raster_dpi": RASTER_DPI,
@@ -688,6 +898,7 @@ def main() -> None:
         args.output_dir,
         metrics,
         match_audit,
+        metric_audit,
         args.graph_edges_2d,
         args.graph_edges_3d,
         args.neighbors,

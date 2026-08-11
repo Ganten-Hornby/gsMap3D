@@ -5,6 +5,7 @@
   },
   "parameters": {
     "neighbors": 15,
+    "spatial_neighbors": 10,
     "seed": 2024,
     "threads": 8,
     "raster_dpi": 320,
@@ -76,6 +77,17 @@
     "training_label_evaluation_is_independent": false
   },
   "metric_audit": {
+    "physical_evaluation_graph": {
+      "within_section_neighbors": 10,
+      "n_focal_spots": 98966,
+      "n_within_section_directed_edges": 989660,
+      "n_cross_section_directed_edges": 801494,
+      "zero_cross_section_neighbor_fraction": 0.19356142513590527,
+      "within_section_radius_median": 0.013290795546433008,
+      "within_section_radius_q25": 0.01138271449102197,
+      "within_section_radius_q75": 0.015980481581905535,
+      "cross_section_fallback": false
+    },
     "emb_cell": {
       "knn_overlap": 0.03378601405196397,
       "n_neighbors": 15,

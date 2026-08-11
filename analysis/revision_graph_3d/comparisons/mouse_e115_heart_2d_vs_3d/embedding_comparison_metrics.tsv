@@ -6,10 +6,14 @@ emb_cell	Training heart-region kNN purity@15	sectionwise 2D	0.5244548632863811	9
 emb_cell	ctype_user kNN purity@15	sectionwise 2D	0.9050199058262434	98966
 emb_cell	Different-section latent kNN fraction@15	sectionwise 2D	0.9329971909544692	98966
 emb_cell	Adjacent-section latent kNN fraction@15	sectionwise 2D	0.07806115231493645	98966
+emb_cell	Mean cosine on within-section physical edges	sectionwise 2D	0.5404589317154014	989660
+emb_cell	Mean cosine on cross-section radius edges	sectionwise 2D	0.4892936464907471	801494
 emb_cell	Training heart-region kNN purity@15	section-aware 3D	0.48725825030818665	98966
 emb_cell	ctype_user kNN purity@15	section-aware 3D	0.901664544725798	98966
 emb_cell	Different-section latent kNN fraction@15	section-aware 3D	0.9356068414068132	98966
 emb_cell	Adjacent-section latent kNN fraction@15	section-aware 3D	0.07405034725730722	98966
+emb_cell	Mean cosine on within-section physical edges	section-aware 3D	0.5161273737648661	989660
+emb_cell	Mean cosine on cross-section radius edges	section-aware 3D	0.48230973740355265	801494
 emb_niche	Linear CKA	2D vs 3D	0.9572796452884955	98966
 emb_niche	Procrustes similarity	2D vs 3D	0.9769826943631194	98966
 emb_niche	kNN overlap@15	2D vs 3D	0.050266421464610744	98966
@@ -17,7 +21,11 @@ emb_niche	Training heart-region kNN purity@15	sectionwise 2D	0.9949053210193399	
 emb_niche	ctype_user kNN purity@15	sectionwise 2D	0.9154153951862256	98966
 emb_niche	Different-section latent kNN fraction@15	sectionwise 2D	0.6741136686673538	98966
 emb_niche	Adjacent-section latent kNN fraction@15	sectionwise 2D	0.13038686687010353	98966
+emb_niche	Mean cosine on within-section physical edges	sectionwise 2D	0.9917424457505022	989660
+emb_niche	Mean cosine on cross-section radius edges	sectionwise 2D	0.9683630539799838	801494
 emb_niche	Training heart-region kNN purity@15	section-aware 3D	0.9974684908621816	98966
 emb_niche	ctype_user kNN purity@15	section-aware 3D	0.911756899675983	98966
 emb_niche	Different-section latent kNN fraction@15	section-aware 3D	0.7016719546780376	98966
 emb_niche	Adjacent-section latent kNN fraction@15	section-aware 3D	0.2198128650243518	98966
+emb_niche	Mean cosine on within-section physical edges	section-aware 3D	0.9923141678240627	989660
+emb_niche	Mean cosine on cross-section radius edges	section-aware 3D	0.9818808936218903	801494

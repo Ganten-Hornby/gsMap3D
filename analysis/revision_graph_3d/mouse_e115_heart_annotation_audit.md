@@ -7,6 +7,29 @@
 - Observation IDs: globally unique within the file
 - Sections: 64 non-missing `slices` categories, with 61–3,042 observations per section
 
+## Physical metadata audit
+
+- `obsm["aligned_spatial_3D_mm"]` is the exact coordinate matrix used by the
+  3D arm. The key names its unit as millimetres; observed XYZ ranges are
+  approximately 0.0009–0.6960, 0–0.6517, and 0–0.7600 mm.
+- Z is constant within each section. Ordered section centers span 0–0.76 mm.
+  Of the 63 successive center-to-center intervals, 56 are 0.01 mm, four are
+  0.02 mm, and one each is 0.03, 0.04, and 0.05 mm. The analysis preserves
+  these nonuniform stored distances.
+- All labels `slices_1` through `slices_64` are present, but the H5AD contains
+  no acquisition metadata or `uns` entries that distinguish skipped physical
+  sections from enlarged inter-section gaps. Missing-tissue status is likewise
+  not encoded and is therefore unknown from the supplied artifact.
+- The Spateo mouse-heart tutorial identifies this exact 98,966-observation
+  object and its coordinate fields as processed MOSTA3D data. However, neither
+  that processed H5AD nor its embedded metadata records section thickness, so
+  thickness is recorded as unknown rather than inferred from another dataset.
+- No z recalibration was applied: `graph_z_scale=1.0`, because all three axes
+  in `aligned_spatial_3D_mm` are already expressed in the same stored unit.
+
+Sources: the supplied H5AD; the Spateo mouse-heart morphogenesis tutorial; and
+the MOSTA3D preprint (doi:10.1101/2024.08.17.608366).
+
 ## Candidate annotations
 
 | Field | Non-missing | Categories | Assessment |
@@ -14,7 +37,7 @@
 | `ctype_user` | 98,966 | 35 | Cell-type/lineage metadata; technically valid but extremely imbalanced |
 | `cml` | 98,966 | 2 | Exact coarse partition of `ctype_user` into cardiac muscle lineage versus other |
 | `heart_anno` | 98,966 | 1 | Constant (`Heart`); not informative for training or evaluation |
-| `heart_regions` | 98,966 | 5 | Spatial-domain label reserved for independent embedding evaluation |
+| `heart_regions` | 98,966 | 5 | User-selected two-stage training target; post-training fit is not independent validation |
 | `stage` | 98,966 | 1 | Constant (`E11.5`); metadata only |
 
 `ctype_user` contains 93,809 `Cardiac muscle lineages` observations (94.79%) and

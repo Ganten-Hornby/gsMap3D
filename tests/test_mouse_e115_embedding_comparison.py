@@ -48,3 +48,45 @@ def test_same_label_chance_uses_label_frequencies():
     labels = np.asarray(["A", "A", "A", "B"], dtype=object)
 
     assert comparison.same_label_chance(labels) == 10 / 16
+
+
+def test_physical_evaluation_graph_uses_radius_without_forced_fallback():
+    comparison = load_comparison_module()
+    coordinates = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.5],
+            [1.0, 0.0, 0.5],
+            [0.0, 0.0, 10.0],
+            [1.0, 0.0, 10.0],
+        ]
+    )
+    sections = np.asarray(["a", "a", "b", "b", "c", "c"])
+
+    within_source, _, cross_source, cross_target, audit = (
+        comparison.physical_evaluation_edges(
+            coordinates, sections, within_k=1, threads=1
+        )
+    )
+
+    assert len(within_source) == 6
+    assert set(zip(cross_source, cross_target, strict=True)) == {
+        (0, 2),
+        (1, 3),
+        (2, 0),
+        (3, 1),
+    }
+    assert audit["zero_cross_section_neighbor_fraction"] == 2 / 6
+    assert audit["cross_section_fallback"] is False
+
+
+def test_edge_cosine_mean_is_chunked_and_signed():
+    comparison = load_comparison_module()
+    embedding = np.asarray([[1.0, 0.0], [1.0, 0.0], [-1.0, 0.0]])
+    source = np.asarray([0, 0])
+    target = np.asarray([1, 2])
+
+    assert comparison.mean_cosine_similarity_on_edges(
+        embedding, source, target, chunk_size=1
+    ) == 0.0

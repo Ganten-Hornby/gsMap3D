@@ -24,6 +24,7 @@ export PYTHONUNBUFFERED=1
     --embedding-3d "${EMBEDDING_3D}" \
     --output-dir "${OUTPUT_DIR}" \
     --neighbors 15 \
+    --spatial-neighbors 10 \
     --threads "${SLURM_CPUS_PER_TASK:-8}" \
     --seed 2024 \
     --graph-edges-2d 1141174 \
