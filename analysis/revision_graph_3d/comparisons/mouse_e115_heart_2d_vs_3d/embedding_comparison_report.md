@@ -36,7 +36,7 @@ Higher cosine means the embedding is smoother along these independently defined 
 ## Main observations
 
 - `emb_niche` retains similar global geometry (CKA 0.9573; Procrustes 0.9770) while its exact kNN overlap is 5.03%.
-- The adjacent-section fraction among `emb_niche` latent neighbors changes from 13.04% to 21.98%.
+- The adjacent-section fraction among `emb_niche` latent neighbors changes from 13.04% to 21.98% (+8.94 percentage points; +68.6% relative).
 - On independently defined cross-section radius edges, `emb_niche` mean cosine changes from 0.9684 to 0.9819; `emb_cell` changes from 0.4893 to 0.4823.
 - Training-region purity is almost saturated for `emb_niche` in both arms and is not independent validation because `heart_regions` was the training target.
 

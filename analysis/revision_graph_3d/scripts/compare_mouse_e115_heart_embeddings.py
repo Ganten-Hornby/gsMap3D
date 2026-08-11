@@ -724,6 +724,20 @@ def write_report(
     heart_region_baseline: float,
     cell_type_baseline: float,
 ) -> None:
+    niche_adjacent_2d = metric_value(
+        metrics,
+        "emb_niche",
+        f"Adjacent-section latent kNN fraction@{k}",
+        METHOD_2D,
+    )
+    niche_adjacent_3d = metric_value(
+        metrics,
+        "emb_niche",
+        f"Adjacent-section latent kNN fraction@{k}",
+        METHOD_3D,
+    )
+    niche_adjacent_absolute = niche_adjacent_3d - niche_adjacent_2d
+    niche_adjacent_relative = niche_adjacent_3d / niche_adjacent_2d - 1
     lines = [
         "# Mouse E11.5 heart: matched sectionwise-2D versus section-aware-3D embeddings",
         "",
@@ -788,7 +802,7 @@ def write_report(
             "## Main observations",
             "",
             f"- `emb_niche` retains similar global geometry (CKA {metric_value(metrics, 'emb_niche', 'Linear CKA', COMPARISON):.4f}; Procrustes {metric_value(metrics, 'emb_niche', 'Procrustes similarity', COMPARISON):.4f}) while its exact kNN overlap is {metric_value(metrics, 'emb_niche', f'kNN overlap@{k}', COMPARISON):.2%}.",
-            f"- The adjacent-section fraction among `emb_niche` latent neighbors changes from {metric_value(metrics, 'emb_niche', f'Adjacent-section latent kNN fraction@{k}', METHOD_2D):.2%} to {metric_value(metrics, 'emb_niche', f'Adjacent-section latent kNN fraction@{k}', METHOD_3D):.2%}.",
+            f"- The adjacent-section fraction among `emb_niche` latent neighbors changes from {niche_adjacent_2d:.2%} to {niche_adjacent_3d:.2%} ({100 * niche_adjacent_absolute:+.2f} percentage points; {niche_adjacent_relative:+.1%} relative).",
             f"- On independently defined cross-section radius edges, `emb_niche` mean cosine changes from {metric_value(metrics, 'emb_niche', 'Mean cosine on cross-section radius edges', METHOD_2D):.4f} to {metric_value(metrics, 'emb_niche', 'Mean cosine on cross-section radius edges', METHOD_3D):.4f}; `emb_cell` changes from {metric_value(metrics, 'emb_cell', 'Mean cosine on cross-section radius edges', METHOD_2D):.4f} to {metric_value(metrics, 'emb_cell', 'Mean cosine on cross-section radius edges', METHOD_3D):.4f}.",
             "- Training-region purity is almost saturated for `emb_niche` in both arms and is not independent validation because `heart_regions` was the training target.",
             "",
