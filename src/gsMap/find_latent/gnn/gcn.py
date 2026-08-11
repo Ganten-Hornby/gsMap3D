@@ -513,7 +513,6 @@ class GCN(torch.nn.Module):
     def __init__(self, K: int = 1):
         super().__init__()
         self.K = K
-        self.flow = "source_to_target"
 
     def forward(
         self,
@@ -539,7 +538,7 @@ class GCN(torch.nn.Module):
                 edge_weight,
                 num_nodes=x.size(0),
                 add_self_loops=True,
-                flow=self.flow,
+                flow="source_to_target",
                 dtype=x.dtype,
             )
 
