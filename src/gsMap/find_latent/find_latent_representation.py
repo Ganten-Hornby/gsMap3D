@@ -57,6 +57,19 @@ def index_splitter(n, splits):
     return random_split(idx, splits_tensor)
 
 
+def _serialize_label_names(label_name: Any) -> list[Any]:
+    """Return annotation labels in a YAML-safe list for run metadata."""
+
+    if label_name is None:
+        return []
+    if isinstance(label_name, list):
+        return label_name
+    if hasattr(label_name, "tolist"):
+        values = label_name.tolist()
+        return values if isinstance(values, list) else [values]
+    return list(label_name)
+
+
 def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> dict[str, Any]:
     """
     Run the find latent representation pipeline.
@@ -296,11 +309,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         "annotation_info": {
             "annotation_key": config.annotation,
             "n_classes": int(class_size),
-            "label_names": label_name
-            if isinstance(label_name, list)
-            else label_name.tolist()
-            if hasattr(label_name, "tolist")
-            else list(label_name),
+            "label_names": _serialize_label_names(label_name),
         },
     }
 
