@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def _section_labels_for_graph(adata, params) -> np.ndarray | None:
-    """Extract section labels only for the section-aware graph mode."""
+    """Extract section labels for graph modes that preserve section identity."""
 
-    if params.graph_mode.lower() != "section_aware_3d":
+    if params.graph_mode.lower() not in {"section_aware_3d", "sectionwise_2d"}:
         return None
     return adata.obs[params.graph_section_key].to_numpy()
 

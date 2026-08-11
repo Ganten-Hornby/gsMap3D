@@ -40,7 +40,7 @@ class FindLatentModelConfig:
         typer.Option(
             help=(
                 "Spatial graph mode: symmetric_knn (default), radius, weighted_radius, "
-                "section_aware_3d, no_graph, or revision-only "
+                "sectionwise_2d, section_aware_3d, no_graph, or revision-only "
                 "legacy_bug/legacy_symmetric"
             ),
             case_sensitive=False,
@@ -60,7 +60,10 @@ class FindLatentModelConfig:
     graph_section_key: Annotated[
         str | None,
         typer.Option(
-            help=("Observation column identifying physical sections for section_aware_3d graphs")
+            help=(
+                "Observation column identifying physical sections for "
+                "sectionwise_2d and section_aware_3d graphs"
+            )
         ),
     ] = None
 
@@ -244,6 +247,7 @@ class FindLatentRepresentationsConfig(
             "symmetric_knn",
             "radius",
             "weighted_radius",
+            "sectionwise_2d",
             "section_aware_3d",
             "no_graph",
             "legacy_bug",
@@ -262,8 +266,9 @@ class FindLatentRepresentationsConfig(
             self.graph_sigma is None or self.graph_sigma <= 0
         ):
             raise ValueError("A positive graph_sigma is required for weighted_radius")
-        if self.graph_mode == "section_aware_3d" and not self.graph_section_key:
-            raise ValueError("graph_section_key is required for section_aware_3d mode")
+        section_modes = {"sectionwise_2d", "section_aware_3d"}
+        if self.graph_mode in section_modes and not self.graph_section_key:
+            raise ValueError(f"graph_section_key is required for {self.graph_mode} mode")
         if self.graph_mode == "section_aware_3d" and self.graph_z_scale <= 0:
             raise ValueError("graph_z_scale must be positive for section_aware_3d mode")
         if self.graph_mode.startswith("legacy_"):
@@ -287,9 +292,9 @@ class FindLatentRepresentationsConfig(
             raise ValueError(
                 "At least one of h5ad_yaml, h5ad_path, h5ad_list_file, or spe_file_list must be provided"
             )
-        if self.graph_mode == "section_aware_3d" and len(self.sample_h5ad_dict) != 1:
+        if self.graph_mode in section_modes and len(self.sample_h5ad_dict) != 1:
             raise ValueError(
-                "section_aware_3d currently requires all aligned sections in one H5AD file"
+                f"{self.graph_mode} currently requires all aligned sections in one H5AD file"
             )
 
         # Define required and optional fields for validation
@@ -298,7 +303,7 @@ class FindLatentRepresentationsConfig(
             "spatial_key": ("obsm", self.spatial_key, "Spatial key"),
         }
 
-        if self.graph_mode == "section_aware_3d":
+        if self.graph_mode in section_modes:
             if self.graph_section_key is None:
                 raise RuntimeError("graph_section_key validation was not applied")
             required_fields["graph_section_key"] = (

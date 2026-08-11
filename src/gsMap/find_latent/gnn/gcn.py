@@ -330,8 +330,10 @@ def build_section_aware_3d_graph(
     physical radius. Cross-section edges connect the spot to every cell in the
     immediately preceding or following physical section within that radius.
     If neither neighboring section contains a cell within the radius, the spot
-    falls back to ``max(1, K // 2)`` nearest cells from *each* available
-    neighboring section.
+    falls back to at most ``max(1, K // 2)`` nearest cells from each available
+    neighboring section, but only when they are within twice the focal spot's
+    within-section radius. This explicit ceiling prevents forced edges across
+    large physical section gaps.
 
     Coordinates must already use a common physical scale, including a
     calibrated z axis. Sections are ordered by their median final coordinate.
@@ -440,11 +442,23 @@ def build_section_aware_3d_graph(
             )
             if selected.shape[1] == 0:
                 continue
+            selected_targets = target_indices[selected]
+            selected_distances = np.linalg.norm(
+                fallback_coords[:, None, :] - canonical_coords[selected_targets],
+                axis=2,
+            )
+            within_ceiling = selected_distances <= (
+                2.0 * within_radii[fallback_indices, None]
+            )
+            if not np.any(within_ceiling):
+                continue
             cross_edges.append(
                 np.column_stack(
                     (
-                        np.repeat(fallback_indices, selected.shape[1]),
-                        target_indices[selected.reshape(-1)],
+                        np.broadcast_to(
+                            fallback_indices[:, None], selected.shape
+                        )[within_ceiling],
+                        selected_targets[within_ceiling],
                     )
                 )
             )
@@ -455,6 +469,64 @@ def build_section_aware_3d_graph(
 
     canonical_edges = np.concatenate(edge_blocks)
     edges = canonical_order[canonical_edges]
+    if undirected:
+        edges = np.concatenate((edges, edges[:, ::-1]), axis=0)
+    edges = np.unique(edges, axis=0).astype(np.int64, copy=False)
+    return SpatialGraph(edges, None)
+
+
+def build_sectionwise_2d_graph(
+    coords: np.ndarray,
+    section_labels: np.ndarray,
+    n_neighbors: int,
+    undirected: bool = True,
+    stable_ids: np.ndarray | None = None,
+    workers: int = -1,
+) -> SpatialGraph:
+    """Build independent within-section 2D KNN graphs in one H5AD.
+
+    Each spot selects up to ``n_neighbors`` external neighbors from its own
+    physical section. No cross-section edge is created. Coordinates must have
+    exactly two XY columns; self-loops remain a separate GCN operation.
+    """
+
+    coords = _validate_coordinates(coords)
+    if coords.shape[1] != 2:
+        raise ValueError("sectionwise 2D graphs require exactly two XY columns")
+    if n_neighbors < 1:
+        raise ValueError("n_neighbors must be at least 1")
+
+    section_labels = np.asarray(section_labels)
+    if section_labels.shape != (coords.shape[0],):
+        raise ValueError(
+            f"section_labels must have shape ({coords.shape[0]},), got {section_labels.shape}"
+        )
+    if coords.shape[0] <= 1:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+
+    canonical_coords, canonical_order = _canonicalize_nodes(coords, stable_ids)
+    canonical_sections = section_labels[canonical_order].astype(str)
+    edge_blocks: list[np.ndarray] = []
+    for section in np.unique(canonical_sections):
+        global_indices = np.flatnonzero(canonical_sections == section)
+        selected = _external_knn_indices(
+            canonical_coords[global_indices], n_neighbors, workers
+        )
+        effective_k = selected.shape[1]
+        if effective_k == 0:
+            continue
+        edge_blocks.append(
+            np.column_stack(
+                (
+                    np.repeat(global_indices, effective_k),
+                    global_indices[selected.reshape(-1)],
+                )
+            )
+        )
+
+    if not edge_blocks:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+    edges = canonical_order[np.concatenate(edge_blocks)]
     if undirected:
         edges = np.concatenate((edges, edges[:, ::-1]), axis=0)
     edges = np.unique(edges, axis=0).astype(np.int64, copy=False)
@@ -499,11 +571,21 @@ def build_graph_for_mode(
             n_neighbors,
             stable_ids=stable_ids,
         )
+    if mode == "sectionwise_2d":
+        if section_labels is None:
+            raise ValueError("section_labels are required for sectionwise_2d mode")
+        return build_sectionwise_2d_graph(
+            coords,
+            section_labels,
+            n_neighbors,
+            stable_ids=stable_ids,
+        )
     if mode == "no_graph":
         return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
     raise ValueError(
         "graph_mode must be one of symmetric_knn, legacy_bug, "
-        "legacy_symmetric, radius, weighted_radius, section_aware_3d, or no_graph"
+        "legacy_symmetric, radius, weighted_radius, sectionwise_2d, "
+        "section_aware_3d, or no_graph"
     )
 
 

@@ -15,6 +15,7 @@ from gsMap.find_latent.gnn.gcn import (
     build_legacy_spatial_graph,
     build_radius_spatial_graph,
     build_section_aware_3d_graph,
+    build_sectionwise_2d_graph,
     build_spatial_graph,
 )
 from gsMap.find_latent.st_process import TrainingData
@@ -151,15 +152,15 @@ def test_section_aware_3d_graph_uses_each_spots_within_section_knn_radius():
     assert ("a0", "b8") not in edges
 
 
-def test_section_aware_3d_graph_falls_back_to_half_k_per_neighboring_section():
+def test_section_aware_3d_graph_falls_back_within_twice_the_local_radius():
     coords = np.asarray(
         [
             [-1.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
-            [0.0, 0.0, 10.0],
-            [2.0, 0.0, 10.0],
-            [-1.0, 0.0, 20.0],
-            [1.0, 0.0, 20.0],
+            [0.0, 0.0, 3.0],
+            [2.0, 0.0, 3.0],
+            [-1.0, 0.0, 6.0],
+            [1.0, 0.0, 6.0],
         ]
     )
     sections = np.asarray(["lower", "lower", "middle", "middle", "upper", "upper"])
@@ -181,6 +182,51 @@ def test_section_aware_3d_graph_falls_back_to_half_k_per_neighboring_section():
     assert ("m0", "u-1") in edges
     assert ("m0", "l1") not in edges
     assert ("m0", "u1") not in edges
+
+
+def test_section_aware_3d_graph_does_not_force_edges_across_large_gaps():
+    coords = np.asarray(
+        [
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [2.0, 0.0, 10.0],
+        ]
+    )
+    sections = np.asarray(["lower", "lower", "upper", "upper"])
+    stable_ids = np.asarray(["l-1", "l1", "u0", "u2"])
+
+    graph = build_section_aware_3d_graph(
+        coords,
+        sections,
+        n_neighbors=2,
+        stable_ids=stable_ids,
+        undirected=False,
+        workers=1,
+    )
+    edges = _edge_id_set(graph.edges, stable_ids)
+
+    assert all(source[0] == target[0] for source, target in edges)
+
+
+def test_sectionwise_2d_graph_never_connects_different_sections():
+    coords = np.asarray(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]
+    )
+    sections = np.asarray(["a", "a", "a", "b", "b", "b"])
+    stable_ids = np.asarray(["a0", "a1", "a2", "b0", "b1", "b2"])
+
+    graph = build_sectionwise_2d_graph(
+        coords,
+        sections,
+        n_neighbors=2,
+        undirected=False,
+        stable_ids=stable_ids,
+        workers=1,
+    )
+
+    assert len(graph.edges) == 12
+    assert all(sections[source] == sections[target] for source, target in graph.edges)
 
 
 def test_section_aware_3d_graph_is_bidirectional_and_permutation_invariant():

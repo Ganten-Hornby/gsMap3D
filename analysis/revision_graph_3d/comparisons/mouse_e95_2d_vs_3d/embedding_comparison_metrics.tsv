@@ -1,28 +1,28 @@
 representation	metric	method	value	n
 emb_cell	Linear CKA	2D vs 3D	0.10770256336732292	30000
 emb_cell	Procrustes similarity	2D vs 3D	0.2956655350182631	30000
-emb_cell	kNN recall@15	2D vs 3D	0.002362222222222222	30000
+emb_cell	kNN overlap@15	2D vs 3D	0.002362222222222222	30000
 emb_cell	kNN Jaccard@15	2D vs 3D	0.0012285531837255975	30000
-emb_cell	Heart-region kNN purity@15	Section-wise 2D	0.5390377777777777	30000
+emb_cell	Heart-region kNN purity@15	Section-wise 2D	0.5817698533584207	44644
 emb_cell	Different-section latent kNN fraction@15	Section-wise 2D	0.9404933333333333	30000
 emb_cell	Adjacent-section latent kNN fraction@15	Section-wise 2D	0.06229333333333333	30000
 emb_cell	Within-section physical edges	Section-wise 2D	0.4845818877220154	300000
 emb_cell	Cross-section radius edges	Section-wise 2D	0.41050904989242554	304784
-emb_cell	Heart-region kNN purity@15	Section-aware 3D	0.5496466666666666	30000
+emb_cell	Heart-region kNN purity@15	Section-aware 3D	0.5840769942956127	44644
 emb_cell	Different-section latent kNN fraction@15	Section-aware 3D	0.9018955555555556	30000
 emb_cell	Adjacent-section latent kNN fraction@15	Section-aware 3D	0.10537333333333333	30000
 emb_cell	Within-section physical edges	Section-aware 3D	0.5664710402488708	300000
 emb_cell	Cross-section radius edges	Section-aware 3D	0.4921325445175171	304784
 emb_niche	Linear CKA	2D vs 3D	0.12977599320476452	30000
 emb_niche	Procrustes similarity	2D vs 3D	0.3160260100935538	30000
-emb_niche	kNN recall@15	2D vs 3D	0.005048888888888889	30000
+emb_niche	kNN overlap@15	2D vs 3D	0.005048888888888889	30000
 emb_niche	kNN Jaccard@15	2D vs 3D	0.002632387408249477	30000
-emb_niche	Heart-region kNN purity@15	Section-wise 2D	0.5689422222222222	30000
+emb_niche	Heart-region kNN purity@15	Section-wise 2D	0.6084236776871845	44644
 emb_niche	Different-section latent kNN fraction@15	Section-wise 2D	0.9375333333333333	30000
 emb_niche	Adjacent-section latent kNN fraction@15	Section-wise 2D	0.06347555555555555	30000
 emb_niche	Within-section physical edges	Section-wise 2D	0.6278231143951416	300000
 emb_niche	Cross-section radius edges	Section-wise 2D	0.49471911787986755	304784
-emb_niche	Heart-region kNN purity@15	Section-aware 3D	0.7454644444444445	30000
+emb_niche	Heart-region kNN purity@15	Section-aware 3D	0.7761580503539109	44644
 emb_niche	Different-section latent kNN fraction@15	Section-aware 3D	0.6579466666666667	30000
 emb_niche	Adjacent-section latent kNN fraction@15	Section-aware 3D	0.19459333333333334	30000
 emb_niche	Within-section physical edges	Section-aware 3D	0.9439689517021179	300000

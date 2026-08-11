@@ -18,6 +18,10 @@ This is a descriptive comparison, **not an isolated graph-only ablation**. The u
 
 `heart_region` is defined for **44,644 / 646,893 spots (6.90%)**. The two defined regions contain 28,931 LV/atrial observations and 15,713 right/outflow-tract observations. All heart-region purity and UMAP results below exclude `NA`.
 
+All 44,644 observations with a defined `heart_region` are used for both the purity calculation and UMAP; there is no subsampling. This preserves the observed region counts of 28,931 LV/atrial and 15,713 right/outflow-tract observations.
+
+The cell-type UMAP likewise uses all 646,893 matched observations colored by `transf_anno_E95`, with no subsampling.
+
 This annotation is not restricted to cardiomyocytes: only 16,082 / 44,644 defined observations (36.0%) have a `mapped_celltype` containing `cardiomyocytes`. The remainder includes cardiopharyngeal mesoderm, primitive erythroid cells, endocardial cells, proepicardium, and arterial endothelial cells.
 
 | heart_region | mapped_celltype | n | Fraction within region |
@@ -39,16 +43,16 @@ This annotation is not restricted to cardiomyocytes: only 16,082 / 44,644 define
 
 ## Metrics
 
-| Representation | Linear CKA | Procrustes similarity | kNN recall@15 | 2D heart-region purity | 3D heart-region purity | 2D different-section kNN | 3D different-section kNN |
+| Representation | Linear CKA | Procrustes similarity | kNN overlap@15 | 2D heart-region purity | 3D heart-region purity | 2D different-section kNN | 3D different-section kNN |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `emb_cell` | 0.1077 | 0.2957 | 0.0024 | 0.5390 | 0.5496 | 0.9405 | 0.9019 |
-| `emb_niche` | 0.1298 | 0.3160 | 0.0050 | 0.5689 | 0.7455 | 0.9375 | 0.6579 |
+| `emb_cell` | 0.1077 | 0.2957 | 0.0024 | 0.5818 | 0.5841 | 0.9405 | 0.9019 |
+| `emb_niche` | 0.1298 | 0.3160 | 0.0050 | 0.6084 | 0.7762 | 0.9375 | 0.6579 |
 
 `Heart-region kNN purity@15` is the mean, across focal spots, of the fraction of the 15 nearest latent neighbors carrying the same non-`NA` `heart_region` label. Both focal spots and the latent-neighbor candidate pool are restricted to observations with a defined heart region. It is a neighborhood-structure statistic, not prediction accuracy.
 
-For `emb_niche`, heart-region purity changed from 56.89% to 74.55%: an absolute increase of 17.65 percentage points and a relative increase of 31.0%. This does not mean that purity is 31.0%, and the descriptive comparison does not isolate a causal effect of the 3D graph because other training settings also differ.
+For `emb_niche`, heart-region purity changed from 60.84% to 77.62%: an absolute increase of 16.77 percentage points and a relative increase of 27.6%. This does not mean that purity is 27.6%, and the descriptive comparison does not isolate a causal effect of the 3D graph because other training settings also differ.
 
-`kNN recall@15` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. Linear CKA and Procrustes similarity are invariant to arbitrary orthogonal rotations of the latent axes.
+`kNN overlap@15` is the mean shared-neighbor fraction between the two fixed-size neighbor sets on the same stratified sample. It is symmetric and does not define either run as a positive/reference class. Linear CKA and Procrustes similarity are invariant to arbitrary orthogonal rotations of the latent axes.
 
 ## Physical-neighborhood continuity
 
@@ -65,7 +69,8 @@ Higher spatial-edge cosine means a smoother latent representation along those ph
 
 ## Outputs
 
-- `embedding_comparison_shared_umap.png` / `.pdf`: non-`NA` heart-region spots in a shared UMAP for each representation after orthogonal Procrustes alignment, colored by `heart_region` and plotted with `scanpy.pl.umap`.
+- `embedding_comparison_shared_umap.png` / `.pdf`: all matched observations in a shared UMAP colored by `transf_anno_E95`, with no subsampling.
+- `embedding_comparison_heart_region_umap.png` / `.pdf`: all non-`NA` heart-region spots in a shared UMAP for each representation after orthogonal Procrustes alignment, colored by `heart_region` and plotted with `scanpy.pl.umap`.
 - `embedding_comparison_metrics.png` / `.pdf`: compact metric summary.
 - `embedding_comparison_metrics.tsv`: tidy metric values.
 - `heart_region_celltype_composition.tsv`: mapped cell-type composition within each defined heart region.

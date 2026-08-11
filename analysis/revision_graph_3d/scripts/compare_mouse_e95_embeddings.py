@@ -55,7 +55,7 @@ class EmbeddingData:
 @dataclass(frozen=True)
 class LatentMetricNames:
     k: int
-    recall: str
+    overlap: str
     jaccard: str
     label_purity: str
     different_section: str
@@ -65,7 +65,7 @@ class LatentMetricNames:
     def for_k(cls, k: int) -> LatentMetricNames:
         return cls(
             k=k,
-            recall=f"kNN recall@{k}",
+            overlap=f"kNN overlap@{k}",
             jaccard=f"kNN Jaccard@{k}",
             label_purity=f"Heart-region kNN purity@{k}",
             different_section=f"Different-section latent kNN fraction@{k}",
@@ -79,7 +79,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--section-aware-h5ad", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sample-size", type=int, default=30_000)
-    parser.add_argument("--umap-sample-size", type=int, default=25_000)
     parser.add_argument("--latent-neighbors", type=int, default=15)
     parser.add_argument("--spatial-neighbors", type=int, default=10)
     parser.add_argument("--cross-section-cap", type=int, default=10)
@@ -210,17 +209,6 @@ def stratified_sample(labels: np.ndarray, size: int, seed: int) -> np.ndarray:
     return result.astype(np.int64, copy=False)
 
 
-def eligible_stratified_sample(
-    labels: np.ndarray, excluded_label: str, size: int, seed: int
-) -> np.ndarray:
-    """Sample within defined labels and return indices into the original arrays."""
-    eligible = np.flatnonzero(labels != excluded_label)
-    if not len(eligible):
-        raise ValueError(f"No observations remain after excluding {excluded_label!r}")
-    local_sample = stratified_sample(labels[eligible], size, seed)
-    return eligible[local_sample]
-
-
 def domain_cell_type_composition(data: EmbeddingData) -> pd.DataFrame:
     """Count mapped cell types in each defined heart-region annotation."""
     defined = data.domains != DOMAIN_MISSING_LABEL
@@ -265,6 +253,13 @@ def domain_annotation_audit(data: EmbeddingData) -> dict[str, Any]:
     }
 
 
+def category_counts(labels: np.ndarray) -> dict[str, int]:
+    categories, counts = np.unique(labels, return_counts=True)
+    return {
+        str(category): int(count) for category, count in zip(categories, counts, strict=True)
+    }
+
+
 def linear_cka(x: np.ndarray, y: np.ndarray) -> float:
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -298,9 +293,12 @@ def aligned_embeddings(
     y: np.ndarray,
     fit_indices: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    x_center, y_center, x_scale, y_scale, rotation, similarity = procrustes_fit(
-        x[fit_indices], y[fit_indices]
+    full_index = len(fit_indices) == len(x) and np.array_equal(
+        fit_indices, np.arange(len(x), dtype=fit_indices.dtype)
     )
+    fit_x = x if full_index else x[fit_indices]
+    fit_y = y if full_index else y[fit_indices]
+    x_center, y_center, x_scale, y_scale, rotation, similarity = procrustes_fit(fit_x, fit_y)
     x_aligned = ((x - x_center) / x_scale) @ rotation
     y_aligned = (y - y_center) / y_scale
     return x_aligned.astype(np.float32), y_aligned.astype(np.float32), similarity
@@ -356,7 +354,7 @@ def neighbor_metrics(
     old_purity, old_cross, old_adjacent = summarize(old_neighbors)
     new_purity, new_cross, new_adjacent = summarize(new_neighbors)
     return {
-        "knn_recall": float(np.mean(intersections / k)),
+        "knn_overlap": float(np.mean(intersections / k)),
         "knn_jaccard": float(np.mean(intersections / (2 * k - intersections))),
         "old_label_purity": old_purity,
         "new_label_purity": new_purity,
@@ -510,7 +508,7 @@ def plot_metric_summary(
     representation_colors = {"emb_cell": "#3B6FB6", "emb_niche": "#D55E00"}
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.5), constrained_layout=True)
 
-    agreement_names = ["Linear CKA", "Procrustes similarity", latent_metric_names.recall]
+    agreement_names = ["Linear CKA", "Procrustes similarity", latent_metric_names.overlap]
     ax = axes[0, 0]
     x = np.arange(len(agreement_names))
     width = 0.34
@@ -523,7 +521,7 @@ def plot_metric_summary(
     ax.set_title("A  Global and local agreement")
     ax.set_xticks(
         x,
-        ["Linear\nCKA", "Procrustes\nsimilarity", latent_metric_names.recall.replace(" ", "\n")],
+        ["Linear\nCKA", "Procrustes\nsimilarity", latent_metric_names.overlap.replace(" ", "\n")],
     )
     ax.set_ylim(0, 1)
     ax.set_ylabel("Score")
@@ -599,22 +597,24 @@ def plot_scanpy_umap_panel(
     coordinates: np.ndarray,
     labels: np.ndarray,
     colors: dict[str, str],
+    annotation_key: str,
+    point_size: float,
     title: str,
     limits: tuple[tuple[float, float], tuple[float, float]],
 ) -> None:
     """Plot precomputed shared-UMAP coordinates through Scanpy's UMAP API."""
     categories = list(colors)
     obs = pd.DataFrame(
-        {DOMAIN_KEY: pd.Categorical(labels, categories=categories)},
+        {annotation_key: pd.Categorical(labels, categories=categories)},
         index=pd.Index(np.arange(len(labels)).astype(str), name="spot"),
     )
     panel = ad.AnnData(obs=obs)
     panel.obsm["X_umap"] = np.asarray(coordinates, dtype=np.float32)
     sc.pl.umap(
         panel,
-        color=DOMAIN_KEY,
+        color=annotation_key,
         palette=[colors[category] for category in categories],
-        size=1.7,
+        size=point_size,
         alpha=0.7,
         frameon=False,
         legend_loc=None,
@@ -632,21 +632,26 @@ def plot_scanpy_umap_panel(
     ax.set_ylabel("Shared UMAP 2")
 
 
-def plot_shared_umap(
+def plot_annotation_umap(
     baseline: EmbeddingData,
     section_aware: EmbeddingData,
-    sample_indices: np.ndarray,
+    observation_indices: np.ndarray,
+    labels: np.ndarray,
+    annotation_key: str,
+    output_stem: str,
+    title: str,
     output_dir: Path,
     seed: int,
     threads: int,
 ) -> dict[str, Any]:
-    labels = section_aware.domains[sample_indices]
     colors = categorical_colors(labels)
+    point_size = min(1.7, max(0.05, 120_000 / len(labels)))
     fig, axes = plt.subplots(2, 2, figsize=(15, 11), constrained_layout=True)
     umap_audit: dict[str, Any] = {
-        "n_spots": int(len(sample_indices)),
-        "annotation_key": DOMAIN_KEY,
-        "excluded_annotation_value": DOMAIN_MISSING_LABEL,
+        "n_spots": int(len(observation_indices)),
+        "annotation_key": annotation_key,
+        "subsampling": False,
+        "category_counts": category_counts(labels),
         "shared_axes_after_procrustes": True,
         "coordinate_backend": "umap.UMAP",
         "plot_backend": "scanpy.pl.umap",
@@ -661,13 +666,21 @@ def plot_shared_umap(
             "n_jobs_effective": 1,
             "n_jobs_note": "umap-learn forces n_jobs=1 when random_state is set",
             "low_memory": True,
+            "point_size": point_size,
         },
     }
+    full_index = len(observation_indices) == len(section_aware.ids) and np.array_equal(
+        observation_indices, np.arange(len(section_aware.ids), dtype=observation_indices.dtype)
+    )
     for row, representation in enumerate(REPRESENTATIONS):
         old_aligned, new_aligned, similarity = aligned_embeddings(
-            baseline.embeddings[representation], section_aware.embeddings[representation], sample_indices
+            baseline.embeddings[representation],
+            section_aware.embeddings[representation],
+            observation_indices,
         )
-        joint = np.concatenate([old_aligned[sample_indices], new_aligned[sample_indices]])
+        old_selected = old_aligned if full_index else old_aligned[observation_indices]
+        new_selected = new_aligned if full_index else new_aligned[observation_indices]
+        joint = np.concatenate([old_selected, new_selected])
         layout = UMAP(
             n_neighbors=30,
             min_dist=0.25,
@@ -690,6 +703,8 @@ def plot_shared_umap(
                 coordinates,
                 labels,
                 colors,
+                annotation_key,
+                point_size,
                 f"{representation}: {method}",
                 limits,
             )
@@ -714,13 +729,12 @@ def plot_shared_umap(
         markerscale=4,
     )
     fig.suptitle(
-        "Mouse E9.5 heart-region latent spaces (defined regions only)\n"
-        "Shared UMAP per representation after rotation/scale alignment; colors are heart_region",
+        title,
         fontsize=14,
     )
     for suffix in ("png", "pdf"):
         fig.savefig(
-            output_dir / f"embedding_comparison_shared_umap.{suffix}",
+            output_dir / f"{output_stem}.{suffix}",
             dpi=RASTER_DPI,
             bbox_inches="tight",
         )
@@ -739,6 +753,7 @@ def write_report(
     audit: dict[str, Any],
     domain_audit: dict[str, Any],
     domain_composition: pd.DataFrame,
+    sampling_audit: dict[str, Any],
     spatial_audit: dict[str, Any],
     baseline_metadata: dict[str, Any],
     section_aware_metadata: dict[str, Any],
@@ -779,6 +794,16 @@ def write_report(
         f"{domain_audit['category_counts']['Right/outflow tract region']:,} right/outflow-tract "
         "observations. All heart-region purity and UMAP results below exclude `NA`.",
         "",
+        f"All {sampling_audit['heart_region_observation_count']:,} observations with a defined "
+        "`heart_region` are used for both the purity calculation and UMAP; there is no subsampling. "
+        f"This preserves the observed region counts of "
+        f"{sampling_audit['heart_region_category_counts']['LV/atrial region']:,} LV/atrial and "
+        f"{sampling_audit['heart_region_category_counts']['Right/outflow tract region']:,} "
+        "right/outflow-tract observations.",
+        "",
+        f"The cell-type UMAP likewise uses all {sampling_audit['celltype_umap_observation_count']:,} "
+        "matched observations colored by `transf_anno_E95`, with no subsampling.",
+        "",
         f"This annotation is not restricted to cardiomyocytes: only "
         f"{domain_audit['n_mapped_cardiomyocytes_among_defined']:,} / "
         f"{domain_audit['n_defined']:,} defined observations "
@@ -797,7 +822,7 @@ def write_report(
         "",
         "## Metrics",
         "",
-        f"| Representation | Linear CKA | Procrustes similarity | {latent_metric_names.recall} | 2D heart-region purity | 3D heart-region purity | 2D different-section kNN | 3D different-section kNN |",
+        f"| Representation | Linear CKA | Procrustes similarity | {latent_metric_names.overlap} | 2D heart-region purity | 3D heart-region purity | 2D different-section kNN | 3D different-section kNN |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for representation in REPRESENTATIONS:
@@ -805,7 +830,7 @@ def write_report(
             f"| `{representation}` | "
             f"{metric_value(metrics, representation, 'Linear CKA', COMPARISON):.4f} | "
             f"{metric_value(metrics, representation, 'Procrustes similarity', COMPARISON):.4f} | "
-            f"{metric_value(metrics, representation, latent_metric_names.recall, COMPARISON):.4f} | "
+            f"{metric_value(metrics, representation, latent_metric_names.overlap, COMPARISON):.4f} | "
             f"{metric_value(metrics, representation, latent_metric_names.label_purity, METHOD_2D):.4f} | "
             f"{metric_value(metrics, representation, latent_metric_names.label_purity, METHOD_3D):.4f} | "
             f"{metric_value(metrics, representation, latent_metric_names.different_section, METHOD_2D):.4f} | "
@@ -834,7 +859,7 @@ def write_report(
             f"This does not mean that purity is {niche_purity_relative_percent:.1f}%, and the descriptive comparison does not "
             "isolate a causal effect of the 3D graph because other training settings also differ.",
             "",
-            f"`{latent_metric_names.recall}` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. "
+            f"`{latent_metric_names.overlap}` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. "
             "Linear CKA and Procrustes similarity are invariant to arbitrary orthogonal rotations of the latent axes.",
             "",
             "## Physical-neighborhood continuity",
@@ -876,7 +901,8 @@ def write_report(
             "",
             "## Outputs",
             "",
-            "- `embedding_comparison_shared_umap.png` / `.pdf`: non-`NA` heart-region spots in a shared UMAP for each representation after orthogonal Procrustes alignment, colored by `heart_region` and plotted with `scanpy.pl.umap`.",
+            "- `embedding_comparison_shared_umap.png` / `.pdf`: all matched observations in a shared UMAP colored by `transf_anno_E95`, with no subsampling.",
+            "- `embedding_comparison_heart_region_umap.png` / `.pdf`: all non-`NA` heart-region spots in a shared UMAP for each representation after orthogonal Procrustes alignment, colored by `heart_region` and plotted with `scanpy.pl.umap`.",
             "- `embedding_comparison_metrics.png` / `.pdf`: compact metric summary.",
             "- `embedding_comparison_metrics.tsv`: tidy metric values.",
             "- `heart_region_celltype_composition.tsv`: mapped cell-type composition within each defined heart region.",
@@ -894,20 +920,22 @@ def main() -> None:
     section_aware = read_single_h5ad(args.section_aware_h5ad, "section_id")
     baseline, match_audit = reorder_baseline_to_section_aware(baseline, section_aware)
     sample_indices = stratified_sample(section_aware.labels, args.sample_size, args.seed)
-    domain_sample_indices = eligible_stratified_sample(
-        section_aware.domains,
-        DOMAIN_MISSING_LABEL,
-        args.sample_size,
-        args.seed + 1,
-    )
-    umap_indices = eligible_stratified_sample(
-        section_aware.domains,
-        DOMAIN_MISSING_LABEL,
-        args.umap_sample_size,
-        args.seed + 2,
-    )
+    all_indices = np.arange(len(section_aware.ids), dtype=np.int64)
+    domain_indices = np.flatnonzero(section_aware.domains != DOMAIN_MISSING_LABEL)
+    if not len(domain_indices):
+        raise ValueError("No observations have a defined heart_region")
     latent_metric_names = LatentMetricNames.for_k(args.latent_neighbors)
     domain_audit = domain_annotation_audit(section_aware)
+    sampling_audit = {
+        "global_metric_sample_size": int(len(sample_indices)),
+        "celltype_umap_observation_count": int(len(all_indices)),
+        "celltype_umap_subsampling": False,
+        "heart_region_observation_count": int(len(domain_indices)),
+        "heart_region_category_counts": category_counts(
+            section_aware.domains[domain_indices]
+        ),
+        "heart_region_subsampling": False,
+    }
     domain_composition = domain_cell_type_composition(section_aware)
     domain_composition.to_csv(
         args.output_dir / "heart_region_celltype_composition.tsv", sep="\t", index=False
@@ -942,12 +970,12 @@ def main() -> None:
             section_aware.sections[sample_indices],
         )
         old_domain_neighbors = approximate_neighbors(
-            old[domain_sample_indices], args.latent_neighbors, args.seed + 1, args.threads
+            old[domain_indices], args.latent_neighbors, args.seed + 1, args.threads
         )
         new_domain_neighbors = approximate_neighbors(
-            new[domain_sample_indices], args.latent_neighbors, args.seed + 1, args.threads
+            new[domain_indices], args.latent_neighbors, args.seed + 1, args.threads
         )
-        domain_labels = section_aware.domains[domain_sample_indices]
+        domain_labels = section_aware.domains[domain_indices]
         old_domain_purity = label_purity(old_domain_neighbors, domain_labels)
         new_domain_purity = label_purity(new_domain_neighbors, domain_labels)
         *_, procrustes_similarity = procrustes_fit(old_sample, new_sample)
@@ -976,9 +1004,9 @@ def main() -> None:
         add_metric(
             metric_rows,
             representation,
-            latent_metric_names.recall,
+            latent_metric_names.overlap,
             COMPARISON,
-            local["knn_recall"],
+            local["knn_overlap"],
             len(sample_indices),
         )
         add_metric(
@@ -996,7 +1024,7 @@ def main() -> None:
                 latent_metric_names.label_purity,
                 method,
                 old_domain_purity if prefix == "old" else new_domain_purity,
-                len(domain_sample_indices),
+                len(domain_indices),
             )
             add_metric(
                 metric_rows,
@@ -1037,10 +1065,28 @@ def main() -> None:
     metrics = pd.DataFrame(metric_rows)
     metrics.to_csv(args.output_dir / "embedding_comparison_metrics.tsv", sep="\t", index=False)
     plot_metric_summary(metrics, args.output_dir, latent_metric_names)
-    umap_audit = plot_shared_umap(
+    celltype_umap_audit = plot_annotation_umap(
         baseline,
         section_aware,
-        umap_indices,
+        all_indices,
+        section_aware.labels,
+        "transf_anno_E95",
+        "embedding_comparison_shared_umap",
+        "Mouse E9.5 latent spaces (all matched observations)\n"
+        "Shared UMAP per representation after rotation/scale alignment; colors are transf_anno_E95",
+        args.output_dir,
+        args.seed,
+        args.threads,
+    )
+    heart_region_umap_audit = plot_annotation_umap(
+        baseline,
+        section_aware,
+        domain_indices,
+        section_aware.domains[domain_indices],
+        DOMAIN_KEY,
+        "embedding_comparison_heart_region_umap",
+        "Mouse E9.5 heart-region latent spaces (all defined observations)\n"
+        "Shared UMAP per representation after rotation/scale alignment; colors are heart_region",
         args.output_dir,
         args.seed,
         args.threads,
@@ -1062,14 +1108,11 @@ def main() -> None:
         },
         "match_audit": match_audit,
         "heart_region_annotation_audit": domain_audit,
-        "sampling_audit": {
-            "global_metric_sample_size": int(len(sample_indices)),
-            "heart_region_metric_sample_size": int(len(domain_sample_indices)),
-            "heart_region_umap_sample_size": int(len(umap_indices)),
-        },
+        "sampling_audit": sampling_audit,
         "spatial_evaluation_audit": spatial_audit,
         "representation_metrics": representation_audit,
-        "umap_audit": umap_audit,
+        "celltype_umap_audit": celltype_umap_audit,
+        "heart_region_umap_audit": heart_region_umap_audit,
         "comparability_warning": (
             "Descriptive comparison only: graph construction, annotation used for training, gene space, "
             "and two-stage training differ between runs."
@@ -1082,6 +1125,7 @@ def main() -> None:
         match_audit,
         domain_audit,
         domain_composition,
+        sampling_audit,
         spatial_audit,
         baseline_metadata,
         section_aware_metadata,
