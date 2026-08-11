@@ -21,6 +21,8 @@ This is a descriptive comparison, **not an isolated graph-only ablation**. The u
 | `emb_cell` | 0.1077 | 0.2957 | 0.0024 | 0.1026 | 0.1108 | 0.9405 | 0.9019 |
 | `emb_niche` | 0.1298 | 0.3160 | 0.0050 | 0.1018 | 0.2214 | 0.9375 | 0.6579 |
 
+For `emb_niche`, label purity changed from 10.18% to 22.14%: an absolute increase of 11.96 percentage points and a relative increase of 117.5%. This does not mean that purity is 117.5%, and the descriptive comparison does not isolate a causal effect of the 3D graph because other training settings also differ.
+
 `kNN recall@15` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. Linear CKA and Procrustes similarity are invariant to arbitrary orthogonal rotations of the latent axes.
 
 ## Physical-neighborhood continuity

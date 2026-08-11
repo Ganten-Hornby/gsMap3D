@@ -12,12 +12,13 @@
 - Primary dataset: `/storage/yangjianLab/lilounan/data/3dst/Fig4to6_3DHeart.h5ad`
 - Mouse E9.5 source dataset: `/storage/yangjianLab/lilounan/data/3dst/E9.5/Mouse_E9.5_embryo.h5ad`
 - Mouse E9.5 prepared section-aware input: `analysis/revision_graph_3d/inputs/Mouse_E9.5_embryo_sectioned.h5ad`
+- Mouse E9.5 physical-metadata audit: `analysis/revision_graph_3d/mouse_e95_physical_metadata_audit.md`
 - Manuscript-analysis provenance root: `/storage/yangjianLab/chenwenhao/01_Project/01_Research/202312_gsMap/experiment/20260107_gsmap_3d_report_all_collected`
 - Local collected-analysis root used by this revision: `/storage/yangjianLab/lilounan/gsMap3D-scripts/20260107_gsmap_3d_report_all_collected`
 - Original Mouse E9.5 section-wise 2D latent outputs: `/storage/yangjianLab/lilounan/gsMap3D-scripts/20260107_gsmap_3d_report_all_collected/mouse_embryo/E9.5/find_latent_representations`
 - Section-aware Mouse E9.5 3D latent output: `analysis/revision_graph_3d/runs/mouse_e95_section_aware_3d_k10/find_latent_representations/Mouse_E9.5_embryo_sectioned_add_latent.h5ad`
 - Mouse E9.5 comparison artifacts: `analysis/revision_graph_3d/comparisons/mouse_e95_2d_vs_3d`
-- Preferred native-Markdown Lark analysis report: `https://ucn9sfonejxs.feishu.cn/file/Avrfb8VUYoo1cpxWXWocm8KMnze` (file token `Avrfb8VUYoo1cpxWXWocm8KMnze`). Version `7672633961180302622` was fetched back byte-identically to the Scanpy-updated local report (SHA-256 `f19bd0ed01a7e722a3c2cf4b2c1cd0b5cd92b321196c9f74aaad736f3a210cc7`).
+- Preferred native-Markdown Lark analysis report: `https://ucn9sfonejxs.feishu.cn/file/Avrfb8VUYoo1cpxWXWocm8KMnze` (file token `Avrfb8VUYoo1cpxWXWocm8KMnze`). Version `7672635513865506058` was fetched back byte-identically to the Scanpy-updated local report (SHA-256 `8435f42093fb71fcbf719fc44d93895e2406b015d21b40fda40c846567c49b5a`).
 - Legacy DOCX-import Lark analysis report: `https://www.feishu.cn/docx/Ria5dWAAQoiEB8xKcAgcFL1ansM`. Its dense inline figures are displayed too narrowly; retain it only as an earlier analysis handoff, not as the preferred report or the configured rebuttal/manuscript deliverable.
 - The manuscript/SI project root, render command, local deliverable, and sync target are not configured yet. Do not apply manuscript edits, render, or sync until those values are resolved.
 
@@ -79,7 +80,7 @@ Comments outside this scope are not to be added unless the user explicitly broad
 
 - Preserve each reviewer comment verbatim in the response registry.
 - Establish the corrected 2D baseline before comparing 3D variants: explicitly bidirectional edges, exactly 10 external neighbors by default, one separately added self-loop, and invariance to observation-row permutation.
-- Report external degree, final degree after graph transforms, physical edge-length distributions, cross-section degree, zero-cross-section-neighbor rate, connected components, and cross-section edge fractions.
+- In dedicated graph-construction validation artifacts, report external degree, final degree after graph transforms, physical edge-length distributions, cross-section degree, zero-cross-section-neighbor rate, connected components, and cross-section edge fractions. A latent-embedding comparison may instead reference that validation artifact and report only the independently constructed physical evaluation edges it uses.
 - Evaluate major conclusions with comparable spot/cell counts wherever feasible. At minimum, plan comparisons for section-wise 2D, pooled-without-cross-section edges, slice-order permutation, measured-z 3D, density/scale alternatives, and graph-propagation removal.
 - Separate confirmed evidence, inference, planned experiments, limitations, and unresolved choices. Never report a planned analysis as completed.
 - Treat source datasets as read-only. Place new code, tests, logs, tables, and figures under project-controlled paths and attach them to the relevant SQLite task.
@@ -115,7 +116,7 @@ Comments outside this scope are not to be added unless the user explicitly broad
 - DPI metadata alone is insufficient. Verify effective DPI after placement using source pixels divided by the final display size, and inspect the actual delivered artifact rather than assuming the source setting survived conversion.
 - Plot every UMAP panel through Scanpy's `scanpy.pl.umap` using the stored or precomputed `X_umap` coordinates; do not bypass Scanpy with a raw Matplotlib scatter plot. Record the Scanpy version and the UMAP-coordinate settings in the analysis audit.
 - Lark DOCX import can preserve the original image bytes while displaying an inline image in a narrow block. In the current report the original 3,484- and 4,532-pixel-wide PNGs were retained, but each was placed in a Lark image block with `width="399"`, making a dense multipanel figure look blurred or unreadably small. For Lark handoffs, split dense composites into individual panels or attach/link the original PNG and vector PDF; do not rely on a single narrow inline preview.
-- Do not overwrite an approved figure artifact. Register new or changed figure provenance through the Rebuttal Dragon figure-map workflow.
+- Do not overwrite an approved rebuttal figure artifact. Register new or changed rebuttal-figure provenance through the Rebuttal Dragon figure-map workflow. Operational analysis figures that have not been promoted into the rebuttal remain attached to their SQLite workflow task and do not require figure-map registration yet.
 
 ## Render and Delivery Rules
 

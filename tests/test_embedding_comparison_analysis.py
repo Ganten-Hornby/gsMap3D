@@ -55,3 +55,15 @@ def test_umap_panel_is_plotted_through_scanpy(monkeypatch):
     assert recorded["palette"] == ["#112233", "#445566"]
     assert all(collection.get_rasterized() for collection in axis.collections)
     plt.close(figure)
+
+
+def test_latent_metric_names_follow_configured_neighbor_count():
+    comparison = load_comparison_module()
+
+    names = comparison.LatentMetricNames.for_k(7)
+
+    assert names.recall == "kNN recall@7"
+    assert names.jaccard == "kNN Jaccard@7"
+    assert names.label_purity == "Label kNN purity@7"
+    assert names.different_section == "Different-section latent kNN fraction@7"
+    assert names.adjacent_section == "Adjacent-section latent kNN fraction@7"

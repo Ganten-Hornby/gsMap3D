@@ -48,6 +48,25 @@ class EmbeddingData:
     embeddings: dict[str, np.ndarray]
 
 
+@dataclass(frozen=True)
+class LatentMetricNames:
+    recall: str
+    jaccard: str
+    label_purity: str
+    different_section: str
+    adjacent_section: str
+
+    @classmethod
+    def for_k(cls, k: int) -> LatentMetricNames:
+        return cls(
+            recall=f"kNN recall@{k}",
+            jaccard=f"kNN Jaccard@{k}",
+            label_purity=f"Label kNN purity@{k}",
+            different_section=f"Different-section latent kNN fraction@{k}",
+            adjacent_section=f"Adjacent-section latent kNN fraction@{k}",
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-dir", type=Path, required=True)
@@ -387,11 +406,13 @@ def add_metric(
     )
 
 
-def plot_metric_summary(metrics: pd.DataFrame, output_dir: Path) -> None:
+def plot_metric_summary(
+    metrics: pd.DataFrame, output_dir: Path, latent_metric_names: LatentMetricNames
+) -> None:
     representation_colors = {"emb_cell": "#3B6FB6", "emb_niche": "#D55E00"}
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.5), constrained_layout=True)
 
-    agreement_names = ["Linear CKA", "Procrustes similarity", "kNN recall@15"]
+    agreement_names = ["Linear CKA", "Procrustes similarity", latent_metric_names.recall]
     ax = axes[0, 0]
     x = np.arange(len(agreement_names))
     width = 0.34
@@ -407,7 +428,10 @@ def plot_metric_summary(metrics: pd.DataFrame, output_dir: Path) -> None:
         ]
         ax.bar(x + offset, values, width, color=representation_colors[representation], label=representation)
     ax.set_title("A  Global and local agreement")
-    ax.set_xticks(x, ["Linear\nCKA", "Procrustes\nsimilarity", "kNN\nrecall@15"])
+    ax.set_xticks(
+        x,
+        ["Linear\nCKA", "Procrustes\nsimilarity", latent_metric_names.recall.replace(" ", "\n")],
+    )
     ax.set_ylim(0, 1)
     ax.set_ylabel("Score")
     ax.legend(frameon=False)
@@ -431,11 +455,16 @@ def plot_metric_summary(metrics: pd.DataFrame, output_dir: Path) -> None:
         ax.set_ylabel(ylabel)
         ax.legend(frameon=False)
 
-    paired_panel(axes[0, 1], "Label kNN purity@15", "B  Annotation structure", "Same-label neighbor fraction")
+    paired_panel(
+        axes[0, 1],
+        latent_metric_names.label_purity,
+        "B  Annotation structure",
+        "Same-label neighbor fraction",
+    )
     axes[0, 1].set_ylim(0, 1)
     paired_panel(
         axes[1, 0],
-        "Different-section latent kNN fraction@15",
+        latent_metric_names.different_section,
         "C  Section mixing in latent space",
         "Different-section neighbor fraction",
     )
@@ -622,6 +651,7 @@ def write_report(
     spatial_audit: dict[str, Any],
     baseline_metadata: dict[str, Any],
     section_aware_metadata: dict[str, Any],
+    latent_metric_names: LatentMetricNames,
 ) -> None:
     def value(representation: str, metric: str, method: str) -> float:
         return float(
@@ -660,7 +690,7 @@ def write_report(
         "",
         "## Metrics",
         "",
-        "| Representation | Linear CKA | Procrustes similarity | kNN recall@15 | 2D label purity | 3D label purity | 2D different-section kNN | 3D different-section kNN |",
+        f"| Representation | Linear CKA | Procrustes similarity | {latent_metric_names.recall} | 2D label purity | 3D label purity | 2D different-section kNN | 3D different-section kNN |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for representation in REPRESENTATIONS:
@@ -668,16 +698,26 @@ def write_report(
             f"| `{representation}` | "
             f"{value(representation, 'Linear CKA', COMPARISON):.4f} | "
             f"{value(representation, 'Procrustes similarity', COMPARISON):.4f} | "
-            f"{value(representation, 'kNN recall@15', COMPARISON):.4f} | "
-            f"{value(representation, 'Label kNN purity@15', METHOD_2D):.4f} | "
-            f"{value(representation, 'Label kNN purity@15', METHOD_3D):.4f} | "
-            f"{value(representation, 'Different-section latent kNN fraction@15', METHOD_2D):.4f} | "
-            f"{value(representation, 'Different-section latent kNN fraction@15', METHOD_3D):.4f} |"
+            f"{value(representation, latent_metric_names.recall, COMPARISON):.4f} | "
+            f"{value(representation, latent_metric_names.label_purity, METHOD_2D):.4f} | "
+            f"{value(representation, latent_metric_names.label_purity, METHOD_3D):.4f} | "
+            f"{value(representation, latent_metric_names.different_section, METHOD_2D):.4f} | "
+            f"{value(representation, latent_metric_names.different_section, METHOD_3D):.4f} |"
         )
+    niche_purity_2d = value("emb_niche", latent_metric_names.label_purity, METHOD_2D)
+    niche_purity_3d = value("emb_niche", latent_metric_names.label_purity, METHOD_3D)
+    niche_purity_absolute_pp = 100 * (niche_purity_3d - niche_purity_2d)
+    niche_purity_relative_percent = 100 * (niche_purity_3d / niche_purity_2d - 1)
     lines.extend(
         [
             "",
-            "`kNN recall@15` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. "
+            f"For `emb_niche`, label purity changed from {niche_purity_2d:.2%} to "
+            f"{niche_purity_3d:.2%}: an absolute increase of {niche_purity_absolute_pp:.2f} "
+            f"percentage points and a relative increase of {niche_purity_relative_percent:.1f}%. "
+            "This does not mean that purity is 117.5%, and the descriptive comparison does not "
+            "isolate a causal effect of the 3D graph because other training settings also differ.",
+            "",
+            f"`{latent_metric_names.recall}` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. "
             "Linear CKA and Procrustes similarity are invariant to arbitrary orthogonal rotations of the latent axes.",
             "",
             "## Physical-neighborhood continuity",
@@ -727,6 +767,7 @@ def main() -> None:
     baseline, match_audit = reorder_baseline_to_section_aware(baseline, section_aware)
     sample_indices = stratified_sample(section_aware.labels, args.sample_size, args.seed)
     umap_indices = stratified_sample(section_aware.labels, args.umap_sample_size, args.seed + 1)
+    latent_metric_names = LatentMetricNames.for_k(args.latent_neighbors)
 
     within_source, within_target, cross_source, cross_target, spatial_audit = physical_evaluation_edges(
         section_aware.coordinates,
@@ -769,14 +810,35 @@ def main() -> None:
             procrustes_similarity,
             len(sample_indices),
         )
-        add_metric(metric_rows, representation, "kNN recall@15", COMPARISON, local["knn_recall"], len(sample_indices))
-        add_metric(metric_rows, representation, "kNN Jaccard@15", COMPARISON, local["knn_jaccard"], len(sample_indices))
+        add_metric(
+            metric_rows,
+            representation,
+            latent_metric_names.recall,
+            COMPARISON,
+            local["knn_recall"],
+            len(sample_indices),
+        )
+        add_metric(
+            metric_rows,
+            representation,
+            latent_metric_names.jaccard,
+            COMPARISON,
+            local["knn_jaccard"],
+            len(sample_indices),
+        )
         for method, prefix in ((METHOD_2D, "old"), (METHOD_3D, "new")):
-            add_metric(metric_rows, representation, "Label kNN purity@15", method, local[f"{prefix}_label_purity"], len(sample_indices))
             add_metric(
                 metric_rows,
                 representation,
-                "Different-section latent kNN fraction@15",
+                latent_metric_names.label_purity,
+                method,
+                local[f"{prefix}_label_purity"],
+                len(sample_indices),
+            )
+            add_metric(
+                metric_rows,
+                representation,
+                latent_metric_names.different_section,
                 method,
                 local[f"{prefix}_different_section_fraction"],
                 len(sample_indices),
@@ -784,7 +846,7 @@ def main() -> None:
             add_metric(
                 metric_rows,
                 representation,
-                "Adjacent-section latent kNN fraction@15",
+                latent_metric_names.adjacent_section,
                 method,
                 local[f"{prefix}_adjacent_section_fraction"],
                 len(sample_indices),
@@ -811,7 +873,7 @@ def main() -> None:
 
     metrics = pd.DataFrame(metric_rows)
     metrics.to_csv(args.output_dir / "embedding_comparison_metrics.tsv", sep="\t", index=False)
-    plot_metric_summary(metrics, args.output_dir)
+    plot_metric_summary(metrics, args.output_dir, latent_metric_names)
     umap_audit = plot_shared_umap(
         baseline,
         section_aware,
@@ -852,6 +914,7 @@ def main() -> None:
         spatial_audit,
         baseline_metadata,
         section_aware_metadata,
+        latent_metric_names,
     )
     print(json.dumps(summary, indent=2), flush=True)
 
