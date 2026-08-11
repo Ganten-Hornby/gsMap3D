@@ -714,7 +714,7 @@ def write_report(
             f"For `emb_niche`, label purity changed from {niche_purity_2d:.2%} to "
             f"{niche_purity_3d:.2%}: an absolute increase of {niche_purity_absolute_pp:.2f} "
             f"percentage points and a relative increase of {niche_purity_relative_percent:.1f}%. "
-            "This does not mean that purity is 117.5%, and the descriptive comparison does not "
+            f"This does not mean that purity is {niche_purity_relative_percent:.1f}%, and the descriptive comparison does not "
             "isolate a causal effect of the 3D graph because other training settings also differ.",
             "",
             f"`{latent_metric_names.recall}` is the mean fraction of latent neighbors shared by the two runs on the same stratified sample. "
