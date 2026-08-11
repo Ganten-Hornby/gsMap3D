@@ -16,6 +16,7 @@
 ## Worktree, Environment, and Slurm Rules
 
 - Use the existing `${PROJECT_ROOT}/.venv`; do not create another virtual environment for revision work or for CUDA troubleshooting.
+- Target the project's supported Python 3 version directly. Do not add `from __future__ import annotations` to new or edited Python files, and do not introduce Python-version compatibility layers unless the user explicitly requests one.
 - Keep PyTorch, DGL, and CUDA dependencies compatible with CUDA 12. Do not introduce a new CUDA major-version dependency unless a concrete package requires it, the requirement is verified on a GPU node, and the user explicitly approves the environment change.
 - A login node is not evidence for CUDA or DGL GPU compatibility. Run CUDA health checks, GPU imports, and GPU smoke tests inside an allocated GPU node.
 - Submit computational workloads through Slurm with callback coverage; do not leave a raw `sbatch` job without a registered callback. Use scheduler/resource-database evidence for CPU and memory requests.
