@@ -229,6 +229,45 @@ def test_sectionwise_2d_graph_never_connects_different_sections():
     assert all(sections[source] == sections[target] for source, target in graph.edges)
 
 
+def test_sectionwise_2d_graph_uses_xy_from_xyz_coordinates():
+    xy = np.asarray(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]
+    )
+    xyz = np.column_stack((xy, np.asarray([0.0, 0.0, 0.0, 9.0, 9.0, 9.0])))
+    sections = np.asarray(["a", "a", "a", "b", "b", "b"])
+    stable_ids = np.asarray(["a0", "a1", "a2", "b0", "b1", "b2"])
+
+    expected = build_sectionwise_2d_graph(
+        xy, sections, n_neighbors=2, stable_ids=stable_ids, workers=1
+    )
+    observed = build_sectionwise_2d_graph(
+        xyz, sections, n_neighbors=2, stable_ids=stable_ids, workers=1
+    )
+
+    assert np.array_equal(observed.edges, expected.edges)
+
+
+def test_section_aware_3d_graph_allows_sections_with_equal_median_z():
+    coords = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ]
+    )
+    sections = np.asarray(["a", "a", "b", "b", "c", "c"])
+    stable_ids = np.asarray(["a0", "a1", "b0", "b1", "c0", "c1"])
+
+    graph = build_section_aware_3d_graph(
+        coords, sections, n_neighbors=1, stable_ids=stable_ids, workers=1
+    )
+
+    assert graph.edges.shape[0] > 0
+
+
 def test_section_aware_3d_graph_is_bidirectional_and_permutation_invariant():
     coords = np.asarray(
         [

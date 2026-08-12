@@ -315,6 +315,24 @@ def _nearest_target_indices(
     return selected
 
 
+def order_sections_by_median_coordinate(
+    coords: np.ndarray, section_labels: np.ndarray
+) -> np.ndarray:
+    """Return section labels ordered by their median final coordinate."""
+
+    coords = _validate_coordinates(coords)
+    section_labels = np.asarray(section_labels).astype(str)
+    if section_labels.shape != (coords.shape[0],):
+        raise ValueError(
+            f"section_labels must have shape ({coords.shape[0]},), got {section_labels.shape}"
+        )
+    unique_sections = np.unique(section_labels)
+    section_z = np.asarray(
+        [np.median(coords[section_labels == section, -1]) for section in unique_sections]
+    )
+    return unique_sections[np.argsort(section_z, kind="stable")]
+
+
 def build_section_aware_3d_graph(
     coords: np.ndarray,
     section_labels: np.ndarray,
@@ -357,18 +375,7 @@ def build_section_aware_3d_graph(
 
     canonical_coords, canonical_order = _canonicalize_nodes(coords, stable_ids)
     canonical_sections = section_labels[canonical_order]
-    unique_sections = np.unique(canonical_sections)
-    section_z = np.asarray(
-        [
-            np.median(canonical_coords[canonical_sections == section, -1])
-            for section in unique_sections
-        ]
-    )
-    z_order = np.argsort(section_z, kind="stable")
-    ordered_sections = unique_sections[z_order]
-    ordered_z = section_z[z_order]
-    if ordered_z.size > 1 and np.any(np.isclose(np.diff(ordered_z), 0.0)):
-        raise ValueError("sections must have distinct median physical z coordinates")
+    ordered_sections = order_sections_by_median_coordinate(canonical_coords, canonical_sections)
 
     within_edges: list[np.ndarray] = []
     within_radii = np.zeros(coords.shape[0], dtype=np.float64)
@@ -447,17 +454,13 @@ def build_section_aware_3d_graph(
                 fallback_coords[:, None, :] - canonical_coords[selected_targets],
                 axis=2,
             )
-            within_ceiling = selected_distances <= (
-                2.0 * within_radii[fallback_indices, None]
-            )
+            within_ceiling = selected_distances <= (2.0 * within_radii[fallback_indices, None])
             if not np.any(within_ceiling):
                 continue
             cross_edges.append(
                 np.column_stack(
                     (
-                        np.broadcast_to(
-                            fallback_indices[:, None], selected.shape
-                        )[within_ceiling],
+                        np.broadcast_to(fallback_indices[:, None], selected.shape)[within_ceiling],
                         selected_targets[within_ceiling],
                     )
                 )
@@ -486,13 +489,15 @@ def build_sectionwise_2d_graph(
     """Build independent within-section 2D KNN graphs in one H5AD.
 
     Each spot selects up to ``n_neighbors`` external neighbors from its own
-    physical section. No cross-section edge is created. Coordinates must have
-    exactly two XY columns; self-loops remain a separate GCN operation.
+    physical section. No cross-section edge is created. Coordinates may contain
+    XY or XYZ columns; only XY participates in this graph. Self-loops remain a
+    separate GCN operation.
     """
 
     coords = _validate_coordinates(coords)
-    if coords.shape[1] != 2:
-        raise ValueError("sectionwise 2D graphs require exactly two XY columns")
+    if coords.shape[1] not in {2, 3}:
+        raise ValueError("sectionwise 2D graphs require XY or XYZ coordinates")
+    coords = coords[:, :2]
     if n_neighbors < 1:
         raise ValueError("n_neighbors must be at least 1")
 
@@ -509,9 +514,7 @@ def build_sectionwise_2d_graph(
     edge_blocks: list[np.ndarray] = []
     for section in np.unique(canonical_sections):
         global_indices = np.flatnonzero(canonical_sections == section)
-        selected = _external_knn_indices(
-            canonical_coords[global_indices], n_neighbors, workers
-        )
+        selected = _external_knn_indices(canonical_coords[global_indices], n_neighbors, workers)
         effective_k = selected.shape[1]
         if effective_k == 0:
             continue

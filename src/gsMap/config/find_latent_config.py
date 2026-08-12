@@ -45,6 +45,7 @@ class FindLatentModelConfig:
             ),
             case_sensitive=False,
         ),
+        {"__display_in_quick_mode_cli__": True},
     ] = "symmetric_knn"
 
     graph_radius: Annotated[
@@ -65,6 +66,7 @@ class FindLatentModelConfig:
                 "sectionwise_2d and section_aware_3d graphs"
             )
         ),
+        {"__display_in_quick_mode_cli__": True},
     ] = None
 
     graph_z_scale: Annotated[
@@ -76,9 +78,23 @@ class FindLatentModelConfig:
             ),
             min=0.0,
         ),
+        {"__display_in_quick_mode_cli__": True},
     ] = 1.0
 
     K: Annotated[int, typer.Option(help="Graph convolution depth for LGCN", min=1, max=10)] = 3
+
+    inference_chunk_size: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Target number of focal spots per section-aligned inference chunk. "
+                "Physical sections remain intact, all spots are retained, and "
+                "section-aware chunks include graph halos."
+            ),
+            min=1,
+        ),
+        {"__display_in_quick_mode_cli__": True},
+    ] = 250_000
 
     # Model parameters
     hidden_size: Annotated[
