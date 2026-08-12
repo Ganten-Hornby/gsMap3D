@@ -47,6 +47,11 @@ from .memmap_io import (
 )
 from .row_ordering_jax import optimize_row_order_jax
 
+# Marker scores are persisted as float16. Saturate the transformed result before
+# that cast so strongly enriched genes remain finite instead of becoming +inf.
+_FLOAT16_MARKER_SCORE_MAX = float(np.finfo(np.float16).max)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -673,7 +678,7 @@ def compute_marker_scores_jax(
         frac_mask = expr_frac > global_expr_frac
         marker_score = jnp.where(frac_mask, marker_score, 0.0)
 
-    marker_score = jnp.exp(marker_score**1.5) - 1.0
+    marker_score = jnp.minimum(jnp.exp(marker_score**1.5) - 1.0, _FLOAT16_MARKER_SCORE_MAX)
 
     # Return as float16 for memory efficiency
     return marker_score.astype(jnp.float16)
@@ -778,6 +783,9 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
 
     # Handle cases where all slices are invalid (all NaN) - set to 0
     marker_score = jnp.where(jnp.isnan(marker_score), 0.0, marker_score)
+    # Pool in float32 before saturation: an individual slice may exceed float16
+    # while its cross-slice mean remains representable.
+    marker_score = jnp.minimum(marker_score, _FLOAT16_MARKER_SCORE_MAX)
 
     # Return as float16 for memory efficiency
     return marker_score.astype(jnp.float16)
