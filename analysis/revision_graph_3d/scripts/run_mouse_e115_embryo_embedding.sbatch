@@ -6,7 +6,8 @@
 
 set -Eeuo pipefail
 
-readonly ARM="${1:?usage: run_mouse_e115_embryo_embedding.sbatch 2d|3d}"
+readonly ARM="${1:?usage: run_mouse_e115_embryo_embedding.sbatch 2d|3d [start-step]}"
+readonly START_STEP="${2:-find_latent}"
 readonly PROJECT_ROOT=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 readonly INPUT_H5AD="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/Mouse_E11.5_embryo_graph_ready.h5ad"
 readonly WORKDIR="${PROJECT_ROOT}/analysis/revision_graph_3d/runs"
@@ -33,7 +34,15 @@ case "${ARM}" in
 esac
 
 readonly RUN_DIR="${WORKDIR}/${PROJECT_NAME}"
-mkdir -p "${RUN_DIR}" "${PROJECT_ROOT}/analysis/revision_graph_3d/logs"
+readonly LATENT2GENE_DIR="${RUN_DIR}/latent_to_gene"
+mkdir -p "${RUN_DIR}" "${LATENT2GENE_DIR}" "${PROJECT_ROOT}/analysis/revision_graph_3d/logs"
+
+if command -v lfs >/dev/null 2>&1; then
+    stripe_count="$(lfs getstripe -d -c "${LATENT2GENE_DIR}" | tr -d '[:space:]')"
+    if [[ "${stripe_count}" != "4" ]]; then
+        lfs setstripe -c 4 "${LATENT2GENE_DIR}"
+    fi
+fi
 
 record_exit() {
     local status=$?
@@ -98,5 +107,5 @@ PY
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
     --use-gpu \
-    --start-step find_latent \
+    --start-step "${START_STEP}" \
     --stop-step cauchy

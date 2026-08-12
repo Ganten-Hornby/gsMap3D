@@ -3,8 +3,10 @@ Memory-mapped I/O utilities for efficient large-scale data handling
 Replaces Zarr-backed storage with NumPy memory maps for better performance
 """
 
+import errno
 import json
 import logging
+import os
 import queue
 import shutil
 import threading
@@ -161,8 +163,14 @@ class MemMapDense:
             except (json.JSONDecodeError, KeyError):
                 logger.warning(f"Invalid metadata at {self.meta_path}. Recreating.")
 
-        # Create new memory map
-        self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="w+", shape=self.shape)
+        # Reserve the complete backing store before mapping it.  Merely opening a
+        # large file with np.memmap(mode="w+") creates a sparse file; a later
+        # allocation failure then terminates the process with SIGBUS instead of a
+        # catchable Python exception.  Up-front allocation turns that failure
+        # into an OSError here, before worker threads start writing.
+        byte_size = int(np.prod(self.shape, dtype=np.int64)) * np.dtype(self.dtype).itemsize
+        self._preallocate_backing_file(byte_size)
+        self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="r+", shape=self.shape)
 
         # # Initialize to zeros
         # self.memmap[:] = 0
@@ -179,6 +187,40 @@ class MemMapDense:
             json.dump(meta, f, indent=2)
 
         logger.info(f"Created MemMapDense at {self.data_path} with shape {self.shape}")
+
+    def _preallocate_backing_file(self, byte_size: int) -> None:
+        """Create a fully allocated backing file or fail before it is mmap'ed."""
+        self.data_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(self.data_path, "w+b") as backing_file:
+                try:
+                    os.posix_fallocate(backing_file.fileno(), 0, byte_size)
+                except AttributeError:
+                    logger.warning(
+                        "os.posix_fallocate is unavailable; creating a sparse memmap backing file"
+                    )
+                    backing_file.truncate(byte_size)
+                except OSError as error:
+                    unsupported_errors = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}
+                    if error.errno not in unsupported_errors:
+                        raise
+                    logger.warning(
+                        "Filesystem does not support posix_fallocate; creating a sparse "
+                        "memmap backing file: %s",
+                        error,
+                    )
+                    backing_file.truncate(byte_size)
+        except BaseException:
+            self.data_path.unlink(missing_ok=True)
+            raise
+
+        actual_size = self.data_path.stat().st_size
+        if actual_size != byte_size:
+            self.data_path.unlink(missing_ok=True)
+            raise OSError(
+                f"Could not allocate {byte_size} bytes for {self.data_path}; "
+                f"backing file size is {actual_size}"
+            )
 
     def _open_memmap_readonly(self):
         """Open an existing memory-mapped file in read-only mode"""
