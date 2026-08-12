@@ -311,12 +311,7 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
                         end = n_vars
             elif self.marker_score_format == "memmap":
                 # For memmap format, check the concatenated latent adata
-                adata_path = (
-                    Path(self.workdir)
-                    / self.project_name
-                    / "latent2gene"
-                    / "concatenated_latent_adata.h5ad"
-                )
+                adata_path = self.concatenated_latent_adata_path
                 shape = get_anndata_shape(str(adata_path))
                 if shape is not None:
                     n_obs, _ = shape
