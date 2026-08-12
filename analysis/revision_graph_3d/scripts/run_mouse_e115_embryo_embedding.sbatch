@@ -8,7 +8,7 @@ set -Eeuo pipefail
 
 readonly ARM="${1:?usage: run_mouse_e115_embryo_embedding.sbatch 2d|3d}"
 readonly PROJECT_ROOT=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
-readonly INPUT_H5AD=/storage/yangjianLab/lilounan/data/3dst/Mouse_E11.5_embryo.h5ad
+readonly INPUT_H5AD="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/Mouse_E11.5_embryo_graph_ready.h5ad"
 readonly WORKDIR="${PROJECT_ROOT}/analysis/revision_graph_3d/runs"
 readonly PYTHON="${PROJECT_ROOT}/.venv/bin/python"
 readonly GSMAP="${PROJECT_ROOT}/.venv/bin/gsmap"
@@ -89,6 +89,11 @@ PY
     --inference-chunk-size 100000 \
     --two-stage \
     --n-cell-training 100000 \
+    --n-adjacent-slices 1 \
+    --cross-slice-selection-mode physical_window \
+    --cross-slice-max-distance 5.000001 \
+    --cross-slice-z-coordinate 2 \
+    --cross-slice-z-scale 1.0 \
     --sumstats-config-file "${TRAIT_MANIFEST}" \
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
