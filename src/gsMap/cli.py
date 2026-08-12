@@ -154,14 +154,13 @@ def spatial_ldsc(config: SpatialLDSCConfig):
     logger.info(f"LDSC results will be saved to: {config.ldsc_save_dir}")
     logger.info(f"Result file: {config.get_ldsc_result_file(config.trait_name)}")
 
-    try:
-        from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
+    backend = "GPU" if config.use_gpu else "CPU"
+    logger.info(f"Using JAX implementation on {backend}")
 
-        run_spatial_ldsc_jax(config)
-        logger.info("✓ Spatial LDSC completed successfully!")
-    except ImportError:
-        logger.info("Running in demo mode...")
-        logger.info("✓ Demo completed!")
+    from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
+
+    run_spatial_ldsc_jax(config)
+    logger.info("✓ Spatial LDSC completed successfully!")
 
 
 @app.command(name="cauchy-combination")
