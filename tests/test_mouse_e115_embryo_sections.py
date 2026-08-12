@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ import pandas as pd
 SCRIPT_DIR = Path(__file__).parents[1] / "analysis" / "revision_graph_3d" / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from prepare_mouse_e115_embryo_input import set_slice_id_from_z_axis  # noqa: E402
+from prepare_mouse_e115_embryo_input import main, set_slice_id_from_z_axis  # noqa: E402
 
 from gsMap.find_latent.find_latent_representation import (  # noqa: E402
     write_latent_representation_outputs,
@@ -70,3 +71,51 @@ def test_section_graph_outputs_one_h5ad_per_unique_z_in_physical_order(tmp_path)
         "embryo__section_002_315.0",
     ]
     assert [ad.read_h5ad(path).n_obs for path in outputs.values()] == [2, 1, 1]
+
+
+def test_preparation_allows_source_slice_label_to_span_multiple_z_values(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "source.h5ad"
+    output = tmp_path / "prepared.h5ad"
+    audit = tmp_path / "audit.json"
+    adata = ad.AnnData(
+        X=np.ones((4, 2), dtype=np.float32),
+        obs=pd.DataFrame(
+            {
+                "slice_id": ["S11", "S11", "S12", "S12"],
+                "mapped_celltype": ["a", "a", "b", "b"],
+            },
+            index=[f"spot-{index}" for index in range(4)],
+        ),
+        obsm={
+            "z_correction": np.array(
+                [[0, 0, 305], [1, 0, 310], [0, 0, 310], [1, 0, 315]], dtype=np.float64
+            )
+        },
+    )
+    adata.write_h5ad(source)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_mouse_e115_embryo_input.py",
+            "--source",
+            str(source),
+            "--output",
+            str(output),
+            "--audit",
+            str(audit),
+        ],
+    )
+
+    main()
+
+    prepared = ad.read_h5ad(output)
+    assert prepared.obs["slice_id"].astype(float).tolist() == [305, 310, 310, 315]
+    mappings = {
+        item["slice_id"]: item
+        for item in json.loads(audit.read_text())["slice_to_physical_section"]
+    }
+    assert mappings["S11"]["z_axis_slice_ids"] == [305.0, 310.0]
+    assert mappings["S11"]["n_z_axis_slices"] == 2

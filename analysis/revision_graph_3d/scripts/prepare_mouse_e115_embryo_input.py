@@ -82,18 +82,14 @@ def main() -> None:
 
     mappings = []
     for section in np.unique(original_sections):
-        section_z = np.unique(z[original_sections == section])
-        if section_z.size != 1:
-            raise ValueError(
-                f"Original section {section!r} spans {section_z.size} corrected z values"
-            )
-        z_value = float(section_z[0])
+        section_mask = original_sections == section
+        section_z = np.unique(z[section_mask])
         mappings.append(
             {
                 "slice_id": section,
-                "z_correction": z_value,
-                "z_axis_slice_id": z_value,
-                "n_obs": int(np.sum(original_sections == section)),
+                "z_axis_slice_ids": section_z.tolist(),
+                "n_z_axis_slices": int(section_z.size),
+                "n_obs": int(np.sum(section_mask)),
             }
         )
 
