@@ -25,6 +25,49 @@ def format_duration(seconds):
         return f"{minutes}m {int(seconds % 60)}s"
 
 
+def _validate_late_start_prerequisites(
+    config: QuickModeConfig,
+    start_idx: int,
+) -> None:
+    """Reject late restarts whose persisted prerequisites are stale."""
+
+    if start_idx < 2:
+        return
+
+    gene_block_mode = config.marker_score_format == "gene_block"
+    if not check_latent2gene_done(config, require_marker_scores=not gene_block_mode):
+        raise RuntimeError(
+            f"Cannot start quick mode at '{config.start_step}': latent2gene outputs "
+            "are missing, stale, or belong to different H5AD inputs. "
+            "Restart from latent2gene."
+        )
+
+    if start_idx >= 3:
+        stale_traits = [
+            trait
+            for trait in config.sumstats_config_dict
+            if not check_spatial_ldsc_done(config, trait)
+        ]
+        if stale_traits:
+            raise RuntimeError(
+                f"Cannot start quick mode at '{config.start_step}': spatial_ldsc "
+                f"prerequisites are stale or missing for {', '.join(stale_traits)}. "
+                "Restart from spatial_ldsc."
+            )
+
+    if start_idx >= 4:
+        stale_traits = [
+            trait
+            for trait in config.sumstats_config_dict
+            if not check_cauchy_done(config, trait)
+        ]
+        if stale_traits:
+            raise RuntimeError(
+                f"Cannot start quick mode at '{config.start_step}': Cauchy results "
+                f"are stale or missing for {', '.join(stale_traits)}. Restart from cauchy."
+            )
+
+
 def run_quick_mode(config: QuickModeConfig):
     """
     Run the Quick Mode pipeline.
@@ -54,6 +97,8 @@ def run_quick_mode(config: QuickModeConfig):
             f"start_step ({config.start_step}) must be before or equal to stop_step ({config.stop_step})"
         )
 
+    _validate_late_start_prerequisites(config, start_idx)
+
     # Step 1: Find Latent Representations
     if start_idx <= 0 <= stop_idx:
         logger.info("=== Step 1: Find Latent Representations ===")
@@ -72,11 +117,15 @@ def run_quick_mode(config: QuickModeConfig):
     if start_idx <= 1 <= stop_idx:
         logger.info("=== Step 2: Latent to Gene Mapping ===")
         start_time = time.time()
+        gene_block_mode = config.marker_score_format == "gene_block"
 
-        if check_latent2gene_done(config):
+        if check_latent2gene_done(config, require_marker_scores=not gene_block_mode):
             logger.info("Latent to gene mapping already done. Skipping...")
         else:
-            run_latent_to_gene(config.latent2gene_config)
+            run_latent_to_gene(
+                config.latent2gene_config,
+                materialize_marker_scores=not gene_block_mode,
+            )
 
         logger.info(f"Step 2 completed in {format_duration(time.time() - start_time)}")
 

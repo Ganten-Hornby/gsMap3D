@@ -7,6 +7,7 @@ import os
 import time
 from collections import deque
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import anndata as ad
 import numpy as np
@@ -26,12 +27,28 @@ from rich.progress import (
 from gsMap.config import SpatialLDSCConfig
 
 from .chunk_source import SpatialLDChunkSource
-from .io import prepare_trait_data
+from .io import FeatherAnnData, prepare_trait_data
 from .pipeline import ParallelLDScoreComputer, ParallelLDScoreReader
 from .result_writer import ResultWriter
 from .trait_data import prepare_snp_data_for_blocks
 
 logger = logging.getLogger("gsMap.spatial_ldsc_processor")
+
+if TYPE_CHECKING:
+    from typing import Any
+
+
+def _align_gene_axes(
+    marker_genes: np.ndarray,
+    weight_genes: pd.Index,
+) -> tuple[np.ndarray, list[int]]:
+    """Return aligned marker-score and SNP-weight indices for common genes."""
+    common_genes_mask = pd.Series(marker_genes).isin(weight_genes).to_numpy()
+    common_genes = marker_genes[common_genes_mask]
+    return (
+        np.flatnonzero(common_genes_mask),
+        [weight_genes.get_loc(gene) for gene in common_genes],
+    )
 
 
 class SpatialLDSCProcessor:
@@ -47,12 +64,13 @@ class SpatialLDSCProcessor:
         self,
         config: SpatialLDSCConfig,
         output_dir: Path,
-        marker_score_adata: ad.AnnData | None,
+        marker_score_adata: ad.AnnData | FeatherAnnData | None,
         snp_gene_weight_adata: ad.AnnData | None,
         baseline_ld: pd.DataFrame,
         w_ld: pd.DataFrame,
         n_loader_threads: int = 10,
         ldscore_adata: ad.AnnData | None = None,
+        marker_score_store=None,
     ):
         """
         Initialize the unified processor.
@@ -84,6 +102,7 @@ class SpatialLDSCProcessor:
         self.result_writer = None
         self.chunk_source = None
         self.defer_ldscore_to_compute = False
+        self.marker_score_store = marker_score_store
 
         if ldscore_adata is not None:
             # ── Direct ldscore mode ──────────────────────────────────────────
@@ -100,8 +119,41 @@ class SpatialLDSCProcessor:
                 f"Direct ldscore mode: {self.n_spots} cells, "
                 f"{ldscore_adata.n_obs} SNPs in ldscore h5ad"
             )
+        elif marker_score_store is not None:
+            self.mode = "gene_block"
+            self.ldscore_adata = None
+            self.marker_score_adata = marker_score_adata
+            self.snp_gene_weight_adata = snp_gene_weight_adata
+            self.n_spots = marker_score_store.shape[0]
+            if marker_score_adata is None:
+                raise ValueError("marker_score_adata metadata is required in gene-block mode")
+            if marker_score_adata.n_obs != self.n_spots:
+                raise ValueError(
+                    "Gene-block marker scores and marker metadata have different spot counts"
+                )
+            if marker_score_adata.n_vars != marker_score_store.shape[1]:
+                raise ValueError(
+                    "Gene-block marker scores and marker metadata have different gene counts"
+                )
+            self.spot_names_all = np.array(marker_score_adata.obs_names)
+            gene_names_from_adata = np.array(marker_score_adata.var_names)
+            marker_score_store.validate_gene_names(gene_names_from_adata)
+
+            if self.snp_gene_weight_adata is None:
+                raise ValueError("snp_gene_weight_adata is required in gene-block mode")
+            self.marker_score_gene_indices, self.weight_gene_indices = _align_gene_axes(
+                gene_names_from_adata,
+                self.snp_gene_weight_adata.var.index,
+            )
+            logger.info(
+                "Gene-block marker scores: %s spots, %s common genes",
+                self.n_spots,
+                len(self.marker_score_gene_indices),
+            )
         else:
             # ── Weight-matrix mode (original behavior) ───────────────────────
+            if marker_score_adata is None:
+                raise ValueError("marker_score_adata is required in weight-matrix mode")
             self.mode = "weight_matrix"
             self.ldscore_adata = None
             self.marker_score_adata = marker_score_adata
@@ -119,18 +171,11 @@ class SpatialLDSCProcessor:
             if self.snp_gene_weight_adata is None:
                 raise ValueError("snp_gene_weight_adata must be provided in weight-matrix mode")
 
-            marker_score_genes_series = pd.Series(gene_names_from_adata)
-            common_genes_mask = marker_score_genes_series.isin(
-                self.snp_gene_weight_adata.var.index
+            self.marker_score_gene_indices, self.weight_gene_indices = _align_gene_axes(
+                gene_names_from_adata,
+                self.snp_gene_weight_adata.var.index,
             )
-            common_genes = gene_names_from_adata[common_genes_mask]
-
-            self.marker_score_gene_indices = np.where(common_genes_mask)[0]
-            self.weight_gene_indices = [
-                self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes
-            ]
-
-            logger.info(f"Found {len(common_genes)} common genes")
+            logger.info(f"Found {len(self.marker_score_gene_indices)} common genes")
 
         # Filter by sample if specified
         if self.mode == "direct_ldscore" and self.config.sample_filter:
@@ -141,6 +186,8 @@ class SpatialLDSCProcessor:
 
         if self.config.sample_filter:
             logger.info(f"Filtering spots by sample: {self.config.sample_filter}")
+            if self.marker_score_adata is None:
+                raise RuntimeError("Marker-score metadata is unavailable for sample filtering")
             sample_info = self.marker_score_adata.obs.get(
                 "sample", self.marker_score_adata.obs.get("sample_name", None)
             )
@@ -189,7 +236,7 @@ class SpatialLDSCProcessor:
         self.total_chunks = len(self.chunk_starts)
         logger.info(f"Total chunks to process: {self.total_chunks}")
 
-    def setup_trait(self, trait_name: str, sumstats_file: str):
+    def setup_trait(self, trait_name: str, sumstats_file: str | Path):
         """
         Setup processor for a new trait.
         Loads sumstats, prepares data, and initializes trait-specific components.
@@ -201,10 +248,12 @@ class SpatialLDSCProcessor:
         snp_ref = (
             self.ldscore_adata if self.mode == "direct_ldscore" else self.snp_gene_weight_adata
         )
+        if snp_ref is None:
+            raise RuntimeError("SNP reference data is not initialized")
         data, common_snps = prepare_trait_data(
             self.config,
             trait_name,
-            sumstats_file,
+            str(sumstats_file),
             self.baseline_ld,
             self.w_ld,
             snp_ref,
@@ -226,7 +275,10 @@ class SpatialLDSCProcessor:
             )
         else:
             # Extract SNP-gene weight matrix for this trait's SNPs
-            self.snp_gene_weight_sparse = self.snp_gene_weight_adata.X[snp_positions, :][
+            if self.snp_gene_weight_adata is None or self.weight_gene_indices is None:
+                raise RuntimeError("SNP-gene weights are not initialized")
+            weight_matrix = cast("Any", self.snp_gene_weight_adata.X)
+            self.snp_gene_weight_sparse = weight_matrix[snp_positions, :][
                 :, self.weight_gene_indices
             ]
 
@@ -255,6 +307,7 @@ class SpatialLDSCProcessor:
             marker_score_adata=self.marker_score_adata,
             marker_score_gene_indices=self.marker_score_gene_indices,
             snp_gene_weight_sparse=getattr(self, "snp_gene_weight_sparse", None),
+            marker_score_store=self.marker_score_store,
         )
 
     def _fetch_ldscore_chunk(self, chunk_index: int) -> tuple[np.ndarray, pd.Index, int, int]:

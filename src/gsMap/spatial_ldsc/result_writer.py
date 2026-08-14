@@ -1,9 +1,9 @@
 """Result assembly and persistence for spatial LDSC."""
 
-from __future__ import annotations
-
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,12 +11,21 @@ import pandas as pd
 from scipy.stats import norm
 from statsmodels.stats.multitest import multipletests
 
-if TYPE_CHECKING:
-    from pathlib import Path
+from gsMap.latent2gene.provenance import artifact_signature, atomic_json_dump
 
+if TYPE_CHECKING:
     from gsMap.config import SpatialLDSCConfig
 
 logger = logging.getLogger("gsMap.spatial_ldsc.result_writer")
+
+RESULT_METADATA_FORMAT_VERSION = 1
+
+
+def result_metadata_path(output_path: str | Path) -> Path:
+    """Return the completion sidecar for one spatial-LDSC CSV."""
+
+    output_path = Path(output_path)
+    return output_path.with_name(f"{output_path.name}.meta.json")
 
 
 @dataclass
@@ -36,7 +45,7 @@ class ResultWriter:
 
     def __init__(
         self,
-        config: SpatialLDSCConfig,
+        config: "SpatialLDSCConfig",
         trait_name: str,
         output_dir: Path,
         n_spots: int,
@@ -82,8 +91,15 @@ class ResultWriter:
 
         missing_chunks = set(range(total_chunks)) - self.processed_chunks
         if missing_chunks:
-            logger.warning(f"Missing chunks: {sorted(missing_chunks)}")
-            logger.warning(f"Processed {len(self.processed_chunks)}/{total_chunks} chunks")
+            raise RuntimeError(
+                f"Refusing to save incomplete spatial-LDSC result: missing chunks "
+                f"{sorted(missing_chunks)}; processed "
+                f"{len(self.processed_chunks)}/{total_chunks}"
+            )
+        if len(self.results) != total_chunks:
+            raise RuntimeError(
+                "Refusing to save spatial-LDSC result with duplicate chunk outputs"
+            )
 
         sorted_results = sorted(self.results, key=lambda x: x.chunk_idx)
         merged_df = pd.concat(
@@ -93,7 +109,28 @@ class ResultWriter:
 
         output_path = self.output_dir / self._generate_output_filename()
         logger.info(f"Saving results to {output_path}")
-        merged_df.to_csv(output_path, index=False, compression="gzip")
+        partial_path = output_path.with_name(f".{output_path.name}.partial")
+        partial_path.unlink(missing_ok=True)
+        try:
+            merged_df.to_csv(partial_path, index=False, compression="gzip")
+            os.replace(partial_path, output_path)
+            atomic_json_dump(
+                result_metadata_path(output_path),
+                {
+                    "format_version": RESULT_METADATA_FORMAT_VERSION,
+                    "complete": True,
+                    "trait_name": self.trait_name,
+                    "row_count": len(merged_df),
+                    "total_chunks": total_chunks,
+                    "processed_chunks": len(self.processed_chunks),
+                    "spot_start": int(self.min_spot_start),
+                    "spot_end": int(self.max_spot_end),
+                    "output_signature": artifact_signature(output_path),
+                },
+            )
+        except BaseException:
+            partial_path.unlink(missing_ok=True)
+            raise
 
         self._log_statistics(merged_df, output_path, total_chunks)
         return merged_df

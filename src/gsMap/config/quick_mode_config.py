@@ -136,7 +136,30 @@ def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
         if len(missing_files) > 10:
             logger.info(f"  ... and {len(missing_files) - 10} more")
 
-    return len(missing_files) == 0
+    if missing_files:
+        return False
+
+    report_sentinel = config.web_report_dir / "report_meta.json"
+    cauchy_outputs = [
+        config.get_cauchy_result_file(
+            trait,
+            annotation=annotation,
+            all_samples=all_samples,
+        )
+        for trait in config.trait_name_list
+        for annotation in config.annotation_list
+        for all_samples in (True, False)
+    ]
+    if cauchy_outputs and not all(path.exists() for path in cauchy_outputs):
+        return False
+    if cauchy_outputs:
+        newest_cauchy = max(path.stat().st_mtime_ns for path in cauchy_outputs)
+        if report_sentinel.stat().st_mtime_ns < newest_cauchy:
+            if verbose:
+                logger.info("Report predates Cauchy results and must be regenerated")
+            return False
+
+    return True
 
 
 def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[Path]]:

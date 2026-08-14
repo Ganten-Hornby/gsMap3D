@@ -1,9 +1,9 @@
 """Cell chunk sources for spatial LDSC."""
 
-from __future__ import annotations
-
 import numpy as np
 import pandas as pd
+
+from gsMap.latent2gene.gene_blocks import accumulate_annotated_ldscore_blocks
 
 
 class SpatialLDChunkSource:
@@ -23,6 +23,7 @@ class SpatialLDChunkSource:
         marker_score_adata=None,
         marker_score_gene_indices=None,
         snp_gene_weight_sparse=None,
+        marker_score_store=None,
     ):
         self.mode = mode
         self.chunk_starts = chunk_starts
@@ -36,6 +37,7 @@ class SpatialLDChunkSource:
         self.marker_score_adata = marker_score_adata
         self.marker_score_gene_indices = marker_score_gene_indices
         self.snp_gene_weight_sparse = snp_gene_weight_sparse
+        self.marker_score_store = marker_score_store
 
     def fetch_chunk(self, chunk_index: int, defer_ldscore_to_compute: bool):
         """Fetch one chunk as either LD scores or marker scores."""
@@ -54,7 +56,7 @@ class SpatialLDChunkSource:
 
         if self.mode == "direct_ldscore":
             ldscore_chunk = self._fetch_direct_ldscore_chunk(memmap_start, memmap_end)
-        else:
+        elif self.mode == "weight_matrix":
             marker_score_chunk = self._fetch_marker_score_chunk(memmap_start, memmap_end)
             if defer_ldscore_to_compute:
                 return (
@@ -65,6 +67,10 @@ class SpatialLDChunkSource:
                     marker_score_chunk,
                 )
             ldscore_chunk = self.compute_ldscore_from_marker_chunk(marker_score_chunk)
+        elif self.mode == "gene_block":
+            ldscore_chunk = self._fetch_gene_block_ldscore_chunk(memmap_start, memmap_end)
+        else:
+            raise ValueError(f"Unsupported spatial LD chunk mode: {self.mode}")
 
         return (
             ldscore_chunk.astype(np.float32, copy=False),
@@ -103,3 +109,24 @@ class SpatialLDChunkSource:
         if hasattr(ldscore_chunk, "toarray"):
             ldscore_chunk = ldscore_chunk.toarray()
         return ldscore_chunk.astype(np.float32, copy=False)
+
+    def _fetch_gene_block_ldscore_chunk(
+        self,
+        memmap_start: int,
+        memmap_end: int,
+    ) -> np.ndarray:
+        """Accumulate SNP-by-spot annotated LD scores over independent gene blocks."""
+        if self.marker_score_store is None or self.marker_score_gene_indices is None:
+            raise RuntimeError("Gene-block marker-score chunk source is not initialized")
+        if self.snp_gene_weight_sparse is None:
+            raise RuntimeError("SNP-gene sparse weight matrix is not initialized")
+
+        marker_blocks = self.marker_score_store.iter_spot_marker_blocks(
+            memmap_start,
+            memmap_end,
+            self.marker_score_gene_indices,
+        )
+        return accumulate_annotated_ldscore_blocks(
+            self.snp_gene_weight_sparse,
+            marker_blocks,
+        )

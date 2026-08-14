@@ -15,6 +15,7 @@ from functools import partial
 from pathlib import Path
 
 import anndata as ad
+import h5py
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
@@ -44,6 +45,12 @@ from .memmap_io import (
     MemMapDense,
     ParallelMarkerScoreWriter,
     ParallelRankReader,
+)
+from .provenance import (
+    artifact_signature,
+    atomic_json_dump,
+    canonical_sha256,
+    rank_source_fingerprint,
 )
 from .row_ordering_jax import optimize_row_order_jax
 
@@ -630,6 +637,7 @@ def compute_marker_scores_jax(
     global_log_gmean: jnp.ndarray,  # G-dimensional vector
     global_expr_frac: jnp.ndarray,  # G-dimensional vector
     no_expression_fraction: bool = False,  # Skip expression fraction filtering if True
+    rank_row_min: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     JAX-accelerated marker score computation
@@ -654,7 +662,11 @@ def compute_marker_scores_jax(
     if not no_expression_fraction:
         # Compute expression fraction (mean of is_expressed across neighbors)
         # Treat min log rank as non-expressed
-        is_expressed = log_ranks_3d != log_ranks_3d.min(axis=-1, keepdims=True)
+        if rank_row_min is None:
+            row_min = log_ranks_3d.min(axis=-1, keepdims=True)
+        else:
+            row_min = rank_row_min.reshape(batch_size, num_neighbors, 1)
+        is_expressed = log_ranks_3d != row_min
 
         # Create mask for valid neighbors (where weights > 0)
         valid_mask = weights > 0  # Shape: (batch_size, num_neighbors)
@@ -689,6 +701,7 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
     global_log_gmean: jnp.ndarray,  # G-dimensional vector
     global_expr_frac: jnp.ndarray,  # G-dimensional vector
     no_expression_fraction: bool = False,  # Skip expression fraction filtering if True
+    rank_row_min: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     JAX-accelerated marker score computation with hierarchical pooling for 3D spatial data.
@@ -731,7 +744,15 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
     if not no_expression_fraction:
         # Compute expression fraction for each slice
         # Treat min log rank as non-expressed
-        min_log_rank = log_ranks_4d.min(axis=-1, keepdims=True)
+        if rank_row_min is None:
+            min_log_rank = log_ranks_4d.min(axis=-1, keepdims=True)
+        else:
+            min_log_rank = rank_row_min.reshape(
+                batch_size,
+                n_slices,
+                num_homogeneous_per_slice,
+                1,
+            )
         is_expressed = log_ranks_4d != min_log_rank
 
         # Create mask for valid neighbors within each slice (where weights > 0)
@@ -1120,6 +1141,7 @@ class MarkerScoreCalculator:
         slice_ids: np.ndarray | None,
         rank_shape: tuple[int, int],
         high_quality_mask: np.ndarray,
+        optimize_row_order: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray, int] | None:
         """
         Prepare batch data for a cell type
@@ -1163,13 +1185,15 @@ class MarkerScoreCalculator:
             f"Neighbor indices exceed bounds (max: {neighbor_indices.max()}, limit: {max_valid_idx})"
         )
 
-        # Optimize row order using JAX implementation
-        logger.info("Optimizing row order for cache efficiency...")
-        row_order = optimize_row_order_jax(
-            neighbor_indices=neighbor_indices[:, : self.config.homogeneous_neighbors],
-            cell_indices=cell_indices,
-            neighbor_weights=cell_sims[:, : self.config.homogeneous_neighbors],
-        )
+        if optimize_row_order:
+            logger.info("Optimizing row order for cache efficiency...")
+            row_order = optimize_row_order_jax(
+                neighbor_indices=neighbor_indices[:, : self.config.homogeneous_neighbors],
+                cell_indices=cell_indices,
+                neighbor_weights=cell_sims[:, : self.config.homogeneous_neighbors],
+            )
+        else:
+            row_order = np.arange(n_cells)
 
         neighbor_indices = neighbor_indices[row_order]
         cell_sims = cell_sims[row_order]
@@ -1427,3 +1451,140 @@ class MarkerScoreCalculator:
         logger.info(f"Results saved to {output_path}")
 
         return str(output_path)
+
+    def prepare_homogeneous_neighbors(
+        self,
+        adata_path: str | Path,
+        rank_memmap_path: str | Path,
+    ) -> str:
+        """Build and persist homogeneous-neighbor matrices without marker scores.
+
+        Gene-block marker calculation stages each rank block on local storage, so
+        the expensive greedy row-order optimization is unnecessary here.
+        """
+
+        adata_path = Path(adata_path)
+        rank_memmap_path = Path(rank_memmap_path)
+        neighbor_metadata_path = adata_path.with_suffix(".homogeneous_neighbors.meta.json")
+        calculation_fingerprint = self._homogeneous_neighbor_calculation_fingerprint()
+        rank_fingerprint = rank_source_fingerprint(rank_memmap_path)
+        if self._homogeneous_neighbors_complete(
+            adata_path,
+            neighbor_metadata_path,
+            calculation_fingerprint,
+            rank_fingerprint,
+        ):
+            logger.info("Homogeneous-neighbor matrices are already complete: %s", adata_path)
+            return str(adata_path)
+
+        logger.info("Preparing homogeneous neighbors for gene-block marker scores")
+        adata = sc.read_h5ad(adata_path)
+        with open(rank_memmap_path.with_suffix(".meta.json")) as handle:
+            rank_metadata = json.load(handle)
+        rank_shape = tuple(rank_metadata["shape"])
+        if adata.n_obs != rank_shape[0]:
+            raise ValueError(
+                f"Cell count mismatch: AnnData has {adata.n_obs}, ranks have {rank_shape[0]}"
+            )
+
+        if self.config.high_quality_neighbor_filter:
+            if "High_quality" not in adata.obs:
+                raise ValueError("High_quality column is required for neighbor filtering")
+            high_quality_mask = adata.obs["High_quality"].to_numpy(dtype=bool)
+        else:
+            high_quality_mask = np.ones(adata.n_obs, dtype=bool)
+
+        self.console = Console()
+        cell_types = self._get_cell_types(adata)
+        self._clear_homogeneous_outputs(adata)
+        self._display_input_summary(adata, cell_types, adata.n_obs, adata.n_vars)
+        coords, emb_niche, emb_indv, slice_ids = self._prepare_embeddings(adata)
+
+        for cell_type in cell_types:
+            self._find_homogeneous_spots(
+                adata,
+                cell_type,
+                self.config.annotation,
+                coords,
+                emb_niche,
+                emb_indv,
+                slice_ids,
+                rank_shape,
+                high_quality_mask,
+                optimize_row_order=False,
+            )
+
+        logger.info("Saving homogeneous-neighbor matrices to %s", adata_path)
+        adata.write_h5ad(adata_path)
+        atomic_json_dump(
+            neighbor_metadata_path,
+            {
+                "format_version": 1,
+                "complete": True,
+                "calculation_fingerprint": calculation_fingerprint,
+                "rank_source_fingerprint": rank_fingerprint,
+                "adata_signature": artifact_signature(adata_path),
+                "completed_at": time.time(),
+            },
+        )
+        return str(adata_path)
+
+    def _homogeneous_neighbor_calculation_fingerprint(self) -> str:
+        keys = (
+            "dataset_type",
+            "annotation",
+            "spatial_key",
+            "latent_representation_niche",
+            "latent_representation_cell",
+            "spatial_neighbors",
+            "homogeneous_neighbors",
+            "cell_embedding_similarity_threshold",
+            "spatial_domain_similarity_threshold",
+            "homogeneous_selection_mode",
+            "adjacent_slice_spatial_neighbors",
+            "n_adjacent_slices",
+            "cross_slice_selection_mode",
+            "cross_slice_max_distance",
+            "cross_slice_z_coordinate",
+            "cross_slice_z_scale",
+            "cross_slice_marker_score_strategy",
+            "high_quality_neighbor_filter",
+            "fix_cross_slice_homogenous_neighbors",
+            "min_cells_per_type",
+        )
+        calculation = {}
+        for key in keys:
+            value = getattr(self.config, key)
+            calculation[key] = value.value if hasattr(value, "value") else value
+        return canonical_sha256(calculation)
+
+    @staticmethod
+    def _homogeneous_neighbors_complete(
+        adata_path: Path,
+        metadata_path: Path,
+        calculation_fingerprint: str,
+        rank_fingerprint: str,
+    ) -> bool:
+        if not metadata_path.exists() or not adata_path.exists():
+            return False
+        try:
+            with open(metadata_path) as handle:
+                metadata = json.load(handle)
+            if (
+                metadata.get("format_version") != 1
+                or not metadata.get("complete", False)
+                or metadata.get("calculation_fingerprint") != calculation_fingerprint
+                or metadata.get("rank_source_fingerprint") != rank_fingerprint
+                or metadata.get("adata_signature") != artifact_signature(adata_path)
+            ):
+                return False
+            with h5py.File(adata_path, "r") as adata_file:
+                indices = adata_file["obsm"]["gsMap_homo_indices"]
+                weights = adata_file["obsm"]["gsMap_homo_cell_sims"]
+                return (
+                    indices.ndim == 2
+                    and indices.shape[0] > 0
+                    and indices.shape == weights.shape
+                )
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False

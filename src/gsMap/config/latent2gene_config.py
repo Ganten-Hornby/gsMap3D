@@ -82,6 +82,14 @@ class LatentToGeneComputeConfig:
         ),
     ] = 500
 
+    marker_score_gene_block_size: Annotated[
+        int,
+        typer.Option(
+            help="Number of genes per independently allocated marker-score block",
+            min=1,
+        ),
+    ] = 2048
+
     find_homogeneous_batch_size: int = 100
     rank_write_interval: int = 10
 
@@ -553,11 +561,16 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         self.latent_representation_niche = None
 
 
-def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
+def check_latent2gene_done(
+    config: LatentToGeneConfig,
+    *,
+    require_marker_scores: bool = True,
+) -> bool:
     """
     Check if latent2gene step is done by verifying validity of metadata and output files.
     """
     from gsMap.latent2gene.memmap_io import MemMapDense
+    from gsMap.latent2gene.rank_calculator import rank_outputs_match_inputs
 
     config._resolve_h5ad_inputs()
 
@@ -565,23 +578,48 @@ def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
         "concatenated_latent_adata": Path(config.concatenated_latent_adata_path),
         "rank_memmap": Path(config.rank_memmap_path),
         "mean_frac": Path(config.mean_frac_path),
-        "marker_scores": Path(config.marker_scores_memmap_path),
         "metadata": Path(config.latent2gene_metadata_path),
     }
+    if require_marker_scores:
+        expected_outputs["marker_scores"] = Path(config.marker_scores_memmap_path)
+    else:
+        expected_outputs["marker_score_blocks_manifest"] = Path(
+            config.marker_score_blocks_manifest_path
+        )
 
     if not all(p.exists() for p in expected_outputs.values()):
         return False
 
     try:
-        # Check rank memmap completion
-        rank_memmap_complete, _ = MemMapDense.check_complete(expected_outputs["rank_memmap"])
-        if not rank_memmap_complete:
+        if config.sample_h5ad_dict is None:
+            return False
+        if not rank_outputs_match_inputs(
+            sample_h5ad_dict=config.sample_h5ad_dict,
+            rank_memmap_path=expected_outputs["rank_memmap"],
+            mean_frac_path=expected_outputs["mean_frac"],
+            concatenated_adata_path=expected_outputs["concatenated_latent_adata"],
+            annotation_key=config.annotation,
+            data_layer=config.data_layer,
+            min_cells_per_type=config.min_cells_per_type,
+        ):
             return False
 
-        # Check marker scores memmap completion
-        marker_scores_complete, _ = MemMapDense.check_complete(expected_outputs["marker_scores"])
-        if not marker_scores_complete:
-            return False
+        if require_marker_scores:
+            marker_scores_complete, _ = MemMapDense.check_complete(
+                expected_outputs["marker_scores"]
+            )
+            if not marker_scores_complete:
+                return False
+        else:
+            from gsMap.latent2gene.gene_blocks import gene_block_store_matches_inputs
+
+            if not gene_block_store_matches_inputs(
+                expected_outputs["marker_score_blocks_manifest"],
+                rank_memmap_path=expected_outputs["rank_memmap"],
+                mean_frac_path=expected_outputs["mean_frac"],
+                marker_metadata_path=expected_outputs["concatenated_latent_adata"],
+            ):
+                return False
 
         # Check metadata
         with open(expected_outputs["metadata"]) as f:

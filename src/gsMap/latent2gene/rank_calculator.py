@@ -4,6 +4,7 @@ Extracts and processes the rank calculation logic from find_latent_representatio
 """
 
 import gc
+import json
 import logging
 import time
 from pathlib import Path
@@ -35,8 +36,115 @@ from scipy.sparse import csr_matrix
 from gsMap.config import LatentToGeneConfig
 
 from .memmap_io import MemMapDense
+from .provenance import (
+    artifact_signature,
+    atomic_json_dump,
+    rank_inputs_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
+
+RANK_PROVENANCE_FORMAT_VERSION = 1
+RANK_MIN_GENES = 20
+
+
+def rank_provenance_path(rank_memmap_path: str | Path) -> Path:
+    """Return the sidecar binding rank outputs to their source H5AD files."""
+
+    return Path(rank_memmap_path).with_suffix(".provenance.json")
+
+
+def _rank_output_signatures(
+    rank_memmap_path: str | Path,
+    mean_frac_path: str | Path,
+    concatenated_adata_path: str | Path,
+) -> dict[str, dict[str, int | str]]:
+    rank_memmap_path = Path(rank_memmap_path)
+    return {
+        "rank_data": artifact_signature(rank_memmap_path.with_suffix(".dat")),
+        "rank_metadata": artifact_signature(rank_memmap_path.with_suffix(".meta.json")),
+        "mean_frac": artifact_signature(mean_frac_path),
+        "concatenated_adata": artifact_signature(concatenated_adata_path),
+    }
+
+
+def write_rank_provenance(
+    *,
+    sample_h5ad_dict: dict[str, Path],
+    rank_memmap_path: str | Path,
+    mean_frac_path: str | Path,
+    concatenated_adata_path: str | Path,
+    annotation_key: str | None,
+    data_layer: str,
+    min_cells_per_type: int | None,
+) -> Path:
+    """Persist the current rank-input fingerprint after every output is durable."""
+
+    provenance_path = rank_provenance_path(rank_memmap_path)
+    atomic_json_dump(
+        provenance_path,
+        {
+            "format_version": RANK_PROVENANCE_FORMAT_VERSION,
+            "input_fingerprint": rank_inputs_fingerprint(
+                sample_h5ad_dict,
+                annotation_key=annotation_key,
+                data_layer=data_layer,
+                min_cells_per_type=min_cells_per_type,
+                min_genes=RANK_MIN_GENES,
+            ),
+            "outputs": _rank_output_signatures(
+                rank_memmap_path,
+                mean_frac_path,
+                concatenated_adata_path,
+            ),
+            "complete": True,
+            "completed_at": time.time(),
+        },
+    )
+    return provenance_path
+
+
+def rank_outputs_match_inputs(
+    *,
+    sample_h5ad_dict: dict[str, Path],
+    rank_memmap_path: str | Path,
+    mean_frac_path: str | Path,
+    concatenated_adata_path: str | Path,
+    annotation_key: str | None,
+    data_layer: str,
+    min_cells_per_type: int | None,
+) -> bool:
+    """Return whether complete rank outputs belong to the current source inputs."""
+
+    try:
+        complete, _ = MemMapDense.check_complete(rank_memmap_path)
+        if not complete:
+            return False
+        with open(rank_provenance_path(rank_memmap_path)) as handle:
+            provenance = json.load(handle)
+        if (
+            provenance.get("format_version") != RANK_PROVENANCE_FORMAT_VERSION
+            or not provenance.get("complete", False)
+        ):
+            return False
+        current_input = rank_inputs_fingerprint(
+            sample_h5ad_dict,
+            annotation_key=annotation_key,
+            data_layer=data_layer,
+            min_cells_per_type=min_cells_per_type,
+            min_genes=RANK_MIN_GENES,
+        )
+        return (
+            provenance.get("input_fingerprint") == current_input
+            and provenance.get("outputs")
+            == _rank_output_signatures(
+                rank_memmap_path,
+                mean_frac_path,
+                concatenated_adata_path,
+            )
+        )
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def filter_cells(
@@ -289,11 +397,14 @@ class RankCalculator:
         rank_memmap_path = Path(self.config.rank_memmap_path)
         mean_frac_path = Path(self.config.mean_frac_path)
 
-        # Check if outputs already exist
-        if (
-            concat_adata_path.exists()
-            and mean_frac_path.exists()
-            and MemMapDense.check_complete(rank_memmap_path)[0]
+        if rank_outputs_match_inputs(
+            sample_h5ad_dict=sample_h5ad_dict,
+            rank_memmap_path=rank_memmap_path,
+            mean_frac_path=mean_frac_path,
+            concatenated_adata_path=concat_adata_path,
+            annotation_key=annotation_key,
+            data_layer=data_layer,
+            min_cells_per_type=self.config.min_cells_per_type,
         ):
             logger.info(f"Rank outputs already exist in {self.output_dir}")
             return {
@@ -301,6 +412,21 @@ class RankCalculator:
                 "rank_memmap": str(rank_memmap_path),
                 "mean_frac": str(mean_frac_path),
             }
+
+        stale_outputs = (
+            rank_memmap_path.with_suffix(".dat"),
+            rank_memmap_path.with_suffix(".meta.json"),
+            rank_provenance_path(rank_memmap_path),
+            mean_frac_path,
+            concat_adata_path,
+        )
+        if any(path.exists() for path in stale_outputs):
+            logger.warning(
+                "Rank outputs are incomplete or do not belong to the current H5AD inputs; "
+                "rebuilding the exact latent-to-gene rank artifacts"
+            )
+            for path in stale_outputs:
+                path.unlink(missing_ok=True)
 
         logger.info("Starting rank calculation and concatenation...")
         logger.info(f"Processing {len(sample_h5ad_dict)} samples")
@@ -360,7 +486,7 @@ class RankCalculator:
                         X=None,
                         annotation_key=annotation_key,
                         min_cells_per_type=self.config.min_cells_per_type,
-                        min_genes=20,
+                        min_genes=RANK_MIN_GENES,
                         precomputed_gene_counts=n_genes_per_cell,
                     )
                 else:
@@ -369,7 +495,7 @@ class RankCalculator:
                         X=X_temp,
                         annotation_key=annotation_key,
                         min_cells_per_type=self.config.min_cells_per_type,
-                        min_genes=20,
+                        min_genes=RANK_MIN_GENES,
                     )
 
                 # Store the indices of cells to keep for this sample
@@ -609,6 +735,15 @@ class RankCalculator:
                 gc.collect()
 
         # Final completion message
+        write_rank_provenance(
+            sample_h5ad_dict=sample_h5ad_dict,
+            rank_memmap_path=rank_memmap_path,
+            mean_frac_path=mean_frac_path,
+            concatenated_adata_path=concat_adata_path,
+            annotation_key=annotation_key,
+            data_layer=data_layer,
+            min_cells_per_type=self.config.min_cells_per_type,
+        )
         logger.info("Rank calculation and concatenation completed successfully")
 
         return {

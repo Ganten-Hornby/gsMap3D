@@ -17,6 +17,8 @@ readonly HOMOLOG_FILE=/storage/yangjianLab/lilounan/resources/mouse_human_homolo
 readonly TRAIT_MANIFEST="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/mouse_e115_embryo_gwas_traits.yaml"
 readonly SNP_GENE_WEIGHTS=/storage/yangjianLab/lilounan/resources/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad
 readonly W_LD_DIR=/storage/yangjianLab/lilounan/resources/gsMap_resource/LDSC_resource/weights_hm3_no_hla
+readonly LOCAL_TMP_ROOT="/data/${USER}/gsmap"
+readonly LOCAL_TMP_DIR="${LOCAL_TMP_ROOT}/${SLURM_JOB_ID}"
 
 case "${ARM}" in
     2d)
@@ -37,13 +39,6 @@ readonly RUN_DIR="${WORKDIR}/${PROJECT_NAME}"
 readonly LATENT2GENE_DIR="${RUN_DIR}/latent_to_gene"
 mkdir -p "${RUN_DIR}" "${LATENT2GENE_DIR}" "${PROJECT_ROOT}/analysis/revision_graph_3d/logs"
 
-if command -v lfs >/dev/null 2>&1; then
-    stripe_count="$(lfs getstripe -d -c "${LATENT2GENE_DIR}" | tr -d '[:space:]')"
-    if [[ "${stripe_count}" != "4" ]]; then
-        lfs setstripe -c 4 "${LATENT2GENE_DIR}"
-    fi
-fi
-
 record_exit() {
     local status=$?
     {
@@ -52,9 +47,30 @@ record_exit() {
         printf 'exit_code=%s\n' "${status}"
         printf 'finished_at=%s\n' "$(date --iso-8601=seconds)"
     } >"${RUN_DIR}/slurm_status.txt"
+    case "${LOCAL_TMP_DIR}" in
+        "/data/${USER}/gsmap/${SLURM_JOB_ID}")
+            rm -rf -- "${LOCAL_TMP_DIR}" || printf 'Failed to clean %s\n' "${LOCAL_TMP_DIR}" >&2
+            ;;
+        *)
+            printf 'Refusing to clean unexpected temp path: %s\n' "${LOCAL_TMP_DIR}" >&2
+            ;;
+    esac
     exit "${status}"
 }
 trap record_exit EXIT
+
+if [[ ! -d /data ]]; then
+    printf '/data is not available on host %s\n' "$(hostname)" >&2
+    exit 1
+fi
+mkdir -p "${LOCAL_TMP_DIR}"
+
+if command -v lfs >/dev/null 2>&1; then
+    stripe_count="$(lfs getstripe -d -c "${LATENT2GENE_DIR}" | tr -d '[:space:]')"
+    if [[ "${stripe_count}" != "4" ]]; then
+        lfs setstripe -c 4 "${LATENT2GENE_DIR}"
+    fi
+fi
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
@@ -67,6 +83,8 @@ printf 'host=%s\n' "$(hostname)"
 printf 'job_id=%s\n' "${SLURM_JOB_ID}"
 printf 'arm=%s\n' "${ARM}"
 printf 'commit=%s\n' "$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
+printf 'memmap_tmp_dir=%s\n' "${LOCAL_TMP_DIR}"
+df -h /data
 nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv
 
 "${PYTHON}" - <<'PY'
@@ -106,6 +124,9 @@ PY
     --sumstats-config-file "${TRAIT_MANIFEST}" \
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
+    --marker-score-format gene_block \
+    --marker-score-gene-block-size 2048 \
+    --memmap-tmp-dir "${LOCAL_TMP_DIR}" \
     --use-gpu \
     --start-step "${START_STEP}" \
     --stop-step cauchy
