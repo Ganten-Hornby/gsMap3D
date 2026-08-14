@@ -24,10 +24,12 @@ case "${ARM}" in
     2d)
         readonly PROJECT_NAME=mouse_e115_embryo_sectionwise_2d_k10
         readonly GRAPH_MODE=sectionwise_2d
+        readonly MARKER_SCORE_GENE_BLOCK_SIZE=2048
         ;;
     3d)
         readonly PROJECT_NAME=mouse_e115_embryo_section_aware_3d_k10
         readonly GRAPH_MODE=section_aware_3d
+        readonly MARKER_SCORE_GENE_BLOCK_SIZE=2400
         ;;
     *)
         printf 'Unknown arm: %s (expected 2d or 3d)\n' "${ARM}" >&2
@@ -127,7 +129,7 @@ PY
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
     --marker-score-format gene_block \
-    --marker-score-gene-block-size 2048 \
+    --marker-score-gene-block-size "${MARKER_SCORE_GENE_BLOCK_SIZE}" \
     --memmap-tmp-dir "${LOCAL_TMP_DIR}" \
     --use-gpu \
     --start-step "${START_STEP}" \
