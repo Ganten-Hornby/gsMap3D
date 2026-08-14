@@ -17,7 +17,7 @@ readonly HOMOLOG_FILE=/storage/yangjianLab/lilounan/resources/mouse_human_homolo
 readonly TRAIT_MANIFEST="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/mouse_e115_embryo_gwas_traits.yaml"
 readonly SNP_GENE_WEIGHTS=/storage/yangjianLab/lilounan/resources/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad
 readonly W_LD_DIR=/storage/yangjianLab/lilounan/resources/gsMap_resource/LDSC_resource/weights_hm3_no_hla
-readonly LOCAL_TMP_ROOT="/data/${USER}/gsmap"
+readonly LOCAL_TMP_ROOT="/tmp/gsmap-${USER}"
 readonly LOCAL_TMP_DIR="${LOCAL_TMP_ROOT}/${SLURM_JOB_ID}"
 
 case "${ARM}" in
@@ -48,7 +48,7 @@ record_exit() {
         printf 'finished_at=%s\n' "$(date --iso-8601=seconds)"
     } >"${RUN_DIR}/slurm_status.txt"
     case "${LOCAL_TMP_DIR}" in
-        "/data/${USER}/gsmap/${SLURM_JOB_ID}")
+        "/tmp/gsmap-${USER}/${SLURM_JOB_ID}")
             rm -rf -- "${LOCAL_TMP_DIR}" || printf 'Failed to clean %s\n' "${LOCAL_TMP_DIR}" >&2
             ;;
         *)
@@ -59,11 +59,12 @@ record_exit() {
 }
 trap record_exit EXIT
 
-if [[ ! -d /data ]]; then
-    printf '/data is not available on host %s\n' "$(hostname)" >&2
+if [[ ! -d /tmp || ! -w /tmp ]]; then
+    printf '/tmp is not writable on host %s\n' "$(hostname)" >&2
     exit 1
 fi
 mkdir -p "${LOCAL_TMP_DIR}"
+chmod 700 "${LOCAL_TMP_ROOT}" "${LOCAL_TMP_DIR}"
 
 if command -v lfs >/dev/null 2>&1; then
     stripe_count="$(lfs getstripe -d -c "${LATENT2GENE_DIR}" | tr -d '[:space:]')"
@@ -84,7 +85,8 @@ printf 'job_id=%s\n' "${SLURM_JOB_ID}"
 printf 'arm=%s\n' "${ARM}"
 printf 'commit=%s\n' "$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
 printf 'memmap_tmp_dir=%s\n' "${LOCAL_TMP_DIR}"
-df -h /data
+findmnt -T "${LOCAL_TMP_DIR}"
+df -h "${LOCAL_TMP_DIR}"
 nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv
 
 "${PYTHON}" - <<'PY'
