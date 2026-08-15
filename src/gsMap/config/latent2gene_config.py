@@ -46,7 +46,11 @@ class HomogeneousSelectionMode(StrEnum):
 
 @dataclass
 class LatentToGeneComputeConfig:
-    """Compute configuration for latent-to-gene step."""
+    """Compute configuration for latent-to-gene step.
+
+    Rank and marker-score batch sizes use zero for deterministic workload-based
+    sizing. Hardware concurrency uses stable defaults and explicit overrides.
+    """
 
     __display_in_quick_mode_cli__ = True
 
@@ -70,51 +74,66 @@ class LatentToGeneComputeConfig:
         ),
     ] = None
 
-    # Batch sizes
-    rank_batch_size: int = 500
+    # Workload-dependent controls: zero selects deterministic data-based sizing.
+    rank_batch_size: int = 0
 
     mkscore_batch_size: Annotated[
         int,
         typer.Option(
-            help="Number of cells per batch for marker score calculation. Reduce this value (e.g., 50) if encountering GPU OOM errors.",
-            min=10,
+            help="Cells per marker-score batch; 0 selects automatically",
+            min=0,
             max=1000,
         ),
-    ] = 500
+    ] = 0
 
+    # Hardware-dependent controls: stable defaults, never inferred from the host.
     find_homogeneous_batch_size: int = 100
-    rank_write_interval: int = 10
+    rank_write_interval: int = 0
 
-    # Worker configurations
     rank_read_workers: Annotated[
         int,
-        typer.Option(help="Number of parallel reader threads for rank memory map", min=1, max=50),
-    ] = 16
+        typer.Option(
+            help="Rank-reader threads; use an explicit value for the target storage system",
+            min=1,
+            max=128,
+        ),
+    ] = 120
 
     mkscore_compute_workers: Annotated[
         int,
         typer.Option(
-            help="Number of parallel compute threads for marker score calculation", min=1, max=16
+            help="Marker-score compute workers",
+            min=1,
+            max=16,
         ),
     ] = 4
 
     mkscore_write_workers: Annotated[
         int,
-        typer.Option(help="Number of parallel writer threads for marker scores", min=1, max=50),
-    ] = 4
+        typer.Option(
+            help="Marker-score and rank write workers",
+            min=1,
+            max=50,
+        ),
+    ] = 2
 
     compute_input_queue_size: Annotated[
         int,
         typer.Option(
-            help="Maximum size of compute input queue (multiplier of mkscore_compute_workers)",
+            help="Compute-input queue multiplier",
             min=1,
             max=10,
         ),
-    ] = 5
+    ] = 1
 
     writer_queue_size: Annotated[
-        int, typer.Option(help="Maximum size of writer input queue", min=10, max=500)
-    ] = 100
+        int,
+        typer.Option(
+            help="Writer-input queue capacity",
+            min=10,
+            max=500,
+        ),
+    ] = 20
 
 
 @dataclass

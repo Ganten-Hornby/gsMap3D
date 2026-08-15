@@ -88,9 +88,9 @@ The number of workers for each stage can be configured:
 
 | Parameter                 | Description                          | Default | Range |
 | ------------------------- | ------------------------------------ | ------- | ----- |
-| `rank_read_workers`       | Parallel reader threads for Stage 1  | 16      | 1-50  |
+| `rank_read_workers`       | Parallel reader threads for Stage 1  | 120     | 1-128 |
 | `mkscore_compute_workers` | Parallel compute threads for Stage 2 | 4       | 1-16  |
-| `mkscore_write_workers`   | Parallel writer threads for Stage 3  | 4       | 1-50  |
+| `mkscore_write_workers`   | Parallel writer threads for Stage 3  | 2       | 1-50  |
 
 ### Queue Configuration
 
@@ -98,8 +98,8 @@ The message queues between stages control data flow and backpressure:
 
 | Parameter                  | Description                                                                                                                                                       | Default | Range  |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------ |
-| `compute_input_queue_size` | Maximum size of **Rank→Compute Queue** (multiplier of `mkscore_compute_workers`). Controls how many batches can be buffered between reading and computing stages. | 5       | 1-10   |
-| `writer_queue_size`        | Maximum size of **Compute→Write Queue**. Controls how many computed batches can be buffered before being written to disk.                                         | 100     | 10-500 |
+| `compute_input_queue_size` | Maximum size of **Rank→Compute Queue** (multiplier of `mkscore_compute_workers`). Controls how many batches can be buffered between reading and computing stages. | 1       | 1-10   |
+| `writer_queue_size`        | Maximum size of **Compute→Write Queue**. Controls how many computed batches can be buffered before being written to disk.                                         | 20      | 10-500 |
 
 ```{tip}
 Queue sizes balance memory usage and throughput. Larger queues allow better buffering when stage speeds vary, but consume more memory. The default values work well for most systems.
@@ -356,13 +356,15 @@ print(f"Merged {len(results)} spots to {result_dir / f'{project}_{trait}.csv.gz'
 
 ### GPU Out of Memory (OOM) Errors
 
-If you encounter GPU out of memory errors in latent to gene step, try the following solutions in order:
+The rank and marker-score batch sizes are selected deterministically from the
+workload. Worker and queue counts use stable defaults and are never inferred
+from host or scheduler resources. If you encounter a GPU out-of-memory error,
+try the following solutions in order:
 
-**1. Reduce batch size** (recommended first step):
+**1. Override the automatic marker-score batch size**:
 
 ```bash
-# Reduce the marker score batch size (default: 500)
-gsmap quick-mode --mkscore-batch-size 50 ...
+gsmap quick-mode --mkscore-batch-size 25 ...
 ```
 
 **2. Limit JAX memory allocation**:

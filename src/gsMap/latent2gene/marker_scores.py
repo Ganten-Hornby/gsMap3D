@@ -10,11 +10,14 @@ import queue
 import threading
 import time
 import traceback
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
 import anndata as ad
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
@@ -45,14 +48,188 @@ from .memmap_io import (
     ParallelMarkerScoreWriter,
     ParallelRankReader,
 )
-from .row_ordering_jax import optimize_row_order_jax
+from .row_ordering_jax import optimize_row_order_jax, optimize_spatial_row_order
+from .window_cache import (
+    AdjacentRankWindowIndex,
+    RankWindow,
+    RankWindowMapping,
+    independent_rank_window_mapping,
+    maximal_rank_windows,
+)
 
 # Marker scores are persisted as float16. Saturate the transformed result before
 # that cast so strongly enriched genes remain finite instead of becoming +inf.
 _FLOAT16_MARKER_SCORE_MAX = float(np.finfo(np.float16).max)
+_MIB = 1024**2
+_TARGET_COMPACT_BATCH_BYTES = 64 * _MIB
+_MARKER_BATCH_SIZE_CHOICES = (10, 25, 50, 100, 200)
+_EXPECTED_UNIQUE_NEIGHBOR_FRACTION = 0.5
+_MAX_CELL_TYPE_RANK_CACHE_BYTES = 2 * 1024**3
+_CELL_TYPE_CACHE_READ_CHUNK_ROWS = 500
+_RANK_WINDOW_UPDATE_BUCKET_ROWS = 4096
+_TARGET_CACHED_BATCH_BYTES = 128 * _MIB
+_TARGET_A100_CACHED_BATCH_BYTES = 512 * _MIB
 
 
 logger = logging.getLogger(__name__)
+
+
+def _automatic_marker_batch_size(
+    genes: int,
+    rank_dtype: np.dtype,
+    neighbors_per_cell: int,
+) -> int:
+    """Select a marker batch with about 64 MiB of compact rank rows."""
+    if genes < 1 or neighbors_per_cell < 1:
+        raise ValueError("Gene and neighbor counts must be positive")
+    bytes_per_cell = (
+        genes
+        * np.dtype(rank_dtype).itemsize
+        * neighbors_per_cell
+        * _EXPECTED_UNIQUE_NEIGHBOR_FRACTION
+    )
+    unconstrained = _TARGET_COMPACT_BATCH_BYTES // max(1, int(bytes_per_cell))
+    eligible = [size for size in _MARKER_BATCH_SIZE_CHOICES if size <= unconstrained]
+    return eligible[-1] if eligible else _MARKER_BATCH_SIZE_CHOICES[0]
+
+
+def _automatic_cached_marker_batch_size(
+    genes: int,
+    rank_dtype: np.dtype,
+    neighbors_per_cell: int,
+    device_kind: str,
+) -> int:
+    """Select a fixed-shape cached batch from measured device throughput."""
+    if genes < 1 or neighbors_per_cell < 1:
+        raise ValueError("Gene and neighbor counts must be positive")
+    target_bytes = (
+        _TARGET_A100_CACHED_BATCH_BYTES
+        if "a100" in device_kind.casefold()
+        else _TARGET_CACHED_BATCH_BYTES
+    )
+    bytes_per_cell = genes * np.dtype(rank_dtype).itemsize * neighbors_per_cell
+    unconstrained = target_bytes // max(1, int(bytes_per_cell))
+    eligible = [size for size in _MARKER_BATCH_SIZE_CHOICES if size <= unconstrained]
+    return eligible[-1] if eligible else _MARKER_BATCH_SIZE_CHOICES[0]
+
+
+def _estimated_cell_type_rank_cache_bytes(
+    n_cells: int,
+    genes: int,
+    rank_dtype: np.dtype,
+) -> int:
+    """Conservative cache size: homogeneous ranks cannot exceed the cell type."""
+    if n_cells < 0 or genes < 1:
+        raise ValueError("Cell and gene counts must be valid")
+    return int(n_cells) * int(genes) * np.dtype(rank_dtype).itemsize
+
+
+@dataclass
+class CellTypeRankCache:
+    """Ranks and neighbor remapping for one bounded cell type."""
+
+    device_ranks: object
+    local_neighbor_indices: np.ndarray
+    unique_rows: int
+    cache_bytes: int
+    remap_seconds: float
+    read_seconds: float
+    transfer_seconds: float
+
+
+@dataclass
+class PreparedRankWindow:
+    """Host-side payload ready to update one bounded device rank cache."""
+
+    window_index: int
+    bounds: RankWindow
+    mapping: RankWindowMapping
+    host_ranks: np.ndarray | None
+    update_slots: np.ndarray
+    bucket_rows: int
+    weights: np.ndarray
+    remap_seconds: float
+    read_seconds: float
+
+
+@partial(jit, donate_argnums=(0,))
+def _update_rank_cache_prefix_jax(
+    rank_cache: jnp.ndarray,
+    rank_rows: jnp.ndarray,
+) -> jnp.ndarray:
+    """Replace a compact prefix while allowing JAX to reuse the cache buffer."""
+    return jax.lax.dynamic_update_slice(rank_cache, rank_rows, (0, 0))
+
+
+@partial(jit, donate_argnums=(0,))
+def _update_rank_cache_slots_jax(
+    rank_cache: jnp.ndarray,
+    update_slots: jnp.ndarray,
+    rank_rows: jnp.ndarray,
+) -> jnp.ndarray:
+    """Replace only newly required slots while retaining adjacent-window rows."""
+    return rank_cache.at[update_slots].set(rank_rows)
+
+
+def _build_cell_type_rank_cache(
+    rank_values: np.ndarray,
+    neighbor_indices: np.ndarray,
+    max_cache_bytes: int,
+    read_workers: int,
+) -> CellTypeRankCache | None:
+    """Materialize distinct rank rows once and place them on the JAX device."""
+    if max_cache_bytes < 1:
+        return None
+    if read_workers < 1:
+        raise ValueError("read_workers must be positive")
+
+    neighbor_indices = np.asarray(neighbor_indices)
+    if neighbor_indices.ndim != 2 or neighbor_indices.size == 0:
+        raise ValueError(
+            f"Neighbor indices must be a non-empty matrix, got {neighbor_indices.shape}"
+        )
+    if neighbor_indices.min() < 0 or neighbor_indices.max() >= rank_values.shape[0]:
+        raise IndexError("Neighbor indices are outside the rank matrix")
+
+    remap_started = time.perf_counter()
+    unique_rows, inverse = np.unique(neighbor_indices.reshape(-1), return_inverse=True)
+    local_neighbor_indices = inverse.reshape(neighbor_indices.shape).astype(np.int32, copy=False)
+    remap_seconds = time.perf_counter() - remap_started
+
+    cache_bytes = int(unique_rows.size) * int(rank_values.shape[1]) * rank_values.dtype.itemsize
+    if cache_bytes > max_cache_bytes:
+        return None
+
+    host_ranks = np.empty((unique_rows.size, rank_values.shape[1]), dtype=rank_values.dtype)
+    chunks = [
+        (start, min(start + _CELL_TYPE_CACHE_READ_CHUNK_ROWS, unique_rows.size))
+        for start in range(0, unique_rows.size, _CELL_TYPE_CACHE_READ_CHUNK_ROWS)
+    ]
+
+    def read_chunk(bounds: tuple[int, int]) -> None:
+        start, end = bounds
+        host_ranks[start:end] = rank_values[unique_rows[start:end]]
+
+    read_started = time.perf_counter()
+    worker_count = min(read_workers, len(chunks))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        list(executor.map(read_chunk, chunks))
+    read_seconds = time.perf_counter() - read_started
+
+    transfer_started = time.perf_counter()
+    device_ranks = jax.device_put(host_ranks)
+    device_ranks.block_until_ready()
+    transfer_seconds = time.perf_counter() - transfer_started
+
+    return CellTypeRankCache(
+        device_ranks=device_ranks,
+        local_neighbor_indices=local_neighbor_indices,
+        unique_rows=int(unique_rows.size),
+        cache_bytes=cache_bytes,
+        remap_seconds=remap_seconds,
+        read_seconds=read_seconds,
+        transfer_seconds=transfer_seconds,
+    )
 
 
 class ParallelMarkerScoreComputer:
@@ -105,6 +282,13 @@ class ParallelMarkerScoreComputer:
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
 
+        # The rank slab has a batch-dependent first dimension.  Concurrent JAX
+        # transfer/gather dispatches for many such shapes on one GPU produced
+        # rare, silently corrupted full marker batches in production stress
+        # tests.  Serialize only this dynamic-shape reconstruction; the fixed-
+        # shape marker-score kernels remain concurrent.
+        self.rank_gather_lock = threading.Lock()
+
         # Current processing context
         self.neighbor_weights = None
         self.cell_indices_sorted = None
@@ -129,6 +313,34 @@ class ParallelMarkerScoreComputer:
             self.workers.append(worker)
         logger.info(f"Started {self.num_workers} compute workers")
 
+    def _reconstruct_batch_ranks(
+        self, rank_data: np.ndarray, rank_indices: np.ndarray
+    ) -> jnp.ndarray:
+        """Gather one fixed-shape neighbor-rank batch without GPU interleaving."""
+        rank_data = np.asarray(rank_data)
+        rank_indices = np.asarray(rank_indices)
+        if rank_data.ndim != 2:
+            raise ValueError(f"Rank slab must be 2D, got shape {rank_data.shape}")
+        if rank_indices.ndim != 1 or rank_indices.size == 0:
+            raise ValueError(
+                f"Rank inverse index must be a non-empty vector, got shape {rank_indices.shape}"
+            )
+        minimum_index = int(rank_indices.min())
+        maximum_index = int(rank_indices.max())
+        if minimum_index < 0 or maximum_index >= rank_data.shape[0]:
+            raise IndexError(
+                "Rank inverse index outside slab bounds: "
+                f"observed [{minimum_index}, {maximum_index}], "
+                f"valid [0, {rank_data.shape[0] - 1}]"
+            )
+
+        with self.rank_gather_lock:
+            rank_data_jax = jnp.asarray(rank_data)
+            rank_indices_jax = jnp.asarray(rank_indices)
+            batch_ranks = rank_data_jax[rank_indices_jax]
+            batch_ranks.block_until_ready()
+        return batch_ranks
+
     def _compute_worker(self, worker_id: int):
         """Compute worker thread"""
         logger.info(f"Compute worker {worker_id} started")
@@ -144,7 +356,7 @@ class ParallelMarkerScoreComputer:
                 batch_idx, rank_data, rank_indices, original_shape, batch_metadata = item
 
                 # Track timing
-                start_time = time.time()
+                start_time = time.perf_counter()
 
                 # Extract batch parameters from metadata
                 # These should always be provided, but check for safety
@@ -165,15 +377,13 @@ class ParallelMarkerScoreComputer:
                 )
 
                 # Get batch-specific data
-                batch_weights = self.neighbor_weights[batch_start:batch_end]
+                batch_weights = jnp.asarray(self.neighbor_weights[batch_start:batch_end])
                 batch_cell_indices = self.cell_indices_sorted[batch_start:batch_end]
 
-                # Convert to JAX for efficient computation
-                rank_data_jax = jnp.array(rank_data)
-                rank_indices_jax = jnp.array(rank_indices)
-
-                # Use JAX fancy indexing
-                batch_ranks = rank_data_jax[rank_indices_jax]
+                # Reconstruct the fixed-shape rank batch on the GPU.  Blocking
+                # before releasing the lock prevents another worker from
+                # interleaving a different dynamic-shape gather on this device.
+                batch_ranks = self._reconstruct_batch_ranks(rank_data, rank_indices)
 
                 # Compute marker scores using appropriate strategy
                 if self.cross_slice_strategy == "hierarchical_pool":
@@ -204,7 +414,7 @@ class ParallelMarkerScoreComputer:
                 marker_scores_np = np.array(marker_scores, dtype=np.float16)
 
                 # Track throughput
-                elapsed = time.time() - start_time
+                elapsed = time.perf_counter() - start_time
                 with self.throughput_lock:
                     self.throughput.record_batch(elapsed)
 
@@ -232,7 +442,10 @@ class ParallelMarkerScoreComputer:
         n_cells: int,
     ):
         """Set context for processing batches of current cell type"""
-        self.neighbor_weights = jnp.asarray(neighbor_weights)  # transfer to jax array only once
+        # Keep the full cell-type matrix in host memory. Only the current batch
+        # is transferred in each compute worker, avoiding a large device/pinned
+        # allocation before useful work can begin.
+        self.neighbor_weights = np.asarray(neighbor_weights)
         self.cell_indices_sorted = cell_indices_sorted
         self.batch_size = batch_size
         self.n_cells = n_cells
@@ -791,6 +1004,56 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
     return marker_score.astype(jnp.float16)
 
 
+@partial(jit, static_argnums=(3, 4, 7))
+def compute_marker_scores_from_cache_jax(
+    rank_cache: jnp.ndarray,
+    local_neighbor_indices: jnp.ndarray,
+    weights: jnp.ndarray,
+    batch_size: int,
+    num_neighbors: int,
+    global_log_gmean: jnp.ndarray,
+    global_expr_frac: jnp.ndarray,
+    no_expression_fraction: bool = False,
+) -> jnp.ndarray:
+    """Gather cached rows and calculate standard marker scores in one JIT."""
+    log_ranks = rank_cache[local_neighbor_indices.reshape(-1)]
+    return compute_marker_scores_jax(
+        log_ranks,
+        weights,
+        batch_size,
+        num_neighbors,
+        global_log_gmean,
+        global_expr_frac,
+        no_expression_fraction,
+    )
+
+
+@partial(jit, static_argnums=(3, 4, 5, 8))
+def compute_marker_scores_3d_from_cache_jax(
+    rank_cache: jnp.ndarray,
+    local_neighbor_indices: jnp.ndarray,
+    weights: jnp.ndarray,
+    batch_size: int,
+    n_slices: int,
+    num_homogeneous_per_slice: int,
+    global_log_gmean: jnp.ndarray,
+    global_expr_frac: jnp.ndarray,
+    no_expression_fraction: bool = False,
+) -> jnp.ndarray:
+    """Gather cached rows and calculate hierarchical 3D scores in one JIT."""
+    log_ranks = rank_cache[local_neighbor_indices.reshape(-1)]
+    return compute_marker_scores_3d_hierarchical_pool_jax(
+        log_ranks,
+        weights,
+        batch_size,
+        n_slices,
+        num_homogeneous_per_slice,
+        global_log_gmean,
+        global_expr_frac,
+        no_expression_fraction,
+    )
+
+
 class MarkerScoreCalculator:
     """Main class for calculating marker scores"""
 
@@ -1055,18 +1318,6 @@ class MarkerScoreCalculator:
         """Initialize the processing pipeline with shared pools and queues"""
         logger.info("Initializing shared processing pools with direct queue connections...")
 
-        # Create shared queues to connect components with configured sizes
-        reader_to_computer_queue = queue.Queue(
-            maxsize=self.config.mkscore_compute_workers * self.config.compute_input_queue_size
-        )
-        computer_to_writer_queue = queue.Queue(maxsize=self.config.writer_queue_size)
-
-        self.reader = ParallelRankReader(
-            rank_memmap,
-            num_workers=self.config.rank_read_workers,
-            output_queue=reader_to_computer_queue,  # Direct connection to computer
-        )
-
         # Determine 3D strategy parameters
         cross_slice_strategy = None
         n_slices = 1
@@ -1085,11 +1336,58 @@ class MarkerScoreCalculator:
             # For pooling strategies, num_homogeneous is per slice
             num_homogeneous_per_slice = self.config.homogeneous_neighbors
 
+        neighbors_per_cell = n_slices * num_homogeneous_per_slice
+        batch_size = self.config.mkscore_batch_size or _automatic_marker_batch_size(
+            rank_memmap.shape[1], rank_memmap.dtype, neighbors_per_cell
+        )
+        device = jax.devices()[0]
+        cached_batch_size = self.config.mkscore_batch_size or _automatic_cached_marker_batch_size(
+            rank_memmap.shape[1],
+            rank_memmap.dtype,
+            neighbors_per_cell,
+            getattr(device, "device_kind", ""),
+        )
+        reader_workers = self.config.rank_read_workers
+        compute_workers = self.config.mkscore_compute_workers
+        writer_workers = self.config.mkscore_write_workers
+        compute_queue_capacity = compute_workers * self.config.compute_input_queue_size
+        writer_queue_capacity = self.config.writer_queue_size
+        self.effective_rank_read_workers = reader_workers
+        self.cached_marker_batch_size = cached_batch_size
+        self.cell_type_rank_cache_limit_bytes = _MAX_CELL_TYPE_RANK_CACHE_BYTES
+        self.rank_window_prefetch = getattr(device, "platform", "cpu") != "cpu"
+        self.rank_window_adjacent_retention = self.rank_window_prefetch
+        logger.info(
+            "Resolved marker-score pipeline: batch=%d, readers=%d, compute=%d, "
+            "writers=%d, queues=%d/%d, advice=random; cell-type cache batch=%d, "
+            "cap=%.1f GiB, large-window prefetch=%s, retention=%s",
+            batch_size,
+            reader_workers,
+            compute_workers,
+            writer_workers,
+            compute_queue_capacity,
+            writer_queue_capacity,
+            cached_batch_size,
+            self.cell_type_rank_cache_limit_bytes / 1024**3,
+            self.rank_window_prefetch,
+            self.rank_window_adjacent_retention,
+        )
+
+        reader_to_computer_queue = queue.Queue(maxsize=compute_queue_capacity)
+        computer_to_writer_queue = queue.Queue(maxsize=writer_queue_capacity)
+
+        self.reader = ParallelRankReader(
+            rank_memmap,
+            num_workers=reader_workers,
+            output_queue=reader_to_computer_queue,
+            mmap_advice="random",
+        )
+
         self.computer = ParallelMarkerScoreComputer(
             global_log_gmean,
             global_expr_frac,
             self.config.homogeneous_neighbors,
-            num_workers=self.config.mkscore_compute_workers,
+            num_workers=compute_workers,
             input_queue=reader_to_computer_queue,  # Input from reader
             output_queue=computer_to_writer_queue,  # Output to writer
             cross_slice_strategy=cross_slice_strategy,
@@ -1100,22 +1398,502 @@ class MarkerScoreCalculator:
 
         self.writer = ParallelMarkerScoreWriter(
             output_memmap,
-            num_workers=self.config.mkscore_write_workers,
+            num_workers=writer_workers,
             input_queue=computer_to_writer_queue,  # Input from computer
         )
 
         logger.info(
-            f"Processing pools initialized: {self.config.rank_read_workers} readers, "
-            f"{self.config.mkscore_compute_workers} computers, "
-            f"{self.config.mkscore_write_workers} writers"
+            f"Processing pools initialized: {reader_workers} readers, "
+            f"{compute_workers} computers, {writer_workers} writers"
         )
 
         self.marker_score_queue = MarkerScoreMessageQueue(
             reader=self.reader,
             computer=self.computer,
             writer=self.writer,
-            batch_size=self.config.mkscore_batch_size,
+            batch_size=batch_size,
         )
+
+    def _calculate_marker_scores_from_cell_type_cache(
+        self,
+        cell_type: str,
+        neighbor_indices: np.ndarray,
+        neighbor_weights: np.ndarray,
+        cell_indices_sorted: np.ndarray,
+    ) -> bool:
+        """Use a bounded fixed-shape cache when the current cell type fits."""
+        estimated_bytes = _estimated_cell_type_rank_cache_bytes(
+            len(cell_indices_sorted),
+            self.reader.shape[1],
+            self.reader.dtype,
+        )
+        if estimated_bytes > self.cell_type_rank_cache_limit_bytes:
+            logger.info(
+                "Cell-type rank cache skipped for %s: conservative %.2f GiB estimate "
+                "exceeds %.2f GiB cap",
+                cell_type,
+                estimated_bytes / 1024**3,
+                self.cell_type_rank_cache_limit_bytes / 1024**3,
+            )
+            return False
+
+        logger.info(
+            "Building bounded rank cache for %s (at most %.2f GiB)",
+            cell_type,
+            estimated_bytes / 1024**3,
+        )
+        cache = _build_cell_type_rank_cache(
+            rank_values=self.reader.shared_memmap,
+            neighbor_indices=neighbor_indices,
+            max_cache_bytes=self.cell_type_rank_cache_limit_bytes,
+            read_workers=self.effective_rank_read_workers,
+        )
+        if cache is None:
+            logger.info("Cell-type rank cache for %s exceeded its cap; using streaming", cell_type)
+            return False
+
+        logger.info(
+            "Cached %d distinct rows (%.2f GiB) for %s in %.2fs "
+            "(remap %.2fs, read %.2fs, transfer %.2fs)",
+            cache.unique_rows,
+            cache.cache_bytes / 1024**3,
+            cell_type,
+            cache.remap_seconds + cache.read_seconds + cache.transfer_seconds,
+            cache.remap_seconds,
+            cache.read_seconds,
+            cache.transfer_seconds,
+        )
+
+        batch_size = self.cached_marker_batch_size
+        batches = [
+            (batch_idx, start, min(start + batch_size, len(cell_indices_sorted)))
+            for batch_idx, start in enumerate(range(0, len(cell_indices_sorted), batch_size))
+        ]
+        self.reader.reset_for_cell_type(cell_type)
+        self.computer.reset_for_cell_type(cell_type)
+        self.writer.reset_for_cell_type(cell_type)
+
+        def calculate_batch(batch: tuple[int, int, int]) -> None:
+            batch_idx, start, end = batch
+            actual_batch_size = end - start
+            local_neighbors = jax.device_put(cache.local_neighbor_indices[start:end])
+            weights = jax.device_put(neighbor_weights[start:end])
+            if self.computer.cross_slice_strategy == "hierarchical_pool":
+                marker_scores = compute_marker_scores_3d_from_cache_jax(
+                    cache.device_ranks,
+                    local_neighbors,
+                    weights,
+                    actual_batch_size,
+                    self.computer.n_slices,
+                    self.computer.num_homogeneous_per_slice,
+                    self.computer.global_log_gmean,
+                    self.computer.global_expr_frac,
+                    self.computer.no_expression_fraction,
+                )
+            else:
+                marker_scores = compute_marker_scores_from_cache_jax(
+                    cache.device_ranks,
+                    local_neighbors,
+                    weights,
+                    actual_batch_size,
+                    neighbor_indices.shape[1],
+                    self.computer.global_log_gmean,
+                    self.computer.global_expr_frac,
+                    self.computer.no_expression_fraction,
+                )
+            marker_scores_np = np.asarray(marker_scores, dtype=np.float16)
+            self.writer.write_queue.put(
+                (batch_idx, marker_scores_np, cell_indices_sorted[start:end])
+            )
+
+        started = time.perf_counter()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=Console(),
+            refresh_per_second=10,
+        ) as progress:
+            task = progress.add_task(f"[bold]{cell_type} (cached)[/bold]", total=len(batches))
+            with ThreadPoolExecutor(max_workers=self.computer.num_workers) as executor:
+                futures = [executor.submit(calculate_batch, batch) for batch in batches]
+                for future in as_completed(futures):
+                    future.result()
+                    self.writer.check_errors()
+                    progress.advance(task)
+
+        self.writer.write_queue.join()
+        self.writer.check_errors()
+        completed = self.writer.get_completed_count()
+        if completed != len(batches):
+            raise RuntimeError(
+                f"Cached marker-score path wrote {completed}/{len(batches)} batches"
+            )
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "Completed cached marker scores for %s: %.2fs, %.0f cells/s",
+            cell_type,
+            elapsed,
+            len(cell_indices_sorted) / elapsed,
+        )
+
+        gc.collect()
+        return True
+
+    def _calculate_marker_scores_from_rank_windows(
+        self,
+        cell_type: str,
+        neighbor_indices: np.ndarray,
+        neighbor_weights: np.ndarray,
+        cell_indices_sorted: np.ndarray,
+    ) -> bool:
+        """Process a large cell type through maximal bounded rank windows.
+
+        GPU execution retains rows shared by adjacent Morton windows and reads
+        the next host slab while the current device slab is being computed. The
+        host slab is transferred and released before prefetch starts, so overlap
+        does not require two full anonymous-RSS buffers. CPU execution uses
+        independent sequential windows because real-data prefetch improved its
+        throughput by only about one percent.
+        """
+        row_bytes = int(self.reader.shape[1]) * np.dtype(self.reader.dtype).itemsize
+        max_cache_rows = self.cell_type_rank_cache_limit_bytes // row_bytes
+        if max_cache_rows < neighbor_indices.shape[1]:
+            logger.info(
+                "Rank-window cache skipped for %s: one focal row can exceed its capacity",
+                cell_type,
+            )
+            return False
+
+        planning_started = time.perf_counter()
+        windows = maximal_rank_windows(
+            neighbor_indices,
+            max_cache_rows=max_cache_rows,
+            global_rows=self.reader.shape[0],
+        )
+        planning_seconds = time.perf_counter() - planning_started
+        retain_adjacent = self.rank_window_adjacent_retention
+        prefetch = self.rank_window_prefetch
+        rank_index = (
+            AdjacentRankWindowIndex(max_cache_rows, self.reader.shape[0])
+            if retain_adjacent
+            else None
+        )
+        total_batches = sum(
+            (window.end - window.start + self.cached_marker_batch_size - 1)
+            // self.cached_marker_batch_size
+            for window in windows
+        )
+        logger.info(
+            "Using %d maximal %.2f-GiB rank windows for %s (planned in %.2fs); "
+            "prefetch=%s, adjacent retention=%s",
+            len(windows),
+            max_cache_rows * row_bytes / 1024**3,
+            cell_type,
+            planning_seconds,
+            prefetch,
+            retain_adjacent,
+        )
+
+        self.reader.reset_for_cell_type(cell_type)
+        self.computer.reset_for_cell_type(cell_type)
+        self.writer.reset_for_cell_type(cell_type)
+
+        device_cache = jnp.zeros(
+            (max_cache_rows, self.reader.shape[1]),
+            dtype=self.reader.dtype,
+        )
+        device_cache.block_until_ready()
+        batch_size = self.cached_marker_batch_size
+        read_workers = self.effective_rank_read_workers
+        read_memmap = self.reader.shared_memmap
+        next_batch_id = 0
+        total_unique_rows = 0
+        total_new_rows = 0
+        total_retained_rows = 0
+        total_read_seconds = 0.0
+        total_remap_seconds = 0.0
+        total_update_seconds = 0.0
+
+        def prepare_window(
+            window_index: int,
+            bounds: RankWindow,
+            read_executor: ThreadPoolExecutor,
+        ) -> PreparedRankWindow:
+            remap_started = time.perf_counter()
+            block_neighbors = neighbor_indices[bounds.start : bounds.end]
+            mapping = (
+                rank_index.map_window(block_neighbors)
+                if rank_index is not None
+                else independent_rank_window_mapping(block_neighbors)
+            )
+            remap_seconds = time.perf_counter() - remap_started
+            if mapping.unique_rows.size != bounds.unique_rows:
+                raise RuntimeError(
+                    f"Rank-window planner/remapper disagreement in window {window_index}: "
+                    f"{bounds.unique_rows} != {mapping.unique_rows.size}"
+                )
+
+            new_rows = int(mapping.rows_to_read.size)
+            bucket_rows = min(
+                max_cache_rows,
+                (
+                    (new_rows + _RANK_WINDOW_UPDATE_BUCKET_ROWS - 1)
+                    // _RANK_WINDOW_UPDATE_BUCKET_ROWS
+                    * _RANK_WINDOW_UPDATE_BUCKET_ROWS
+                ),
+            )
+            host_ranks = (
+                np.empty(
+                    (bucket_rows, self.reader.shape[1]),
+                    dtype=self.reader.dtype,
+                )
+                if bucket_rows
+                else None
+            )
+            chunks = [
+                (
+                    start,
+                    min(
+                        start + _CELL_TYPE_CACHE_READ_CHUNK_ROWS,
+                        new_rows,
+                    ),
+                )
+                for start in range(0, new_rows, _CELL_TYPE_CACHE_READ_CHUNK_ROWS)
+            ]
+
+            def read_chunk(chunk: tuple[int, int]) -> None:
+                if host_ranks is None:
+                    raise RuntimeError("Missing host rank-window buffer")
+                start, end = chunk
+                host_ranks[start:end] = read_memmap[mapping.rows_to_read[start:end]]
+
+            read_started = time.perf_counter()
+            if chunks:
+                list(read_executor.map(read_chunk, chunks))
+                if host_ranks is None:
+                    raise RuntimeError("Missing populated host rank-window buffer")
+                if bucket_rows > new_rows:
+                    host_ranks[new_rows:] = host_ranks[new_rows - 1]
+            read_seconds = time.perf_counter() - read_started
+
+            update_slots = mapping.update_slots
+            if bucket_rows > update_slots.size:
+                padded_slots = np.empty(bucket_rows, dtype=np.int32)
+                padded_slots[: update_slots.size] = update_slots
+                padded_slots[update_slots.size :] = update_slots[-1]
+                update_slots = padded_slots
+
+            return PreparedRankWindow(
+                window_index=window_index,
+                bounds=bounds,
+                mapping=mapping,
+                host_ranks=host_ranks,
+                update_slots=update_slots,
+                bucket_rows=bucket_rows,
+                weights=np.asarray(neighbor_weights[bounds.start : bounds.end]),
+                remap_seconds=remap_seconds,
+                read_seconds=read_seconds,
+            )
+
+        def update_device_cache(prepared: PreparedRankWindow) -> float:
+            nonlocal device_cache
+            if not prepared.bucket_rows:
+                return 0.0
+            if prepared.host_ranks is None:
+                raise RuntimeError("Host rank-window buffer was already released")
+            update_started = time.perf_counter()
+            device_rows = jax.device_put(prepared.host_ranks)
+            if retain_adjacent:
+                device_slots = jax.device_put(prepared.update_slots)
+                device_cache = _update_rank_cache_slots_jax(
+                    device_cache,
+                    device_slots,
+                    device_rows,
+                )
+                del device_slots
+            else:
+                device_cache = _update_rank_cache_prefix_jax(device_cache, device_rows)
+            device_cache.block_until_ready()
+            update_seconds = time.perf_counter() - update_started
+            prepared.host_ranks = None
+            del device_rows
+            return update_seconds
+
+        def padded_batch(
+            prepared: PreparedRankWindow,
+            start: int,
+            end: int,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+            actual_size = end - start
+            local_neighbors = prepared.mapping.local_neighbor_indices[start:end]
+            weights = prepared.weights[start:end]
+            output_indices = cell_indices_sorted[
+                prepared.bounds.start + start : prepared.bounds.start + end
+            ]
+            if actual_size < batch_size:
+                pad = batch_size - actual_size
+                local_neighbors = np.concatenate(
+                    (local_neighbors, np.repeat(local_neighbors[-1:], pad, axis=0))
+                )
+                weights = np.concatenate((weights, np.repeat(weights[-1:], pad, axis=0)))
+            return local_neighbors, weights, output_indices, actual_size
+
+        def compute_window(
+            prepared: PreparedRankWindow,
+            compute_executor: ThreadPoolExecutor,
+            progress: Progress,
+            progress_task: int,
+        ) -> None:
+            nonlocal next_batch_id
+            cache_for_window = device_cache
+            focal_cells = prepared.bounds.end - prepared.bounds.start
+
+            def calculate_batch(
+                payload: tuple[int, int, int],
+            ) -> tuple[int, np.ndarray, np.ndarray]:
+                batch_id, start, end = payload
+                local_neighbors, weights, output_indices, actual_size = padded_batch(
+                    prepared,
+                    start,
+                    end,
+                )
+                device_neighbors = jax.device_put(local_neighbors)
+                device_weights = jax.device_put(weights)
+                if self.computer.cross_slice_strategy == "hierarchical_pool":
+                    marker_scores = compute_marker_scores_3d_from_cache_jax(
+                        cache_for_window,
+                        device_neighbors,
+                        device_weights,
+                        batch_size,
+                        self.computer.n_slices,
+                        self.computer.num_homogeneous_per_slice,
+                        self.computer.global_log_gmean,
+                        self.computer.global_expr_frac,
+                        self.computer.no_expression_fraction,
+                    )
+                else:
+                    marker_scores = compute_marker_scores_from_cache_jax(
+                        cache_for_window,
+                        device_neighbors,
+                        device_weights,
+                        batch_size,
+                        neighbor_indices.shape[1],
+                        self.computer.global_log_gmean,
+                        self.computer.global_expr_frac,
+                        self.computer.no_expression_fraction,
+                    )
+                output = np.asarray(marker_scores, dtype=np.float16)[:actual_size]
+                return batch_id, output, output_indices
+
+            pending = deque()
+            pending_limit = max(1, self.computer.num_workers * 2)
+
+            def finish_one() -> None:
+                batch_id, marker_scores, output_indices = pending.popleft().result()
+                self.writer.check_errors()
+                self.writer.write_queue.put((batch_id, marker_scores, output_indices))
+                progress.advance(progress_task)
+
+            for start in range(0, focal_cells, batch_size):
+                end = min(start + batch_size, focal_cells)
+                payload = (next_batch_id, start, end)
+                next_batch_id += 1
+                pending.append(compute_executor.submit(calculate_batch, payload))
+                if len(pending) >= pending_limit:
+                    finish_one()
+            while pending:
+                finish_one()
+
+        started = time.perf_counter()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=Console(),
+            refresh_per_second=10,
+        ) as progress:
+            task = progress.add_task(
+                f"[bold]{cell_type} (rank windows)[/bold]",
+                total=total_batches,
+            )
+            with (
+                ThreadPoolExecutor(max_workers=read_workers) as read_executor,
+                ThreadPoolExecutor(max_workers=self.computer.num_workers) as compute_executor,
+            ):
+                if prefetch:
+                    with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
+                        current = prepare_window(0, windows[0], read_executor)
+                        next_future = None
+                        for window_index, bounds in enumerate(windows):
+                            if window_index:
+                                if next_future is None:
+                                    raise RuntimeError("Missing prefetched rank window")
+                                current = next_future.result()
+                            update_seconds = update_device_cache(current)
+                            next_future = (
+                                prefetch_executor.submit(
+                                    prepare_window,
+                                    window_index + 1,
+                                    windows[window_index + 1],
+                                    read_executor,
+                                )
+                                if window_index + 1 < len(windows)
+                                else None
+                            )
+                            compute_window(current, compute_executor, progress, task)
+                            total_unique_rows += current.mapping.unique_rows.size
+                            total_new_rows += current.mapping.rows_to_read.size
+                            total_retained_rows += current.mapping.retained_rows
+                            total_read_seconds += current.read_seconds
+                            total_remap_seconds += current.remap_seconds
+                            total_update_seconds += update_seconds
+                else:
+                    for window_index, bounds in enumerate(windows):
+                        current = prepare_window(window_index, bounds, read_executor)
+                        update_seconds = update_device_cache(current)
+                        compute_window(current, compute_executor, progress, task)
+                        total_unique_rows += current.mapping.unique_rows.size
+                        total_new_rows += current.mapping.rows_to_read.size
+                        total_retained_rows += current.mapping.retained_rows
+                        total_read_seconds += current.read_seconds
+                        total_remap_seconds += current.remap_seconds
+                        total_update_seconds += update_seconds
+
+        self.writer.write_queue.join()
+        self.writer.check_errors()
+        completed = self.writer.get_completed_count()
+        if completed != total_batches or next_batch_id != total_batches:
+            raise RuntimeError(
+                "Rank-window marker-score path wrote/submitted "
+                f"{completed}/{next_batch_id}/{total_batches} batches"
+            )
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "Completed rank-window marker scores for %s: %.2fs, %.0f cells/s; "
+            "unique/new/retained rows=%d/%d/%d, remap/read/update=%.2f/%.2f/%.2fs",
+            cell_type,
+            elapsed,
+            len(cell_indices_sorted) / elapsed,
+            total_unique_rows,
+            total_new_rows,
+            total_retained_rows,
+            total_remap_seconds,
+            total_read_seconds,
+            total_update_seconds,
+        )
+
+        device_cache = None
+        gc.collect()
+        return True
 
     def _find_homogeneous_spots(
         self,
@@ -1171,15 +1949,40 @@ class MarkerScoreCalculator:
             f"Neighbor indices exceed bounds (max: {neighbor_indices.max()}, limit: {max_valid_idx})"
         )
 
-        # Optimize row order using JAX implementation
-        logger.info("Optimizing row order for cache efficiency...")
-        row_order = optimize_row_order_jax(
-            neighbor_indices=neighbor_indices[:, : self.config.homogeneous_neighbors],
-            cell_indices=cell_indices,
-            neighbor_weights=cell_sims[:, : self.config.homogeneous_neighbors],
-        )
+        # A missing cross-section slot is represented by index -1 and weight 0.
+        # Substitute the focal row before rank access; its rank is multiplied by
+        # zero, so this only makes the rank-read index valid and does not change
+        # either marker-score strategy. Preserve -1 in the AnnData diagnostics.
+        neighbor_indices_for_storage = neighbor_indices
+        invalid_neighbors = neighbor_indices < 0
+        if np.any(invalid_neighbors):
+            if np.any(cell_sims[invalid_neighbors] != 0):
+                raise ValueError(
+                    "Invalid homogeneous neighbors must have zero marker-score weight"
+                )
+            neighbor_indices = neighbor_indices.copy()
+            focal_rows = np.broadcast_to(cell_indices[:, None], neighbor_indices.shape)
+            neighbor_indices[invalid_neighbors] = focal_rows[invalid_neighbors]
+            logger.info(
+                "Replaced %d zero-weight missing-neighbor slots with focal rank rows",
+                int(invalid_neighbors.sum()),
+            )
+
+        # Spatial locality gives better rank-row reuse than the sequential
+        # central-neighbor walk and is orders of magnitude cheaper to construct.
+        if coords is not None:
+            logger.info("Ordering rows by spatial Morton signature...")
+            row_order = optimize_spatial_row_order(coords[cell_indices])
+        else:
+            logger.info("Optimizing non-spatial row order for cache efficiency...")
+            row_order = optimize_row_order_jax(
+                neighbor_indices=neighbor_indices[:, : self.config.homogeneous_neighbors],
+                cell_indices=cell_indices,
+                neighbor_weights=cell_sims[:, : self.config.homogeneous_neighbors],
+            )
 
         neighbor_indices = neighbor_indices[row_order]
+        neighbor_indices_for_storage = neighbor_indices_for_storage[row_order]
         cell_sims = cell_sims[row_order]
         if niche_sims is not None:
             niche_sims = niche_sims[row_order]
@@ -1189,7 +1992,7 @@ class MarkerScoreCalculator:
         has_real_niche_embedding = self.config.latent_representation_niche is not None
         self._save_homogeneous_data_to_adata(
             adata=adata,
-            neighbor_indices=neighbor_indices,
+            neighbor_indices=neighbor_indices_for_storage,
             cell_sims=cell_sims,
             niche_sims=niche_sims,
             cell_indices_sorted=cell_indices_sorted,
@@ -1316,6 +2119,22 @@ class MarkerScoreCalculator:
             )
         )
 
+        if self._calculate_marker_scores_from_cell_type_cache(
+            cell_type,
+            neighbor_indices,
+            cell_sims,
+            cell_indices_sorted,
+        ):
+            return
+
+        if self._calculate_marker_scores_from_rank_windows(
+            cell_type,
+            neighbor_indices,
+            cell_sims,
+            cell_indices_sorted,
+        ):
+            return
+
         # Reset the message queue for this cell type
         self.marker_score_queue.reset_for_cell_type(cell_type, n_cells)
 
@@ -1380,7 +2199,9 @@ class MarkerScoreCalculator:
             shape=(n_cells, n_genes),
             dtype=np.float16,  # Use float16 to save memory
             mode="w",
-            num_write_workers=self.config.mkscore_write_workers,
+            # ParallelMarkerScoreWriter owns output writes. Starting the
+            # MemMapDense asynchronous pool here creates idle duplicate threads.
+            num_write_workers=0,
             tmp_dir=self.config.memmap_tmp_dir,
         )
 

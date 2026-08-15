@@ -9,6 +9,57 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def optimize_spatial_row_order(coords: np.ndarray) -> np.ndarray:
+    """Order spatial rows with a fast 3D Morton (Z-order) signature.
+
+    Coordinates are independently scaled to 21-bit integers before their bits
+    are interleaved. Two-dimensional inputs are padded with a constant third
+    axis. The result is deterministic and takes linear work plus one sort,
+    avoiding the sequential JAX scan used by the neighbor-greedy order.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    if coords.ndim != 2 or coords.shape[1] < 1:
+        raise ValueError(f"Spatial coordinates must be a non-empty 2D matrix, got {coords.shape}")
+
+    n_rows = coords.shape[0]
+    if n_rows == 0:
+        return np.empty(0, dtype=np.int32)
+
+    # Morton encoding below supports three axes. Extra annotation columns in a
+    # spatial matrix are deliberately ignored; 2D inputs receive a zero z axis.
+    working = np.zeros((n_rows, 3), dtype=np.float64)
+    n_dimensions = min(coords.shape[1], 3)
+    for dimension in range(n_dimensions):
+        values = coords[:, dimension]
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            continue
+        lower = values[finite].min()
+        upper = values[finite].max()
+        span = upper - lower
+        if span > 0:
+            working[finite, dimension] = (values[finite] - lower) / span
+        # Put missing values at the centre of the observed range. This keeps
+        # the order defined without allowing a NaN-to-integer cast to leak in.
+        working[~finite, dimension] = 0.5
+
+    integer = np.rint(np.clip(working, 0.0, 1.0) * ((1 << 21) - 1)).astype(np.uint64)
+
+    def spread_21(value: np.ndarray) -> np.ndarray:
+        value = value & np.uint64(0x1FFFFF)
+        value = (value | (value << np.uint64(32))) & np.uint64(0x1F00000000FFFF)
+        value = (value | (value << np.uint64(16))) & np.uint64(0x1F0000FF0000FF)
+        value = (value | (value << np.uint64(8))) & np.uint64(0x100F00F00F00F00F)
+        value = (value | (value << np.uint64(4))) & np.uint64(0x10C30C30C30C30C3)
+        value = (value | (value << np.uint64(2))) & np.uint64(0x1249249249249249)
+        return value
+
+    signature = spread_21(integer[:, 0])
+    signature |= spread_21(integer[:, 1]) << np.uint64(1)
+    signature |= spread_21(integer[:, 2]) << np.uint64(2)
+    return np.argsort(signature, kind="stable").astype(np.int32, copy=False)
+
+
 # @partial(jit, static_argnames=['k'])
 def _optimize_weighted_scan(
     neighbor_indices: jnp.ndarray, neighbor_weights: jnp.ndarray, cell_indices: jnp.ndarray, k: int

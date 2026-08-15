@@ -5,6 +5,7 @@ Replaces Zarr-backed storage with NumPy memory maps for better performance
 
 import json
 import logging
+import mmap
 import queue
 import shutil
 import threading
@@ -17,6 +18,48 @@ from pathlib import Path
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def set_memmap_advice(rank_memmap: np.memmap, advice: str = "random") -> bool:
+    """Apply a portable best-effort access hint to a rank memory map.
+
+    Returns ``True`` when the operating system accepted the hint. Unsupported
+    platforms retain their default behavior and return ``False``.
+    """
+
+    advice_value = getattr(advice, "value", advice)
+    normalized = str(advice_value).lower()
+    constant_names = {
+        "normal": "MADV_NORMAL",
+        "random": "MADV_RANDOM",
+        "sequential": "MADV_SEQUENTIAL",
+    }
+    if normalized not in constant_names:
+        choices = ", ".join(constant_names)
+        raise ValueError(f"Invalid rank mmap advice {advice!r}; expected one of: {choices}")
+
+    underlying_mmap = getattr(rank_memmap, "_mmap", None)
+    madvise = getattr(underlying_mmap, "madvise", None)
+    advice_constant = getattr(mmap, constant_names[normalized], None)
+    if madvise is None or advice_constant is None:
+        logger.warning(
+            "Rank mmap advice '%s' is unsupported on this platform; using OS defaults",
+            normalized,
+        )
+        return False
+
+    try:
+        madvise(advice_constant)
+    except (OSError, ValueError) as error:
+        logger.warning(
+            "Could not apply rank mmap advice '%s'; using OS defaults: %s",
+            normalized,
+            error,
+        )
+        return False
+
+    logger.info("Applied rank mmap advice: %s", normalized)
+    return True
 
 
 class MemMapDense:
@@ -471,16 +514,18 @@ class ParallelRankReader:
         self,
         rank_memmap: MemMapDense | str,
         num_workers: int = 4,
-        output_queue: queue.Queue = None,
-        cache_size_mb: int = 1000,
+        output_queue: queue.Queue | None = None,
+        mmap_advice: str = "random",
     ):
         # Store shared memmap object if provided
         if isinstance(rank_memmap, MemMapDense):
+            self.owns_memmap = False
             self.shared_memmap = rank_memmap.memmap
             self.memmap_path = rank_memmap.path
             self.shape = rank_memmap.shape
             self.dtype = rank_memmap.dtype
         else:
+            self.owns_memmap = True
             # Fallback for string path: open a shared read-only memmap here
             self.memmap_path = Path(rank_memmap)
             meta_path = self.memmap_path.with_suffix(".meta.json")
@@ -495,12 +540,14 @@ class ParallelRankReader:
             logger.info(f"Opened shared memmap for reading at {data_path}")
 
         self.num_workers = num_workers
+        self.mmap_advice = str(getattr(mmap_advice, "value", mmap_advice)).lower()
+        self.mmap_advice_applied = set_memmap_advice(self.shared_memmap, self.mmap_advice)
 
         # Queues for communication
         self.read_queue = queue.Queue()
         # Use provided output queue or create own
         self.result_queue = (
-            output_queue if output_queue else queue.Queue(maxsize=self.num_workers * 4)
+            output_queue if output_queue is not None else queue.Queue(maxsize=self.num_workers * 4)
         )
 
         # Throughput tracking
@@ -540,33 +587,30 @@ class ParallelRankReader:
                 batch_id, neighbor_indices, batch_metadata = item
 
                 # Track timing
-                start_time = time.time()
+                start_time = time.perf_counter()
 
-                # Flatten and deduplicate indices for efficient reading
-                flat_indices = np.unique(neighbor_indices.flatten())
+                # Flatten once, then obtain both the sorted unique rows and the
+                # exact inverse mapping in compiled NumPy code. This replaces a
+                # Python dictionary and per-neighbor list comprehension.
+                flat_neighbors = neighbor_indices.reshape(-1)
+                flat_indices, rank_indices = np.unique(flat_neighbors, return_inverse=True)
+                rank_indices = rank_indices.astype(np.int32, copy=False)
 
                 # Validate indices are within bounds
+                if flat_indices.size == 0:
+                    raise ValueError(f"Worker {worker_id}: Empty neighbor-index batch")
                 max_idx = self.shape[0] - 1
-                assert flat_indices.max() <= max_idx, (
-                    f"Worker {worker_id}: Indices exceed bounds (max: {flat_indices.max()}, limit: {max_idx})"
-                )
+                if flat_indices[0] < 0 or flat_indices[-1] > max_idx:
+                    raise IndexError(
+                        f"Worker {worker_id}: Neighbor indices outside [0, {max_idx}] "
+                        f"(observed [{flat_indices[0]}, {flat_indices[-1]}])"
+                    )
 
                 # Read from shared memory map (thread-safe, GIL released)
-                rank_data = self.shared_memmap[flat_indices]
-
-                # Ensure we have a numpy array
-                if not isinstance(rank_data, np.ndarray):
-                    rank_data = np.array(rank_data)
-
-                # Create mapping for reconstruction
-                idx_map = {idx: i for i, idx in enumerate(flat_indices)}
-
-                # Map neighbor indices to rank_data indices
-                flat_neighbors = neighbor_indices.flatten()
-                rank_indices = np.array([idx_map[neighbor_idx] for neighbor_idx in flat_neighbors])
+                rank_data = np.asarray(self.shared_memmap[flat_indices])
 
                 # Track throughput
-                elapsed = time.time() - start_time
+                elapsed = time.perf_counter() - start_time
                 with self.throughput_lock:
                     self.throughput.record_batch(elapsed)
 
@@ -624,10 +668,14 @@ class ParallelRankReader:
             self.read_queue.put(None)
         for worker in self.workers:
             worker.join(timeout=5)
+        live_workers = [worker.name for worker in self.workers if worker.is_alive()]
+        if live_workers:
+            raise RuntimeError(f"Rank-reader workers did not stop: {live_workers}")
 
-        # Do not close shared_memmap here if it was passed in (owned by caller)
-        # If we opened it ourselves (str path), we could close it, but memmap doesn't strictly require close()
-        pass
+        if self.owns_memmap:
+            underlying_mmap = getattr(self.shared_memmap, "_mmap", None)
+            if underlying_mmap is not None:
+                underlying_mmap.close()
 
 
 class ParallelMarkerScoreWriter:
@@ -692,7 +740,7 @@ class ParallelMarkerScoreWriter:
                 batch_idx, marker_scores, cell_indices = item
 
                 # Track timing
-                start_time = time.time()
+                start_time = time.perf_counter()
 
                 # Write directly to shared memory map
                 # Thread-safe because workers process disjoint batches (indices)
@@ -700,7 +748,7 @@ class ParallelMarkerScoreWriter:
                 self.shared_memmap[cell_indices] = marker_scores
 
                 # Track throughput
-                elapsed = time.time() - start_time
+                elapsed = time.perf_counter() - start_time
                 with self.throughput_lock:
                     self.throughput.record_batch(elapsed)
 

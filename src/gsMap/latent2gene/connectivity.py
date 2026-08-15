@@ -659,7 +659,6 @@ class ConnectivityMatrixBuilder:
             config: LatentToGeneConfig object
         """
         self.config = config
-        # Use configured batch size for GPU processing
         self.find_homogeneous_batch_size = config.find_homogeneous_batch_size
         self.dataset_type = config.dataset_type
 

@@ -38,6 +38,27 @@ from .memmap_io import MemMapDense
 
 logger = logging.getLogger(__name__)
 
+_MIB = 1024**2
+_TARGET_RANK_BATCH_BYTES = 32 * _MIB
+_RANK_BATCH_SIZE_CHOICES = (64, 128, 250, 500, 1000)
+_TARGET_RANK_WRITE_CELLS = 5000
+
+
+def _automatic_rank_batch_size(genes: int, dtype: np.dtype = np.dtype("float32")) -> int:
+    """Select a rank batch whose dense input payload is about 32 MiB."""
+    if genes < 1:
+        raise ValueError("Gene count must be positive")
+    unconstrained = _TARGET_RANK_BATCH_BYTES // (genes * np.dtype(dtype).itemsize)
+    eligible = [size for size in _RANK_BATCH_SIZE_CHOICES if size <= unconstrained]
+    return eligible[-1] if eligible else _RANK_BATCH_SIZE_CHOICES[0]
+
+
+def _automatic_rank_write_interval(batch_size: int) -> int:
+    """Flush rank writes after approximately five thousand cells."""
+    if batch_size < 1:
+        raise ValueError("Batch size must be positive")
+    return max(1, round(_TARGET_RANK_WRITE_CELLS / batch_size))
+
 
 def filter_cells(
     obs_df,
@@ -460,6 +481,20 @@ class RankCalculator:
                 if gene_list is None:
                     gene_list = adata.var_names.tolist()
                     n_genes = len(gene_list)
+                    rank_batch_size = self.config.rank_batch_size or _automatic_rank_batch_size(
+                        n_genes
+                    )
+                    rank_write_interval = (
+                        self.config.rank_write_interval
+                        or _automatic_rank_write_interval(rank_batch_size)
+                    )
+                    rank_writer_workers = self.config.mkscore_write_workers
+                    logger.info(
+                        "Resolved rank plan: batch=%d, write interval=%d, writers=%d",
+                        rank_batch_size,
+                        rank_write_interval,
+                        rank_writer_workers,
+                    )
                     # Initialize rank memory map as dense matrix with float16 for 50% space savings
                     # Log ranks typically have sufficient precision with float16
                     rank_memmap = MemMapDense(
@@ -467,7 +502,7 @@ class RankCalculator:
                         shape=(total_cells_expected, n_genes),
                         dtype=np.float16,  # Use float16 to save space
                         mode="w",
-                        num_write_workers=self.config.mkscore_write_workers,
+                        num_write_workers=rank_writer_workers,
                     )
                     # Initialize global accumulators
                     sum_log_ranks = np.zeros(n_genes, dtype=np.float64)
@@ -523,8 +558,8 @@ class RankCalculator:
                         n_genes,
                         memmap_dense=rank_memmap,
                         metadata=metadata,
-                        chunk_size=self.config.rank_batch_size,
-                        write_interval=self.config.rank_write_interval,
+                        chunk_size=rank_batch_size,
+                        write_interval=rank_write_interval,
                         current_row_offset=current_row_offset,
                         progress=chunk_progress,
                         progress_task=chunk_task,
