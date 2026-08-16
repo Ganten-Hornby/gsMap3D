@@ -62,8 +62,10 @@ def process_chunk_jit(
 
         # Apply weights and combine features
         with jax.profiler.StepTraceAnnotation("feature_preparation"):
+            # Match the N / Nbar scaling already applied to baseline annotations.
+            spot_ann = spot_ld * N / Nbar
             x_focal = jnp.concatenate(
-                [(spot_ld.reshape(-1, 1) * weights_scaled), (baseline_ann * weights_scaled)],
+                [(spot_ann.reshape(-1, 1) * weights_scaled), (baseline_ann * weights_scaled)],
                 axis=1,
             )
             y_weighted = chisq.reshape(-1, 1) * weights_scaled
@@ -170,7 +172,8 @@ def process_chunk_batched_lowmem_jit(
     block_size = n_snps // n_blocks
     n_snps_used = block_size * n_blocks
 
-    spatial_blocks = spatial_ld[:n_snps_used].reshape(n_blocks, block_size, n_spots)
+    spatial_ann = spatial_ld * N_expanded / Nbar
+    spatial_blocks = spatial_ann[:n_snps_used].reshape(n_blocks, block_size, n_spots)
     baseline_blocks = baseline_ann[:n_snps_used].reshape(n_blocks, block_size, n_baseline)
     chisq_blocks = chisq[:n_snps_used].reshape(n_blocks, block_size)
     weights_sq_blocks = weights_sq[:n_snps_used].reshape(n_blocks, block_size, n_spots)
@@ -253,7 +256,8 @@ def process_chunk_batched_fullsolve_jit(
     weights_sum = jnp.sum(weights, axis=0, keepdims=True)
     weights_scaled = weights / weights_sum
 
-    spatial_weighted = (spatial_ld * weights_scaled)[..., None]
+    spatial_ann = spatial_ld * N_expanded / Nbar
+    spatial_weighted = (spatial_ann * weights_scaled)[..., None]
     baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]
     x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
 
@@ -332,7 +336,8 @@ def process_chunk_batched_materialized_jit(
     weights_sum = jnp.sum(weights, axis=0, keepdims=True)
     weights_scaled = weights / weights_sum
 
-    spatial_weighted = (spatial_ld * weights_scaled)[..., None]
+    spatial_ann = spatial_ld * N_expanded / Nbar
+    spatial_weighted = (spatial_ann * weights_scaled)[..., None]
     baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]
     x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
 

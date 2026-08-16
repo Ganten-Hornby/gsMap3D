@@ -118,3 +118,44 @@ def test_lowmem_matches_fullsolve_on_small_problem():
     low_beta, low_se = kernel_module.process_chunk_batched_lowmem_jit(*args)
     np.testing.assert_allclose(np.asarray(low_beta), np.asarray(full_beta), rtol=1e-4, atol=1e-6)
     np.testing.assert_allclose(np.asarray(low_se), np.asarray(full_se), rtol=1e-4, atol=1e-6)
+
+
+def test_all_kernels_scale_focal_ld_by_per_snp_sample_size():
+    rng = np.random.default_rng(20260816)
+    n_blocks, n_snps = 4, 80
+    sample_size = np.linspace(50_000.0, 500_000.0, n_snps, dtype=np.float32)
+    nbar = float(sample_size.mean())
+
+    raw_spatial = rng.uniform(0.2, 2.0, n_snps)
+    raw_spatial *= np.power(sample_size / nbar, 1.5)
+    expected_beta = np.asarray([1.5e-6, 2.0e-6, 3.0e-6], dtype=np.float32)
+    common_signal = expected_beta[1] * raw_spatial
+    spatial_ld = (common_signal[:, None] / expected_beta[None, :]).astype(np.float32)
+
+    # Each spot obeys chisq = intercept + N * beta_spot * spatial_ld_spot.
+    chisq = (1.25 + sample_size * common_signal).astype(np.float32)
+    baseline_ld_sum = rng.uniform(0.2, 1.2, n_snps).astype(np.float32)
+    baseline_ann = np.ones((n_snps, 1), dtype=np.float32)
+    w_ld = rng.uniform(1.0, 2.0, n_snps).astype(np.float32)
+    arrays = tuple(
+        jnp.asarray(value)
+        for value in (
+            spatial_ld,
+            baseline_ld_sum,
+            chisq,
+            sample_size,
+            baseline_ann,
+            w_ld,
+        )
+    )
+    kernels = (
+        lambda: kernel_module.process_chunk_jit(n_blocks, 0, *arrays, nbar),
+        lambda: kernel_module.process_chunk_batched_lowmem_jit(n_blocks, *arrays, nbar),
+        lambda: kernel_module.process_chunk_batched_fullsolve_jit(n_blocks, *arrays, nbar),
+        lambda: kernel_module.process_chunk_batched_materialized_jit(n_blocks, *arrays, nbar),
+    )
+
+    for run_kernel in kernels:
+        beta, se = run_kernel()
+        np.testing.assert_allclose(np.asarray(beta), expected_beta, rtol=2e-3, atol=1e-9)
+        assert np.max(np.asarray(se)) < 1e-8
