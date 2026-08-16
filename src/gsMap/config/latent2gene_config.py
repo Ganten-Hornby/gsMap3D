@@ -93,7 +93,7 @@ class LatentToGeneComputeConfig:
     rank_read_workers: Annotated[
         int,
         typer.Option(
-            help="Rank-reader threads; use an explicit value for the target storage system",
+            help="Threads used to materialize distinct rank rows for each cache window",
             min=1,
             max=128,
         ),
@@ -120,7 +120,7 @@ class LatentToGeneComputeConfig:
     compute_input_queue_size: Annotated[
         int,
         typer.Option(
-            help="Compute-input queue multiplier",
+            help="Maximum pending marker-score batches per compute worker",
             min=1,
             max=10,
         ),
@@ -327,8 +327,6 @@ class LatentToGeneCoreConfig:
     # Performance options
     # Minimum number of cells per cell type in that dataset to be used for finding homogeneous neighbors
     min_cells_per_type: int | None = None
-
-    enable_profiling: bool = False
 
 
 @dataclass

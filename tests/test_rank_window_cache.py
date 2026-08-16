@@ -5,7 +5,33 @@ from gsMap.latent2gene.window_cache import (
     AdjacentRankWindowIndex,
     independent_rank_window_mapping,
     maximal_rank_windows,
+    plan_rank_windows,
 )
+
+
+def test_plan_uses_one_right_sized_window_when_cell_type_fits():
+    neighbors = np.asarray([[4, 1, 4], [2, 1, 2]], dtype=np.int32)
+
+    windows = plan_rank_windows(neighbors, max_cache_rows=4, global_rows=8)
+
+    assert windows == [type(windows[0])(start=0, end=2, unique_rows=3)]
+
+
+def test_plan_switches_to_capacity_maximal_windows_for_large_type():
+    neighbors = np.asarray([[0, 1], [1, 2], [2, 3], [3, 4]], dtype=np.int32)
+
+    windows = plan_rank_windows(neighbors, max_cache_rows=3, global_rows=5)
+
+    assert [(window.start, window.end) for window in windows] == [(0, 2), (2, 4)]
+
+
+def test_plan_rejects_non_integer_neighbor_indices():
+    with pytest.raises(TypeError, match="must be integers"):
+        plan_rank_windows(
+            np.asarray([[0.0, 1.0]], dtype=np.float32),
+            max_cache_rows=2,
+            global_rows=2,
+        )
 
 
 def test_maximal_windows_cover_trace_and_fill_until_next_row_would_overflow():

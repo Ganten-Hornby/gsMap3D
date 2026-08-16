@@ -62,12 +62,15 @@ def test_missing_neighbor_is_read_safe_but_remains_invalid_in_anndata() -> None:
     )
     calculator = object.__new__(MarkerScoreCalculator)
     calculator.config = SimpleNamespace(
+        dataset_type="spatial2D",
         min_cells_per_type=1,
         spatial_neighbors=2,
         adjacent_slice_spatial_neighbors=1,
         n_adjacent_slices=0,
         homogeneous_neighbors=2,
         latent_representation_niche="niche",
+        cross_slice_z_coordinate=-1,
+        cross_slice_z_scale=1.0,
     )
 
     class ConnectivityBuilder:

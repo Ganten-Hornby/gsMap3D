@@ -91,10 +91,10 @@ def maximal_rank_windows(
         raise ValueError(f"Neighbor indices must be a non-empty matrix, got {neighbors.shape}")
     if max_cache_rows < 1 or global_rows < 1:
         raise ValueError("Cache and global row counts must be positive")
-    if neighbors.min() < 0 or neighbors.max() >= global_rows:
-        raise IndexError("Neighbor indices are outside the rank matrix")
     if not np.issubdtype(neighbors.dtype, np.integer):
         raise TypeError("Neighbor indices must be integers")
+    if neighbors.min() < 0 or neighbors.max() >= global_rows:
+        raise IndexError("Neighbor indices are outside the rank matrix")
 
     starts, ends, unique_counts = _maximal_rank_window_arrays(
         neighbors,
@@ -105,6 +105,36 @@ def maximal_rank_windows(
         RankWindow(int(start), int(end), int(unique_rows))
         for start, end, unique_rows in zip(starts, ends, unique_counts, strict=True)
     ]
+
+
+def plan_rank_windows(
+    neighbor_indices: np.ndarray,
+    max_cache_rows: int,
+    global_rows: int,
+) -> list[RankWindow]:
+    """Plan one compact cache or several capacity-maximal windows.
+
+    Homogeneous neighbors are restricted to the focal cell type. Therefore, a
+    type with no more focal cells than cache rows is known to fit without the
+    global-row stamp array used by the large-trace planner. The exact distinct
+    count is still recorded for a right-sized one-window allocation.
+    """
+    neighbors = np.asarray(neighbor_indices)
+    if neighbors.ndim != 2 or neighbors.size == 0:
+        raise ValueError(f"Neighbor indices must be a non-empty matrix, got {neighbors.shape}")
+    if max_cache_rows < 1 or global_rows < 1:
+        raise ValueError("Cache and global row counts must be positive")
+    if not np.issubdtype(neighbors.dtype, np.integer):
+        raise TypeError("Neighbor indices must be integers")
+    if neighbors.min() < 0 or neighbors.max() >= global_rows:
+        raise IndexError("Neighbor indices are outside the rank matrix")
+
+    if neighbors.shape[0] <= max_cache_rows:
+        unique_rows = int(np.unique(neighbors).size)
+        if unique_rows <= max_cache_rows:
+            return [RankWindow(0, neighbors.shape[0], unique_rows)]
+
+    return maximal_rank_windows(neighbors, max_cache_rows, global_rows)
 
 
 def independent_rank_window_mapping(

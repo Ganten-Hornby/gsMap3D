@@ -9,30 +9,6 @@ from gsMap.latent2gene.marker_scores import (
 )
 
 
-class _Reader:
-    def __init__(self, ranks):
-        self.shared_memmap = ranks
-        self.shape = ranks.shape
-        self.dtype = ranks.dtype
-
-    def reset_for_cell_type(self, cell_type):
-        del cell_type
-
-
-class _Computer:
-    def __init__(self, genes):
-        self.num_workers = 2
-        self.cross_slice_strategy = None
-        self.n_slices = 1
-        self.num_homogeneous_per_slice = 2
-        self.global_log_gmean = jnp.zeros(genes, dtype=jnp.float32)
-        self.global_expr_frac = jnp.zeros(genes, dtype=jnp.float32)
-        self.no_expression_fraction = True
-
-    def reset_for_cell_type(self, cell_type):
-        del cell_type
-
-
 class _ImmediateWriteQueue:
     def __init__(self, writer):
         self.writer = writer
@@ -63,8 +39,9 @@ class _Writer:
         return self.completed
 
 
+@pytest.mark.parametrize("cache_rows", [3, 5], ids=["multiple-windows", "one-window"])
 @pytest.mark.parametrize("prefetch_and_retain", [False, True])
-def test_rank_window_path_matches_full_rank_cache(prefetch_and_retain):
+def test_unified_rank_cache_matches_full_rank_matrix(cache_rows, prefetch_and_retain):
     ranks = np.asarray(
         [
             [0.10, 0.20, 0.30],
@@ -80,16 +57,27 @@ def test_rank_window_path_matches_full_rank_cache(prefetch_and_retain):
     output_indices = np.asarray([2, 0, 3, 1], dtype=np.int64)
 
     calculator = object.__new__(MarkerScoreCalculator)
-    calculator.reader = _Reader(ranks)
-    calculator.computer = _Computer(ranks.shape[1])
+    calculator.rank_values = ranks
+    calculator.rank_shape = ranks.shape
+    calculator.rank_dtype = ranks.dtype
     calculator.writer = _Writer(ranks.shape)
-    calculator.cached_marker_batch_size = 2
-    calculator.effective_rank_read_workers = 2
-    calculator.cell_type_rank_cache_limit_bytes = 3 * ranks.shape[1] * ranks.dtype.itemsize
+    calculator.marker_batch_size = 2
+    calculator.rank_read_workers = 2
+    calculator.compute_workers = 2
+    calculator.compute_pending_limit = 2
+    calculator.cross_slice_strategy = None
+    calculator.n_slices = 1
+    calculator.num_homogeneous_per_slice = 2
+    calculator.global_log_gmean = jnp.zeros(ranks.shape[1], dtype=jnp.float32)
+    calculator.global_expr_frac = jnp.zeros(ranks.shape[1], dtype=jnp.float32)
+    calculator.no_expression_fraction = True
+    calculator.cell_type_rank_cache_limit_bytes = (
+        cache_rows * ranks.shape[1] * ranks.dtype.itemsize
+    )
     calculator.rank_window_prefetch = prefetch_and_retain
     calculator.rank_window_adjacent_retention = prefetch_and_retain
 
-    used = calculator._calculate_marker_scores_from_rank_windows(
+    calculator._calculate_marker_scores_with_rank_cache(
         "synthetic",
         neighbors,
         weights,
@@ -103,8 +91,8 @@ def test_rank_window_path_matches_full_rank_cache(prefetch_and_retain):
             jax.device_put(weights),
             neighbors.shape[0],
             neighbors.shape[1],
-            calculator.computer.global_log_gmean,
-            calculator.computer.global_expr_frac,
+            calculator.global_log_gmean,
+            calculator.global_expr_frac,
             True,
         ),
         dtype=np.float16,
@@ -112,5 +100,4 @@ def test_rank_window_path_matches_full_rank_cache(prefetch_and_retain):
     expected = np.zeros_like(ranks)
     expected[output_indices] = expected_in_trace_order
 
-    assert used
     assert np.array_equal(calculator.writer.output, expected)

@@ -7,14 +7,14 @@
 gsMap3D employs multiple strategies to achieve high performance:
 
 - **GPU/TPU Acceleration**: JAX-based computation with JIT compilation
-- **Multi-threaded Pipeline**: Parallel reader, compute, and writer workers
+- **Bounded Rank Cache**: One compact cache or capacity-limited windows per cell type
 - **Memory Mapping**: Efficient disk-based storage with SSD optimization
 - **Vectorized Operations**: Batched matrix operations using einsum
 - **Sparse Matrix Support**: Memory-efficient handling of sparse data
 
 ## GPU/TPU Acceleration
 
-gsMap3D uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the Spatial LDSC computation stage. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
+gsMap3D uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the latent-to-gene and Spatial LDSC computation stages. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
 
 ### Enabling/Disabling GPU
 
@@ -71,83 +71,32 @@ The first run may be slower due to JIT compilation. Subsequent runs will be fast
 
 ## GSS calculation
 
-gsMap3D implements a three-stage parallel message queue pipeline for the Gene Specificity Score (GSS) calculation:
-![jax](./_static/jax.png)
+The latent-to-gene stage calculates the Gene Specificity Score (GSS) with one bounded rank-cache engine. Homogeneous cells are placed in a locality-preserving order before rank access:
 
-### Pipeline Stages
+- Spatial2D data are ordered separately within each section.
+- Spatial3D data use measured physical x/y/z coordinates when a varying z coordinate is available.
+- Spatial3D data without measured z use an explicit ordinal section coordinate.
+- Non-spatial data use homogeneous-neighbor overlap.
 
-1. **Stage 1 - Gene Rank Reading**: Reader workers load pre-computed gene rank data from memory-mapped files in parallel. Each reader fetches batch data containing neighbor indices for homogeneous spots.
+For a cell type whose distinct rank rows fit under the 2 GiB cache limit, gsMap3D reads each distinct row once and transfers one right-sized cache to the JAX device. Larger cell types are divided into maximal contiguous windows under the same limit. On GPU, the next host window is prefetched and rank rows shared by adjacent windows remain in stable device-cache slots. This design bounds peak cache memory without reverting to random rank reads for every marker-score batch.
 
-1. **Stage 2 - GSS Calculation**: Compute workers receive rank data via the **Rank→Compute Queue** and calculate marker scores using JAX-accelerated weighted geometric mean operations. The computation transforms gene ranks into Gene Specificity Scores (GSS).
+### Execution controls
 
-1. **Stage 3 - Write GSS**: Writer workers receive computed GSS results via the **Compute→Write Queue** and write them back to memory-mapped files for downstream Spatial LDSC analysis.
+| Parameter                  | Description                                                      | Default | Range  |
+| -------------------------- | ---------------------------------------------------------------- | ------- | ------ |
+| `rank_read_workers`        | Threads that materialize distinct rows for a rank-cache window    | 120     | 1-128  |
+| `mkscore_compute_workers`  | Concurrent fixed-shape JAX marker-score submissions               | 4       | 1-16   |
+| `mkscore_write_workers`    | Threads that write completed GSS batches                          | 2       | 1-50   |
+| `compute_input_queue_size` | Maximum pending batches per compute worker                        | 1       | 1-10   |
+| `writer_queue_size`        | Capacity of the bounded completed-batch writer queue              | 20      | 10-500 |
 
-### Worker Configuration
+`mkscore_batch_size=0` selects a deterministic workload- and device-aware batch size. An explicit positive value overrides that selection.
 
-The number of workers for each stage can be configured:
-
-| Parameter                 | Description                          | Default | Range |
-| ------------------------- | ------------------------------------ | ------- | ----- |
-| `rank_read_workers`       | Parallel reader threads for Stage 1  | 120     | 1-128 |
-| `mkscore_compute_workers` | Parallel compute threads for Stage 2 | 4       | 1-16  |
-| `mkscore_write_workers`   | Parallel writer threads for Stage 3  | 2       | 1-50  |
-
-### Queue Configuration
-
-The message queues between stages control data flow and backpressure:
-
-| Parameter                  | Description                                                                                                                                                       | Default | Range  |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------ |
-| `compute_input_queue_size` | Maximum size of **Rank→Compute Queue** (multiplier of `mkscore_compute_workers`). Controls how many batches can be buffered between reading and computing stages. | 1       | 1-10   |
-| `writer_queue_size`        | Maximum size of **Compute→Write Queue**. Controls how many computed batches can be buffered before being written to disk.                                         | 20      | 10-500 |
+After each cell type, the log reports end-to-end cells per second and separates time spent remapping rows, reading rank windows, and updating the device cache. The same record includes the numbers of distinct, newly read, and adjacent-window-retained rows.
 
 ```{tip}
-Queue sizes balance memory usage and throughput. Larger queues allow better buffering when stage speeds vary, but consume more memory. The default values work well for most systems.
+If rank-window read time dominates, place the rank memory map on local NVMe storage or use `--memmap-tmp-dir` when the complete rank and output files fit there. If compute dominates, use GPU acceleration. Increasing pending batches cannot compensate for slow storage and raises transient memory use.
 ```
-
-### Performance Monitoring
-
-After processing each cell type, gsMap3D displays a pipeline summary table showing throughput metrics for each stage:
-
-```text
-╭─────────────────────────────────── Pipeline Summary ───────────────────────────────────╮
-│                   ✓ Completed Brain                                                    │
-│  Property                                       Value                                  │
-│  Total Batches                                     59                                  │
-│  Time Elapsed                                   2.66s                                  │
-│  Pipeline Throughput  22.15 batches/s (11076 cells/s)                                  │
-│           Component Performance (per worker)                                           │
-│ ┏━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓                                │
-│ ┃ Component ┃ Throughput ┃ Workers ┃ Total Throughput ┃                                │
-│ ┡━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩                                │
-│ │ Reader    │   8.99 b/s │      16 │        71942 c/s │                                │
-│ │ Computer  │   7.24 b/s │       4 │        14472 c/s │                                │
-│ │ Writer    │ 101.91 b/s │       4 │       203821 c/s │                                │
-│ └───────────┴────────────┴─────────┴──────────────────┘                                │
-╰────────────────────────────────────────────────────────────────────────────────────────╯
-```
-
-Use this table to identify pipeline bottlenecks:
-
-- **Throughput**: Per-worker processing speed in batches/second (b/s)
-- **Total Throughput**: Combined throughput across all workers in cells/second (c/s)
-- **Pipeline Throughput**: The effective end-to-end throughput, limited by the slowest stage
-
-```{tip}
-**Identifying Bottlenecks**: The stage with the lowest **Total Throughput** is the bottleneck limiting overall performance.
-
-- **Reader is the bottleneck** (Reader throughput < Computer throughput):
-  - Increase `rank_read_workers` to add more parallel readers
-  - Use [`--memmap-tmp-dir`](#memory-mapping) to copy memory-mapped files to a fast SSD
-
-- **Computer is the bottleneck** (Computer throughput < Reader/Writer throughput):
-  - Ensure GPU acceleration is enabled (`--use-gpu`)
-  - Increase available CPU cores or `mkscore_compute_workers` if using CPU-only mode
-- **Writer is the bottleneck** (Writer throughput < Computer throughput):
-  - Increase `mkscore_write_workers`
-  - Use a faster storage device for output
-```
-
 ## Memory Mapping
 
 `gsMap3D` uses memory-mapped files to handle data that exceeds available RAM. The `--memmap-tmp-dir` option allows you to specify a fast SSD for temporary files, significantly improving I/O performance.

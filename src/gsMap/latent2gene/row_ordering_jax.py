@@ -9,14 +9,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def optimize_spatial_row_order(coords: np.ndarray) -> np.ndarray:
-    """Order spatial rows with a fast 3D Morton (Z-order) signature.
-
-    Coordinates are independently scaled to 21-bit integers before their bits
-    are interleaved. Two-dimensional inputs are padded with a constant third
-    axis. The result is deterministic and takes linear work plus one sort,
-    avoiding the sequential JAX scan used by the neighbor-greedy order.
-    """
+def _morton_order(coords: np.ndarray, *, preserve_axis_scale: bool) -> np.ndarray:
+    """Return a stable Morton order for one coordinate matrix."""
     coords = np.asarray(coords, dtype=np.float64)
     if coords.ndim != 2 or coords.shape[1] < 1:
         raise ValueError(f"Spatial coordinates must be a non-empty 2D matrix, got {coords.shape}")
@@ -25,10 +19,18 @@ def optimize_spatial_row_order(coords: np.ndarray) -> np.ndarray:
     if n_rows == 0:
         return np.empty(0, dtype=np.int32)
 
-    # Morton encoding below supports three axes. Extra annotation columns in a
-    # spatial matrix are deliberately ignored; 2D inputs receive a zero z axis.
+    # Morton encoding supports three axes. Two-dimensional inputs receive a
+    # constant z axis.
     working = np.zeros((n_rows, 3), dtype=np.float64)
     n_dimensions = min(coords.shape[1], 3)
+    common_span = None
+    if preserve_axis_scale:
+        spans = []
+        for dimension in range(n_dimensions):
+            finite_values = coords[np.isfinite(coords[:, dimension]), dimension]
+            spans.append(float(np.ptp(finite_values)) if finite_values.size else 0.0)
+        common_span = max(spans, default=0.0)
+
     for dimension in range(n_dimensions):
         values = coords[:, dimension]
         finite = np.isfinite(values)
@@ -37,11 +39,14 @@ def optimize_spatial_row_order(coords: np.ndarray) -> np.ndarray:
         lower = values[finite].min()
         upper = values[finite].max()
         span = upper - lower
-        if span > 0:
-            working[finite, dimension] = (values[finite] - lower) / span
+        denominator = common_span if preserve_axis_scale else span
+        if denominator is not None and denominator > 0:
+            working[finite, dimension] = (values[finite] - lower) / denominator
         # Put missing values at the centre of the observed range. This keeps
         # the order defined without allowing a NaN-to-integer cast to leak in.
-        working[~finite, dimension] = 0.5
+        working[~finite, dimension] = (
+            0.5 * span / denominator if denominator is not None and denominator > 0 else 0.0
+        )
 
     integer = np.rint(np.clip(working, 0.0, 1.0) * ((1 << 21) - 1)).astype(np.uint64)
 
@@ -58,6 +63,93 @@ def optimize_spatial_row_order(coords: np.ndarray) -> np.ndarray:
     signature |= spread_21(integer[:, 1]) << np.uint64(1)
     signature |= spread_21(integer[:, 2]) << np.uint64(2)
     return np.argsort(signature, kind="stable").astype(np.int32, copy=False)
+
+
+def optimize_spatial_row_order(
+    coords: np.ndarray,
+    *,
+    slice_ids: np.ndarray | None = None,
+    dataset_type: str | None = None,
+    z_coordinate: int = -1,
+    z_scale: float = 1.0,
+) -> np.ndarray:
+    """Choose a spatial row order that matches the dataset geometry.
+
+    Generic calls retain the original independently normalized 2D/3D Morton
+    order. Dataset-aware calls distinguish three cases:
+
+    - Spatial2D: order each section independently because neighbors never cross
+      sections.
+    - Spatial3D with a varying configured z column: use x, y, and measured z,
+      preserving their common physical scale.
+    - Spatial3D without measured z: use x, y, and the ordinal section rank. The
+      log explicitly identifies this as ordinal rather than physical geometry.
+    """
+    coords = np.asarray(coords, dtype=np.float64)
+    if dataset_type is None:
+        return _morton_order(coords, preserve_axis_scale=False)
+    if coords.ndim != 2 or coords.shape[1] < 2:
+        raise ValueError(f"Spatial datasets require at least x/y coordinates, got {coords.shape}")
+
+    normalized_type = str(getattr(dataset_type, "value", dataset_type)).casefold()
+    if normalized_type not in {"spatial2d", "spatial3d"}:
+        raise ValueError(f"Unsupported spatial dataset type: {dataset_type!r}")
+    if slice_ids is None:
+        raise ValueError(f"{dataset_type} row ordering requires slice IDs")
+    slice_ids = np.asarray(slice_ids)
+    if slice_ids.ndim != 1 or slice_ids.shape[0] != coords.shape[0]:
+        raise ValueError(f"Slice IDs must have shape ({coords.shape[0]},), got {slice_ids.shape}")
+    if coords.shape[0] == 0:
+        return np.empty(0, dtype=np.int32)
+
+    if normalized_type == "spatial2d":
+        sections = []
+        for slice_id in np.unique(slice_ids):
+            section_rows = np.flatnonzero(slice_ids == slice_id)
+            local_order = _morton_order(
+                coords[section_rows, :2],
+                preserve_axis_scale=False,
+            )
+            sections.append(section_rows[local_order])
+        logger.info(f"Using section-separated 2D Morton order for {len(sections)} slices")
+        return np.concatenate(sections).astype(np.int32, copy=False)
+
+    if not np.isfinite(z_scale) or z_scale <= 0:
+        raise ValueError("Spatial3D z scale must be positive")
+    physical_z = None
+    if coords.shape[1] >= 3:
+        if not -coords.shape[1] <= z_coordinate < coords.shape[1]:
+            raise IndexError(
+                f"Spatial3D z-coordinate column {z_coordinate} is outside a "
+                f"{coords.shape[1]}-column spatial matrix"
+            )
+        z_column = z_coordinate if z_coordinate >= 0 else coords.shape[1] + z_coordinate
+        if z_column in (0, 1):
+            raise ValueError("Spatial3D z coordinate must be distinct from x/y columns 0 and 1")
+        candidate_z = coords[:, z_column] * z_scale
+        if np.isfinite(candidate_z).all() and np.ptp(candidate_z) > 0:
+            physical_z = candidate_z
+        elif not np.isfinite(candidate_z).all():
+            logger.warning(
+                f"Spatial column {z_column} contains non-finite z coordinates; "
+                f"using ordinal slice rank for Morton ordering"
+            )
+
+    if physical_z is not None:
+        logger.info(
+            f"Using physical 3D Morton order from x/y and spatial column "
+            f"{z_column} (z scale={z_scale:g})"
+        )
+        physical_coords = np.column_stack((coords[:, :2], physical_z))
+        return _morton_order(physical_coords, preserve_axis_scale=True)
+
+    _, ordinal_z = np.unique(slice_ids, return_inverse=True)
+    logger.warning(
+        "Spatial3D coordinates have no varying physical z axis; using ordinal "
+        "slice rank for Morton ordering"
+    )
+    ordinal_coords = np.column_stack((coords[:, :2], ordinal_z))
+    return _morton_order(ordinal_coords, preserve_axis_scale=False)
 
 
 # @partial(jit, static_argnames=['k'])

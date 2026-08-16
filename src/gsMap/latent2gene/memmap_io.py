@@ -507,182 +507,15 @@ class ComponentThroughput:
         return 0.0
 
 
-class ParallelRankReader:
-    """Multi-threaded reader for log-rank data from memory-mapped storage"""
-
-    def __init__(
-        self,
-        rank_memmap: MemMapDense | str,
-        num_workers: int = 4,
-        output_queue: queue.Queue | None = None,
-        mmap_advice: str = "random",
-    ):
-        # Store shared memmap object if provided
-        if isinstance(rank_memmap, MemMapDense):
-            self.owns_memmap = False
-            self.shared_memmap = rank_memmap.memmap
-            self.memmap_path = rank_memmap.path
-            self.shape = rank_memmap.shape
-            self.dtype = rank_memmap.dtype
-        else:
-            self.owns_memmap = True
-            # Fallback for string path: open a shared read-only memmap here
-            self.memmap_path = Path(rank_memmap)
-            meta_path = self.memmap_path.with_suffix(".meta.json")
-            data_path = self.memmap_path.with_suffix(".dat")
-            with open(meta_path) as f:
-                meta = json.load(f)
-            self.shape = tuple(meta["shape"])
-            self.dtype = np.dtype(meta["dtype"])
-
-            # Open the single shared memmap
-            self.shared_memmap = np.memmap(data_path, dtype=self.dtype, mode="r", shape=self.shape)
-            logger.info(f"Opened shared memmap for reading at {data_path}")
-
-        self.num_workers = num_workers
-        self.mmap_advice = str(getattr(mmap_advice, "value", mmap_advice)).lower()
-        self.mmap_advice_applied = set_memmap_advice(self.shared_memmap, self.mmap_advice)
-
-        # Queues for communication
-        self.read_queue = queue.Queue()
-        # Use provided output queue or create own
-        self.result_queue = (
-            output_queue if output_queue is not None else queue.Queue(maxsize=self.num_workers * 4)
-        )
-
-        # Throughput tracking
-        self.throughput = ComponentThroughput()
-        self.throughput_lock = threading.Lock()
-
-        # Exception handling
-        self.exception_queue = queue.Queue()
-        self.has_error = threading.Event()
-
-        # Start worker threads
-        self.workers = []
-        self.stop_workers = threading.Event()
-        self._start_workers()
-
-    def _start_workers(self):
-        """Start worker threads"""
-        for i in range(self.num_workers):
-            worker = threading.Thread(target=self._worker, args=(i,), daemon=True)
-            worker.start()
-            self.workers.append(worker)
-
-    def _worker(self, worker_id: int):
-        """Worker thread for reading batches from shared memory map"""
-        logger.debug(f"Reader worker {worker_id} started using shared memmap")
-
-        # No need to open a new memmap; use self.shared_memmap directly.
-        # Numpy releases the GIL during memmap array access, enabling parallelism.
-
-        while not self.stop_workers.is_set():
-            try:
-                # Get batch request
-                item = self.read_queue.get()
-                if item is None:
-                    break
-
-                batch_id, neighbor_indices, batch_metadata = item
-
-                # Track timing
-                start_time = time.perf_counter()
-
-                # Flatten once, then obtain both the sorted unique rows and the
-                # exact inverse mapping in compiled NumPy code. This replaces a
-                # Python dictionary and per-neighbor list comprehension.
-                flat_neighbors = neighbor_indices.reshape(-1)
-                flat_indices, rank_indices = np.unique(flat_neighbors, return_inverse=True)
-                rank_indices = rank_indices.astype(np.int32, copy=False)
-
-                # Validate indices are within bounds
-                if flat_indices.size == 0:
-                    raise ValueError(f"Worker {worker_id}: Empty neighbor-index batch")
-                max_idx = self.shape[0] - 1
-                if flat_indices[0] < 0 or flat_indices[-1] > max_idx:
-                    raise IndexError(
-                        f"Worker {worker_id}: Neighbor indices outside [0, {max_idx}] "
-                        f"(observed [{flat_indices[0]}, {flat_indices[-1]}])"
-                    )
-
-                # Read from shared memory map (thread-safe, GIL released)
-                rank_data = np.asarray(self.shared_memmap[flat_indices])
-
-                # Track throughput
-                elapsed = time.perf_counter() - start_time
-                with self.throughput_lock:
-                    self.throughput.record_batch(elapsed)
-
-                # Put result with metadata for computer
-                self.result_queue.put(
-                    (batch_id, rank_data, rank_indices, neighbor_indices.shape, batch_metadata)
-                )
-                self.read_queue.task_done()
-
-            except queue.Empty:
-                continue
-            except Exception as e:  # noqa: BLE001
-                error_trace = traceback.format_exc()
-                logger.error(f"Reader worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
-                self.exception_queue.put((worker_id, e, error_trace))
-                self.has_error.set()
-                self.stop_workers.set()  # Signal all workers to stop
-                break
-
-    def submit_batch(
-        self, batch_id: int, neighbor_indices: np.ndarray, batch_metadata: dict = None
-    ):
-        """Submit batch for reading with metadata"""
-        self.read_queue.put((batch_id, neighbor_indices, batch_metadata or {}))
-
-    def get_result(self):
-        """Get next completed batch"""
-        return self.result_queue.get()
-
-    def get_queue_sizes(self):
-        """Get current queue sizes for monitoring"""
-        return self.read_queue.qsize(), self.result_queue.qsize()
-
-    def check_errors(self):
-        """Check if any worker encountered an error"""
-        if self.has_error.is_set():
-            try:
-                worker_id, exception, error_trace = self.exception_queue.get_nowait()
-                raise RuntimeError(
-                    f"Reader worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
-                ) from exception
-            except queue.Empty:
-                raise RuntimeError("Reader worker failed with unknown error") from None
-
-    def reset_for_cell_type(self, cell_type: str):
-        """Reset throughput tracking for new cell type"""
-        with self.throughput_lock:
-            self.throughput = ComponentThroughput()
-        logger.debug(f"Reset reader throughput for {cell_type}")
-
-    def close(self):
-        """Clean up resources"""
-        self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.read_queue.put(None)
-        for worker in self.workers:
-            worker.join(timeout=5)
-        live_workers = [worker.name for worker in self.workers if worker.is_alive()]
-        if live_workers:
-            raise RuntimeError(f"Rank-reader workers did not stop: {live_workers}")
-
-        if self.owns_memmap:
-            underlying_mmap = getattr(self.shared_memmap, "_mmap", None)
-            if underlying_mmap is not None:
-                underlying_mmap.close()
-
-
 class ParallelMarkerScoreWriter:
     """Multi-threaded writer pool for marker scores using shared memmap"""
 
     def __init__(
-        self, output_memmap: MemMapDense, num_workers: int = 4, input_queue: queue.Queue = None
+        self,
+        output_memmap: MemMapDense,
+        num_workers: int = 4,
+        input_queue: queue.Queue | None = None,
+        queue_size: int = 100,
     ):
         """
         Initialize writer pool
@@ -691,6 +524,7 @@ class ParallelMarkerScoreWriter:
             output_memmap: Output memory map wrapper object
             num_workers: Number of writer threads
             input_queue: Optional input queue (from computer)
+            queue_size: Queue capacity when no input queue is supplied
         """
         # Store shared memmap object
         self.shared_memmap = output_memmap.memmap
@@ -700,7 +534,11 @@ class ParallelMarkerScoreWriter:
         self.num_workers = num_workers
 
         # Queue for write requests
-        self.write_queue = input_queue if input_queue else queue.Queue(maxsize=100)
+        if queue_size < 1:
+            raise ValueError("Writer queue size must be positive")
+        self.write_queue = (
+            input_queue if input_queue is not None else queue.Queue(maxsize=queue_size)
+        )
         self.completed_count = 0
         self.completed_lock = threading.Lock()
         self.active_cell_type = None  # Track current cell type being processed
