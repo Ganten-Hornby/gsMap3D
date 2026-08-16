@@ -39,6 +39,7 @@ from rich.table import Table
 from gsMap.config import DatasetType, MarkerScoreCrossSliceStrategy
 
 from .connectivity import ConnectivityMatrixBuilder
+from .marker_layout import MARKER_SCORE_LAYOUT_VERSION, SequentialMarkerRowWriter
 from .memmap_io import (
     MemMapDense,
     ParallelMarkerScoreWriter,
@@ -677,7 +678,7 @@ class MarkerScoreCalculator:
         cell_type: str,
         neighbor_indices: np.ndarray,
         neighbor_weights: np.ndarray,
-        cell_indices_sorted: np.ndarray,
+        output_rows: slice | np.ndarray,
     ) -> None:
         """Process every cell type through one bounded rank-cache engine.
 
@@ -687,6 +688,18 @@ class MarkerScoreCalculator:
         independent sequential windows because real-data prefetch improved its
         throughput by only about one percent.
         """
+        n_focal_cells = neighbor_indices.shape[0]
+        if isinstance(output_rows, slice):
+            output_start = 0 if output_rows.start is None else output_rows.start
+            output_stop = output_rows.stop
+            output_step = 1 if output_rows.step is None else output_rows.step
+            if output_stop is None or output_step != 1 or output_stop - output_start != n_focal_cells:
+                raise ValueError("Contiguous marker output slice does not match focal cells")
+        else:
+            output_rows = np.asarray(output_rows)
+            if output_rows.ndim != 1 or output_rows.size != n_focal_cells:
+                raise ValueError("Marker output rows must match the number of focal cells")
+
         row_bytes = int(self.rank_shape[1]) * self.rank_dtype.itemsize
         max_cache_rows = self.cell_type_rank_cache_limit_bytes // row_bytes
 
@@ -850,13 +863,20 @@ class MarkerScoreCalculator:
             prepared: PreparedRankWindow,
             start: int,
             end: int,
-        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+        ) -> tuple[np.ndarray, np.ndarray, slice | np.ndarray, int]:
             actual_size = end - start
             local_neighbors = prepared.mapping.local_neighbor_indices[start:end]
             weights = prepared.weights[start:end]
-            output_indices = cell_indices_sorted[
-                prepared.bounds.start + start : prepared.bounds.start + end
-            ]
+            relative_start = prepared.bounds.start + start
+            relative_end = prepared.bounds.start + end
+            if isinstance(output_rows, slice):
+                marker_start = output_start + relative_start
+                output_indices: slice | np.ndarray = slice(
+                    marker_start,
+                    marker_start + actual_size,
+                )
+            else:
+                output_indices = output_rows[relative_start:relative_end]
             if actual_size < batch_size:
                 pad = batch_size - actual_size
                 local_neighbors = np.concatenate(
@@ -879,7 +899,7 @@ class MarkerScoreCalculator:
 
             def calculate_batch(
                 payload: tuple[int, int, int],
-            ) -> tuple[int, np.ndarray, np.ndarray]:
+            ) -> tuple[int, np.ndarray, slice | np.ndarray]:
                 batch_id, start, end = payload
                 local_neighbors, weights, output_indices, actual_size = padded_batch(
                     prepared,
@@ -1000,7 +1020,7 @@ class MarkerScoreCalculator:
                 f"{completed}/{next_batch_id}/{total_batches} batches"
             )
         elapsed = time.perf_counter() - started
-        cells_per_second = len(cell_indices_sorted) / elapsed
+        cells_per_second = n_focal_cells / elapsed
         logger.info(
             f"Completed rank-cache marker scores for {cell_type}: {elapsed:.2f}s, "
             f"{cells_per_second:.0f} cells/s; unique/new/retained rows="
@@ -1246,11 +1266,12 @@ class MarkerScoreCalculator:
             return
 
         neighbor_indices, cell_sims, _niche_sims, cell_indices_sorted, _n_cells = prepared
+        marker_rows = self.marker_row_writer.append(cell_indices_sorted)
         self._calculate_marker_scores_with_rank_cache(
             cell_type,
             neighbor_indices,
             cell_sims,
-            cell_indices_sorted,
+            marker_rows,
         )
 
     def calculate_marker_scores(
@@ -1311,6 +1332,7 @@ class MarkerScoreCalculator:
             num_write_workers=0,
             tmp_dir=self.config.memmap_tmp_dir,
         )
+        self.marker_row_writer = SequentialMarkerRowWriter(output_path, n_cells)
 
         # Get cell types to process
         cell_types = self._get_cell_types(adata)
@@ -1326,18 +1348,26 @@ class MarkerScoreCalculator:
         # Initialize processing pipeline
         self._initialize_pipeline(rank_memmap, output_memmap, global_log_gmean, global_expr_frac)
 
-        # Process each cell type
-        for cell_type in cell_types:
-            self._calculate_marker_scores_by_cell_type(
-                adata,
-                cell_type,
-                coords,
-                emb_niche,
-                emb_indv,
-                annotation_key,
-                slice_ids,
-                high_quality_mask,
-            )
+        try:
+            # Process each cell type. Marker output is contiguous in this
+            # processing order; the companion permutation preserves alignment
+            # to the unchanged concatenated AnnData.
+            for cell_type in cell_types:
+                self._calculate_marker_scores_by_cell_type(
+                    adata,
+                    cell_type,
+                    coords,
+                    emb_niche,
+                    emb_indv,
+                    annotation_key,
+                    slice_ids,
+                    high_quality_mask,
+                )
+
+            row_layout = self.marker_row_writer.finalize()
+        except Exception:
+            self.marker_row_writer.abort()
+            raise
 
         # Save updated AnnData with neighbor matrices
         logger.info(f"Saving updated AnnData with homogeneous spot matrices to {adata_path}")
@@ -1349,7 +1379,12 @@ class MarkerScoreCalculator:
 
         # Close memory maps
         rank_memmap.close()
-        output_memmap.close()
+        output_memmap.close(
+            metadata_updates={
+                "marker_score_layout_version": MARKER_SCORE_LAYOUT_VERSION,
+                "row_layout": row_layout,
+            }
+        )
 
         self.console.print(
             Panel.fit(

@@ -90,6 +90,7 @@ This directory contains the gene specificity scores (GSS) computed for each spot
 | `ranks.meta.json`                | Metadata for ranks array (shape, dtype)                          |
 | `marker_scores.dat`              | Memory-mapped marker scores (n_spots × n_genes, float16)         |
 | `marker_scores.meta.json`        | Metadata for marker scores array                                 |
+| `marker_scores.obs_indices.dat`  | Marker-row to source-H5AD observation mapping (int64)            |
 | `mean_frac.parquet`              | Mean expression fraction per gene                                |
 | `metadata.yaml`                  | Configuration and output paths                                   |
 
@@ -117,7 +118,9 @@ print(gss_adata.obs.head())
 print(gss_adata.var_names[:10])
 ```
 
-Alternatively, you can manually load the raw memory-mapped arrays:
+The loader transparently handles both layouts: current sequential marker files with a companion observation mapping, and legacy files whose marker rows use source-H5AD order. In the returned object, `gss_adata.X[i]`, `gss_adata.obs.iloc[i]`, `gss_adata.obsm[config.spatial_key][i]` (when configured), and `gss_adata.obs_names[i]` always refer to the same spot. Other latent arrays remain in `concatenated_latent_adata.h5ad` instead of being copied into this wrapper.
+
+The raw memory map is stored in compute order for efficient sequential I/O. If you load it manually, apply the row mapping before combining it with metadata from `concatenated_latent_adata.h5ad`:
 
 ```python
 import numpy as np
@@ -131,7 +134,20 @@ with open("marker_scores.meta.json") as f:
 marker_scores = np.memmap(
     "marker_scores.dat", dtype=meta["dtype"], mode="r", shape=tuple(meta["shape"])
 )
+
+# Current files: raw marker row -> original concatenated-H5AD row.
+# Legacy metadata has no "row_layout" and therefore uses identity order.
+if "row_layout" in meta:
+    layout = meta["row_layout"]
+    marker_to_source_row = np.memmap(
+        layout["mapping_file"],
+        dtype=layout["dtype"],
+        mode="r",
+        shape=tuple(layout["shape"]),
+    )
 ```
+
+Prefer `load_marker_scores_memmap_format` unless raw storage-order access is specifically required. Do not assume raw marker row `i` is source-H5AD row `i` for current files.
 
 ### Check Homogeneous Spots
 

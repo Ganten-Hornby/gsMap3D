@@ -15,7 +15,6 @@ class SpatialLDChunkSource:
         chunk_starts: list[int],
         chunk_size: int,
         cell_end: int,
-        sample_start_offset: int,
         spot_indices: np.ndarray,
         spot_names_filtered: np.ndarray,
         ldscore_adata=None,
@@ -28,7 +27,6 @@ class SpatialLDChunkSource:
         self.chunk_starts = chunk_starts
         self.chunk_size = chunk_size
         self.cell_end = cell_end
-        self.sample_start_offset = sample_start_offset
         self.spot_indices = spot_indices
         self.spot_names_filtered = spot_names_filtered
         self.ldscore_adata = ldscore_adata
@@ -45,17 +43,27 @@ class SpatialLDChunkSource:
         start = self.chunk_starts[chunk_index]
         end = min(start + self.chunk_size, self.cell_end)
 
-        memmap_start = self.sample_start_offset + start
-        memmap_end = self.sample_start_offset + end
-
         spot_names = pd.Index(self.spot_names_filtered[start:end])
-        absolute_start = self.spot_indices[start] if start < len(self.spot_indices) else start
-        absolute_end = self.spot_indices[end - 1] + 1 if end > 0 else absolute_start
+        selected_rows = self.spot_indices[start:end]
+        absolute_start = selected_rows[0] if selected_rows.size else start
+        absolute_end = selected_rows[-1] + 1 if selected_rows.size else absolute_start
+        if selected_rows.size and selected_rows[-1] - selected_rows[0] + 1 == selected_rows.size:
+            row_selector: slice | np.ndarray = slice(
+                int(selected_rows[0]),
+                int(selected_rows[-1]) + 1,
+            )
+        else:
+            row_selector = selected_rows
 
         if self.mode == "direct_ldscore":
-            ldscore_chunk = self._fetch_direct_ldscore_chunk(memmap_start, memmap_end)
+            if not isinstance(row_selector, slice):
+                raise RuntimeError("Direct LD-score chunks require contiguous cell columns")
+            ldscore_chunk = self._fetch_direct_ldscore_chunk(
+                row_selector.start,
+                row_selector.stop,
+            )
         else:
-            marker_score_chunk = self._fetch_marker_score_chunk(memmap_start, memmap_end)
+            marker_score_chunk = self._fetch_marker_score_chunk(row_selector)
             if defer_ldscore_to_compute:
                 return (
                     None,
@@ -85,13 +93,20 @@ class SpatialLDChunkSource:
             chunk_all_snps = np.asarray(chunk_raw)
         return chunk_all_snps[self.ldscore_snp_positions, :]
 
-    def _fetch_marker_score_chunk(self, memmap_start: int, memmap_end: int) -> np.ndarray:
+    def _fetch_marker_score_chunk(self, row_selector: slice | np.ndarray) -> np.ndarray:
         if self.marker_score_adata is None or self.marker_score_gene_indices is None:
             raise RuntimeError("Marker-score chunk source is not initialized")
 
-        marker_score_chunk = self.marker_score_adata.X[
-            memmap_start:memmap_end, self.marker_score_gene_indices
-        ]
+        if isinstance(row_selector, slice):
+            marker_score_chunk = self.marker_score_adata.X[
+                row_selector, self.marker_score_gene_indices
+            ]
+        else:
+            # Select rows first so two advanced index arrays do not trigger
+            # NumPy's pairwise-indexing semantics.
+            marker_score_chunk = self.marker_score_adata.X[row_selector][
+                :, self.marker_score_gene_indices
+            ]
         return marker_score_chunk.T.astype(np.float32)
 
     def compute_ldscore_from_marker_chunk(self, marker_score_chunk: np.ndarray) -> np.ndarray:

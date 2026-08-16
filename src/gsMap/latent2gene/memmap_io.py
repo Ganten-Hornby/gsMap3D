@@ -6,8 +6,10 @@ Replaces Zarr-backed storage with NumPy memory maps for better performance
 import json
 import logging
 import mmap
+import os
 import queue
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -18,6 +20,158 @@ from pathlib import Path
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+_LUSTRE_STRIPE_SIZE_BYTES = 4 * 1024**2
+_TMP_MINIMUM_HEADROOM_BYTES = 5 * 1024**3
+_COPY_BUFFER_BYTES = 16 * 1024**2
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Publish JSON metadata atomically in the destination directory."""
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _filesystem_type(path: Path) -> str | None:
+    """Resolve the Linux mount type without requiring an external command."""
+    target = path if path.exists() else path.parent
+    try:
+        target = target.resolve()
+        best_match = ""
+        best_type = None
+        with Path("/proc/self/mountinfo").open(encoding="utf-8") as handle:
+            for line in handle:
+                left, separator, right = line.rstrip().partition(" - ")
+                if not separator:
+                    continue
+                fields = left.split()
+                right_fields = right.split()
+                if len(fields) < 5 or not right_fields:
+                    continue
+                mountpoint = fields[4].replace("\\040", " ").replace("\\011", "\t")
+                target_text = str(target)
+                prefix = mountpoint.rstrip("/") + "/"
+                if target_text == mountpoint or target_text.startswith(prefix):
+                    if len(mountpoint) > len(best_match):
+                        best_match = mountpoint
+                        best_type = right_fields[0]
+        return best_type
+    except OSError:
+        return None
+
+
+def _automatic_lustre_stripe_count(file_bytes: int) -> int:
+    """Choose bounded parallelism for large files without a user-facing knob."""
+    if file_bytes < 8 * 1024**3:
+        return 1
+    if file_bytes < 128 * 1024**3:
+        return 4
+    if file_bytes < 1024**4:
+        return 8
+    return 16
+
+
+def _same_filesystem(first: Path, second: Path) -> bool:
+    """Return whether two paths reside on the same mounted filesystem."""
+
+    def existing_parent(path: Path) -> Path:
+        candidate = path
+        while not candidate.exists() and candidate != candidate.parent:
+            candidate = candidate.parent
+        return candidate
+
+    try:
+        return existing_parent(first).stat().st_dev == existing_parent(second).stat().st_dev
+    except OSError:
+        return False
+
+
+def _should_use_tmp_storage(
+    original_path: Path,
+    tmp_dir: Path,
+    file_bytes: int,
+) -> bool:
+    """Use optional scratch only when it is distinct and safely large enough."""
+    if _same_filesystem(original_path, tmp_dir):
+        logger.info(
+            f"Temporary directory {tmp_dir} shares the output filesystem; "
+            "using the original path directly"
+        )
+        return False
+
+    try:
+        free_bytes = shutil.disk_usage(tmp_dir).free
+    except OSError as error:
+        logger.warning(
+            f"Could not inspect temporary storage {tmp_dir}; using the original path: {error}"
+        )
+        return False
+
+    headroom = max(_TMP_MINIMUM_HEADROOM_BYTES, file_bytes // 10)
+    required_bytes = file_bytes + headroom
+    if free_bytes < required_bytes:
+        logger.warning(
+            f"Temporary storage {tmp_dir} has {free_bytes / 1024**3:.1f} GiB free, "
+            f"but this memmap requires {file_bytes / 1024**3:.1f} GiB plus "
+            f"{headroom / 1024**3:.1f} GiB headroom; using the original path directly"
+        )
+        return False
+    return True
+
+
+def _prepare_memmap_data_file(data_path: Path, file_bytes: int) -> dict[str, object]:
+    """Create a large Lustre file with automatic striping, falling back portably."""
+    data_path.unlink(missing_ok=True)
+    filesystem_type = _filesystem_type(data_path)
+    storage_layout: dict[str, object] = {
+        "filesystem_type": filesystem_type or "unknown",
+        "automatic_striping": False,
+    }
+    if filesystem_type != "lustre":
+        return storage_layout
+
+    lfs = shutil.which("lfs")
+    if lfs is None:
+        logger.warning("Lustre filesystem detected but lfs is unavailable; using default striping")
+        return storage_layout
+
+    stripe_count = _automatic_lustre_stripe_count(file_bytes)
+    command = [
+        lfs,
+        "setstripe",
+        "-c",
+        str(stripe_count),
+        "-S",
+        str(_LUSTRE_STRIPE_SIZE_BYTES),
+        str(data_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        data_path.unlink(missing_ok=True)
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        logger.warning(f"Could not configure Lustre striping; using defaults: {detail}")
+        return storage_layout
+
+    with data_path.open("r+b") as handle:
+        handle.truncate(file_bytes)
+    storage_layout.update(
+        {
+            "automatic_striping": True,
+            "stripe_count": stripe_count,
+            "stripe_size_bytes": _LUSTRE_STRIPE_SIZE_BYTES,
+        }
+    )
+    logger.info(
+        f"Created Lustre memmap with {stripe_count} stripes of "
+        f"{_LUSTRE_STRIPE_SIZE_BYTES // 1024**2} MiB: {data_path}"
+    )
+    return storage_layout
 
 
 def set_memmap_advice(rank_memmap: np.memmap, advice: str = "random") -> bool:
@@ -98,10 +252,38 @@ class MemMapDense:
         self.using_tmp = False
         self.tmp_path = None
 
-        # Set up paths based on whether tmp_dir is provided
-        if self.tmp_dir:
+        # A scratch directory must not bypass the normal protection against
+        # overwriting a completed final output.
+        if mode == "w":
+            original_meta_path = self.original_path.with_suffix(".meta.json")
+            if original_meta_path.is_file():
+                try:
+                    with original_meta_path.open(encoding="utf-8") as handle:
+                        original_meta = json.load(handle)
+                    if original_meta.get("complete", False):
+                        raise ValueError(
+                            f"MemMapDense at {self.original_path} already exists and is "
+                            "marked as complete. Please delete it manually before overwriting."
+                        )
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Invalid metadata at {original_meta_path}. Recreating the memmap."
+                    )
+
+        file_bytes = int(np.prod(self.shape, dtype=np.int64)) * np.dtype(self.dtype).itemsize
+
+        # Scratch is an optional optimization, never a capacity requirement.
+        # This check is repeated for each concurrently live memmap, so free
+        # space consumed by an already staged rank file is accounted for when
+        # deciding whether the marker output can also be staged.
+        if self.tmp_dir and _should_use_tmp_storage(
+            self.original_path,
+            self.tmp_dir,
+            file_bytes,
+        ):
             self._setup_tmp_paths()
         else:
+            self.tmp_dir = None
             self.path = self.original_path
 
         # File paths
@@ -158,7 +340,7 @@ class MemMapDense:
                 logger.info(f"Memmap files copied to {self.tmp_subdir}")
 
     def _sync_tmp_to_original(self):
-        """Sync temporary files back to original location"""
+        """Sequentially publish scratch data to its final storage layout."""
         if not self.using_tmp:
             return
 
@@ -167,12 +349,30 @@ class MemMapDense:
         original_data_path = self.original_path.with_suffix(".dat")
         original_meta_path = self.original_path.with_suffix(".meta.json")
 
-        if tmp_data_path.exists():
-            logger.info("Syncing memmap data from tmp to original location...")
-            shutil.move(str(tmp_data_path), str(original_data_path))
+        if not tmp_data_path.is_file() or not tmp_meta_path.is_file():
+            raise FileNotFoundError("Temporary memmap data or metadata disappeared before sync")
 
-        if tmp_meta_path.exists():
-            shutil.move(str(tmp_meta_path), str(original_meta_path))
+        self.original_path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp_meta_path.open(encoding="utf-8") as handle:
+            final_meta = json.load(handle)
+
+        # Publish incomplete metadata before replacing data. Readers therefore
+        # cannot accept a partial cross-filesystem copy as a completed memmap.
+        incomplete_meta = {**final_meta, "complete": False}
+        _atomic_write_json(original_meta_path, incomplete_meta)
+
+        file_bytes = tmp_data_path.stat().st_size
+        storage_layout = _prepare_memmap_data_file(original_data_path, file_bytes)
+        destination_mode = "r+b" if original_data_path.exists() else "wb"
+        logger.info("Syncing memmap data from temporary to original storage sequentially...")
+        with tmp_data_path.open("rb") as source, original_data_path.open(
+            destination_mode
+        ) as destination:
+            shutil.copyfileobj(source, destination, length=_COPY_BUFFER_BYTES)
+            destination.truncate(file_bytes)
+
+        final_meta["storage_layout"] = storage_layout
+        _atomic_write_json(original_meta_path, final_meta)
 
         logger.info(f"Memmap files synced to {self.original_path}")
 
@@ -204,8 +404,15 @@ class MemMapDense:
             except (json.JSONDecodeError, KeyError):
                 logger.warning(f"Invalid metadata at {self.meta_path}. Recreating.")
 
-        # Create new memory map
-        self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="w+", shape=self.shape)
+        file_bytes = int(np.prod(self.shape, dtype=np.int64)) * np.dtype(self.dtype).itemsize
+        storage_layout = _prepare_memmap_data_file(self.data_path, file_bytes)
+        memmap_mode = "r+" if storage_layout["automatic_striping"] else "w+"
+        self.memmap = np.memmap(
+            self.data_path,
+            dtype=self.dtype,
+            mode=memmap_mode,
+            shape=self.shape,
+        )
 
         # # Initialize to zeros
         # self.memmap[:] = 0
@@ -217,9 +424,9 @@ class MemMapDense:
             "dtype": np.dtype(self.dtype).name,  # Use dtype.name for proper serialization
             "complete": False,
             "created_at": time.time(),
+            "storage_layout": storage_layout,
         }
-        with open(self.meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
+        _atomic_write_json(self.meta_path, meta)
 
         logger.info(f"Created MemMapDense at {self.data_path} with shape {self.shape}")
 
@@ -360,7 +567,7 @@ class MemMapDense:
             raise ValueError("Cannot write to read-only MemMapDense")
         self.memmap[key] = value
 
-    def mark_complete(self):
+    def mark_complete(self, metadata_updates: dict | None = None):
         """Mark the memory map as complete"""
         if self.mode in ("w", "r+"):
             logger.info("Marking memmap as complete")
@@ -386,11 +593,12 @@ class MemMapDense:
                 meta = json.load(f)
             meta["complete"] = True
             meta["completed_at"] = time.time()
+            if metadata_updates:
+                meta.update(metadata_updates)
             # Ensure dtype is properly serialized
             if "dtype" in meta and not isinstance(meta["dtype"], str):
                 meta["dtype"] = np.dtype(self.dtype).name
-            with open(self.meta_path, "w") as f:
-                json.dump(meta, f, indent=2)
+            _atomic_write_json(self.meta_path, meta)
 
             logger.info(f"Marked MemMapDense at {self.path} as complete")
 
@@ -428,12 +636,33 @@ class MemMapDense:
         try:
             with open(meta_path) as f:
                 meta = json.load(f)
-            return meta.get("complete", False), meta
-        except (OSError, json.JSONDecodeError) as e:
+            if not meta.get("complete", False):
+                return False, meta
+
+            data_path = memmap_path if memmap_path.suffix == ".dat" else memmap_path.with_suffix(".dat")
+            expected_bytes = int(np.prod(meta["shape"], dtype=np.int64)) * np.dtype(
+                meta["dtype"]
+            ).itemsize
+            if not data_path.is_file() or data_path.stat().st_size != expected_bytes:
+                logger.warning(f"Memmap data file is missing or has the wrong size: {data_path}")
+                return False, meta
+
+            if "row_layout" in meta:
+                from .marker_layout import open_marker_obs_indices
+
+                mapping = open_marker_obs_indices(
+                    data_path,
+                    meta,
+                    expected_obs=int(meta["shape"][0]),
+                )
+                if mapping is not None:
+                    mapping._mmap.close()
+            return True, meta
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
             logger.warning(f"Could not read metadata from {meta_path}: {e}")
             return False, None
 
-    def close(self):
+    def close(self, metadata_updates: dict | None = None):
         """Clean up resources"""
         logger.info("MemMapDense.close() called")
         if self.writer_threads:
@@ -454,7 +683,7 @@ class MemMapDense:
 
         # Final flush
         if self.mode in ("w", "r+"):
-            self.mark_complete()
+            self.mark_complete(metadata_updates=metadata_updates)
 
             # Sync tmp files back to original location if using tmp
             if self.using_tmp:

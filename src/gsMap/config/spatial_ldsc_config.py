@@ -32,8 +32,9 @@ class SpatialLDSCComputeConfig:
     memmap_tmp_dir: Annotated[
         Path | None,
         typer.Option(
-            help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-            "If provided, memory maps will be copied to this directory for faster random access during computation.",
+            help="Optional fast scratch directory for memory-mapped files. A file is staged only "
+            "when the full logical memmap plus safety headroom fits; otherwise gsMap uses the "
+            "project storage directly.",
             exists=True,
             file_okay=False,
             dir_okay=True,

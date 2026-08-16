@@ -8,7 +8,7 @@ gsMap3D employs multiple strategies to achieve high performance:
 
 - **GPU/TPU Acceleration**: JAX-based computation with JIT compilation
 - **Bounded Rank Cache**: One compact cache or capacity-limited windows per cell type
-- **Memory Mapping**: Efficient disk-based storage with SSD optimization
+- **Storage-Aware Memory Mapping**: Sequential shared-storage I/O with optional SSD staging
 - **Vectorized Operations**: Batched matrix operations using einsum
 - **Sparse Matrix Support**: Memory-efficient handling of sparse data
 
@@ -80,6 +80,8 @@ The latent-to-gene stage calculates the Gene Specificity Score (GSS) with one bo
 
 For a cell type whose distinct rank rows fit under the 2 GiB cache limit, gsMap3D reads each distinct row once and transfers one right-sized cache to the JAX device. Larger cell types are divided into maximal contiguous windows under the same limit. On GPU, the next host window is prefetched and rank rows shared by adjacent windows remain in stable device-cache slots. This design bounds peak cache memory without reverting to random rank reads for every marker-score batch.
 
+Marker-score rows are written sequentially in this locality-preserving compute order. A compact companion permutation records which row of `concatenated_latent_adata.h5ad` belongs to each marker row. The standard loader applies that permutation to observation annotations and the configured spatial-coordinate array, so downstream Spatial LDSC, reporting, and Cauchy analysis remain aligned by spot name. The source H5AD is never reordered because rank and homogeneous-neighbor indices refer to its original row order. Non-spatial embedding arrays stay in the source H5AD rather than being duplicated in the marker wrapper, which bounds loader memory for very large datasets.
+
 ### Execution controls
 
 | Parameter                  | Description                                                      | Default | Range  |
@@ -95,19 +97,22 @@ For a cell type whose distinct rank rows fit under the 2 GiB cache limit, gsMap3
 After each cell type, the log reports end-to-end cells per second and separates time spent remapping rows, reading rank windows, and updating the device cache. The same record includes the numbers of distinct, newly read, and adjacent-window-retained rows.
 
 ```{tip}
-If rank-window read time dominates, place the rank memory map on local NVMe storage or use `--memmap-tmp-dir` when the complete rank and output files fit there. If compute dominates, use GPU acceleration. Increasing pending batches cannot compensate for slow storage and raises transient memory use.
+If rank-window read time dominates, local NVMe can still improve an older, single-stripe rank file. New large files created directly on Lustre are automatically striped, and marker output is sequential, so local scratch is optional. If compute dominates, use GPU acceleration. Increasing pending batches cannot compensate for slow storage and raises transient memory use.
 ```
+
 ## Memory Mapping
 
-`gsMap3D` uses memory-mapped files to handle data that exceeds available RAM. The `--memmap-tmp-dir` option allows you to specify a fast SSD for temporary files, significantly improving I/O performance.
+`gsMap3D` uses memory-mapped files to handle data that exceeds both RAM and local SSD capacity. By default, ranks and marker scores remain in the project directory. Marker scores are streamed there sequentially, and large Lustre files receive an automatic stripe count based on their logical size. This path does not require `/data`, NVMe, or a second full-sized copy.
+
+The optional `--memmap-tmp-dir` setting is an optimization for a complete memmap that fits on faster local storage. Before staging each live file, gsMap3D checks that the scratch filesystem is distinct and has room for the full logical file plus safety headroom. If it does not, gsMap3D logs the decision and uses the project storage directly.
 
 ### Why Use memmap-tmp-dir?
 
-When your working directory is on a slow filesystem (e.g., network storage, HDD), random access to memory-mapped files can become a bottleneck. By specifying a fast local SSD as the temporary directory, gsMap3D:
+When the complete file fits on a fast local SSD, specifying a temporary directory lets gsMap3D:
 
-1. Copies memory-mapped files to the fast storage
-1. Performs all random access operations on the fast storage
-1. Syncs results back to the original location when complete
+1. Copy memory-mapped files to the fast storage
+1. Perform all random access operations on the fast storage
+1. Sync results sequentially back to an automatically striped final file
 
 ### Usage
 
@@ -142,22 +147,22 @@ gsmap quick-mode \
 
 ### Storage Requirements
 
-The temporary directory needs sufficient space for intermediate memory-mapped files. Storage is estimated as:
+Both rank and marker matrices use float16. If both are staged simultaneously, required scratch capacity is approximately:
 
 ```{math}
-\text{Temp Storage Space} = \text{spots} \times \text{genes} \times 4\ \text{bytes} \times 2\ \text{(rank + marker score)}
+\text{Temp Storage Space} = \text{spots} \times \text{genes} \times 2\ \text{bytes} \times 2\ \text{(rank + marker score)}
 ```
 
 Assuming ~20,000 genes:
 
 | Dataset Size | Calculation        | Approximate Temp Space |
 | ------------ | ------------------ | ---------------------- |
-| 100K spots   | 100K × 20K × 4 × 2 | ~16 GB                 |
-| 1M spots     | 1M × 20K × 4 × 2   | ~160 GB                |
-| 10M spots    | 10M × 20K × 4 × 2  | ~1.6 TB                |
+| 100K spots   | 100K × 20K × 2 × 2 | ~8 GB                  |
+| 1M spots     | 1M × 20K × 2 × 2   | ~80 GB                 |
+| 10M spots    | 10M × 20K × 2 × 2  | ~800 GB                |
 
 ```{important}
-Ensure your temporary directory has enough free space before running. gsMap3D will fail if the disk runs out of space during computation.
+Scratch is not required. If the configured directory cannot safely hold a file, gsMap3D automatically falls back to the project filesystem. The project filesystem must still have capacity for the final rank and marker files.
 ```
 
 ## Batch Processing
@@ -177,14 +182,14 @@ Larger batch sizes can improve throughput but require more memory. Adjust based 
 ### For Very Large Datasets (>1M spots)
 
 1. **Use GPU acceleration**: GPU significantly speeds up both latent-to-gene and Spatial LDSC computation. Enabled by default with `--use-gpu`.
-1. **Use NVMe SSD**: Fast local storage is critical. Use `--memmap-tmp-dir` to specify a fast SSD for temporary files to avoid reading becoming a bottleneck. If SSD is not available, increase `rank_read_workers` to compensate.
+1. **Use storage appropriate to the file size**: Leave `memmap_tmp_dir` unset when the memmaps exceed local capacity. New Lustre files are striped automatically, and marker output remains sequential. Use local NVMe only when the full staged files fit.
 1. **Increase batch sizes**: If memory allows, larger batches improve throughput
 
 ### For CPU-Only Systems
 
 1. **Disable GPU**: Use `--no-gpu` to avoid JAX GPU initialization overhead
 1. **Increase CPU cores and compute workers**: The Spatial LDSC step scales near-linearly with the number of available CPU cores. Increase `ldsc_compute_workers` to match available cores.
-1. **Use NVMe SSD**: Fast storage significantly speeds up latent-to-gene computation. Use `--memmap-tmp-dir` to specify a fast SSD.
+1. **Prefer sequential shared storage for oversized files**: Local SSD is optional. Use it only when the complete staged memmaps fit; otherwise the automatic direct-storage path avoids a capacity failure.
 
 ### For Cluster Users
 

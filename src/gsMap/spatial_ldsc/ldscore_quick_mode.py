@@ -150,13 +150,8 @@ class SpatialLDSCProcessor:
 
             sample_info = sample_info.to_numpy()
             self.spot_indices = np.where(sample_info == self.config.sample_filter)[0]
-
-            # Verify spots are contiguous for efficient slicing
-            expected_range = list(range(self.spot_indices[0], self.spot_indices[-1] + 1))
-            if self.spot_indices.tolist() != expected_range:
-                raise ValueError("Spot indices for sample must be contiguous")
-
-            self.sample_start_offset = self.spot_indices[0]
+            if self.spot_indices.size == 0:
+                raise ValueError(f"No spots found for sample '{self.config.sample_filter}'")
             self.spot_names_filtered = self.spot_names_all[self.spot_indices]
             logger.info(
                 f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_filter}'"
@@ -164,7 +159,6 @@ class SpatialLDSCProcessor:
         else:
             self.spot_indices = np.arange(self.n_spots)
             self.spot_names_filtered = self.spot_names_all
-            self.sample_start_offset = 0
 
         self.n_spots_filtered = len(self.spot_indices)
 
@@ -247,7 +241,6 @@ class SpatialLDSCProcessor:
             chunk_starts=self.chunk_starts,
             chunk_size=self.chunk_size,
             cell_end=self._cell_end,
-            sample_start_offset=self.sample_start_offset,
             spot_indices=self.spot_indices,
             spot_names_filtered=self.spot_names_filtered,
             ldscore_adata=self.ldscore_adata,

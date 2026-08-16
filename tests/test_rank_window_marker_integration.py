@@ -41,7 +41,20 @@ class _Writer:
 
 @pytest.mark.parametrize("cache_rows", [3, 5], ids=["multiple-windows", "one-window"])
 @pytest.mark.parametrize("prefetch_and_retain", [False, True])
-def test_unified_rank_cache_matches_full_rank_matrix(cache_rows, prefetch_and_retain):
+@pytest.mark.parametrize(
+    ("output_rows", "expected_rows"),
+    [
+        (np.asarray([2, 0, 3, 1], dtype=np.int64), np.asarray([2, 0, 3, 1])),
+        (slice(0, 4), np.arange(4)),
+    ],
+    ids=["indexed-output", "sequential-output"],
+)
+def test_unified_rank_cache_matches_full_rank_matrix(
+    cache_rows,
+    prefetch_and_retain,
+    output_rows,
+    expected_rows,
+):
     ranks = np.asarray(
         [
             [0.10, 0.20, 0.30],
@@ -54,7 +67,6 @@ def test_unified_rank_cache_matches_full_rank_matrix(cache_rows, prefetch_and_re
     )
     neighbors = np.asarray([[0, 1], [1, 2], [2, 3], [3, 4]], dtype=np.int32)
     weights = np.ones(neighbors.shape, dtype=np.float16)
-    output_indices = np.asarray([2, 0, 3, 1], dtype=np.int64)
 
     calculator = object.__new__(MarkerScoreCalculator)
     calculator.rank_values = ranks
@@ -81,7 +93,7 @@ def test_unified_rank_cache_matches_full_rank_matrix(cache_rows, prefetch_and_re
         "synthetic",
         neighbors,
         weights,
-        output_indices,
+        output_rows,
     )
 
     expected_in_trace_order = np.asarray(
@@ -98,6 +110,6 @@ def test_unified_rank_cache_matches_full_rank_matrix(cache_rows, prefetch_and_re
         dtype=np.float16,
     )
     expected = np.zeros_like(ranks)
-    expected[output_indices] = expected_in_trace_order
+    expected[expected_rows] = expected_in_trace_order
 
     assert np.array_equal(calculator.writer.output, expected)

@@ -71,7 +71,7 @@ gsmap quick-mode [OPTIONS]
 - `--cross-slice-marker-score-strategy [global_pool|per_slice_pool|hierarchical_pool]`: Strategy for computing marker scores across slices in spatial3D datasets. 'global_pool': Select the top K most similar neighbors globally across all slices combined. 'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. 'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores. [default: hierarchical_pool]
 - `--high-quality-neighbor-filter / --no-high-quality-filter`: Only find neighbors within high quality cells (requires High_quality column in obs) [default: no-high-quality-filter]
 - `--use-gpu / --no-gpu`: Use GPU for JAX-accelerated spatial LDSC implementation [default: use-gpu]
-- `--memmap-tmp-dir DIRECTORY`: Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. If provided, memory maps will be copied to this directory for faster random access during computation.
+- `--memmap-tmp-dir DIRECTORY`: Optional fast scratch directory. A memmap is staged only when the complete logical file plus safety headroom fits; otherwise project storage is used directly.
 - `--mkscore-batch-size INTEGER RANGE`: Cells per marker-score batch; 0 selects automatically. [default: 0; 0\<=x\<=1000]
 - `--rank-read-workers INTEGER RANGE`: Rank-reader threads; use an explicit value for the target storage system. [default: 120; 1\<=x\<=128]
 - `--mkscore-compute-workers INTEGER RANGE`: Marker-score compute workers. [default: 4; 1\<=x\<=16]
@@ -195,7 +195,7 @@ gsmap latent-to-gene [OPTIONS]
 - `--cross-slice-marker-score-strategy [global_pool|per_slice_pool|hierarchical_pool]`: Strategy for computing marker scores across slices in spatial3D datasets. 'global_pool': Select the top K most similar neighbors globally across all slices combined. 'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. 'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores. [default: hierarchical_pool]
 - `--high-quality-neighbor-filter / --no-high-quality-filter`: Only find neighbors within high quality cells (requires High_quality column in obs) [default: no-high-quality-filter]
 - `--use-gpu / --no-gpu`: Use GPU for JAX computations (requires sufficient GPU memory) [default: use-gpu]
-- `--memmap-tmp-dir DIRECTORY`: Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. If provided, memory maps will be copied to this directory for faster random access during computation.
+- `--memmap-tmp-dir DIRECTORY`: Optional fast scratch directory. A memmap is staged only when the complete logical file plus safety headroom fits; otherwise project storage is used directly.
 - `--mkscore-batch-size INTEGER RANGE`: Cells per marker-score batch; 0 selects automatically. [default: 0; 0\<=x\<=1000]
 - `--rank-read-workers INTEGER RANGE`: Rank-reader threads; use an explicit value for the target storage system. [default: 120; 1\<=x\<=128]
 - `--mkscore-compute-workers INTEGER RANGE`: Marker-score compute workers. [default: 4; 1\<=x\<=16]
@@ -226,7 +226,7 @@ gsmap spatial-ldsc [OPTIONS]
 - `--workdir DIRECTORY`: Path to the working directory [required]
 - `--project-name TEXT`: Name of the project [required]
 - `--use-gpu / --no-gpu`: Use GPU for JAX-accelerated spatial LDSC implementation [default: use-gpu]
-- `--memmap-tmp-dir DIRECTORY`: Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. If provided, memory maps will be copied to this directory for faster random access during computation.
+- `--memmap-tmp-dir DIRECTORY`: Optional fast scratch directory. A memmap is staged only when the complete logical file plus safety headroom fits; otherwise project storage is used directly.
 - `--ldsc-read-workers INTEGER RANGE`: Number of read workers [default: 10; x>=1]
 - `--ldsc-compute-workers INTEGER RANGE`: Number of compute workers for LDSC regression [default: 10; x>=1]
 - `--spots-per-chunk-quick-mode INTEGER RANGE`: Number of spots per chunk in quick mode [default: 50; x>=1]

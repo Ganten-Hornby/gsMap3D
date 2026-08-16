@@ -8,9 +8,11 @@ import numpy as np
 import pandas as pd
 import psutil
 import pyarrow.feather as feather
+import scipy.sparse as sp
 from statsmodels.stats.multitest import multipletests
 
 from gsMap.config import SpatialLDSCConfig
+from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
 
 logger = logging.getLogger("gsMap.spatial_ldsc.io")
@@ -437,37 +439,105 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
         raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
 
     # check complete
-    is_complete, _ = MemMapDense.check_complete(memmap_path)
+    is_complete, marker_metadata = MemMapDense.check_complete(memmap_path)
     if not is_complete:
         raise ValueError(
             f"Marker score at {memmap_path} is incomplete or corrupted. Please recompute."
         )
 
-    # Load metadata source in backed mode
+    if marker_metadata is None:
+        raise ValueError(f"Marker score metadata could not be loaded: {memmap_path}")
+
     logger.info(f"Loading metadata from {metadata_path}")
     src_adata = ad.read_h5ad(metadata_path, backed="r")
+    row_order = None
+    mm = None
+    try:
+        shape = (src_adata.n_obs, src_adata.n_vars)
+        if tuple(marker_metadata["shape"]) != shape:
+            raise ValueError(
+                f"Marker score shape {tuple(marker_metadata['shape'])} does not match "
+                f"AnnData shape {shape}"
+            )
 
-    # Determine shape from metadata
-    shape = (src_adata.n_obs, src_adata.n_vars)
+        mm = MemMapDense(
+            memmap_path,
+            shape=shape,
+            dtype=np.dtype(marker_metadata["dtype"]),
+            mode=mode,
+            tmp_dir=tmp_dir,
+        )
 
-    # Initialize MemMapDense
-    mm = MemMapDense(memmap_path, shape=shape, mode=mode, tmp_dir=tmp_dir)
+        row_order = open_marker_obs_indices(
+            memmap_path,
+            marker_metadata,
+            expected_obs=src_adata.n_obs,
+        )
+        spatial_key = getattr(config, "spatial_key", None)
+        obsm_keys = (
+            [spatial_key]
+            if spatial_key is not None and spatial_key in src_adata.obsm
+            else []
+        )
+        if row_order is None:
+            obs = src_adata.obs.copy()
+            obsm = {}
+            for key in obsm_keys:
+                value = src_adata.obsm[key]
+                if hasattr(value, "to_memory"):
+                    value = value.to_memory()
+                obsm[key] = value.copy()
+            logger.info("Using legacy identity marker-row layout")
+        else:
+            logger.info("Aligning AnnData observations to sequential marker-row layout")
+            row_indices = np.asarray(row_order)
+            obs = src_adata.obs.iloc[row_indices].copy()
+            obsm = {}
+            for key in obsm_keys:
+                value = src_adata.obsm[key]
+                if hasattr(value, "to_memory"):
+                    value = value.to_memory()
+                if isinstance(value, pd.DataFrame):
+                    obsm[key] = value.iloc[row_indices].copy()
+                elif sp.issparse(value):
+                    obsm[key] = value[row_indices].copy()
+                else:
+                    # Materialize backed arrays before arbitrary permutation;
+                    # h5py fancy indexing requires monotonically ordered rows.
+                    obsm[key] = np.asarray(value)[row_indices].copy()
 
-    logger.info("Constructing AnnData wrapper...")
-    adata = ad.AnnData(
-        X=mm.memmap,
-        obs=src_adata.obs.copy(),
-        var=src_adata.var.copy(),
-        uns=src_adata.uns.copy(),
-        obsm=src_adata.obsm.copy(),
-        varm=src_adata.varm.copy(),
-    )
-    # Close metadata source to release file handle
-    if src_adata.isbacked:
-        src_adata.file.close()
+        if obsm_keys:
+            logger.info(f"Loaded aligned spatial coordinates from obsm[{spatial_key!r}]")
+        omitted_obsm = len(src_adata.obsm) - len(obsm_keys)
+        if omitted_obsm:
+            logger.info(
+                f"Left {omitted_obsm} non-spatial obsm arrays in the source H5AD "
+                "to bound marker-loader memory"
+            )
+
+        logger.info("Constructing AnnData wrapper...")
+        adata = ad.AnnData(
+            X=mm.memmap,
+            obs=obs,
+            var=src_adata.var.copy(),
+            uns=src_adata.uns.copy(),
+            obsm=obsm,
+            varm=src_adata.varm.copy(),
+        )
+    except Exception:
+        if mm is not None:
+            mm.close()
+        raise
+    finally:
+        if row_order is not None:
+            row_order._mmap.close()
+        if src_adata.isbacked:
+            src_adata.file.close()
 
     # Attach the manager to allow access to MemMapDense methods
     adata.uns["memmap_manager"] = mm
+    if row_order is not None:
+        adata.uns["marker_score_row_layout"] = marker_metadata["row_layout"]
 
     return adata
 

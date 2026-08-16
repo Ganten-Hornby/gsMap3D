@@ -94,7 +94,6 @@ def test_chunk_source_can_defer_or_compute_cpu_ldscore():
         chunk_starts=[1],
         chunk_size=2,
         cell_end=3,
-        sample_start_offset=0,
         spot_indices=np.array([0, 1, 2]),
         spot_names_filtered=np.array(["cell0", "cell1", "cell2"]),
         marker_score_adata=marker_adata,
@@ -114,6 +113,28 @@ def test_chunk_source_can_defer_or_compute_cpu_ldscore():
     np.testing.assert_allclose(computed[0], expected.astype(np.float32))
     assert list(computed[1]) == ["cell1", "cell2"]
     assert computed[2:] == (1, 3)
+
+
+def test_chunk_source_reads_noncontiguous_sample_rows_correctly():
+    marker_scores = np.arange(15, dtype=np.float32).reshape(5, 3)
+    marker_adata = type("MarkerAdata", (), {"X": marker_scores})()
+    source = SpatialLDChunkSource(
+        mode="weight_matrix",
+        chunk_starts=[0],
+        chunk_size=3,
+        cell_end=3,
+        spot_indices=np.array([0, 2, 4]),
+        spot_names_filtered=np.array(["cell0", "cell2", "cell4"]),
+        marker_score_adata=marker_adata,
+        marker_score_gene_indices=np.array([0, 2]),
+        snp_gene_weight_sparse=sp.eye(2, format="csr", dtype=np.float32),
+    )
+
+    deferred = source.fetch_chunk(0, defer_ldscore_to_compute=True)
+
+    np.testing.assert_array_equal(deferred[4], marker_scores[[0, 2, 4]][:, [0, 2]].T)
+    assert list(deferred[1]) == ["cell0", "cell2", "cell4"]
+    assert deferred[2:4] == (0, 5)
 
 
 def test_prepare_ldscore_backend_follows_shared_use_gpu(monkeypatch):
