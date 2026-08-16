@@ -13,6 +13,7 @@ from gsMap.latent2gene.marker_layout import (
     marker_obs_indices_path,
     open_marker_obs_indices,
 )
+from gsMap.latent2gene.marker_scores import MarkerScoreCalculator
 from gsMap.latent2gene.memmap_io import (
     MemMapDense,
     _automatic_lustre_stripe_count,
@@ -219,6 +220,116 @@ def test_optional_tmp_storage_falls_back_when_capacity_is_insufficient(
     )
 
 
+def _force_distinct_scratch_with_capacity(monkeypatch):
+    monkeypatch.setattr(
+        "gsMap.latent2gene.memmap_io._same_filesystem",
+        lambda first, second: False,
+    )
+    usage = type("Usage", (), {"free": 100 * 1024**3})()
+    monkeypatch.setattr(
+        "gsMap.latent2gene.memmap_io.shutil.disk_usage",
+        lambda path: usage,
+    )
+
+
+def test_rank_publish_retains_scratch_and_syncs_project_once(tmp_path, monkeypatch):
+    project_dir = tmp_path / "project"
+    scratch_dir = tmp_path / "scratch"
+    project_dir.mkdir()
+    scratch_dir.mkdir()
+    rank_path = project_dir / "ranks.dat"
+    values = np.arange(12, dtype=np.float16).reshape(4, 3)
+    _force_distinct_scratch_with_capacity(monkeypatch)
+
+    sync_calls = []
+    original_sync = MemMapDense._sync_tmp_to_original
+
+    def tracked_sync(memmap):
+        sync_calls.append(memmap.data_path)
+        original_sync(memmap)
+
+    monkeypatch.setattr(MemMapDense, "_sync_tmp_to_original", tracked_sync)
+
+    rank = MemMapDense(
+        rank_path,
+        shape=values.shape,
+        dtype=values.dtype,
+        mode="w",
+        num_write_workers=0,
+        tmp_dir=scratch_dir,
+    )
+    assert rank.using_tmp
+    assert rank.data_path.parent.parent == scratch_dir
+    assert not rank_path.is_file()
+    assert not rank_path.with_suffix(".meta.json").is_file()
+
+    rank.memmap[:] = values
+    rank.publish()
+
+    assert sync_calls == [rank.data_path]
+    assert MemMapDense.check_complete(rank_path)[0]
+    assert rank.data_path.is_file()
+    np.testing.assert_array_equal(rank.memmap, values)
+
+    completed = np.memmap(rank_path, dtype=np.float16, mode="r", shape=values.shape)
+    try:
+        np.testing.assert_array_equal(completed, values)
+    finally:
+        completed._mmap.close()
+
+    scratch_subdir = rank.tmp_subdir
+    rank.close()
+    rank.close()
+    assert sync_calls == [rank.data_path]
+    assert not scratch_subdir.exists()
+
+
+def test_marker_input_reuses_live_rank_scratch_mapping(tmp_path, monkeypatch):
+    project_dir = tmp_path / "project"
+    scratch_dir = tmp_path / "scratch"
+    project_dir.mkdir()
+    scratch_dir.mkdir()
+    rank_path = project_dir / "ranks.dat"
+    adata_path = project_dir / "concatenated_latent_adata.h5ad"
+    _force_distinct_scratch_with_capacity(monkeypatch)
+
+    rank = MemMapDense(
+        rank_path,
+        shape=(3, 2),
+        dtype=np.float16,
+        mode="w",
+        num_write_workers=0,
+        tmp_dir=scratch_dir,
+    )
+    rank.memmap[:] = np.arange(6, dtype=np.float16).reshape(3, 2)
+    rank.publish()
+    scratch_entries_before = set(scratch_dir.iterdir())
+
+    ad.AnnData(
+        X=np.zeros((3, 2), dtype=np.float32),
+        obs=pd.DataFrame(index=["a", "b", "c"]),
+        var=pd.DataFrame(index=["g1", "g2"]),
+    ).write_h5ad(adata_path)
+
+    calculator = object.__new__(MarkerScoreCalculator)
+    calculator.config = SimpleNamespace(
+        high_quality_neighbor_filter=False,
+        memmap_tmp_dir=scratch_dir,
+    )
+    calculator.load_global_stats = lambda path: (
+        np.zeros(2, dtype=np.float32),
+        np.ones(2, dtype=np.float32),
+    )
+
+    loaded = calculator._load_input_data(adata_path, rank, "unused.parquet")
+    assert loaded[1] is rank
+    assert loaded[1].data_path == rank.data_path
+    assert set(scratch_dir.iterdir()) == scratch_entries_before
+    np.testing.assert_array_equal(loaded[-1], np.ones(3, dtype=bool))
+
+    rank.close()
+
+
 def test_staged_marker_output_publishes_data_metadata_and_mapping_together(
     tmp_path,
     monkeypatch,
@@ -232,15 +343,7 @@ def test_staged_marker_output_publishes_data_metadata_and_mapping_together(
 
     # Exercise the cross-filesystem branch using two test directories on the
     # same CI filesystem.
-    monkeypatch.setattr(
-        "gsMap.latent2gene.memmap_io._same_filesystem",
-        lambda first, second: False,
-    )
-    usage = type("Usage", (), {"free": 100 * 1024**3})()
-    monkeypatch.setattr(
-        "gsMap.latent2gene.memmap_io.shutil.disk_usage",
-        lambda path: usage,
-    )
+    _force_distinct_scratch_with_capacity(monkeypatch)
 
     marker = MemMapDense(
         marker_path,

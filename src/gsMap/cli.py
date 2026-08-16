@@ -18,11 +18,8 @@ from gsMap.config import (
     SpatialLDSCConfig,
     dataclass_typer,
 )
+from gsMap.logging_config import configure_console_logging
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO, format="[%(asctime)s] %(levelname)s | %(name)s - %(message)s"
-)
 logger = logging.getLogger("gsMap")
 
 # Create the Typer app
@@ -58,17 +55,10 @@ def quick_mode(config: QuickModeConfig):
     logger.info(f"Working directory: {config.workdir}")
     logger.info(f"Project directory: {config.project_dir}")
 
-    try:
-        from gsMap.pipeline.quick_mode import run_quick_mode
+    from gsMap.pipeline.quick_mode import run_quick_mode
 
-        run_quick_mode(config)
-        logger.info("✓ Pipeline completed successfully!")
-    except (ImportError, AttributeError) as e:
-        logger.error(f"Error executing pipeline: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Execution Error: {e}")
-        raise
+    run_quick_mode(config)
+    logger.info("✓ Pipeline completed successfully!")
 
 
 @app.command(name="find-latent")
@@ -96,14 +86,10 @@ def find_latent_representations(config: FindLatentRepresentationsConfig):
     else:
         logger.info("Using single-stage training with reconstruction loss only")
 
-    try:
-        from gsMap.find_latent import run_find_latent_representation
+    from gsMap.find_latent import run_find_latent_representation
 
-        run_find_latent_representation(config)
-        logger.info("✓ Latent representations computed successfully!")
-    except ImportError:
-        logger.info("Running in demo mode...")
-        logger.info("✓ Demo completed!")
+    run_find_latent_representation(config)
+    logger.info("✓ Latent representations computed successfully!")
 
 
 @app.command(name="latent-to-gene")
@@ -124,14 +110,10 @@ def latent_to_gene(config: LatentToGeneConfig):
     # Show auto-generated paths
     logger.info(f"Marker scores will be saved to: {config.latent2gene_dir}")
 
-    try:
-        from gsMap.latent2gene import run_latent_to_gene
+    from gsMap.latent2gene import run_latent_to_gene
 
-        run_latent_to_gene(config)
-        logger.info("✓ Gene marker scores computed successfully!")
-    except ImportError:
-        logger.info("Running in demo mode...")
-        logger.info("✓ Demo completed!")
+    run_latent_to_gene(config)
+    logger.info("✓ Gene marker scores computed successfully!")
 
 
 @app.command(name="spatial-ldsc")
@@ -179,17 +161,10 @@ def cauchy_combination(config: CauchyCombinationConfig):
     logger.info(f"Project: {config.project_name}")
     logger.info(f"Annotation: {config.annotation}")
 
-    try:
-        from gsMap.cauchy_combination_test import run_Cauchy_combination
+    from gsMap.cauchy_combination_test import run_Cauchy_combination
 
-        run_Cauchy_combination(config)
-        logger.info("✓ Cauchy combination test completed successfully!")
-    except (ImportError, AttributeError) as e:
-        logger.error(f"Error executing Cauchy combination: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Execution Error: {e}")
-        raise
+    run_Cauchy_combination(config)
+    logger.info("✓ Cauchy combination test completed successfully!")
 
 
 @app.command(name="ldscore-weight-matrix")
@@ -208,18 +183,11 @@ def ldscore_weight_matrix(config: LDScoreConfig):
     logger.info(f"Target Chromosomes: {config.chromosomes}")
     logger.info(f"Output Directory: {config.output_dir}")
 
-    try:
-        from gsMap.ldscore.pipeline import LDScorePipeline
+    from gsMap.ldscore.pipeline import LDScorePipeline
 
-        pipeline = LDScorePipeline(config)
-        pipeline.run()
-        logger.info("✓ LDScore Pipeline completed successfully!")
-    except ImportError as e:
-        logger.error(f"Import Error: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"Execution Error: {e}")
-        raise
+    pipeline = LDScorePipeline(config)
+    pipeline.run()
+    logger.info("✓ LDScore Pipeline completed successfully!")
 
 
 @app.command(name="format-sumstats")
@@ -233,14 +201,10 @@ def format_sumstats(config: FormatSumstatsConfig):
     - Converts SNP positions to RSID (if dbsnp is provided)
     - Saves formatted summary statistics
     """
-    try:
-        from gsMap.format_sumstats import gwas_format
+    from gsMap.format_sumstats import gwas_format
 
-        gwas_format(config)
-        logger.info("✓ Summary statistics formatted successfully!")
-    except Exception as e:
-        logger.error(f"Execution Error: {e}")
-        raise
+    gwas_format(config)
+    logger.info("✓ Summary statistics formatted successfully!")
 
 
 @app.command(name="report-view")
@@ -350,7 +314,7 @@ def main(
 
     For detailed documentation, visit: https://yanglab.westlake.edu.cn/gsmap3d/docs
     """
-    pass
+    configure_console_logging()
 
 
 if __name__ == "__main__":

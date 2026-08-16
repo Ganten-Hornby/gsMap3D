@@ -407,7 +407,10 @@ class MarkerScoreCalculator:
         self.console.print(ct_table)
 
     def _load_input_data(
-        self, adata_path: str, rank_memmap_path: str, mean_frac_path: str
+        self,
+        adata_path: str,
+        rank_memmap_path: str | Path | MemMapDense,
+        mean_frac_path: str,
     ) -> tuple[ad.AnnData, MemMapDense, np.ndarray, np.ndarray, int, int, np.ndarray]:
         """Load input data: AnnData, rank memory map, global statistics, and high quality mask
 
@@ -424,20 +427,23 @@ class MarkerScoreCalculator:
         global_log_gmean, global_expr_frac = self.load_global_stats(mean_frac_path)
 
         # Open rank memory map and get dimensions
-        rank_memmap_path = Path(rank_memmap_path)
-        meta_path = rank_memmap_path.with_suffix(".meta.json")
-        with open(meta_path) as f:
-            meta = json.load(f)
+        if isinstance(rank_memmap_path, MemMapDense):
+            rank_memmap = rank_memmap_path
+            logger.info(f"Reusing generated rank memory map at {rank_memmap.data_path}")
+        else:
+            rank_memmap_path = Path(rank_memmap_path)
+            meta_path = rank_memmap_path.with_suffix(".meta.json")
+            with open(meta_path) as f:
+                meta = json.load(f)
 
-        rank_memmap = MemMapDense(
-            path=rank_memmap_path,
-            shape=tuple(meta["shape"]),
-            dtype=np.dtype(meta["dtype"]),
-            mode="r",
-            tmp_dir=self.config.memmap_tmp_dir,
-        )
-
-        logger.info(f"Opened rank memory map from {rank_memmap_path}")
+            rank_memmap = MemMapDense(
+                path=rank_memmap_path,
+                shape=tuple(meta["shape"]),
+                dtype=np.dtype(meta["dtype"]),
+                mode="r",
+                tmp_dir=self.config.memmap_tmp_dir,
+            )
+            logger.info(f"Opened rank memory map from {rank_memmap_path}")
         n_cells = adata.n_obs
         n_cells_rank = rank_memmap.shape[0]
         n_genes = rank_memmap.shape[1]
@@ -1277,7 +1283,7 @@ class MarkerScoreCalculator:
     def calculate_marker_scores(
         self,
         adata_path: str,
-        rank_memmap_path: str,
+        rank_memmap_path: str | Path | MemMapDense,
         mean_frac_path: str,
         output_path: str | Path | None = None,
     ) -> str | Path:

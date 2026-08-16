@@ -6,12 +6,14 @@ from jinja2 import Template
 
 import gsMap
 from gsMap.config import QuickModeConfig
+from gsMap.logging_config import logged_stage
 
 from .report_data import ReportDataManager
 
 logger = logging.getLogger(__name__)
 
 
+@logged_stage("report")
 def run_report(config: QuickModeConfig, run_parameters: dict = None):
     """
     Main entry point for report generation.

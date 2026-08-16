@@ -251,6 +251,9 @@ class MemMapDense:
         self.tmp_dir = Path(tmp_dir) if tmp_dir else None
         self.using_tmp = False
         self.tmp_path = None
+        self._published = False
+        self._closed = False
+        self._writers_stopped = False
 
         # A scratch directory must not bypass the normal protection against
         # overwriting a completed final output.
@@ -662,34 +665,65 @@ class MemMapDense:
             logger.warning(f"Could not read metadata from {meta_path}: {e}")
             return False, None
 
-    def close(self, metadata_updates: dict | None = None):
-        """Clean up resources"""
-        logger.info("MemMapDense.close() called")
+    def _stop_writer_threads(self) -> None:
+        """Drain queued writes and stop the asynchronous writers exactly once."""
+        if self._writers_stopped:
+            return
         if self.writer_threads:
-            logger.info("Closing MemMapDense: waiting for queued writes...")
+            logger.info("Waiting for queued memmap writes...")
             self.write_queue.join()
             logger.info("All queued writes have been processed")
-            self.stop_writer.set()
-            logger.info("Stop signal set for writer threads")
 
-            # Send stop signal to all threads
             for _ in self.writer_threads:
                 self.write_queue.put(None)
-            logger.info("Stop sentinels queued for writer threads")
 
-            # Wait for all threads to finish
             for thread in self.writer_threads:
                 thread.join(timeout=5.0)
+                if thread.is_alive():
+                    raise RuntimeError("Memmap writer thread did not stop within 5 seconds")
+            self.stop_writer.set()
+            logger.info("Memmap writer threads stopped")
+        self._writers_stopped = True
 
-        # Final flush
+    def publish(self, metadata_updates: dict | None = None) -> None:
+        """Finalize output and publish one sequential copy while retaining scratch.
+
+        A newly generated rank matrix uses this method before marker scoring so
+        its project-side checkpoint is durable while the existing scratch
+        mapping remains available for immediate reuse.
+        """
+        if self._closed:
+            raise RuntimeError("Cannot publish a closed MemMapDense")
+        if self.mode not in ("w", "r+"):
+            return
+        if self._published:
+            if metadata_updates:
+                raise RuntimeError("Cannot update metadata after a memmap was published")
+            return
+
+        self._stop_writer_threads()
+        self.mark_complete(metadata_updates=metadata_updates)
+        if self.using_tmp:
+            self._sync_tmp_to_original()
+        self._published = True
+
+    def _close_memmap_handle(self) -> None:
+        underlying_mmap = getattr(getattr(self, "memmap", None), "_mmap", None)
+        if underlying_mmap is not None and not getattr(underlying_mmap, "closed", False):
+            underlying_mmap.close()
+
+    def close(self, metadata_updates: dict | None = None):
+        """Publish pending output, close the mapping, and clean temporary storage."""
+        if self._closed:
+            return
+        logger.info("MemMapDense.close() called")
+
         if self.mode in ("w", "r+"):
-            self.mark_complete(metadata_updates=metadata_updates)
+            self.publish(metadata_updates=metadata_updates)
 
-            # Sync tmp files back to original location if using tmp
-            if self.using_tmp:
-                self._sync_tmp_to_original()
-
+        self._close_memmap_handle()
         self._cleanup_tmp()
+        self._closed = True
 
     def __enter__(self):
         return self

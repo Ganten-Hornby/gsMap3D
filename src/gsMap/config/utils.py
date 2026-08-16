@@ -32,7 +32,22 @@ def configure_jax_platform(use_accelerator: bool = True):
         from jax import config as jax_config
 
         if not use_accelerator:
-            jax_config.update("jax_platform_name", "cpu")
+            # Recent CUDA-enabled JAX wheels discover every installed PJRT plugin,
+            # even when CPU is explicitly selected. On a CPU-only node that CUDA
+            # version probe logs a full cuInit traceback before falling back. Force
+            # discovery while the irrelevant CUDA constraint check is disabled,
+            # then restore the caller's environment immediately.
+            skip_check = "JAX_SKIP_CUDA_CONSTRAINTS_CHECK"
+            previous_skip_check = os.environ.get(skip_check)
+            os.environ[skip_check] = "1"
+            try:
+                jax_config.update("jax_platform_name", "cpu")
+                jax.devices("cpu")
+            finally:
+                if previous_skip_check is None:
+                    os.environ.pop(skip_check, None)
+                else:
+                    os.environ[skip_check] = previous_skip_check
             logger.info("JAX configured to use CPU for computations (accelerators disabled)")
             return
 

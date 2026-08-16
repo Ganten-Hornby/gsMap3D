@@ -10,6 +10,7 @@ import anndata as ad
 import jax
 
 from gsMap.config import SpatialLDSCConfig
+from gsMap.logging_config import logged_stage, stage_logging
 
 from .io import (
     FeatherAnnData,
@@ -40,6 +41,7 @@ jax.config.update("jax_enable_x64", False)  # Use float32 for speed and memory e
 # ============================================================================
 
 
+@logged_stage("spatial_ldsc")
 def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     """
     Run spatial LDSC for all traits in config.sumstats_config_dict.
@@ -128,44 +130,51 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
         try:
             for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
                 try:
-                    logger.info("=" * 70)
-                    logger.info("Running Spatial LDSC (JAX Implementation)")
-                    logger.info(
-                        f"Project: {config.project_name}, Trait: {trait_name} ({idx + 1}/{len(traits_to_process)})"
+                    with stage_logging(config, "spatial_ldsc", trait=trait_name):
+                        logger.info("=" * 70)
+                        logger.info("Running Spatial LDSC (JAX Implementation)")
+                        logger.info(
+                            f"Project: {config.project_name}, Trait: {trait_name} "
+                            f"({idx + 1}/{len(traits_to_process)})"
+                        )
+                        if config.sample_filter:
+                            logger.info(f"Sample filter: {config.sample_filter}")
+                        if config.cell_indices_range:
+                            logger.info(f"Cell indices range: {config.cell_indices_range}")
+                        logger.info("=" * 70)
+
+                        # Check if output already exists
+                        expected_filename = generate_expected_output_filename(config, trait_name)
+                        if expected_filename is not None:
+                            expected_output_path = output_dir / expected_filename
+                            if expected_output_path.exists():
+                                logger.info(f"Output file already exists: {expected_output_path}")
+                                logger.info(
+                                    f"Skipping trait {trait_name} "
+                                    f"({idx + 1}/{len(traits_to_process)})"
+                                )
+
+                                # Log statistics from existing result
+                                log_existing_result_statistics(expected_output_path, trait_name)
+                                continue
+
+                        # Setup processor for current trait
+                        processor.setup_trait(trait_name, sumstats_file)
+
+                        # Process all chunks for current trait
+                        start_time = time.time()
+                        processor.process_all_chunks(wrapper_of_process_chunk_jit)
+
+                        elapsed_time = time.time() - start_time
+                        h, rem = divmod(elapsed_time, 3600)
+                        m, s = divmod(rem, 60)
+                        logger.info(
+                            f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s"
+                        )
+                except Exception as error:  # noqa: BLE001 isolate per-trait failures
+                    logger.error(
+                        f"Trait {trait_name} failed; continuing with the next trait: {error}"
                     )
-                    if config.sample_filter:
-                        logger.info(f"Sample filter: {config.sample_filter}")
-                    if config.cell_indices_range:
-                        logger.info(f"Cell indices range: {config.cell_indices_range}")
-                    logger.info("=" * 70)
-
-                    # Check if output already exists
-                    expected_filename = generate_expected_output_filename(config, trait_name)
-                    if expected_filename is not None:
-                        expected_output_path = output_dir / expected_filename
-                        if expected_output_path.exists():
-                            logger.info(f"Output file already exists: {expected_output_path}")
-                            logger.info(
-                                f"Skipping trait {trait_name} ({idx + 1}/{len(traits_to_process)})"
-                            )
-
-                            # Log statistics from existing result
-                            log_existing_result_statistics(expected_output_path, trait_name)
-                            continue
-
-                    # Setup processor for current trait
-                    processor.setup_trait(trait_name, sumstats_file)
-
-                    # Process all chunks for current trait
-                    start_time = time.time()
-                    processor.process_all_chunks(wrapper_of_process_chunk_jit)
-
-                    elapsed_time = time.time() - start_time
-                    h, rem = divmod(elapsed_time, 3600)
-                    m, s = divmod(rem, 60)
-                    logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
-                except Exception as e:  # noqa: BLE001  isolate per-trait failures
-                    logger.error(f"Error processing trait {trait_name}: {e}")
                     continue  # Move on to the next trait even if this one fails
 
         finally:
@@ -182,6 +191,6 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                 if config.marker_score_format == "h5ad" and marker_score_adata.isbacked:
                     marker_score_adata.file.close()
 
-    except Exception as e:
-        logger.error(f"An error occurred during execution: {e}")
+    except Exception as error:
+        logger.error(f"Spatial LDSC execution failed: {error}")
         raise

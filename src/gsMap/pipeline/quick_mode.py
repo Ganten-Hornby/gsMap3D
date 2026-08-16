@@ -10,6 +10,7 @@ from gsMap.config.quick_mode_config import check_report_done
 from gsMap.config.spatial_ldsc_config import check_spatial_ldsc_done
 from gsMap.find_latent import run_find_latent_representation
 from gsMap.latent2gene import run_latent_to_gene
+from gsMap.logging_config import logged_stage
 from gsMap.report import run_report
 from gsMap.spatial_ldsc.spatial_ldsc_jax import run_spatial_ldsc_jax
 
@@ -25,6 +26,7 @@ def format_duration(seconds):
         return f"{minutes}m {int(seconds % 60)}s"
 
 
+@logged_stage("quick_mode")
 def run_quick_mode(config: QuickModeConfig):
     """
     Run the Quick Mode pipeline.

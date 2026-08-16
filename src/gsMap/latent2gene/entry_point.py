@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from gsMap.config import LatentToGeneConfig
+from gsMap.logging_config import logged_stage
 
 from .marker_scores import MarkerScoreCalculator
 from .memmap_io import MemMapDense
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+@logged_stage("latent_to_gene")
 def run_latent_to_gene(config: LatentToGeneConfig) -> dict[str, Any]:
     """
     Main entry point for latent to gene conversion
@@ -118,12 +120,22 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> dict[str, Any]:
 
     marker_calculator = MarkerScoreCalculator(config)
 
-    marker_scores_path = marker_calculator.calculate_marker_scores(
-        adata_path=rank_outputs["concatenated_latent_adata"],
-        rank_memmap_path=rank_outputs["rank_memmap"],
-        mean_frac_path=rank_outputs["mean_frac"],
-        output_path=expected_outputs["marker_scores"],
+    rank_memmap_handle = rank_outputs.get("rank_memmap_handle")
+    rank_runtime_source = (
+        rank_memmap_handle
+        if rank_memmap_handle is not None
+        else rank_outputs["rank_memmap"]
     )
+    try:
+        marker_scores_path = marker_calculator.calculate_marker_scores(
+            adata_path=rank_outputs["concatenated_latent_adata"],
+            rank_memmap_path=rank_runtime_source,
+            mean_frac_path=rank_outputs["mean_frac"],
+            output_path=expected_outputs["marker_scores"],
+        )
+    finally:
+        if rank_memmap_handle is not None:
+            rank_memmap_handle.close()
 
     # Convert config to dict with all Path objects as strings
     config_dict = config.to_dict_with_paths_as_strings()

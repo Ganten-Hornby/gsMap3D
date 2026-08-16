@@ -14,7 +14,7 @@ pd.options.future.infer_string = False
 package_name = "gsMap3D"
 __version__ = version(package_name)
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Libraries should not alter application/root logging during import. The CLI and
+# public pipeline entry points install project-aware handlers when execution starts.
 logger = logging.getLogger("gsMap")
-logger.propagate = False
+logger.addHandler(logging.NullHandler())

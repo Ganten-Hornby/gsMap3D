@@ -503,6 +503,7 @@ class RankCalculator:
                         dtype=np.float16,  # Use float16 to save space
                         mode="w",
                         num_write_workers=rank_writer_workers,
+                        tmp_dir=self.config.memmap_tmp_dir,
                     )
                     # Initialize global accumulators
                     sum_log_ranks = np.zeros(n_genes, dtype=np.float64)
@@ -590,10 +591,14 @@ class RankCalculator:
                 del adata, X, minimal_adata
                 gc.collect()
 
-            # Close rank memory map
+            # Publish one sequential project-side checkpoint while retaining
+            # the scratch mapping for marker-score calculation.
             if rank_memmap is not None:
-                rank_memmap.close()
-                logger.info(f"Saved rank matrix to {rank_memmap_path}")
+                rank_memmap.publish()
+                logger.info(
+                    f"Published rank matrix to {rank_memmap_path}; "
+                    f"marker scoring will read {rank_memmap.data_path}"
+                )
 
         # Calculate mean log ranks and mean fraction
         mean_log_ranks = sum_log_ranks / total_cells
@@ -649,5 +654,6 @@ class RankCalculator:
         return {
             "concatenated_latent_adata": str(concat_adata_path),
             "rank_memmap": str(rank_memmap_path),
+            "rank_memmap_handle": rank_memmap,
             "mean_frac": str(mean_frac_path),
         }
