@@ -127,7 +127,6 @@ def test_direct_chunk_uses_np_take_and_preserves_snp_order(monkeypatch):
         chunk_starts=[0],
         chunk_size=2,
         cell_end=2,
-        sample_start_offset=0,
         spot_indices=np.arange(2),
         spot_names_filtered=np.array(["cell_0", "cell_1"]),
         ldscore_adata=type("AdataStub", (), {"X": matrix})(),
