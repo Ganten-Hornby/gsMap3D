@@ -20,8 +20,7 @@ from .io import (
     load_marker_scores_memmap_format,
     log_existing_result_statistics,
 )
-from .ldscore_quick_mode import SpatialLDSCProcessor
-from .regression_kernel import wrapper_of_process_chunk_jit
+from .ldscore_quick_mode import SpatialLDSCEngine
 
 logger = logging.getLogger("gsMap.spatial_ldsc_jax")
 
@@ -54,9 +53,6 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     output_dir = config.ldsc_save_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine number of loader threads based on platform
-    n_loader_threads = 10 if jax.default_backend() == "gpu" else 2
-
     marker_score_adata = None
     trait_failures: list[tuple[str, Exception]] = []
 
@@ -69,14 +65,13 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             baseline_ld, w_ld, ldscore_adata = load_common_resources_direct_ldscore(config)
 
             logger.debug("Initializing processor (direct ldscore mode)...")
-            processor = SpatialLDSCProcessor(
+            processor = SpatialLDSCEngine(
                 config=config,
                 output_dir=output_dir,
                 marker_score_adata=None,
                 snp_gene_weight_adata=None,
                 baseline_ld=baseline_ld,
                 w_ld=w_ld,
-                n_loader_threads=n_loader_threads,
                 ldscore_adata=ldscore_adata,
             )
         else:
@@ -118,14 +113,13 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
             # Initialize processor with common resources
             logger.debug("Initializing processor (weight-matrix mode)...")
-            processor = SpatialLDSCProcessor(
+            processor = SpatialLDSCEngine(
                 config=config,
                 output_dir=output_dir,
                 marker_score_adata=marker_score_adata,
                 snp_gene_weight_adata=snp_gene_weight_adata,
                 baseline_ld=baseline_ld,
                 w_ld=w_ld,
-                n_loader_threads=n_loader_threads,
             )
 
         try:
@@ -164,7 +158,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
                         # Process all chunks for current trait
                         start_time = time.time()
-                        processor.process_all_chunks(wrapper_of_process_chunk_jit)
+                        processor.process_all_chunks()
 
                         elapsed_time = time.time() - start_time
                         h, rem = divmod(elapsed_time, 3600)

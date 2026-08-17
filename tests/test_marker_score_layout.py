@@ -20,7 +20,7 @@ from gsMap.latent2gene.memmap_io import (
     _automatic_lustre_stripe_count,
     _should_use_tmp_storage,
 )
-from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
+from gsMap.spatial_ldsc.io import _shared_marker_cache_base, load_marker_scores_memmap_format
 
 
 def test_sequential_marker_layout_appends_skipped_rows_and_is_atomic(tmp_path):
@@ -40,6 +40,34 @@ def test_sequential_marker_layout_appends_skipped_rows_and_is_atomic(tmp_path):
     assert metadata["scored_rows"] == 3
     assert metadata["unscored_rows"] == 2
     assert not list(tmp_path.glob("*.incomplete.*"))
+
+
+def test_shared_marker_read_cache_is_reused(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    cache_dir = tmp_path / "cache"
+    source_dir.mkdir()
+    cache_dir.mkdir()
+    marker_path = source_dir / "marker_scores.dat"
+    marker_values = np.arange(12, dtype=np.float16).reshape(4, 3)
+    marker_values.tofile(marker_path)
+    metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    )
+
+    first = _shared_marker_cache_base(marker_path, cache_dir, metadata)
+    second = _shared_marker_cache_base(marker_path, cache_dir, metadata)
+
+    assert first == second
+    np.testing.assert_array_equal(
+        np.fromfile(first.with_suffix(".dat"), dtype=np.float16).reshape(4, 3),
+        marker_values,
+    )
+    assert first.with_suffix(".meta.json").is_file()
+    assert len(list((cache_dir / "gsmap_read_cache").glob("*.dat"))) == 1
 
 
 @pytest.mark.parametrize(

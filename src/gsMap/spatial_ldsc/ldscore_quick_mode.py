@@ -1,6 +1,4 @@
-"""
-Unified spatial LDSC processor combining chunk production, parallel loading, and result accumulation.
-"""
+"""Bounded streaming engine for spatial LDSC."""
 
 import logging
 import os
@@ -27,21 +25,16 @@ from gsMap.config import SpatialLDSCConfig
 
 from .chunk_source import SpatialLDChunkSource
 from .io import prepare_trait_data
-from .pipeline import ParallelLDScoreComputer, ParallelLDScoreReader
+from .pipeline import LDScoreComputePool, LDScoreStream
+from .regression_kernel import process_spatial_ldsc_batch
 from .result_writer import ResultWriter
 from .trait_data import prepare_snp_data_for_blocks
 
-logger = logging.getLogger("gsMap.spatial_ldsc_processor")
+logger = logging.getLogger("gsMap.spatial_ldsc.engine")
 
 
-class SpatialLDSCProcessor:
-    """
-    Unified processor for spatial LDSC that combines:
-    - ChunkProducer: Loading spatial LD chunks
-    - ParallelChunkLoader: Managing parallel chunk loading with adjacent fetching
-    - QuickModeLDScore: Handling memory-mapped marker scores
-    - ResultAccumulator: Validating, merging and saving results
-    """
+class SpatialLDSCEngine:
+    """Bounded spatial-LDSC source, compute, and output engine."""
 
     def __init__(
         self,
@@ -51,11 +44,9 @@ class SpatialLDSCProcessor:
         snp_gene_weight_adata: ad.AnnData | None,
         baseline_ld: pd.DataFrame,
         w_ld: pd.DataFrame,
-        n_loader_threads: int = 10,
         ldscore_adata: ad.AnnData | None = None,
     ):
-        """
-        Initialize the unified processor.
+        """Initialize the spatial-LDSC engine.
 
         Args:
             config: Configuration object
@@ -66,7 +57,6 @@ class SpatialLDSCProcessor:
                                     Pass None when using ldscore_adata.
             baseline_ld: Baseline LD scores common to all traits
             w_ld: Weights common to all traits
-            n_loader_threads: Number of parallel loader threads
             ldscore_adata: Pre-computed SNP × Cell LD score AnnData (obs=SNPs, var=cells).
                            When provided, activates direct ldscore mode and marker_score_adata /
                            snp_gene_weight_adata are ignored.
@@ -75,8 +65,6 @@ class SpatialLDSCProcessor:
         self.output_dir = output_dir
         self.baseline_ld = baseline_ld
         self.w_ld = w_ld
-        self.n_loader_threads = n_loader_threads
-
         # Trait specific state
         self.trait_name = None
         self.data_truncated = None
@@ -101,7 +89,7 @@ class SpatialLDSCProcessor:
                 f"{ldscore_adata.n_obs} SNPs in ldscore h5ad"
             )
         else:
-            # ── Weight-matrix mode (original behavior) ───────────────────────
+            # ── Weight-matrix mode ──────────────────────────────────────────
             self.mode = "weight_matrix"
             self.ldscore_adata = None
             self.marker_score_adata = marker_score_adata
@@ -242,6 +230,8 @@ class SpatialLDSCProcessor:
             trait_name=self.trait_name,
             output_dir=self.output_dir,
             n_spots=self.n_spots,
+            total_chunks=self.total_chunks,
+            expected_cells=self.total_cells_to_process,
         )
         self.chunk_source = SpatialLDChunkSource(
             mode=self.mode,
@@ -294,7 +284,7 @@ class SpatialLDSCProcessor:
           core while blocked. If the worker count approaches/exceeds the available
           cores, XLA's bounded intra-op pool is starved and the pipeline deadlocks
           (observed on 2-core CI). So cap at ``cpu_count // 2`` (>=1), which leaves
-          headroom for the intra-op pool and reader threads, and naturally collapses
+          headroom for the intra-op pool and source/transform threads, and naturally collapses
           to 1 on a 2-core box.
 
         ``GSMAP_LDSC_FORCE_COMPUTE_WORKERS`` overrides the heuristic for power users
@@ -330,20 +320,18 @@ class SpatialLDSCProcessor:
             )
         return effective
 
-    def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
-        """
-        Process all chunks using parallel reader-computer pipeline.
-
-        Args:
-            process_chunk_jit_fn: JIT-compiled function for processing chunks
+    def process_all_chunks(self) -> Path:
+        """Process all chunks through the production streaming pipeline.
 
         Returns:
-            Merged DataFrame with all results
+            Atomically published compressed result path
         """
         import jax as _jax
 
-        # Create the reader-computer pipeline
-        reader = ParallelLDScoreReader(
+        # Create a bounded source-compute pipeline. The source is started only
+        # after the consumer exists, so neither bounded queue can deadlock
+        # during initialization.
+        source_stream = LDScoreStream(
             processor=self,
             num_workers=self.config.ldsc_read_workers,
         )
@@ -362,19 +350,17 @@ class SpatialLDSCProcessor:
         if backend == "gpu":
             pipeline_depth = max(0, int(os.environ.get("GSMAP_LDSC_GPU_PIPELINE_DEPTH", "2")))
 
-        computer = ParallelLDScoreComputer(
+        computer = LDScoreComputePool(
             processor=self,
-            process_chunk_jit_fn=process_chunk_jit_fn,
+            regression_fn=process_spatial_ldsc_batch,
             num_workers=effective_compute_workers,
-            input_queue=reader.result_queue,  # Connect reader output to computer input
+            input_queue=source_stream.result_queue,
             pipeline_depth=pipeline_depth,
         )
 
         start_time = time.time()
         try:
-            # Submit all chunks to reader
-            for chunk_idx in range(self.total_chunks):
-                reader.submit_chunk(chunk_idx)
+            source_stream.start()
 
             # Build description with sample name and range info
             desc_parts = [
@@ -389,15 +375,6 @@ class SpatialLDSCProcessor:
                 desc_parts.append(f"Range: [{start_cell:,}-{end_cell:,})")
 
             description = " | ".join(desc_parts)
-
-            # # Start JAX profiling if needed
-            # # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # jax.profiler.start_trace("/tmp/jax-trace-ldsc")
 
             # Rich Console auto-detects terminal/Jupyter environments
             console = Console(soft_wrap=True)
@@ -414,14 +391,19 @@ class SpatialLDSCProcessor:
                 MofNCompleteColumn(),
                 TaskProgressColumn(),
                 TextColumn("[bold green]{task.fields[speed]} cells/s"),
-                TextColumn("[dim]R→C: {task.fields[r_to_c_queue]}"),
+                TextColumn("[dim]I/O: {task.fields[io_speed]} MiB/s"),
+                TextColumn("[dim]S→C: {task.fields[r_to_c_queue]}"),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
                 console=console,
                 refresh_per_second=2,
             ) as progress:
                 task = progress.add_task(
-                    description, total=self.total_cells_to_process, speed="0", r_to_c_queue="0"
+                    description,
+                    total=self.total_cells_to_process,
+                    speed="0",
+                    io_speed="-",
+                    r_to_c_queue="0",
                 )
 
                 last_update_time = start_time
@@ -432,7 +414,7 @@ class SpatialLDSCProcessor:
 
                 while last_chunks_processed < self.total_chunks:
                     # Check for errors
-                    reader.check_errors()
+                    source_stream.check_errors()
                     computer.check_errors()
 
                     # Get current stats from computer
@@ -442,7 +424,12 @@ class SpatialLDSCProcessor:
                     current_time = time.time()
                     if current_time - last_update_time > 0.5:  # Update every 0.5 seconds
                         # Get queue sizes
-                        r_pending, r_to_c = reader.get_queue_sizes()
+                        r_pending, r_to_c = source_stream.get_queue_sizes()
+                        io_speed = (
+                            f"{source_stream.sequential_io_throughput.mib_per_second:,.1f}"
+                            if source_stream.uses_sequential_windows
+                            else "-"
+                        )
 
                         # Calculate speed in cells/s (10s moving average)
                         speed_window.append((current_time, n_cells_processed))
@@ -467,6 +454,7 @@ class SpatialLDSCProcessor:
                             task,
                             completed=n_cells_processed,
                             speed=f"{speed_10s:,.0f}",
+                            io_speed=io_speed,
                             r_to_c_queue=f"{r_to_c}",
                         )
 
@@ -488,7 +476,10 @@ class SpatialLDSCProcessor:
                                 console.log(
                                     f"Progress: {n_cells_processed:,}/{self.total_cells_to_process:,} cells "
                                     f"({current_pct:.1f}%) | {n_chunks_processed}/{self.total_chunks} chunks | "
-                                    f"Speed: {speed_10s:,.0f} cells/s | Elapsed: {elapsed:.1f}s"
+                                    f"Speed: {speed_10s:,.0f} cells/s | "
+                                    f"Source I/O: {io_speed} MiB/s | "
+                                    f"Source pending: {r_pending:,} | Ready queue: {r_to_c:,} | "
+                                    f"Elapsed: {elapsed:.1f}s"
                                 )
                                 last_log_pct = (current_pct // log_interval_pct) * log_interval_pct
                                 last_log_time = current_time
@@ -506,16 +497,13 @@ class SpatialLDSCProcessor:
                     # Small sleep to prevent busy waiting
                     time.sleep(0.5)
 
-            # # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-            # jax.profiler.stop_trace()
-            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
-            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
-            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
-            #     # logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
-
+        except BaseException:
+            if self.result_writer is not None:
+                self.result_writer.abort()
+            raise
         finally:
             # Clean up resources
-            reader.close()
+            source_stream.close()
             computer.close()
 
             # Log overall speed
@@ -523,14 +511,27 @@ class SpatialLDSCProcessor:
             n_cells_total, _ = computer.get_stats()
             overall_speed = n_cells_total / total_elapsed if total_elapsed > 0 else 0
             logger.info(f"Processing complete. Overall speed: {overall_speed:,.0f} cells/s")
-            reader_label = (
-                f"Marker-score read throughput ({computer.gpu_ldscore_backend} GPU LD-score)"
+            if source_stream.uses_sequential_windows:
+                io_stats = source_stream.sequential_io_throughput
+                logger.info(
+                    "Sequential marker-score I/O: "
+                    f"{io_stats.total_windows:,} windows, "
+                    f"{io_stats.total_cells:,} cells, "
+                    f"{io_stats.mib_per_second:,.0f} MiB/s "
+                    f"({io_stats.cells_per_second:,.0f} cells/s while reading)"
+                )
+            source_label = (
+                f"Marker-score transform throughput ({computer.gpu_ldscore_backend} GPU LD-score)"
                 if getattr(computer, "use_gpu_ldscore", False)
-                else "LD-score read/construct throughput"
+                else (
+                    "LD-score construction throughput"
+                    if source_stream.uses_sequential_windows
+                    else "LD-score read/construct throughput"
+                )
             )
             logger.info(
-                f"{reader_label}: {reader.throughput.total_batches} chunks, "
-                f"avg {reader.throughput.average_time:.3f}s/chunk"
+                f"{source_label}: {source_stream.throughput.total_batches} chunks, "
+                f"avg {source_stream.throughput.average_time:.3f}s/chunk"
             )
             logger.info(
                 "LDSC regression throughput: "
@@ -538,10 +539,7 @@ class SpatialLDSCProcessor:
                 f"avg {computer.throughput.average_time:.3f}s/chunk"
             )
 
-            # Note: mkscore_memmap is NOT closed here to allow reuse across multiple traits.
-            # It will be closed by the caller after all traits are processed.
-
-        # Validate and merge results
+        # Validate completeness and atomically publish the streamed result.
         return self._validate_merge_and_save()
 
     def _add_chunk_result(
@@ -553,7 +551,7 @@ class SpatialLDSCProcessor:
         abs_start: int,
         abs_end: int,
     ):
-        """Add processed chunk result to accumulator."""
+        """Add a processed chunk to the bounded ordered output stream."""
         if self.result_writer is None:
             raise RuntimeError("Result writer is not initialized; call setup_trait first")
         self.result_writer.add_chunk_result(
@@ -565,8 +563,8 @@ class SpatialLDSCProcessor:
             abs_end=abs_end,
         )
 
-    def _validate_merge_and_save(self) -> pd.DataFrame:
-        """Validate completeness, merge results, and save with appropriate filename."""
+    def _validate_merge_and_save(self) -> Path:
+        """Validate completeness and publish the streamed result."""
         if self.result_writer is None:
             raise RuntimeError("Result writer is not initialized; call setup_trait first")
-        return self.result_writer.validate_merge_and_save(total_chunks=self.total_chunks)
+        return self.result_writer.finalize()

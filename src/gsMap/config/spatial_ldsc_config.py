@@ -32,9 +32,9 @@ class SpatialLDSCComputeConfig:
     memmap_tmp_dir: Annotated[
         Path | None,
         typer.Option(
-            help="Optional fast scratch directory for memory-mapped files. A file is staged only "
-            "when the full logical memmap plus safety headroom fits; otherwise gsMap uses the "
-            "project storage directly.",
+            help="Optional fast scratch directory. Concurrent spatial-LDSC processes stage and "
+            "reuse one content-addressed, read-only marker cache per directory/node. If it does "
+            "not fit, gsMap streams directly from project storage.",
             exists=True,
             file_okay=False,
             dir_okay=True,
@@ -42,7 +42,14 @@ class SpatialLDSCComputeConfig:
         ),
     ] = None
 
-    ldsc_read_workers: Annotated[int, typer.Option(help="Number of read workers", min=1)] = 10
+    ldsc_read_workers: Annotated[
+        int,
+        typer.Option(
+            help="Number of parallel marker-to-LD-score transform workers. Marker memmap I/O "
+            "uses one bounded sequential source stream.",
+            min=1,
+        ),
+    ] = 10
 
     ldsc_compute_workers: Annotated[
         int, typer.Option(help="Number of compute workers for LDSC regression", min=1)

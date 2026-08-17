@@ -1,6 +1,10 @@
+import fcntl
 import glob
+import hashlib
+import json
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import anndata as ad
@@ -16,6 +20,140 @@ from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
 
 logger = logging.getLogger("gsMap.spatial_ldsc.io")
+
+_MARKER_CACHE_COPY_BUFFER_BYTES = 16 * 1024**2
+_MARKER_CACHE_MINIMUM_HEADROOM_BYTES = 5 * 1024**3
+
+
+def _cached_marker_memmap_is_valid(cache_base: Path, expected_bytes: int) -> bool:
+    data_path = cache_base.with_suffix(".dat")
+    metadata_path = cache_base.with_suffix(".meta.json")
+    if not data_path.is_file() or not metadata_path.is_file():
+        return False
+    if data_path.stat().st_size != expected_bytes:
+        return False
+    try:
+        with metadata_path.open(encoding="utf-8") as handle:
+            metadata = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(metadata.get("complete", False))
+
+
+def _paths_share_storage_device(source: Path, destination_dir: Path) -> bool:
+    return source.stat().st_dev == destination_dir.stat().st_dev
+
+
+def _shared_marker_cache_base(
+    memmap_path: Path,
+    tmp_dir: Path,
+    marker_metadata: dict,
+) -> Path:
+    """Stage one immutable marker file per node/cache directory.
+
+    All concurrent LDSC processes using the same ``tmp_dir`` share the cache.
+    An advisory lock ensures that only one process copies the source, and an
+    atomic rename prevents readers from observing a partial file.
+    """
+    source_data = memmap_path.with_suffix(".dat")
+    source_stat = source_data.stat()
+    tmp_dir = tmp_dir.resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Staging onto the same filesystem cannot improve I/O and doubles capacity.
+    if _paths_share_storage_device(source_data, tmp_dir):
+        logger.info(
+            f"Marker scratch {tmp_dir} is on the source filesystem; reading {source_data} directly"
+        )
+        return memmap_path
+
+    identity = "\0".join(
+        [
+            str(source_data.resolve()),
+            str(source_stat.st_size),
+            str(source_stat.st_mtime_ns),
+            str(marker_metadata.get("dtype")),
+            repr(marker_metadata.get("shape")),
+        ]
+    )
+    cache_key = hashlib.blake2b(identity.encode(), digest_size=12).hexdigest()
+    cache_dir = tmp_dir / "gsmap_read_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_base = cache_dir / f"marker_scores_{cache_key}"
+    cache_data = cache_base.with_suffix(".dat")
+    cache_metadata = cache_base.with_suffix(".meta.json")
+    lock_path = cache_dir / f"marker_scores_{cache_key}.lock"
+
+    expected_bytes = source_stat.st_size
+    if _cached_marker_memmap_is_valid(cache_base, expected_bytes):
+        logger.info(f"Reusing shared marker-score cache: {cache_data}")
+        return cache_base
+
+    with lock_path.open("a+b") as lock_handle:
+        logger.info(f"Waiting for shared marker-score cache lock: {lock_path}")
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        if _cached_marker_memmap_is_valid(cache_base, expected_bytes):
+            logger.info(
+                f"Reusing shared marker-score cache prepared by another process: {cache_data}"
+            )
+            return cache_base
+
+        free_bytes = shutil.disk_usage(cache_dir).free
+        headroom = max(_MARKER_CACHE_MINIMUM_HEADROOM_BYTES, expected_bytes // 20)
+        if free_bytes < expected_bytes + headroom:
+            logger.warning(
+                f"Shared marker cache {cache_dir} has {free_bytes / 1024**3:.1f} GiB free; "
+                f"requires {expected_bytes / 1024**3:.1f} GiB plus "
+                f"{headroom / 1024**3:.1f} GiB headroom. Reading source directly."
+            )
+            return memmap_path
+
+        partial_data = cache_dir / f".{cache_data.name}.{os.getpid()}.partial"
+        partial_metadata = cache_dir / f".{cache_metadata.name}.{os.getpid()}.partial"
+        partial_data.unlink(missing_ok=True)
+        partial_metadata.unlink(missing_ok=True)
+        try:
+            logger.info(
+                f"Populating shared marker-score cache once for this node: "
+                f"{source_data} -> {cache_data}"
+            )
+            with (
+                source_data.open("rb") as source,
+                partial_data.open("wb") as destination,
+            ):
+                shutil.copyfileobj(
+                    source,
+                    destination,
+                    length=_MARKER_CACHE_COPY_BUFFER_BYTES,
+                )
+            if partial_data.stat().st_size != expected_bytes:
+                raise OSError(
+                    f"Shared marker cache copy has {partial_data.stat().st_size:,} bytes; "
+                    f"expected {expected_bytes:,}"
+                )
+
+            cache_payload = {
+                **marker_metadata,
+                "complete": True,
+                "shared_read_cache": {
+                    "source": str(source_data.resolve()),
+                    "source_size": expected_bytes,
+                    "source_mtime_ns": source_stat.st_mtime_ns,
+                },
+            }
+            with partial_metadata.open("w", encoding="utf-8") as handle:
+                json.dump(cache_payload, handle, indent=2)
+                handle.write("\n")
+            os.replace(partial_data, cache_data)
+            os.replace(partial_metadata, cache_metadata)
+            logger.info(f"Published shared marker-score cache: {cache_data}")
+            return cache_base
+        except OSError as error:
+            logger.warning(f"Could not populate shared marker-score cache: {error}")
+            return memmap_path
+        finally:
+            partial_data.unlink(missing_ok=True)
+            partial_metadata.unlink(missing_ok=True)
 
 
 def _read_sumstats(fh, alleles=False, dropna=False):
@@ -432,7 +570,6 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
     """
     memmap_path = Path(config.marker_scores_memmap_path)
     metadata_path = Path(config.concatenated_latent_adata_path)
-    tmp_dir = config.memmap_tmp_dir
     mode = "r"  # Read-only mode for loading
 
     if not metadata_path.exists():
@@ -460,12 +597,20 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
                 f"AnnData shape {shape}"
             )
 
+        effective_memmap_path = memmap_path
+        if config.memmap_tmp_dir is not None:
+            effective_memmap_path = _shared_marker_cache_base(
+                memmap_path,
+                Path(config.memmap_tmp_dir),
+                marker_metadata,
+            )
+
         mm = MemMapDense(
-            memmap_path,
+            effective_memmap_path,
             shape=shape,
             dtype=np.dtype(marker_metadata["dtype"]),
             mode=mode,
-            tmp_dir=tmp_dir,
+            tmp_dir=None,
         )
 
         row_order = open_marker_obs_indices(

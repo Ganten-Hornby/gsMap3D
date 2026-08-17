@@ -20,8 +20,7 @@ def test_failed_trait_does_not_turn_the_multi_trait_run_into_success(tmp_path, m
             if trait_name == "bad":
                 raise RuntimeError("synthetic setup failure")
 
-        def process_all_chunks(self, process_chunk_fn):
-            del process_chunk_fn
+        def process_all_chunks(self):
             processed.append("good")
 
     config = SimpleNamespace(
@@ -38,7 +37,7 @@ def test_failed_trait_does_not_turn_the_multi_trait_run_into_success(tmp_path, m
         "load_common_resources_direct_ldscore",
         lambda _config: (object(), object(), object()),
     )
-    monkeypatch.setattr(spatial_ldsc_jax, "SpatialLDSCProcessor", FakeProcessor)
+    monkeypatch.setattr(spatial_ldsc_jax, "SpatialLDSCEngine", FakeProcessor)
     monkeypatch.setattr(
         spatial_ldsc_jax,
         "generate_expected_output_filename",
