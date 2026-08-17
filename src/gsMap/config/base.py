@@ -15,6 +15,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
+from gsMap.logging_config import is_interactive_output
+
 
 def ensure_path_exists(func):
     """Decorator to ensure path exists when accessing properties."""
@@ -69,6 +71,10 @@ class BaseConfig:
     def show_config(self, cls: type | None = None):
         """Show configuration in a nice way using rich."""
         if cls is not None and type(self) is not cls:
+            return
+        # Resolved configurations are persisted in the run manifest and debug
+        # log. Printing a many-page Rich panel into SLURM output adds no value.
+        if not is_interactive_output():
             return
 
         config_dict = self.to_dict_with_paths_as_strings()

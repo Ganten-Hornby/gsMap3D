@@ -7,6 +7,7 @@ import gc
 import logging
 import os
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from rich.table import Table
 from scipy.sparse import csr_matrix
 
 from gsMap.config import LatentToGeneConfig
+from gsMap.logging_config import is_interactive_output
 
 from .memmap_io import MemMapDense
 
@@ -393,7 +395,7 @@ def rank_data_jax(
         rank_threads = _configure_rank_numba_threads()
         log_rank_float32, log_rank_float16_bits = _build_log_rank_lookup(n_genes)
         backend_name = "sparse-numba"
-        logger.info(
+        logger.debug(
             f"Rank backend for {metadata.get('name', 'unknown') if metadata else 'unknown'}: "
             f"sparse-numba with {rank_threads} threads"
         )
@@ -498,7 +500,7 @@ def rank_data_jax(
             progress.update(progress_task, advance=chunk_cells, speed=f"{speed:.0f}")
 
     elapsed_seconds = time.perf_counter() - sample_started_at
-    logger.info(
+    logger.debug(
         f"Rank backend summary for {sample_name}: backend={backend_name}, "
         f"cells={n_rows:,}, elapsed={elapsed_seconds:.2f}s "
         f"({n_rows / elapsed_seconds:,.0f} cells/s); "
@@ -523,6 +525,7 @@ class RankCalculator:
         self.output_dir = Path(config.latent2gene_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.console = Console()
+        self.show_rich_progress = is_interactive_output()
 
     def calculate_ranks_and_concatenate(
         self,
@@ -684,7 +687,19 @@ class RankCalculator:
             f"[bold green]{total_cells_expected}[/bold green]",
         )
 
-        self.console.print(table)
+        if self.show_rich_progress:
+            self.console.print(table)
+        else:
+            logger.info(
+                "Cell filtering summary: "
+                f"input={sum(s['input_cells'] for s in filtering_stats):,}; "
+                f"final={total_cells_expected:,}; "
+                f"removed_nan={sum(s['nan_removed'] for s in filtering_stats):,}; "
+                "removed_small_group="
+                f"{sum(s['small_group_removed'] for s in filtering_stats):,}; "
+                "removed_low_gene_count="
+                f"{sum(s['low_gene_count_removed'] for s in filtering_stats):,}"
+            )
         logger.info(f"Expected total cells after filtering: {total_cells_expected}")
         rank_progress_reporter = (
             _RankProgressReporter(total_cells_expected) if total_cells_expected > 0 else None
@@ -703,6 +718,8 @@ class RankCalculator:
             MofNCompleteColumn(),
             TaskProgressColumn(),
             TimeRemainingColumn(),
+            console=self.console,
+            disable=not self.show_rich_progress,
             refresh_per_second=1,
         ) as section_progress:
             # Overall section progress task
@@ -713,9 +730,13 @@ class RankCalculator:
             processed_cells_total = 0
 
             for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items()):
-                section_progress.console.log(
-                    f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})..."
+                loading_message = (
+                    f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})"
                 )
+                if self.show_rich_progress:
+                    section_progress.console.log(f"{loading_message}...")
+                else:
+                    logger.info(loading_message)
 
                 # Load the h5ad file (which should already contain latent representations)
                 adata = sc.read_h5ad(h5ad_path)
@@ -803,6 +824,8 @@ class RankCalculator:
                     TaskProgressColumn(),
                     TextColumn("[bold green]{task.fields[speed]} cells/s"),
                     TimeRemainingColumn(),
+                    console=self.console,
+                    disable=not self.show_rich_progress,
                     refresh_per_second=2,
                     transient=True,
                 ) as chunk_progress:
@@ -924,9 +947,16 @@ class RankCalculator:
 
         # Concatenate all sections
         if adata_list:
-            with self.console.status(
-                "[bold blue]Concatenating and saving latent representations..."
-            ):
+            status = (
+                self.console.status(
+                    "[bold blue]Concatenating and saving latent representations..."
+                )
+                if self.show_rich_progress
+                else nullcontext()
+            )
+            if not self.show_rich_progress:
+                logger.info("Concatenating and saving latent representations")
+            with status:
                 concatenated_adata = ad.concat(adata_list, axis=0, join="outer", merge="same")
 
                 # Ensure the var_names are the common genes

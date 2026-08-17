@@ -85,6 +85,17 @@ class _ConciseRichHandler(RichHandler):
         super().emit(console_record)
 
 
+class _ConciseStreamHandler(logging.StreamHandler):
+    """Write one unwrapped batch-log record while keeping tracebacks in files."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        console_record = copy.copy(record)
+        console_record.exc_info = None
+        console_record.exc_text = None
+        console_record.stack_info = None
+        super().emit(console_record)
+
+
 class _ExternalWarningFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return not record.name.startswith(LOGGER_NAME)
@@ -291,6 +302,48 @@ def resolve_project_dir_from_kwargs(kwargs: dict[str, Any]) -> Path:
     return Path.cwd().resolve()
 
 
+def is_interactive_output(stream: Any | None = None) -> bool:
+    """Return whether Rich live rendering is safe for the selected output stream."""
+    target = sys.stdout if stream is None else stream
+    isatty = getattr(target, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except (OSError, ValueError):
+        return False
+
+
+def _build_console_handler(
+    stream: Any,
+    *,
+    level: int,
+) -> logging.Handler:
+    """Use Rich on a TTY and stable one-record-per-line output in batch jobs."""
+    if is_interactive_output(stream):
+        handler: logging.Handler = _ConciseRichHandler(
+            console=Console(file=stream),
+            show_time=True,
+            show_path=False,
+            rich_tracebacks=True,
+            tracebacks_show_locals=False,
+        )
+        handler.setFormatter(logging.Formatter("{name} - {message}", style="{"))
+        handler._gsmap_console_mode = "rich"  # type: ignore[attr-defined]
+    else:
+        handler = _ConciseStreamHandler(stream)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)-8s %(name)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        handler._gsmap_console_mode = "plain"  # type: ignore[attr-defined]
+    handler.setLevel(level)
+    handler._gsmap_managed_console = True  # type: ignore[attr-defined]
+    return handler
+
+
 def _install_console_handlers() -> tuple[list[logging.Handler], bool]:
     gsmap_logger = logging.getLogger(LOGGER_NAME)
     existing = [
@@ -301,28 +354,10 @@ def _install_console_handlers() -> tuple[list[logging.Handler], bool]:
     if existing:
         return existing, False
 
-    stdout_handler = _ConciseRichHandler(
-        console=Console(file=sys.stdout),
-        show_time=True,
-        show_path=False,
-        rich_tracebacks=True,
-        tracebacks_show_locals=False,
-    )
-    stdout_handler.setLevel(logging.INFO)
+    stdout_handler = _build_console_handler(sys.stdout, level=logging.INFO)
     stdout_handler.addFilter(_BelowWarningFilter())
-    stdout_handler.setFormatter(logging.Formatter("{name} - {message}", style="{"))
-    stdout_handler._gsmap_managed_console = True  # type: ignore[attr-defined]
 
-    stderr_handler = _ConciseRichHandler(
-        console=Console(stderr=True),
-        show_time=True,
-        show_path=False,
-        rich_tracebacks=True,
-        tracebacks_show_locals=False,
-    )
-    stderr_handler.setLevel(logging.WARNING)
-    stderr_handler.setFormatter(logging.Formatter("{name} - {message}", style="{"))
-    stderr_handler._gsmap_managed_console = True  # type: ignore[attr-defined]
+    stderr_handler = _build_console_handler(sys.stderr, level=logging.WARNING)
 
     gsmap_logger.setLevel(logging.DEBUG)
     gsmap_logger.propagate = False
@@ -886,6 +921,7 @@ atexit.register(_shutdown_active_session)
 __all__ = [
     "RunLoggingSession",
     "configure_console_logging",
+    "is_interactive_output",
     "logged_stage",
     "rebuild_log_index",
     "resolve_project_dir",

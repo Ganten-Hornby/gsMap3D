@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from gsMap.config import LatentToGeneConfig
-from gsMap.logging_config import logged_stage
+from gsMap.logging_config import is_interactive_output, logged_stage
 
 from .marker_scores import MarkerScoreCalculator
 from .memmap_io import MemMapDense
@@ -95,12 +95,15 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> dict[str, Any]:
             )
 
     # Step 1: Calculate ranks and concatenate
-    console.print(
-        Panel(
-            "[bold cyan]Step 1: Rank calculation and concatenation[/bold cyan]",
-            border_style="cyan",
+    if is_interactive_output():
+        console.print(
+            Panel(
+                "[bold cyan]Step 1: Rank calculation and concatenation[/bold cyan]",
+                border_style="cyan",
+            )
         )
-    )
+    else:
+        logger.info("Step 1/2: rank calculation and concatenation")
 
     rank_calculator = RankCalculator(config)
 
@@ -114,9 +117,15 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> dict[str, Any]:
     )
 
     # Step 2: Calculate marker scores
-    console.print(
-        Panel("[bold cyan]Step 2: Marker score calculation[/bold cyan]", border_style="cyan")
-    )
+    if is_interactive_output():
+        console.print(
+            Panel(
+                "[bold cyan]Step 2: Marker score calculation[/bold cyan]",
+                border_style="cyan",
+            )
+        )
+    else:
+        logger.info("Step 2/2: marker score calculation")
 
     marker_calculator = MarkerScoreCalculator(config)
 

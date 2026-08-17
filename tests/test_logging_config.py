@@ -9,6 +9,7 @@ import pytest
 
 from gsMap.logging_config import (
     _reset_logging_for_tests,
+    is_interactive_output,
     logged_stage,
     rebuild_log_index,
     stage_logging,
@@ -42,6 +43,12 @@ def test_console_levels_and_plain_debug_file(tmp_path, capsys):
 
     with stage_logging(tmp_path, "latent_to_gene") as session:
         run_dir = session.run_dir
+        console_modes = {
+            getattr(handler, "_gsmap_console_mode", None)
+            for handler in logging.getLogger("gsMap").handlers
+            if getattr(handler, "_gsmap_managed_console", False)
+        }
+        assert console_modes == {"plain"}
         logger.debug("debug-only-message")
         logger.info("console-info-message")
         logger.warning("console-warning-message")
@@ -53,6 +60,13 @@ def test_console_levels_and_plain_debug_file(tmp_path, capsys):
     assert "console-warning-message" not in captured.out
     assert "console-warning-message" in captured.err
     assert "debug-only-message" not in captured.out + captured.err
+    assert "\x1b[" not in captured.out + captured.err
+    assert len(
+        [line for line in captured.out.splitlines() if "console-info-message" in line]
+    ) == 1
+    assert len(
+        [line for line in captured.err.splitlines() if "console-warning-message" in line]
+    ) == 1
 
     log_text = (run_dir / "02_latent_to_gene.log").read_text()
     assert "debug-only-message" in log_text
@@ -78,6 +92,19 @@ def test_console_levels_and_plain_debug_file(tmp_path, capsys):
     latest_log = tmp_path / "logs" / "latest" / "02_latent_to_gene.log"
     assert latest_log.resolve() == run_dir / "02_latent_to_gene.log"
     assert latest_log.with_suffix(".manifest.json").resolve() == run_dir / "run_manifest.json"
+
+
+def test_interactive_output_requires_a_real_tty():
+    class FakeStream:
+        def __init__(self, interactive: bool):
+            self.interactive = interactive
+
+        def isatty(self) -> bool:
+            return self.interactive
+
+    assert is_interactive_output(FakeStream(True))
+    assert not is_interactive_output(FakeStream(False))
+    assert not is_interactive_output(object())
 
 
 def test_nested_stages_are_split_and_same_stage_is_idempotent(tmp_path):

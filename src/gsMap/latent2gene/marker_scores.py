@@ -37,6 +37,7 @@ from rich.progress import (
 from rich.table import Table
 
 from gsMap.config import DatasetType, MarkerScoreCrossSliceStrategy
+from gsMap.logging_config import is_interactive_output
 
 from .connectivity import ConnectivityMatrixBuilder
 from .marker_layout import MARKER_SCORE_LAYOUT_VERSION, SequentialMarkerRowWriter
@@ -350,6 +351,8 @@ class MarkerScoreCalculator:
         """
         self.config = config
         self.connectivity_builder = ConnectivityMatrixBuilder(config)
+        self.console = Console()
+        self.show_rich_output = is_interactive_output()
 
     def load_global_stats(self, mean_frac_path: str) -> tuple[np.ndarray, np.ndarray]:
         """Load pre-calculated global geometric mean and expression fraction from parquet"""
@@ -373,6 +376,16 @@ class MarkerScoreCalculator:
 
     def _display_input_summary(self, adata, cell_types, n_cells, n_genes):
         """Display summary of input data and cell types"""
+        ct_counts = adata.obs[self.config.annotation].value_counts()
+        if not self.show_rich_output:
+            logger.info(
+                f"Marker score input: {n_cells:,} cells, {n_genes:,} genes, "
+                f"{len(cell_types):,} cell types, dataset={self.config.dataset_type.value}, "
+                f"annotation={self.config.annotation}"
+            )
+            logger.debug(f"Cell type counts: {ct_counts.to_dict()}")
+            return
+
         table = Table(
             title="[bold cyan]Marker Score Input Summary[/bold cyan]",
             show_header=True,
@@ -398,7 +411,6 @@ class MarkerScoreCalculator:
         ct_table.add_column("Cell Type", style="dim")
         ct_table.add_column("Count", justify="right")
 
-        ct_counts = adata.obs[self.config.annotation].value_counts()
         for ct in cell_types:
             count = ct_counts.get(ct, 0)
             style = "green" if count >= self.config.min_cells_per_type else "red"
@@ -959,6 +971,10 @@ class MarkerScoreCalculator:
                 finish_one()
 
         started = time.perf_counter()
+        # Some low-level callers construct this calculator without invoking
+        # __init__; keep the cache engine independently usable in that case.
+        progress_console = getattr(self, "console", None) or Console()
+        show_rich_output = getattr(self, "show_rich_output", is_interactive_output())
         with Progress(
             SpinnerColumn(),
             TextColumn("[bold blue]{task.description}"),
@@ -967,7 +983,8 @@ class MarkerScoreCalculator:
             TaskProgressColumn(),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
-            console=Console(),
+            console=progress_console,
+            disable=not show_rich_output,
             refresh_per_second=10,
         ) as progress:
             task = progress.add_task(
@@ -1301,14 +1318,16 @@ class MarkerScoreCalculator:
         """
         logger.info("Starting marker score calculation...")
         self.console = Console()
+        self.show_rich_output = is_interactive_output()
 
-        self.console.print(
-            Panel.fit(
-                "[bold cyan]Marker Score Calculation Stage[/bold cyan]",
-                subtitle="gsMap Stage 2",
-                border_style="cyan",
+        if self.show_rich_output:
+            self.console.print(
+                Panel.fit(
+                    "[bold cyan]Marker Score Calculation Stage[/bold cyan]",
+                    subtitle="gsMap Stage 2",
+                    border_style="cyan",
+                )
             )
-        )
 
         # Use config path if not specified
         if output_path is None:
@@ -1392,12 +1411,13 @@ class MarkerScoreCalculator:
             }
         )
 
-        self.console.print(
-            Panel.fit(
-                "[bold green]✓ Marker score calculation complete![/bold green]",
-                border_style="green",
+        if self.show_rich_output:
+            self.console.print(
+                Panel.fit(
+                    "[bold green]✓ Marker score calculation complete![/bold green]",
+                    border_style="green",
+                )
             )
-        )
 
         logger.info(f"Results saved to {output_path}")
 

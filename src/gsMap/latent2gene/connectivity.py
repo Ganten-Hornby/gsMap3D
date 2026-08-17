@@ -31,6 +31,7 @@ from gsMap.config import (
     HomogeneousSelectionMode,
     LatentToGeneConfig,
 )
+from gsMap.logging_config import is_interactive_output
 
 logger = logging.getLogger(__name__)
 
@@ -486,6 +487,7 @@ def _find_homogeneous_3d_memory_efficient(
         TaskProgressColumn(),
         TimeRemainingColumn(),
         TimeElapsedColumn(),
+        disable=not is_interactive_output(),
         refresh_per_second=1,
     ) as slice_progress:
         # Overall slice progress task
@@ -522,6 +524,7 @@ def _find_homogeneous_3d_memory_efficient(
                 range(0, n_masked, find_homogeneous_batch_size),
                 description=f"Finding homogeneous neighbors ({slice_name})",
                 transient=True,
+                disable=not is_interactive_output(),
             ):
                 batch_end = min(batch_start + find_homogeneous_batch_size, n_masked)
                 batch_indices = slice(batch_start, batch_end)
@@ -874,6 +877,7 @@ class ConnectivityMatrixBuilder:
                 range(0, n_masked, self.find_homogeneous_batch_size),
                 description="Finding homogeneous neighbors",
                 transient=True,
+                disable=not is_interactive_output(),
             ):
                 batch_end = min(batch_start + self.find_homogeneous_batch_size, n_masked)
                 batch_indices = slice(batch_start, batch_end)
