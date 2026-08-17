@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SPATIAL_PAYLOAD_VERSION = 3
+SPATIAL_PAYLOAD_VERSION = 4
 P_VALUE_COLORS = [
     "#313695",
     "#4575b4",
@@ -56,6 +56,26 @@ def encode_typed_array(values, dtype: str = "float32") -> dict:
     }
 
 
+def encode_nonnegative_quantized_array(values, scale: float = 0.1) -> dict:
+    """Quantize nonnegative values to uint16 while preserving NaN explicitly."""
+
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("Quantization scale must be finite and positive")
+    values_array = np.asarray(values, dtype=np.float32).reshape(-1)
+    nan_value = np.iinfo(np.uint16).max
+    maximum_code = nan_value - 1
+    codes = np.full(values_array.size, nan_value, dtype=np.uint16)
+    present = ~np.isnan(values_array)
+    if present.any():
+        maximum_value = maximum_code * scale
+        bounded = np.clip(values_array[present], 0, maximum_value)
+        quantized = np.rint(bounded / scale)
+        codes[present] = np.clip(quantized, 0, maximum_code).astype(np.uint16)
+    payload = encode_typed_array(codes, dtype="uint16")
+    payload.update({"scale": float(scale), "offset": 0.0, "nan_value": int(nan_value)})
+    return payload
+
+
 def decode_typed_array(payload: dict) -> np.ndarray:
     """Decode a payload in Python; primarily useful for validation and tests."""
 
@@ -65,7 +85,17 @@ def decode_typed_array(payload: dict) -> np.ndarray:
         "uint32": np.dtype("<u4"),
     }
     raw = base64.b64decode(payload["data"])
-    return np.frombuffer(raw, dtype=dtype_map[payload["dtype"]], count=payload["length"])
+    array = np.frombuffer(raw, dtype=dtype_map[payload["dtype"]], count=payload["length"])
+    if "scale" not in payload:
+        return array
+    decoded = array.astype(np.float32)
+    nan_value = payload.get("nan_value")
+    missing = array == nan_value if nan_value is not None else None
+    decoded *= float(payload["scale"])
+    decoded += float(payload.get("offset", 0.0))
+    if missing is not None:
+        decoded[missing] = np.nan
+    return decoded
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -101,8 +131,15 @@ def _write_keyed_payload(path: Path, root_name: str, key: str, payload: dict) ->
 
 
 def _categorical_schema(values: pd.Series | np.ndarray) -> tuple[list[str], list[str]]:
-    series = pd.Series(values, copy=False).astype("string").fillna("NaN").astype(str)
-    categories = sorted(series.unique().tolist(), key=str)
+    series = pd.Series(values, copy=False)
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        categories = [str(category) for category in series.cat.categories]
+        if (series.cat.codes < 0).any():
+            categories.append("NaN")
+        categories = sorted(set(categories), key=str)
+    else:
+        string_series = series.astype("string").fillna("NaN").astype(str)
+        categories = sorted(string_series.unique().tolist(), key=str)
 
     from gsMap.report.visualize import _create_color_map
 
@@ -136,27 +173,80 @@ def _stratified_positions(
     annotation_columns: list[str],
     random_state: int = 42,
 ) -> np.ndarray:
-    """Select an exact-size display sample while retaining samples and rare annotations."""
+    """Select an exact-size, annotation-aware display sample.
+
+    Very large inputs first draw a deterministic candidate reservoir. This bounds
+    the expensive grouping work by the browser display size while preserving the
+    observed sample/annotation composition.
+    """
 
     n_rows = len(metadata)
     if target_size >= n_rows:
         return np.arange(n_rows, dtype=np.int64)
 
-    strata = (
+    candidate_size = min(n_rows, max(250_000, target_size * 12))
+    if candidate_size < n_rows:
+        rng = np.random.default_rng(random_state)
+        relevant_columns = [
+            column for column in ["sample_name", *annotation_columns[:1]] if column in metadata
+        ]
+        required_positions = []
+        for column in relevant_columns:
+            first_occurrence = ~metadata[column].duplicated().to_numpy()
+            required_positions.append(np.flatnonzero(first_occurrence))
+        required_positions = (
+            np.unique(np.concatenate(required_positions))
+            if required_positions
+            else np.empty(0, dtype=np.int64)
+        )
+        if required_positions.size > candidate_size:
+            required_positions = required_positions[:candidate_size]
+
+        random_positions = rng.choice(n_rows, size=candidate_size, replace=False, shuffle=False)
+        candidate_positions = np.union1d(random_positions, required_positions)
+        if candidate_positions.size > candidate_size:
+            optional_positions = np.setdiff1d(
+                candidate_positions, required_positions, assume_unique=True
+            )
+            optional_positions = rng.choice(
+                optional_positions,
+                size=candidate_size - required_positions.size,
+                replace=False,
+            )
+            candidate_positions = np.sort(np.concatenate((required_positions, optional_positions)))
+        candidate_metadata = metadata.iloc[candidate_positions][relevant_columns]
+        selected_candidates = _stratified_positions(
+            candidate_metadata,
+            target_size,
+            annotation_columns,
+            random_state=random_state + 1,
+        )
+        return np.sort(candidate_positions[selected_candidates])
+
+    sample_strata = (
         metadata["sample_name"].astype("string").fillna("NaN")
         if "sample_name" in metadata
         else pd.Series("all", index=metadata.index, dtype="string")
     )
+    sample_codes, sample_categories = pd.factorize(sample_strata, sort=False)
+    n_sample_categories = max(1, len(sample_categories))
+    codes = sample_codes.astype(np.int64, copy=False)
     if annotation_columns:
         primary = annotation_columns[0]
         if primary in metadata:
-            strata = strata.str.cat(metadata[primary].astype("string").fillna("NaN"), sep="\x1f")
+            annotation_strata = metadata[primary].astype("string").fillna("NaN")
+            annotation_codes, annotation_categories = pd.factorize(annotation_strata, sort=False)
+            n_annotation_categories = max(1, len(annotation_categories))
+            codes = codes * n_annotation_categories + annotation_codes
 
-    codes, _ = pd.factorize(strata, sort=False)
-    counts = np.bincount(codes)
+    n_groups = max(
+        n_sample_categories,
+        int(codes.max()) + 1,
+    )
+    counts = np.bincount(codes, minlength=n_groups)
     exact = target_size * counts / n_rows
     allocations = np.floor(exact).astype(np.int64)
-    preserve_each_stratum = len(counts) <= target_size
+    preserve_each_stratum = np.count_nonzero(counts) <= target_size
     if preserve_each_stratum:
         allocations[(counts > 0) & (allocations == 0)] = 1
 
@@ -182,11 +272,14 @@ def _stratified_positions(
             break
 
     rng = np.random.default_rng(random_state)
+    order = np.argsort(codes, kind="stable")
+    offsets = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=offsets[1:])
     selected = []
     for group, allocation in enumerate(allocations):
         if allocation <= 0:
             continue
-        members = np.flatnonzero(codes == group)
+        members = order[offsets[group] : offsets[group + 1]]
         selected.append(rng.choice(members, size=int(allocation), replace=False))
 
     positions = np.sort(np.concatenate(selected).astype(np.int64, copy=False))
@@ -230,10 +323,19 @@ def _robust_trait_max(values: np.ndarray) -> float:
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return 1.0
-    n_top = min(20, finite.size)
+    n_top = min(20, max(1, int(np.ceil(finite.size * 0.001))))
     top = np.partition(finite, finite.size - n_top)[-n_top:]
     upper = float(np.median(top))
     return upper if upper > 0 else max(1.0, float(np.max(finite)))
+
+
+def _finite_range(values: np.ndarray | None) -> float:
+    if values is None:
+        return 0.0
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0
+    return float(np.max(finite) - np.min(finite))
 
 
 def _point_size_3d(n_points: int) -> float:
@@ -472,8 +574,14 @@ def export_sample_spatial_payloads(
     annotations: list[str],
     js_data_dir: Path,
     max_points: int,
+    extreme_points_per_trait: int = 500,
 ) -> tuple[dict, list[str]]:
-    """Write compact per-sample bases and independently loadable trait arrays."""
+    """Write compact per-sample bases and independently loadable trait arrays.
+
+    Trait colors share one robust scale across every sample. When a sample is
+    downsampled, a small trait-specific overlay retains the strongest omitted
+    associations so spatial hotspots are not lost by representative sampling.
+    """
 
     payload_dir = js_data_dir / "spatial_2d"
     payload_dir.mkdir(parents=True, exist_ok=True)
@@ -493,6 +601,8 @@ def export_sample_spatial_payloads(
         else None
     )
     sample_positions = {}
+    sample_all_positions = {}
+    sample_selected_masks = {}
     annotation_schemas = {
         annotation: _categorical_schema(metadata[annotation])
         for annotation in annotations
@@ -513,8 +623,13 @@ def export_sample_spatial_payloads(
             )
             positions = all_positions[local_positions]
         else:
+            local_positions = np.arange(n_original, dtype=np.int64)
             positions = all_positions
         sample_positions[sample_name] = positions
+        sample_all_positions[sample_name] = all_positions
+        selected_mask = np.zeros(n_original, dtype=bool)
+        selected_mask[local_positions] = True
+        sample_selected_masks[sample_name] = selected_mask
 
         if has_spatial_coordinates:
             sx = sx_all[positions]
@@ -537,6 +652,10 @@ def export_sample_spatial_payloads(
             "n_points": int(len(positions)),
             "n_points_original": n_original,
             "point_size": round(float(point_size), 2),
+            "coordinate_ranges": [
+                _finite_range(sx_all[all_positions]) if sx_all is not None else 0.0,
+                _finite_range(sy_all[all_positions]) if sy_all is not None else 0.0,
+            ],
             "sx": encode_typed_array(sx) if sx is not None else None,
             "sy": encode_typed_array(sy) if sy is not None else None,
             "spot": metadata["spot"].iloc[positions].astype(str).tolist()
@@ -568,10 +687,38 @@ def export_sample_spatial_payloads(
         if trait not in metadata:
             continue
         all_values = pd.to_numeric(metadata[trait], errors="coerce").to_numpy(dtype=np.float32)
+        quantization_scale = 0.1
+        maximum_encoded_value = (np.iinfo(np.uint16).max - 1) * quantization_scale
+        shared_cmax = min(_robust_trait_max(all_values), maximum_encoded_value)
         for sample_name in samples:
             positions = sample_positions[sample_name]
-            values = np.round(all_values[positions], decimals=1)
-            payload = {"values": encode_typed_array(values)}
+            values = all_values[positions]
+            all_positions = sample_all_positions[sample_name]
+            sample_values = all_values[all_positions]
+            n_available_extra = len(all_positions) - len(positions)
+            extra_local_positions = _top_trait_positions(
+                sample_values,
+                sample_selected_masks[sample_name],
+                min(extreme_points_per_trait, n_available_extra),
+            )
+            extra_positions = all_positions[extra_local_positions]
+            payload = {
+                "values": encode_nonnegative_quantized_array(values, quantization_scale),
+                "extra": {
+                    "x": encode_typed_array(sx_all[extra_positions]),
+                    "y": encode_typed_array(sy_all[extra_positions]),
+                    "values": encode_nonnegative_quantized_array(
+                        all_values[extra_positions], quantization_scale
+                    ),
+                }
+                if has_spatial_coordinates
+                else None,
+                "n_extra": int(len(extra_positions)),
+                "cmin": 0.0,
+                "cmax": shared_cmax,
+                "n_clipped": int(np.count_nonzero(sample_values > shared_cmax)),
+                "scale_scope": "all_samples",
+            }
             filename = f"sample_{safe_name(sample_name)}_trait_{safe_name(trait)}.js"
             relative = f"spatial_2d/{filename}"
             compound_key = f"{sample_name}\x1f{trait}"

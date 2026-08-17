@@ -85,7 +85,8 @@ def test_report_plot_layout_has_no_fixed_minimum_panel_widths(
     assert "min-w-[400px]" not in report_template
     assert "min-w-[500px]" not in report_template
     assert "height: 800px" not in report_template
-    assert report_template.count('class="plot-grid"') == 5
+    assert report_template.count('class="plot-grid"') == 4
+    assert "spatial2dViewMode === 'compare' ? 'plot-grid'" in report_template
 
 
 def test_removed_hidden_annotation_section_does_not_regress(report_template: str) -> None:
@@ -116,3 +117,23 @@ def test_large_secondary_datasets_are_loaded_near_their_sections(
     assert "loadUmapData()" in report_template
     assert "loadCauchyData()" in report_template
     assert 'loading="lazy"' in report_template
+
+
+def test_trait_selector_supports_fuzzy_keyboard_search(report_template: str) -> None:
+    assert 'role="combobox"' in report_template
+    assert 'id="trait-listbox"' in report_template
+    assert "scoreTraitMatch(label, query)" in report_template
+    assert "moveTraitSearch(1)" in report_template
+    assert "selectActiveTrait()" in report_template
+
+
+def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
+    report_template: str,
+) -> None:
+    assert "spatial2dViewMode: 'compare'" in report_template
+    assert "setSpatial2dViewMode('annotation')" in report_template
+    assert 'aria-label="2D point-size multiplier"' in report_template
+    assert 'aria-label="2D point opacity"' in report_template
+    assert "bindSpatial2dViewportSync" in report_template
+    assert "Retained high-signal spots" in report_template
+    assert "Color scale is shared across samples" in report_template

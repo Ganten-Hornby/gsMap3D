@@ -259,6 +259,12 @@
             contain: layout style;
         }
 
+        .spatial-2d-plot {
+            width: 100%;
+            height: clamp(32rem, 64vh, 46rem);
+            min-height: 32rem;
+        }
+
         /* GPU-accelerated collapse animation */
         .section-content {
             transition: opacity 0.2s ease-out, transform 0.2s ease-out;
@@ -305,6 +311,11 @@
 
             .plot-container {
                 min-height: 360px;
+            }
+
+            .spatial-2d-plot {
+                height: 32rem;
+                min-height: 32rem;
             }
         }
 
@@ -431,14 +442,43 @@
                 </div>
 
                 <!-- Trait Selector -->
-                <div>
+                <div class="relative" @click.outside="closeTraitSearch()">
                     <label for="trait-selector" class="control-label">GWAS trait</label>
-                    <select id="trait-selector" :value="selectedTrait" @change="handleTraitSelect($event.target.value)"
-                        class="control-select">
-                        <template x-for="t in traits" :key="t">
-                            <option :value="t" x-text="t"></option>
+                    <div class="relative">
+                        <input id="trait-selector" x-ref="traitSearchInput" type="search" x-model="traitSearchQuery"
+                            @focus="openTraitSearch()" @input="traitComboboxOpen = true; traitActiveIndex = 0"
+                            @keydown.down.prevent="moveTraitSearch(1)" @keydown.up.prevent="moveTraitSearch(-1)"
+                            @keydown.enter.prevent="selectActiveTrait()" @keydown.escape.prevent="closeTraitSearch()"
+                            @keydown.tab="closeTraitSearch()"
+                            class="control-select pr-9" autocomplete="off" role="combobox"
+                            aria-autocomplete="list" aria-haspopup="listbox" aria-controls="trait-listbox"
+                            :aria-expanded="traitComboboxOpen.toString()"
+                            :aria-activedescendant="traitComboboxOpen && filteredTraits.length ? 'trait-option-' + traitActiveIndex : null"
+                            placeholder="Search traits…">
+                        <svg class="pointer-events-none absolute right-3 top-3 h-4 w-4 text-slate-400" fill="none"
+                            stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="11" cy="11" r="7" stroke-width="2" />
+                            <path stroke-linecap="round" stroke-width="2" d="m16 16 4 4" />
+                        </svg>
+                    </div>
+                    <div id="trait-listbox" x-show="traitComboboxOpen" x-transition.opacity role="listbox"
+                        class="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl custom-scrollbar">
+                        <div class="sticky top-0 z-10 bg-white px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400"
+                            x-text="filteredTraits.length.toLocaleString() + ' matching traits'"></div>
+                        <template x-for="(trait, index) in filteredTraits" :key="trait">
+                            <button type="button" role="option" :id="'trait-option-' + index"
+                                :aria-selected="(trait === selectedTrait).toString()"
+                                @mouseenter="traitActiveIndex = index" @mousedown.prevent
+                                @click="selectTraitFromSearch(trait)"
+                                class="block w-full rounded-lg px-2.5 py-2 text-left text-sm"
+                                :class="index === traitActiveIndex ? 'bg-primary-50 text-primary-800' : (trait === selectedTrait ? 'font-semibold text-slate-900' : 'text-slate-600 hover:bg-slate-50')">
+                                <span class="block truncate" x-text="trait" :title="trait"></span>
+                            </button>
                         </template>
-                    </select>
+                        <p x-show="filteredTraits.length === 0" class="px-3 py-5 text-center text-sm text-slate-500">
+                            No matching trait. Try a shorter name or abbreviation.
+                        </p>
+                    </div>
                 </div>
 
                 <!-- Sample Selector (spatial datasets only) -->
@@ -720,8 +760,8 @@
                             <span x-text="getSectionTitle('sec-gsmap')"></span> -
                             <span x-text="selectedSample"></span>
                         </h2>
-                        <p class="mt-0.5 text-sm text-slate-500">Spatial distribution of −log10(P) values and annotations side
-                            by side.</p>
+                        <p class="mt-0.5 text-sm text-slate-500">Interactive trait and anatomy maps with a shared scale,
+                            synchronized navigation, and hotspot-aware sampling.</p>
                     </div>
                     <svg class="h-5 w-5 flex-none text-slate-400 transition-transform" :class="sections.gsmap ? 'rotate-180' : ''"
                         fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -730,16 +770,64 @@
                 </button>
                 <div id="content-gsmap" class="section-content" :class="sections.gsmap ? 'expanded' : 'collapsed'">
                     <!-- Spatial 2D Controls -->
-                    <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
-                        <div class="flex items-center gap-2">
-                            <label class="text-sm font-medium text-gray-700">Trait:</label>
-                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
-                                x-text="selectedTrait"></span>
+                    <div class="border-b border-slate-200 bg-slate-50 p-4">
+                        <div class="grid gap-4 xl:grid-cols-[auto_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
+                            <div>
+                                <span class="control-label">View</span>
+                                <div class="inline-flex rounded-lg border border-slate-300 bg-white p-1 shadow-sm"
+                                    role="group" aria-label="2D spatial view">
+                                    <button type="button" @click="setSpatial2dViewMode('trait')"
+                                        :aria-pressed="(spatial2dViewMode === 'trait').toString()"
+                                        :class="spatial2dViewMode === 'trait' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                                        class="rounded-md px-3 py-1.5 text-sm font-semibold">Trait</button>
+                                    <button type="button" @click="setSpatial2dViewMode('annotation')"
+                                        :aria-pressed="(spatial2dViewMode === 'annotation').toString()"
+                                        :class="spatial2dViewMode === 'annotation' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                                        class="rounded-md px-3 py-1.5 text-sm font-semibold">Annotation</button>
+                                    <button type="button" @click="setSpatial2dViewMode('compare')"
+                                        :aria-pressed="(spatial2dViewMode === 'compare').toString()"
+                                        :class="spatial2dViewMode === 'compare' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+                                        class="rounded-md px-3 py-1.5 text-sm font-semibold">Compare</button>
+                                </div>
+                            </div>
+                            <label>
+                                <span class="control-label flex justify-between gap-3">
+                                    <span>Point size</span>
+                                    <span x-text="spatial2dPointScale.toFixed(1) + '×'"></span>
+                                </span>
+                                <input type="range" min="0.5" max="2.5" step="0.1" x-model.number="spatial2dPointScale"
+                                    @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
+                                    aria-label="2D point-size multiplier">
+                            </label>
+                            <label>
+                                <span class="control-label flex justify-between gap-3">
+                                    <span>Opacity</span>
+                                    <span x-text="Number(spatial2dOpacity).toFixed(2)"></span>
+                                </span>
+                                <input type="range" min="0.2" max="1" step="0.05" x-model.number="spatial2dOpacity"
+                                    @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
+                                    aria-label="2D point opacity">
+                            </label>
+                            <button type="button" @click="resetSpatial2dView()"
+                                class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm hover:border-slate-400 hover:text-slate-900">
+                                Reset view
+                            </button>
                         </div>
-                        <div class="flex items-center gap-2">
-                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
-                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
-                                x-text="selectedAnnotationCategory"></span>
+                        <div x-show="currentSampleData" class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500">
+                            <span>
+                                Rendering <strong class="text-slate-700" x-text="(currentSampleData?.n_points || 0).toLocaleString()"></strong>
+                                of <strong class="text-slate-700" x-text="(currentSampleData?.n_points_original || currentSampleData?.n_points || 0).toLocaleString()"></strong> spots
+                            </span>
+                            <span x-show="(currentSampleData?.n_points_original || 0) > (currentSampleData?.n_points || 0)">
+                                Representative sampling is annotation-aware.
+                            </span>
+                            <span x-show="currentSpatial2dTraitPayload?.n_extra">
+                                The active trait retains <strong class="text-slate-700" x-text="currentSpatial2dTraitPayload?.n_extra?.toLocaleString()"></strong>
+                                omitted high-signal spots.
+                            </span>
+                            <span x-show="currentSpatial2dTraitPayload?.cmax">
+                                Color scale is shared across samples: 0–<strong class="text-slate-700" x-text="Number(currentSpatial2dTraitPayload?.cmax || 0).toFixed(2)"></strong>.
+                            </span>
                         </div>
                     </div>
 
@@ -757,10 +845,14 @@
                             </svg>
                             <span class="text-gray-500 text-lg">Loading sample data...</span>
                         </div>
-                        <!-- Side-by-side plot containers -->
-                        <div x-show="!loadingSampleData" class="plot-grid">
+                        <p x-show="spatial2dError" class="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                            x-text="spatial2dError" role="alert"></p>
+                        <!-- Trait, annotation, or synchronized comparison -->
+                        <div x-show="!loadingSampleData"
+                            :class="spatial2dViewMode === 'compare' ? 'plot-grid' : 'grid grid-cols-1'">
                             <!-- Left: Trait -log10(p) -->
-                            <div class="plot-panel relative">
+                            <div x-show="spatial2dViewMode !== 'annotation'" class="plot-panel relative"
+                                :class="spatial2dViewMode === 'compare' ? '' : 'mx-auto w-full max-w-5xl'">
                                 <h3 class="mb-2 text-center text-sm font-semibold text-slate-700">
                                     −log10(P) · <span x-text="selectedTrait"></span>
                                 </h3>
@@ -778,14 +870,19 @@
                                         <span class="text-sm font-medium text-gray-600">Loading trait data...</span>
                                     </div>
                                 </div>
-                                <div id="spatial2dPlotTrait" class="w-full" style="height: 500px;"></div>
+                                <div id="spatial2dPlotTrait" class="spatial-2d-plot"></div>
+                                <p x-show="currentSpatial2dTraitPayload?.n_clipped" class="px-2 pb-1 text-center text-[11px] text-slate-500">
+                                    <span x-text="currentSpatial2dTraitPayload?.n_clipped?.toLocaleString()"></span>
+                                    spots exceed the robust shared color limit and use the top color.
+                                </p>
                             </div>
                             <!-- Right: Annotation -->
-                            <div class="plot-panel">
+                            <div x-show="spatial2dViewMode !== 'trait'" class="plot-panel"
+                                :class="spatial2dViewMode === 'compare' ? '' : 'mx-auto w-full max-w-5xl'">
                                 <h3 class="mb-2 text-center text-sm font-semibold text-slate-700">
                                     Annotation · <span x-text="selectedAnnotationCategory"></span>
                                 </h3>
-                                <div id="spatial2dPlotAnnotation" class="w-full" style="height: 500px;"></div>
+                                <div id="spatial2dPlotAnnotation" class="spatial-2d-plot"></div>
                                 <div x-show="currentSampleData?.annotations?.[selectedAnnotationCategory]?.categories?.length"
                                     class="mt-2 max-h-28 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2 custom-scrollbar">
                                     <div class="flex flex-wrap gap-x-3 gap-y-1">
@@ -1293,6 +1390,9 @@
 
                 // Global state
                 selectedTrait: '',
+                traitSearchQuery: '',
+                traitComboboxOpen: false,
+                traitActiveIndex: 0,
                 selectedAnnotationCategory: '',
                 selectedGene: '',
                 isLoading: false,
@@ -1364,11 +1464,17 @@
                 spatial2dPlotTraitInitialized: false,
                 spatial2dPlotAnnotationInitialized: false,
                 spatial2dActivated: false,
+                spatial2dViewMode: 'compare',
+                spatial2dPointScale: 1.0,
+                spatial2dOpacity: 0.82,
+                spatial2dError: '',
                 _spatial2dObserver: null,
+                _spatial2dSyncing: false,
 
                 // Per-sample data loading (for efficient on-demand loading)
                 sampleDataCache: {},        // { sampleName: data } - cache loaded samples
-                sampleTraitCache: {},       // { "sample\u001ftrait": Float32Array }
+                sampleTraitCache: {},       // { "sample\u001ftrait": decoded trait payload }
+                _sampleLoadsInFlight: 0,
                 loadingSampleData: false,   // Loading indicator
                 loadingSpatial2dTraitData: false,  // Loading indicator for trait switch on 2D plot
                 currentSampleData: null,    // Currently loaded sample data
@@ -1438,6 +1544,22 @@
                         }
                     }
                     return visible;
+                },
+
+                get currentSpatial2dTraitPayload() {
+                    const payload = this.currentSampleData?.traits?.[this.selectedTrait];
+                    if (!payload || ArrayBuffer.isView(payload) || Array.isArray(payload)) return null;
+                    return payload.values ? payload : null;
+                },
+
+                get filteredTraits() {
+                    const query = this.traitSearchQuery.trim();
+                    if (!query) return this.traits;
+                    return this.traits
+                        .map(trait => ({ trait, score: this.scoreTraitMatch(trait, query) }))
+                        .filter(match => match.score !== null)
+                        .sort((left, right) => left.score - right.score || left.trait.localeCompare(right.trait))
+                        .map(match => match.trait);
                 },
 
                 // Helper method to get section title with number
@@ -1651,6 +1773,7 @@
                     if (this.traits.length > 0) {
                         // Initialize selections
                         this.selectedTrait = this.traits[0];
+                        this.traitSearchQuery = this.selectedTrait;
                         if (this.annotations.length > 0) {
                             this.selectedAnnotationCategory = this.annotations[0];
                         }
@@ -1815,15 +1938,21 @@
                 async activateSpatial2d() {
                     if (this.spatial2dActivated) return;
                     this.spatial2dActivated = true;
-                    this.loadingSampleData = true;
+                    const sampleName = this.selectedSample;
+                    const trait = this.selectedTrait;
+                    this.loadingSpatial2dTraitData = true;
                     try {
-                        await this.loadSampleData(this.selectedSample);
-                        await this.loadSampleTraitData(this.selectedSample, this.selectedTrait);
-                        this.$nextTick(() => this.renderSpatial2DPlot());
+                        await this.loadSampleData(sampleName);
+                        await this.loadSampleTraitData(sampleName, trait);
+                        if (sampleName === this.selectedSample && trait === this.selectedTrait) {
+                            this.$nextTick(() => this.renderSpatial2DPlot());
+                        }
                     } catch (error) {
                         console.error('Failed to activate spatial 2D plots:', error);
                     } finally {
-                        this.loadingSampleData = false;
+                        if (sampleName === this.selectedSample && trait === this.selectedTrait) {
+                            this.loadingSpatial2dTraitData = false;
+                        }
                     }
                 },
 
@@ -1914,7 +2043,17 @@
                     };
                     const Constructor = constructors[payload.dtype];
                     if (!Constructor) throw new Error(`Unsupported array dtype: ${payload.dtype}`);
-                    return new Constructor(bytes.buffer, 0, payload.length);
+                    const encoded = new Constructor(bytes.buffer, 0, payload.length);
+                    if (payload.scale === undefined) return encoded;
+                    const decoded = new Float32Array(payload.length);
+                    const scale = Number(payload.scale);
+                    const offset = Number(payload.offset || 0);
+                    const missing = payload.nan_value;
+                    for (let index = 0; index < encoded.length; index++) {
+                        decoded[index] = missing !== undefined && encoded[index] === missing
+                            ? NaN : encoded[index] * scale + offset;
+                    }
+                    return decoded;
                 },
 
                 decodeCategoricalPayload(payload) {
@@ -2197,6 +2336,66 @@
                     }
                 },
 
+                scoreTraitMatch(label, query) {
+                    const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+                    const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+                    let score = 0;
+                    for (const token of tokens) {
+                        const directIndex = normalizedLabel.indexOf(token);
+                        if (directIndex >= 0) {
+                            score += directIndex * 0.05 - Math.min(token.length, 12) * 2;
+                            continue;
+                        }
+                        let cursor = -1;
+                        let firstIndex = -1;
+                        let gaps = 0;
+                        for (const character of token) {
+                            const nextIndex = normalizedLabel.indexOf(character, cursor + 1);
+                            if (nextIndex < 0) return null;
+                            if (firstIndex < 0) firstIndex = nextIndex;
+                            if (cursor >= 0) gaps += nextIndex - cursor - 1;
+                            cursor = nextIndex;
+                        }
+                        score += 20 + gaps * 2 + firstIndex * 0.05;
+                    }
+                    return score + normalizedLabel.length * 0.001;
+                },
+
+                openTraitSearch() {
+                    this.traitSearchQuery = '';
+                    this.traitActiveIndex = 0;
+                    this.traitComboboxOpen = true;
+                },
+
+                closeTraitSearch() {
+                    this.traitComboboxOpen = false;
+                    this.traitSearchQuery = this.selectedTrait;
+                    this.traitActiveIndex = 0;
+                },
+
+                moveTraitSearch(delta) {
+                    this.traitComboboxOpen = true;
+                    const count = this.filteredTraits.length;
+                    if (!count) return;
+                    this.traitActiveIndex = (this.traitActiveIndex + delta + count) % count;
+                    this.$nextTick(() => {
+                        document.getElementById(`trait-option-${this.traitActiveIndex}`)
+                            ?.scrollIntoView({ block: 'nearest' });
+                    });
+                },
+
+                selectActiveTrait() {
+                    const trait = this.filteredTraits[this.traitActiveIndex];
+                    if (trait) this.selectTraitFromSearch(trait);
+                },
+
+                selectTraitFromSearch(trait) {
+                    this.traitSearchQuery = trait;
+                    this.traitComboboxOpen = false;
+                    this.$refs.traitSearchInput?.blur();
+                    this.handleTraitSelect(trait);
+                },
+
                 // Event handlers
                 // Handle trait selection - debounced to prevent rapid re-renders
                 handleTraitSelect(newTrait) {
@@ -2214,6 +2413,7 @@
                     this._geneFilterCache = null;
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
+                    this.traitSearchQuery = newTrait;
 
                     // Show loading overlay for 2D trait plot
                     this.loadingSpatial2dTraitData = true;
@@ -2229,30 +2429,37 @@
                 },
 
                 async onTraitChange() {
+                    const trait = this.selectedTrait;
+                    const sampleName = this.selectedSample;
                     // Invalidate caches
                     this._geneFilterCache = null;
                     this._cauchyFilterCache = null;
                     this.manhattanTraceCache = null;
 
                     // Load gene data first (required for gene selection)
-                    await this.updateGeneList();
+                    await this.updateGeneList(trait);
+                    if (trait !== this.selectedTrait) return;
                     this.loadingGeneData = false;
 
                     const dataTasks = [];
-                    if (this.spatial2dActivated && this.selectedSample) {
-                        dataTasks.push(this.loadSampleTraitData(this.selectedSample, this.selectedTrait));
+                    if (this.spatial2dActivated && sampleName) {
+                        dataTasks.push(this.loadSampleTraitData(sampleName, trait));
                     }
                     if (this.has3dWidget && this.spatial3dViewMode !== 'annotation') {
-                        dataTasks.push(this.loadSpatial3dTrait(this.selectedTrait));
+                        dataTasks.push(this.loadSpatial3dTrait(trait));
                     }
                     await Promise.all(dataTasks);
+                    if (trait !== this.selectedTrait) return;
 
                     // Parallel render operations using requestAnimationFrame for smooth UI
                     // Each wrapped in try-catch to prevent one failure from blocking others
                     requestAnimationFrame(() => {
+                        if (trait !== this.selectedTrait) return;
                         if (this.manhattanActivated) this.loadManhattanData().catch(e => console.error('Manhattan load:', e));
                         if (this.umapActivated) try { this.renderUmapPlotTrait(); } catch(e) { console.error('UMAP trait render:', e); }
-                        try { this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait'); } catch(e) { console.error('2D trait render:', e); }
+                        if (sampleName === this.selectedSample && this.spatial2dViewMode !== 'annotation') {
+                            try { this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait'); } catch(e) { console.error('2D trait render:', e); }
+                        }
                         try { this.renderSpatial3dTrait(); } catch(e) { console.error('3D trait render:', e); }
                         this.loadingSpatial2dTraitData = false;
                     });
@@ -2276,26 +2483,36 @@
                     // Each wrapped in try-catch to prevent one failure from blocking others
                     requestAnimationFrame(() => {
                         if (this.umapActivated) try { this.renderUmapPlotAnnotation(); } catch(e) { console.error('UMAP annotation render:', e); }
-                        try { this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation'); } catch(e) { console.error('2D annotation render:', e); }
+                        if (this.spatial2dViewMode !== 'trait') {
+                            try { this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation'); } catch(e) { console.error('2D annotation render:', e); }
+                        }
                         try { this.renderSpatial3dAnnotation(); } catch(e) { console.error('3D annotation render:', e); }
                         if (this.cauchyActivated) try { this.renderCauchyHeatmap(); } catch(e) { console.error('Cauchy heatmap render:', e); }
                     });
                 },
 
                 async onSampleChange() {
+                    const sampleName = this.selectedSample;
+                    const trait = this.selectedTrait;
                     // Invalidate sample-specific caches
                     this._spatial2dTraitColorCache = null;
                     this._spatial2dAnnoTracesCache = null;
 
                     if (!this.spatial2dActivated) return;
+                    this.loadingSpatial2dTraitData = true;
 
                     // Load compact sample geometry and only the active trait.
                     try {
-                        await this.loadSampleData(this.selectedSample);
-                        await this.loadSampleTraitData(this.selectedSample, this.selectedTrait);
+                        await this.loadSampleData(sampleName);
+                        await this.loadSampleTraitData(sampleName, trait);
+                        if (sampleName !== this.selectedSample || trait !== this.selectedTrait) return;
                         this.renderSpatial2DPlot();
                     } catch (err) {
                         console.error('Failed to load sample data:', err);
+                    } finally {
+                        if (sampleName === this.selectedSample && trait === this.selectedTrait) {
+                            this.loadingSpatial2dTraitData = false;
+                        }
                     }
                     // Static gene plots update automatically via img src binding
                 },
@@ -2304,8 +2521,9 @@
                 async loadSampleData(sampleName) {
                     // Return cached data if available
                     if (this.sampleDataCache[sampleName]) {
-                        this.currentSampleData = this.sampleDataCache[sampleName];
-                        return this.currentSampleData;
+                        const cached = this.sampleDataCache[sampleName];
+                        if (sampleName === this.selectedSample) this.currentSampleData = cached;
+                        return cached;
                     }
 
                     // Get sample info from index
@@ -2315,32 +2533,36 @@
                         return null;
                     }
 
+                    this._sampleLoadsInFlight += 1;
                     this.loadingSampleData = true;
                     try {
                         let data;
                         if (sampleInfo.version >= 2 && sampleInfo.base_file) {
                             await this.loadScript(`js_data/${sampleInfo.base_file}`);
-                            const encoded = window.GSMAP_SAMPLE_BASES?.[sampleName];
-                            if (!encoded) throw new Error(`Sample geometry was not defined for ${sampleName}`);
-                            const decodedAnnotations = {};
-                            for (const [name, payload] of Object.entries(encoded.annotations || {})) {
-                                decodedAnnotations[name] = this.decodeCategoricalPayload(payload);
+                            data = this.sampleDataCache[sampleName];
+                            if (!data) {
+                                const encoded = window.GSMAP_SAMPLE_BASES?.[sampleName];
+                                if (!encoded) throw new Error(`Sample geometry was not defined for ${sampleName}`);
+                                const decodedAnnotations = {};
+                                for (const [name, payload] of Object.entries(encoded.annotations || {})) {
+                                    decodedAnnotations[name] = this.decodeCategoricalPayload(payload);
+                                }
+                                data = {
+                                    ...encoded,
+                                    sx: this.decodeTypedArray(encoded.sx),
+                                    sy: this.decodeTypedArray(encoded.sy),
+                                    annotations: decodedAnnotations,
+                                    traits: {}
+                                };
+                                delete window.GSMAP_SAMPLE_BASES[sampleName];
                             }
-                            data = {
-                                ...encoded,
-                                sx: this.decodeTypedArray(encoded.sx),
-                                sy: this.decodeTypedArray(encoded.sy),
-                                annotations: decodedAnnotations,
-                                traits: {}
-                            };
-                            delete window.GSMAP_SAMPLE_BASES[sampleName];
                         } else {
                             await this.loadScript(`js_data/${sampleInfo.file}`);
                             data = window[sampleInfo.var_name];
                         }
                         if (!data) throw new Error(`Data not found for ${sampleName}`);
                         this.sampleDataCache[sampleName] = data;
-                        this.currentSampleData = data;
+                        if (sampleName === this.selectedSample) this.currentSampleData = data;
                         const nSpots = data.n_points || data.sx?.length || data.spot?.length || 0;
                         const nSpotsOriginal = sampleInfo.n_spots_original || nSpots;
                         console.log(
@@ -2349,7 +2571,8 @@
                         );
                         return data;
                     } finally {
-                        this.loadingSampleData = false;
+                        this._sampleLoadsInFlight = Math.max(0, this._sampleLoadsInFlight - 1);
+                        this.loadingSampleData = this._sampleLoadsInFlight > 0;
                     }
                 },
 
@@ -2363,20 +2586,31 @@
                         return data[trait] || null;
                     }
                     const compoundKey = `${sampleName}\u001f${trait}`;
-                    let values = this.sampleTraitCache[compoundKey];
-                    if (!values) {
+                    let decoded = this.sampleTraitCache[compoundKey];
+                    if (!decoded) {
                         const entry = sampleInfo.trait_files?.[trait];
                         if (!entry?.file) throw new Error(`No 2D payload for ${trait} in ${sampleName}`);
                         await this.loadScript(`js_data/${entry.file}`);
-                        const encoded = window.GSMAP_SAMPLE_TRAITS?.[compoundKey];
-                        if (!encoded) throw new Error(`2D values were not defined for ${trait} in ${sampleName}`);
-                        values = this.decodeTypedArray(encoded.values);
-                        this.sampleTraitCache[compoundKey] = values;
-                        delete window.GSMAP_SAMPLE_TRAITS[compoundKey];
+                        decoded = this.sampleTraitCache[compoundKey];
+                        if (!decoded) {
+                            const encoded = window.GSMAP_SAMPLE_TRAITS?.[compoundKey];
+                            if (!encoded) throw new Error(`2D values were not defined for ${trait} in ${sampleName}`);
+                            decoded = {
+                                ...encoded,
+                                values: this.decodeTypedArray(encoded.values),
+                                extra: encoded.extra ? {
+                                    x: this.decodeTypedArray(encoded.extra.x),
+                                    y: this.decodeTypedArray(encoded.extra.y),
+                                    values: this.decodeTypedArray(encoded.extra.values)
+                                } : null
+                            };
+                            this.sampleTraitCache[compoundKey] = decoded;
+                            delete window.GSMAP_SAMPLE_TRAITS[compoundKey];
+                        }
                     }
-                    data.traits[trait] = values;
+                    data.traits[trait] = decoded;
                     if (sampleName === this.selectedSample) this.currentSampleData = data;
-                    return values;
+                    return decoded;
                 },
 
                 onGeneChange() {
@@ -2429,8 +2663,7 @@
                 },
 
                 // Update gene list when trait changes
-                async updateGeneList() {
-                    const trait = this.selectedTrait;
+                async updateGeneList(trait = this.selectedTrait) {
                     if (!trait) {
                         this.topGenesList = [];
                         return;
@@ -2438,6 +2671,7 @@
 
                     // Load trait-specific gene PCC data
                     const traitGeneData = await this.loadGenePccData(trait);
+                    if (trait !== this.selectedTrait) return;
 
                     if (!traitGeneData || traitGeneData.length === 0) {
                         this.topGenesList = [];
@@ -3077,14 +3311,42 @@
                 },
 
                 // Spatial 2D Plot rendering (uses per-sample data loaded on-demand)
-                // Render both 2D spatial plots (trait and annotation side by side)
+                setSpatial2dViewMode(mode) {
+                    this.spatial2dViewMode = mode;
+                    this.$nextTick(() => {
+                        this.renderSpatial2DPlot();
+                        setTimeout(() => {
+                            for (const id of ['spatial2dPlotTrait', 'spatial2dPlotAnnotation']) {
+                                const plot = document.getElementById(id);
+                                if (plot?.data) Plotly.Plots.resize(plot);
+                            }
+                        }, 80);
+                    });
+                },
+
+                resetSpatial2dView() {
+                    const yAutorange = this.reportMeta.plot_origin === 'upper' ? 'reversed' : true;
+                    for (const id of ['spatial2dPlotTrait', 'spatial2dPlotAnnotation']) {
+                        const plot = document.getElementById(id);
+                        if (plot?.data) {
+                            Plotly.relayout(plot, {
+                                'xaxis.autorange': true,
+                                'yaxis.autorange': yAutorange
+                            });
+                        }
+                    }
+                },
+
+                // Render only the visible 2D views; comparison mode keeps both viewports synchronized.
                 renderSpatial2DPlot() {
                     if (!this.plotlyReady || !this.currentSampleData) return;
-
-                    // Render trait plot
-                    this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
-                    // Render annotation plot
-                    this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
+                    this.spatial2dError = '';
+                    if (this.spatial2dViewMode !== 'annotation') {
+                        this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
+                    }
+                    if (this.spatial2dViewMode !== 'trait') {
+                        this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
+                    }
                 },
 
                 // Render one compact 2D payload. Large categorical data remain a single WebGL trace.
@@ -3106,14 +3368,25 @@
                     }
 
                     // Use pre-computed point size if available, otherwise calculate
-                    const pointSize = data.point_size || this.estimateSpatialPointSize(x, y);
+                    const pointSize = (data.point_size || this.estimateSpatialPointSize(x, y))
+                        * Number(this.spatial2dPointScale);
+                    const opacity = Number(this.spatial2dOpacity);
 
                     let traces = [];
 
                     if (plotType === 'trait') {
                         const trait = this.selectedTrait;
-                        const colorValues = data.traits?.[trait] || data[trait] || new Float32Array(x.length);
+                        const rawTraitPayload = data.traits?.[trait];
+                        const compactTraitPayload = rawTraitPayload &&
+                            !ArrayBuffer.isView(rawTraitPayload) && !Array.isArray(rawTraitPayload)
+                            ? rawTraitPayload : null;
+                        const colorValues = compactTraitPayload?.values || rawTraitPayload || data[trait]
+                            || new Float32Array(x.length);
                         const colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
+                        const cmax = Number(compactTraitPayload?.cmax);
+                        const colorLimits = Number.isFinite(cmax) && cmax > 0
+                            ? { cmin: Number(compactTraitPayload?.cmin || 0), cmax }
+                            : {};
                         const enableHover = Array.isArray(data.spot) && data.spot.length <= 50000;
                         const annotation = data.annotations?.[this.selectedAnnotationCategory];
                         const legacyAnnotation = data[this.selectedAnnotationCategory];
@@ -3134,6 +3407,8 @@
                                 size: pointSize,
                                 color: colorValues,
                                 colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
+                                ...colorLimits,
+                                opacity,
                                 showscale: true,
                                 colorbar: {
                                     title: { text: '−log10(P)', side: 'top', font: { size: 12 } },
@@ -3141,6 +3416,24 @@
                                 }
                             }
                         });
+                        if (compactTraitPayload?.n_extra > 0 && compactTraitPayload.extra?.x?.length) {
+                            traces.push({
+                                x: compactTraitPayload.extra.x,
+                                y: compactTraitPayload.extra.y,
+                                mode: 'markers',
+                                type: 'scattergl',
+                                hoverinfo: 'skip',
+                                name: 'Retained high-signal spots',
+                                marker: {
+                                    size: Math.max(2, pointSize * 1.55),
+                                    color: compactTraitPayload.extra.values,
+                                    colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
+                                    ...colorLimits,
+                                    opacity: Math.max(0.85, opacity),
+                                    showscale: false
+                                }
+                            });
+                        }
                     } else {
                         const anno = this.selectedAnnotationCategory;
                         let annotation = data.annotations?.[anno];
@@ -3172,25 +3465,13 @@
                                 colorscale: this.discreteColorScale(annotation.colors),
                                 cmin: -0.5,
                                 cmax: Math.max(0.5, annotation.categories.length - 0.5),
+                                opacity,
                                 showscale: false,
-                                colorbar: {
-                                    tickmode: 'array',
-                                    tickvals: annotation.categories.map((_, index) => index),
-                                    ticktext: annotation.categories,
-                                    thickness: 14,
-                                    len: 0.82,
-                                    tickfont: { size: 9 }
-                                }
                             }
                         });
                     }
 
-                    const titleText = plotType === 'trait' ? this.selectedTrait : this.selectedAnnotationCategory;
                     const layout = {
-                        title: {
-                            text: `${sample} - ${titleText}`,
-                            font: { size: 14 }
-                        },
                         xaxis: {
                             showgrid: false,
                             zeroline: false,
@@ -3204,15 +3485,51 @@
                             autorange: (this.reportMeta.plot_origin === 'upper') ? 'reversed' : true
                         },
                         hovermode: 'closest',
-                        margin: { l: 20, r: 20, t: 40, b: 20 },
+                        dragmode: 'pan',
+                        margin: { l: 12, r: plotType === 'trait' ? 62 : 12, t: 8, b: 12 },
+                        paper_bgcolor: '#ffffff',
+                        plot_bgcolor: '#ffffff',
                         showlegend: false,
-                        uirevision: `${sample}-${plotType}`
+                        uirevision: `spatial2d-${sample}`
                     };
 
                     const config = this.getPlotlyConfig();
 
-                    // Always use Plotly.react for efficient updates
-                    Plotly.react(plotDiv, traces, layout, config);
+                    try {
+                        Promise.resolve(Plotly.react(plotDiv, traces, layout, config)).then(() => {
+                            if (this.spatial2dViewMode === 'compare') {
+                                const targetId = plotType === 'trait'
+                                    ? 'spatial2dPlotAnnotation' : 'spatial2dPlotTrait';
+                                this.bindSpatial2dViewportSync(divId, targetId);
+                            }
+                        }).catch(error => {
+                            this.spatial2dError = `Unable to render the 2D view: ${error.message}`;
+                        });
+                    } catch (error) {
+                        this.spatial2dError = `Unable to render the 2D view: ${error.message}`;
+                    }
+                },
+
+                bindSpatial2dViewportSync(sourceId, targetId) {
+                    const source = document.getElementById(sourceId);
+                    if (!source?.on || source.__gsMapViewportSyncBound) return;
+                    source.__gsMapViewportSyncBound = true;
+                    source.on('plotly_relayout', event => {
+                        if (this._spatial2dSyncing || this.spatial2dViewMode !== 'compare') return;
+                        const target = document.getElementById(targetId);
+                        if (!target?.data) return;
+                        const viewport = {};
+                        for (const key of [
+                            'xaxis.range', 'xaxis.range[0]', 'xaxis.range[1]', 'xaxis.autorange',
+                            'yaxis.range', 'yaxis.range[0]', 'yaxis.range[1]', 'yaxis.autorange'
+                        ]) {
+                            if (Object.hasOwn(event, key)) viewport[key] = event[key];
+                        }
+                        if (Object.keys(viewport).length === 0) return;
+                        this._spatial2dSyncing = true;
+                        Promise.resolve(Plotly.relayout(target, viewport))
+                            .finally(() => { this._spatial2dSyncing = false; });
+                    });
                 },
 
                 // Helper function to estimate point size for spatial plot

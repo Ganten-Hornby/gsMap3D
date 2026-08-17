@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.report.report_data import _load_coordinates
@@ -12,6 +13,7 @@ from gsMap.report.spatial_payload import (
     _stratified_positions,
     _top_trait_positions,
     decode_typed_array,
+    encode_nonnegative_quantized_array,
     encode_typed_array,
     export_sample_spatial_payloads,
     export_spatial_3d_payloads,
@@ -56,6 +58,21 @@ def test_typed_array_payload_round_trip():
     assert np.isnan(result[1])
 
 
+def test_quantized_trait_payload_round_trip():
+    values = np.array([0.04, 1.26, np.nan, 7000.0, np.inf, -np.inf], dtype=np.float32)
+
+    payload = encode_nonnegative_quantized_array(values)
+    result = decode_typed_array(payload)
+
+    assert payload["dtype"] == "uint16"
+    assert payload["scale"] == 0.1
+    np.testing.assert_allclose(result[:2], [0.0, 1.3], atol=1e-6)
+    assert np.isnan(result[2])
+    assert result[3] == pytest.approx(6553.4, abs=1e-3)
+    assert result[4] == pytest.approx(6553.4, abs=1e-3)
+    assert result[5] == 0
+
+
 def test_stratified_sampling_is_exact_and_reproducible():
     metadata = _metadata(20)
 
@@ -66,6 +83,43 @@ def test_stratified_sampling_is_exact_and_reproducible():
     np.testing.assert_array_equal(first, second)
     assert set(metadata.iloc[first]["sample_name"]) == {"sample_a", "sample_b"}
     assert "rare" in set(metadata.iloc[first]["region"])
+
+
+def test_large_stratified_sampling_uses_bounded_reproducible_candidates():
+    n_rows = 300_000
+    metadata = pd.DataFrame(
+        {
+            "sample_name": pd.Categorical(
+                np.asarray([f"sample_{index % 30}" for index in range(n_rows)])
+            ),
+            "region": pd.Categorical(
+                np.asarray([f"region_{index % 12}" for index in range(n_rows)])
+            ),
+        }
+    )
+
+    first = _stratified_positions(metadata, 10_000, ["region"])
+    second = _stratified_positions(metadata, 10_000, ["region"])
+
+    assert len(first) == 10_000
+    np.testing.assert_array_equal(first, second)
+    assert metadata.iloc[first]["sample_name"].nunique() == 30
+    assert metadata.iloc[first]["region"].nunique() == 12
+
+
+def test_large_stratified_sampling_preserves_rare_sample_and_annotation():
+    n_rows = 300_000
+    metadata = pd.DataFrame(
+        {
+            "sample_name": pd.Categorical(["common"] * (n_rows - 1) + ["singleton"]),
+            "region": pd.Categorical(["common"] * (n_rows - 2) + ["rare", "common"]),
+        }
+    )
+
+    positions = _stratified_positions(metadata, 10_000, ["region"])
+
+    assert set(metadata.iloc[positions]["sample_name"]) == {"common", "singleton"}
+    assert set(metadata.iloc[positions]["region"]) == {"common", "rare"}
 
 
 def test_top_trait_positions_exclude_display_sample():
@@ -124,6 +178,7 @@ def test_sample_export_splits_base_and_traits(tmp_path):
         annotations=["region"],
         js_data_dir=tmp_path,
         max_points=6,
+        extreme_points_per_trait=2,
     )
 
     assert index["sample_a"]["n_spots"] == 6
@@ -135,7 +190,26 @@ def test_sample_export_splits_base_and_traits(tmp_path):
     assert len(outputs) == 4
     base = _assignment_payload(tmp_path / index["sample_a"]["base_file"])
     assert len(decode_typed_array(base["sx"])) == 6
+    assert base["coordinate_ranges"] == [9.0, 18.0]
     assert len(base["spot"]) == 6
+    sample_a_trait = _assignment_payload(
+        tmp_path / index["sample_a"]["trait_files"]["trait"]["file"]
+    )
+    sample_b_trait = _assignment_payload(
+        tmp_path / index["sample_b"]["trait_files"]["trait"]["file"]
+    )
+    assert sample_a_trait["cmax"] == sample_b_trait["cmax"] == 19.0
+    assert sample_a_trait["scale_scope"] == "all_samples"
+    assert sample_a_trait["values"]["dtype"] == "uint16"
+    assert sample_a_trait["values"]["scale"] == 0.1
+    assert sample_a_trait["n_extra"] == 2
+    base_x = set(decode_typed_array(base["sx"]).tolist())
+    extra_x = decode_typed_array(sample_a_trait["extra"]["x"])
+    assert base_x.isdisjoint(extra_x.tolist())
+    expected_top_omitted = sorted(set(range(10)).difference(base_x), reverse=True)[:2]
+    assert decode_typed_array(sample_a_trait["extra"]["values"]).tolist() == pytest.approx(
+        expected_top_omitted
+    )
 
 
 def test_2d_sections_use_explicitly_ordinal_nonphysical_z(tmp_path):
