@@ -7,7 +7,10 @@ import gc
 import logging
 import os
 import time
-from contextlib import nullcontext
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -337,6 +340,181 @@ def filter_cells(
     stats["final_cells"] = filtered_obs.shape[0]
 
     return filtered_obs, stats, keep_mask
+
+
+@dataclass(frozen=True, slots=True)
+class _RankInputRequest:
+    """Everything needed to selectively load one section for ranking."""
+
+    sample_name: str
+    h5ad_path: Path
+    slice_id: int
+    keep_mask: pd.Series
+    data_layer: str
+
+
+@dataclass(slots=True)
+class _RankInput:
+    """Materialized subset needed by rank calculation and latent concatenation."""
+
+    sample_name: str
+    slice_id: int
+    X: csr_matrix
+    obs: pd.DataFrame
+    var_names: list[str]
+    obsm: dict[str, Any]
+    matrix_source: str
+    metadata_read_seconds: float
+    matrix_read_seconds: float
+    obsm_read_seconds: float
+    prepare_seconds: float
+
+    @property
+    def input_seconds(self) -> float:
+        return (
+            self.metadata_read_seconds
+            + self.matrix_read_seconds
+            + self.obsm_read_seconds
+            + self.prepare_seconds
+        )
+
+
+def _subset_obsm_rows(
+    obsm: dict[str, Any], keep: np.ndarray, obs_names: pd.Index
+) -> dict[str, Any]:
+    """Subset obsm positionally and keep DataFrame indices aligned with obs."""
+    filtered: dict[str, Any] = {}
+    for key, value in obsm.items():
+        if value.shape[0] != keep.size:
+            raise ValueError(f"obsm/{key} has {value.shape[0]} rows but obs has {keep.size} rows")
+        if isinstance(value, pd.DataFrame):
+            subset = value.iloc[keep].copy()
+            subset.index = obs_names
+        else:
+            subset = value[keep].copy()
+        filtered[key] = subset
+    return filtered
+
+
+def _read_rank_input(request: _RankInputRequest) -> _RankInput:
+    """Read only obs, var names, the selected expression matrix, and obsm.
+
+    In particular, this deliberately does not materialize ``raw`` or ``X`` when
+    the configured expression layer exists.
+    """
+    keep = np.asarray(request.keep_mask, dtype=bool)
+
+    metadata_started_at = time.perf_counter()
+    with h5py.File(request.h5ad_path, "r") as handle:
+        obs = read_elem(handle["obs"])
+        var_names = read_elem(handle["var"]).index.astype(str).tolist()
+        metadata_read_seconds = time.perf_counter() - metadata_started_at
+
+        matrix_started_at = time.perf_counter()
+        if "layers" in handle and request.data_layer in handle["layers"]:
+            matrix_source = f"layers/{request.data_layer}"
+            X = read_elem(handle["layers"][request.data_layer])
+        else:
+            matrix_source = "X"
+            X = read_elem(handle["X"])
+        matrix_read_seconds = time.perf_counter() - matrix_started_at
+
+        obsm_started_at = time.perf_counter()
+        obsm = read_elem(handle["obsm"]) if "obsm" in handle else {}
+        obsm_read_seconds = time.perf_counter() - obsm_started_at
+
+    prepare_started_at = time.perf_counter()
+    if keep.ndim != 1 or keep.size != obs.shape[0]:
+        raise ValueError(
+            f"Filter mask for {request.sample_name} has shape {keep.shape}; "
+            f"expected ({obs.shape[0]},)"
+        )
+    if X.shape != (obs.shape[0], len(var_names)):
+        raise ValueError(
+            f"Expression matrix for {request.sample_name} has shape {X.shape}; "
+            f"expected ({obs.shape[0]}, {len(var_names)})"
+        )
+
+    # Match AnnData.obs_names_make_unique() before filtering so observation
+    # identities remain exactly the same when duplicate rows are removed.
+    obs.index = ad.utils.make_index_unique(obs.index)
+    obs["slice_id"] = request.slice_id
+    obs["slice_name"] = request.sample_name
+    obs["sample_name"] = request.sample_name
+    obs.index = obs.index.astype(str) + "|" + obs["slice_name"].astype(str)
+    obs = obs.iloc[keep].copy()
+    for column in obs.select_dtypes(include="category"):
+        obs[column] = obs[column].cat.remove_unused_categories()
+
+    if not keep.all():
+        X = X[keep]
+    if not hasattr(X, "tocsr"):
+        X = csr_matrix(X, dtype=np.float32)
+    else:
+        X = X.tocsr()
+        if X.dtype != np.float32:
+            X = X.astype(np.float32)
+    X.sum_duplicates()
+    X.eliminate_zeros()
+    X.sort_indices()
+
+    obsm = _subset_obsm_rows(obsm, keep, obs.index)
+    prepare_seconds = time.perf_counter() - prepare_started_at
+
+    return _RankInput(
+        sample_name=request.sample_name,
+        slice_id=request.slice_id,
+        X=X,
+        obs=obs,
+        var_names=var_names,
+        obsm=obsm,
+        matrix_source=matrix_source,
+        metadata_read_seconds=metadata_read_seconds,
+        matrix_read_seconds=matrix_read_seconds,
+        obsm_read_seconds=obsm_read_seconds,
+        prepare_seconds=prepare_seconds,
+    )
+
+
+@contextmanager
+def _prefetched_rank_inputs(
+    requests: Iterable[_RankInputRequest],
+    loader: Callable[[_RankInputRequest], _RankInput] = _read_rank_input,
+) -> Iterator[Iterator[tuple[_RankInput, float]]]:
+    """Yield ordered inputs while loading at most one future section ahead.
+
+    The yielded float is the input latency exposed to the rank loop. Loading
+    time beyond that wait was hidden behind computation of the prior section.
+    """
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rank-input")
+    request_iterator = iter(requests)
+
+    def iterate() -> Iterator[tuple[_RankInput, float]]:
+        try:
+            first_request = next(request_iterator)
+        except StopIteration:
+            return
+
+        future = executor.submit(loader, first_request)
+        while future is not None:
+            wait_started_at = time.perf_counter()
+            rank_input = future.result()
+            exposed_wait_seconds = time.perf_counter() - wait_started_at
+
+            try:
+                next_request = next(request_iterator)
+            except StopIteration:
+                next_future = None
+            else:
+                next_future = executor.submit(loader, next_request)
+
+            yield rank_input, exposed_wait_seconds
+            future = next_future
+
+    try:
+        yield iterate()
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 @jit
@@ -709,6 +887,19 @@ class RankCalculator:
             f"Rank progress will be logged every {_RANK_LOG_PERCENT_STEP}% or "
             f"{_RANK_LOG_INTERVAL_SECONDS:.0f}s for {total_cells_expected:,} cells"
         )
+        rank_input_requests = [
+            _RankInputRequest(
+                sample_name=sample_name,
+                h5ad_path=Path(h5ad_path),
+                slice_id=st_id,
+                keep_mask=sample_keep_indices[sample_name],
+                data_layer=data_layer,
+            )
+            for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items())
+        ]
+        cumulative_input_seconds = 0.0
+        exposed_input_wait_seconds = 0.0
+        logger.info("Rank input plan: selective HDF5 components with one-section prefetch")
 
         # Create overall section progress tracking
         with Progress(
@@ -729,160 +920,148 @@ class RankCalculator:
 
             processed_cells_total = 0
 
-            for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items()):
-                loading_message = (
-                    f"Loading {sample_name} ({st_id + 1}/{len(sample_h5ad_dict)})"
-                )
-                if self.show_rich_progress:
-                    section_progress.console.log(f"{loading_message}...")
-                else:
-                    logger.info(loading_message)
+            with _prefetched_rank_inputs(rank_input_requests) as prefetched_inputs:
+                for rank_input, prefetch_wait_seconds in prefetched_inputs:
+                    st_id = rank_input.slice_id
+                    sample_name = rank_input.sample_name
+                    X = rank_input.X
+                    cumulative_input_seconds += rank_input.input_seconds
+                    exposed_input_wait_seconds += prefetch_wait_seconds
 
-                # Load the h5ad file (which should already contain latent representations)
-                adata = sc.read_h5ad(h5ad_path)
-
-                # Add slice information
-                adata.obs["slice_id"] = st_id
-                adata.obs["slice_name"] = sample_name
-                adata.obs["sample_name"] = sample_name
-
-                # make unique index
-                adata.obs_names_make_unique()
-                adata.obs_names = (
-                    adata.obs_names.astype(str) + "|" + adata.obs["slice_name"].astype(str)
-                )
-
-                # Apply the pre-computed filter mask from first pass
-                keep_mask = sample_keep_indices[sample_name]
-                adata = adata[keep_mask].copy()
-
-                # Get gene list (should be consistent across sections)
-                if gene_list is None:
-                    gene_list = adata.var_names.tolist()
-                    n_genes = len(gene_list)
-                    rank_batch_size = (
-                        self.config.rank_batch_size
-                        or _automatic_sparse_rank_batch_size(n_genes)
+                    input_message = (
+                        f"Rank input ready: {sample_name} "
+                        f"({st_id + 1}/{len(sample_h5ad_dict)}); "
+                        f"source={rank_input.matrix_source}; "
+                        f"metadata={rank_input.metadata_read_seconds:.2f}s, "
+                        f"matrix={rank_input.matrix_read_seconds:.2f}s, "
+                        f"obsm={rank_input.obsm_read_seconds:.2f}s, "
+                        f"prepare={rank_input.prepare_seconds:.2f}s, "
+                        f"exposed_wait={prefetch_wait_seconds:.2f}s"
                     )
-                    # Sparse batches are already tens of MiB and can be handed directly
-                    # to the asynchronous writer without an extra np.vstack copy.
-                    rank_write_interval = self.config.rank_write_interval or 1
-                    rank_writer_workers = self.config.mkscore_write_workers
+                    if self.show_rich_progress:
+                        section_progress.console.log(input_message)
+                    else:
+                        logger.info(input_message)
+
+                    # Get gene list (should be consistent across sections)
+                    if gene_list is None:
+                        gene_list = rank_input.var_names
+                    else:
+                        assert rank_input.var_names == gene_list, (
+                            f"Gene list mismatch in section {st_id}"
+                        )
+
+                    if rank_memmap is None:
+                        n_genes = len(gene_list)
+                        rank_batch_size = (
+                            self.config.rank_batch_size
+                            or _automatic_sparse_rank_batch_size(n_genes)
+                        )
+                        # Sparse batches are already tens of MiB and can be handed directly
+                        # to the asynchronous writer without an extra np.vstack copy.
+                        rank_write_interval = self.config.rank_write_interval or 1
+                        rank_writer_workers = self.config.mkscore_write_workers
+                        logger.info(
+                            f"Resolved rank plan: backend=sparse-numba, "
+                            f"batch={rank_batch_size}, "
+                            f"write interval={rank_write_interval}, "
+                            f"writers={rank_writer_workers}"
+                        )
+                        # Initialize the dense float16 rank matrix once its width is known.
+                        rank_memmap = MemMapDense(
+                            str(rank_memmap_path),
+                            shape=(total_cells_expected, n_genes),
+                            dtype=np.float16,
+                            mode="w",
+                            num_write_workers=rank_writer_workers,
+                            tmp_dir=self.config.memmap_tmp_dir,
+                        )
+                        sum_log_ranks = np.zeros(n_genes, dtype=np.float64)
+                        sum_frac = np.zeros(n_genes, dtype=np.float64)
+
+                    n_cells = X.shape[0]
+
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn(
+                            f"[bold blue]Ranking {sample_name} ({{task.fields[cells]}} cells)"
+                        ),
+                        BarColumn(bar_width=None),
+                        MofNCompleteColumn(),
+                        TaskProgressColumn(),
+                        TextColumn("[bold green]{task.fields[speed]} cells/s"),
+                        TimeRemainingColumn(),
+                        console=self.console,
+                        disable=not self.show_rich_progress,
+                        refresh_per_second=2,
+                        transient=True,
+                    ) as chunk_progress:
+                        chunk_task = chunk_progress.add_task(
+                            "Processing chunks", total=n_cells, cells=n_cells, speed="0"
+                        )
+
+                        metadata = {
+                            "name": sample_name,
+                            "cells": n_cells,
+                            "study_id": st_id,
+                        }
+                        sample_rank_started_at = time.perf_counter()
+                        batch_sum_log_ranks, batch_frac = rank_data_jax(
+                            X,
+                            n_genes,
+                            memmap_dense=rank_memmap,
+                            metadata=metadata,
+                            chunk_size=rank_batch_size,
+                            write_interval=rank_write_interval,
+                            current_row_offset=current_row_offset,
+                            progress=chunk_progress,
+                            progress_task=chunk_task,
+                            progress_reporter=rank_progress_reporter,
+                        )
+                        sample_rank_seconds = time.perf_counter() - sample_rank_started_at
+
+                    sample_rank_throughput = n_cells / sample_rank_seconds
                     logger.info(
-                        f"Resolved rank plan: backend=sparse-numba, "
-                        f"batch={rank_batch_size}, write interval={rank_write_interval}, "
-                        f"writers={rank_writer_workers}"
-                    )
-                    # Initialize rank memory map as dense matrix with float16 for 50% space savings
-                    # Log ranks typically have sufficient precision with float16
-                    rank_memmap = MemMapDense(
-                        str(rank_memmap_path),
-                        shape=(total_cells_expected, n_genes),
-                        dtype=np.float16,  # Use float16 to save space
-                        mode="w",
-                        num_write_workers=rank_writer_workers,
-                        tmp_dir=self.config.memmap_tmp_dir,
-                    )
-                    # Initialize global accumulators
-                    sum_log_ranks = np.zeros(n_genes, dtype=np.float64)
-                    sum_frac = np.zeros(n_genes, dtype=np.float64)
-                else:
-                    # Verify gene list consistency
-                    assert adata.var_names.tolist() == gene_list, (
-                        f"Gene list mismatch in section {st_id}"
+                        f"Rank sample complete: {sample_name} "
+                        f"({st_id + 1}/{len(sample_h5ad_dict)}); {n_cells:,} cells in "
+                        f"{sample_rank_seconds:.2f}s "
+                        f"({sample_rank_throughput:,.0f} cells/s)"
                     )
 
-                # Get expression data for ranking
-                if data_layer in adata.layers:
-                    X = adata.layers[data_layer]
-                else:
-                    X = adata.X
+                    sum_log_ranks += batch_sum_log_ranks
+                    sum_frac += batch_frac
+                    total_cells += n_cells
+                    current_row_offset += n_cells
+                    processed_cells_total += n_cells
+                    section_progress.update(section_task, advance=1)
 
-                # Efficient sparse matrix conversion
-                if not hasattr(X, "tocsr"):
-                    X = csr_matrix(X, dtype=np.float32)
-                else:
-                    X = X.tocsr()
-                    if X.dtype != np.float32:
-                        X = X.astype(np.float32)
-
-                # Canonical CSR rows make sparse ranking identical to dense conversion,
-                # including inputs that contain duplicate coordinates or explicit zeros.
-                X.sum_duplicates()
-                X.eliminate_zeros()
-                X.sort_indices()
-
-                # Get number of cells after filtering
-                n_cells = X.shape[0]
-
-                # Use nested progress bar for detailed chunk processing
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn(f"[bold blue]Ranking {sample_name} ({{task.fields[cells]}} cells)"),
-                    BarColumn(bar_width=None),
-                    MofNCompleteColumn(),
-                    TaskProgressColumn(),
-                    TextColumn("[bold green]{task.fields[speed]} cells/s"),
-                    TimeRemainingColumn(),
-                    console=self.console,
-                    disable=not self.show_rich_progress,
-                    refresh_per_second=2,
-                    transient=True,
-                ) as chunk_progress:
-                    # Detailed chunk progress task
-                    chunk_task = chunk_progress.add_task(
-                        "Processing chunks", total=n_cells, cells=n_cells, speed="0"
+                    # The output only needs cell metadata and latent arrays. The
+                    # expression matrix is released at the end of this iteration.
+                    minimal_adata = ad.AnnData(
+                        X=csr_matrix((n_cells, n_genes), dtype=np.float32),
+                        obs=rank_input.obs,
+                        var=pd.DataFrame(index=gene_list),
+                        obsm=rank_input.obsm,
                     )
+                    adata_list.append(minimal_adata)
+                    n_total_cells += n_cells
 
-                    # Use JAX rank calculation with nested progress
-                    metadata = {"name": sample_name, "cells": n_cells, "study_id": st_id}
-                    sample_rank_started_at = time.perf_counter()
+                    del rank_input, X, minimal_adata
+                    gc.collect()
 
-                    batch_sum_log_ranks, batch_frac = rank_data_jax(
-                        X,
-                        n_genes,
-                        memmap_dense=rank_memmap,
-                        metadata=metadata,
-                        chunk_size=rank_batch_size,
-                        write_interval=rank_write_interval,
-                        current_row_offset=current_row_offset,
-                        progress=chunk_progress,
-                        progress_task=chunk_task,
-                        progress_reporter=rank_progress_reporter,
-                    )
-                    sample_rank_seconds = time.perf_counter() - sample_rank_started_at
-
-                sample_rank_throughput = n_cells / sample_rank_seconds
-                logger.info(
-                    f"Rank sample complete: {sample_name} "
-                    f"({st_id + 1}/{len(sample_h5ad_dict)}); {n_cells:,} cells in "
-                    f"{sample_rank_seconds:.2f}s ({sample_rank_throughput:,.0f} cells/s)"
-                )
-
-                # Update global sums
-                sum_log_ranks += batch_sum_log_ranks
-                sum_frac += batch_frac
-                total_cells += n_cells
-                current_row_offset += n_cells  # Update offset for next section
-                processed_cells_total += n_cells
-
-                # Update section progress
-                section_progress.update(section_task, advance=1)
-
-                # Create minimal AnnData with empty X matrix but keep obs and obsm
-                minimal_adata = ad.AnnData(
-                    X=csr_matrix((adata.n_obs, n_genes), dtype=np.float32),
-                    obs=adata.obs.copy(),
-                    var=pd.DataFrame(index=gene_list),
-                    obsm=adata.obsm.copy(),  # Keep all latent representations
-                )
-
-                adata_list.append(minimal_adata)
-                n_total_cells += n_cells
-
-                # Clean up memory
-                del adata, X, minimal_adata
-                gc.collect()
+            hidden_input_seconds = max(0.0, cumulative_input_seconds - exposed_input_wait_seconds)
+            hidden_input_fraction = (
+                hidden_input_seconds / cumulative_input_seconds
+                if cumulative_input_seconds > 0
+                else 0.0
+            )
+            logger.info(
+                "Rank input pipeline summary: "
+                f"selective_load={cumulative_input_seconds:.2f}s; "
+                f"exposed_wait={exposed_input_wait_seconds:.2f}s; "
+                f"hidden_by_prefetch={hidden_input_seconds:.2f}s "
+                f"({hidden_input_fraction:.1%})"
+            )
 
             # Publish one sequential project-side checkpoint while retaining
             # the scratch mapping for marker-score calculation.
@@ -890,9 +1069,7 @@ class RankCalculator:
                 publish_started_at = time.perf_counter()
                 rank_memmap.publish()
                 publish_seconds = time.perf_counter() - publish_started_at
-                rank_output_bytes = (
-                    total_cells_expected * n_genes * np.dtype(np.float16).itemsize
-                )
+                rank_output_bytes = total_cells_expected * n_genes * np.dtype(np.float16).itemsize
                 publish_mib_per_second = (
                     rank_output_bytes / _MIB / publish_seconds if publish_seconds > 0 else 0.0
                 )
