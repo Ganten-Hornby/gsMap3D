@@ -29,7 +29,11 @@ from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import setup_data_layer
 from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
-from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
+from gsMap.report.spatial_payload import (
+    SPATIAL_PAYLOAD_VERSION,
+    export_sample_spatial_payloads,
+    export_spatial_3d_payloads,
+)
 from gsMap.report.visualize import (
     estimate_plotly_point_size,
 )
@@ -110,6 +114,7 @@ class ReportDataManager:
         self.coords = None
         self.is_3d = False
         self.z_axis = None
+        self.spatial_3d_coordinate_info = None
         self.common_spots = None
         self.analysis_spots = None
         self.gene_stats = None
@@ -117,7 +122,7 @@ class ReportDataManager:
         self.gss_adata = None
         self.chrom_tick_positions = None
         self.umap_info = None
-        self.spatial_3d_html = None
+        self.spatial_3d_info = None
 
     def close(self):
         """Release resources and close file handles."""
@@ -180,6 +185,7 @@ class ReportDataManager:
         # 2. Load coordinates
         if self.coords is None:
             self.coords, self.is_3d, self.z_axis = _load_coordinates(self.report_config)
+            self.spatial_3d_coordinate_info = self.coords.attrs.get("spatial_3d_coordinate_info")
 
         # Export base metadata as JS if needed (usually handled in finalizing or per-sample)
         # However, _export_per_sample_spatial_js is what we use now.
@@ -256,6 +262,10 @@ class ReportDataManager:
     def prepare_spot_metadata(self):
         """Save spot metadata and coordinates."""
         metadata_file = self.report_data_dir / "spot_metadata.csv"
+        coordinate_info_file = self.report_data_dir / "spatial_3d_coordinate_info.json"
+        coordinate_info_is_current = _spatial_coordinate_info_is_current(
+            coordinate_info_file, self.spatial_3d_coordinate_info
+        )
         if self._is_step_complete([metadata_file]):
             self.metadata = pd.read_csv(metadata_file)
             required_columns = {
@@ -269,14 +279,23 @@ class ReportDataManager:
                 DatasetType.SPATIAL_3D,
             ):
                 required_columns.update(("sx", "sy"))
+            if self.report_config.dataset_type == DatasetType.SPATIAL_3D:
+                required_columns.update(("3d_x", "3d_y", "3d_z"))
             missing_columns = sorted(required_columns.difference(self.metadata.columns))
-            if missing_columns:
+            if missing_columns or not coordinate_info_is_current:
+                reasons = []
+                if missing_columns:
+                    reasons.append(f"missing columns: {missing_columns}")
+                if not coordinate_info_is_current:
+                    reasons.append("3D coordinate provenance or scaling changed")
                 logger.warning(
-                    f"Cached spot_metadata.csv is missing required columns: {missing_columns}. "
-                    "Regenerating it."
+                    f"Cached spot_metadata.csv is stale ({'; '.join(reasons)}). Regenerating it."
                 )
                 self.metadata = _save_metadata(
                     self.ldsc_results, self.coords, self.report_data_dir
+                )
+                _write_spatial_coordinate_info(
+                    coordinate_info_file, self.spatial_3d_coordinate_info
                 )
             else:
                 logger.info("Spot metadata already exists. Skipping.")
@@ -285,6 +304,7 @@ class ReportDataManager:
             return
 
         self.metadata = _save_metadata(self.ldsc_results, self.coords, self.report_data_dir)
+        _write_spatial_coordinate_info(coordinate_info_file, self.spatial_3d_coordinate_info)
         if self.common_spots is None:
             self.common_spots = self.metadata["spot"].values
 
@@ -571,15 +591,16 @@ class ReportDataManager:
     def prepare_3d_visualization(self):
         """Prepare 3D visualization if applicable."""
         if not self.is_3d:
-            self.spatial_3d_html = None
+            self.spatial_3d_info = None
             return
 
-        self.spatial_3d_html = _prepare_3d_visualization(
+        self.spatial_3d_info = _prepare_3d_visualization(
             self.report_config,
             self.metadata,
             self.traits,
             self.report_data_dir,
             self.web_report_dir,
+            coordinate_info=self.spatial_3d_coordinate_info,
         )
 
     def finalize_report(self):
@@ -593,7 +614,7 @@ class ReportDataManager:
             getattr(self, "chrom_tick_positions", None),
             getattr(self, "umap_info", None),
             is_3d=self.is_3d,
-            spatial_3d_path=getattr(self, "spatial_3d_html", None),
+            spatial_3d_info=getattr(self, "spatial_3d_info", None),
         )
 
         # 2. Copy JS libraries
@@ -605,7 +626,12 @@ class ReportDataManager:
         ):
             logger.info("Per-sample spatial JS is current. Skipping export.")
         else:
-            _export_per_sample_spatial_js(self.report_data_dir, self.js_data_dir, meta)
+            _export_per_sample_spatial_js(
+                self.report_data_dir,
+                self.js_data_dir,
+                meta,
+                metadata=self.metadata,
+            )
         _export_report_meta_js(self.web_report_dir, self.js_data_dir, meta)
 
 
@@ -733,64 +759,6 @@ def _render_single_sample_gene_pair_task(task_data: dict):
 # =============================================================================
 # UMAP Calculation Functions
 # =============================================================================
-
-
-def _detect_z_axis(coords_3d: np.ndarray, sample_names: pd.Series) -> int:
-    """
-    Detect which dimension is the Z axis (stacking dimension) in 3D coordinates.
-
-    The Z axis is identified as the dimension with the least within-sample variance,
-    since samples are stacked along Z and should have minimal variation in that dimension.
-
-    Args:
-        coords_3d: 3D coordinates array (n_spots, 3)
-        sample_names: Series of sample names for each spot
-
-    Returns:
-        Index of the Z axis (0, 1, or 2)
-    """
-    # Calculate within-sample variance for each dimension
-    within_sample_vars = []
-
-    for dim in range(3):
-        dim_values = coords_3d[:, dim]
-
-        # Calculate variance within each sample
-        sample_vars = []
-        for sample in sample_names.unique():
-            mask = sample_names == sample
-            sample_values = dim_values[mask]
-            if len(sample_values) > 1:
-                sample_vars.append(np.var(sample_values))
-
-        # Average within-sample variance for this dimension
-        avg_within_var = np.mean(sample_vars) if sample_vars else 0
-        within_sample_vars.append(avg_within_var)
-
-    # Z axis has the least within-sample variance
-    z_axis = int(np.argmin(within_sample_vars))
-    logger.info(
-        f"Detected Z axis: dimension {z_axis} (within-sample variances: {within_sample_vars})"
-    )
-
-    return z_axis
-
-
-def _reorder_coords_for_3d(coords_3d: np.ndarray, z_axis: int) -> tuple[np.ndarray, list[str]]:
-    """
-    Reorder 3D coordinates so that Z axis is the last dimension.
-
-    Returns:
-        Tuple of (reordered coords, column names)
-    """
-    # Create axis order: put z_axis last
-    axis_order = [i for i in range(3) if i != z_axis] + [z_axis]
-    reordered = coords_3d[:, axis_order]
-
-    # Column names reflect the reordering
-    col_names = ["3d_x", "3d_y", "3d_z"]
-
-    return reordered, col_names
 
 
 def _stratified_subsample(
@@ -969,211 +937,20 @@ def _prepare_3d_visualization(
     traits: list[str],
     report_data_dir: Path,
     web_report_dir: Path,
-) -> str | None:
-    """
-    Create 3D visualization widget using spatialvista and save as HTML.
+    coordinate_info: dict | None = None,
+) -> dict | None:
+    """Export a shared Plotly 3D geometry and lazy trait/annotation payloads."""
 
-    Args:
-        report_config: QuickModeConfig with annotation_list and other settings
-        metadata: DataFrame with 3d_x, 3d_y, 3d_z coordinates and annotations
-        traits: List of trait names (for continuous values)
-        report_data_dir: Directory for data files (h5ad)
-        web_report_dir: Directory for web report files (HTML)
-
-    Returns:
-        Path to saved HTML file, or None if failed
-    """
-    try:
-        import pyvista  # noqa: F401
-    except ImportError:
-        logger.warning("pyvista not installed. Skipping 3D visualization.")
-        return None
-
-    # Check if we have 3D coordinates
-    if (
-        "3d_x" not in metadata.columns
-        or "3d_y" not in metadata.columns
-        or "3d_z" not in metadata.columns
-    ):
-        logger.warning("3D coordinates not found in metadata. Skipping 3D visualization.")
-        return None
-
-    logger.info("Creating 3D visualization...")
-
-    # 1. Create adata_vis using ALL spots
-    n_spots_all = len(metadata)
-    adata_vis_full = ad.AnnData(
-        X=sp.csr_matrix((n_spots_all, 1), dtype=np.float32), obs=metadata.set_index("spot")
+    return export_spatial_3d_payloads(
+        metadata=metadata,
+        traits=traits,
+        annotations=report_config.annotation_list,
+        report_data_dir=report_data_dir,
+        web_report_dir=web_report_dir,
+        max_points=getattr(report_config, "downsampling_n_spots_3d", 50000),
+        force=getattr(report_config, "force_report_re_run", False),
+        coordinate_info=coordinate_info,
     )
-    # Set coordinates
-    adata_vis_full.obsm["spatial_3d"] = metadata[["3d_x", "3d_y", "3d_z"]].values
-    adata_vis_full.obsm["spatial"] = adata_vis_full.obsm["spatial_3d"]
-    if "sx" in metadata.columns and "sy" in metadata.columns:
-        adata_vis_full.obsm["spatial_2d"] = metadata[["sx", "sy"]].values
-
-    # Ensure trait columns are float32
-    adata_vis_full.obs = adata_vis_full.obs.astype(
-        {trait: np.float32 for trait in traits if trait in adata_vis_full.obs.columns}
-    )
-
-    # Create 3D visualization directories
-    three_d_data_dir = report_data_dir / "spatial_3d"
-    three_d_data_dir.mkdir(exist_ok=True)
-    three_d_web_dir = web_report_dir / "spatial_3d"
-    three_d_web_dir.mkdir(exist_ok=True)
-
-    # 2. Save the full adata_vis to data directory
-    h5ad_path = three_d_data_dir / "spatial_3d.h5ad"
-    adata_vis_full.write_h5ad(h5ad_path)
-    logger.info(f"Full 3D visualization data saved to {h5ad_path}")
-
-    # 3. Stratified subsampling for HTML visualization (limit to reasonable size)
-    n_max_points = getattr(report_config, "downsampling_n_spots_3d", 1000000)
-    if len(metadata) > n_max_points:
-        sample_names = metadata["sample_name"]
-        selected_idx = _stratified_subsample(metadata.index.values, sample_names, n_max_points)
-        adata_vis = adata_vis_full[selected_idx].copy()
-        logger.info(f"Subsampled to {len(adata_vis)} spots for HTML 3D visualization")
-    else:
-        adata_vis = adata_vis_full.copy()
-
-    # Add traits as continuous values
-    continuous_cols = traits
-
-    # Add annotations (categorical)
-    annotation_cols = []
-    for anno in report_config.annotation_list:
-        if anno in adata_vis.obs.columns:
-            annotation_cols.append(anno)
-
-    logger.info(f"3D visualization: annotations={annotation_cols}, traits={continuous_cols}")
-
-    # Create 3D plots
-    try:
-        from gsMap.report.visualize import _create_color_map
-
-        # P-value color scale (Red-Blue)
-        P_COLOR = [
-            "#313695",
-            "#4575b4",
-            "#74add1",
-            "#fee090",
-            "#fdae61",
-            "#f46d43",
-            "#d73027",
-            "#a50026",
-        ]
-
-        # Calculate appropriate point size based on coverage ratio (20-30%)
-        # Formula: S = sqrt(W * H * k / N)
-        win_w, win_h = 1200, 1008
-        k_coverage = 0.25
-        n_points = len(adata_vis)
-        point_size = np.sqrt((win_w * win_h * k_coverage) / n_points)
-        point_size = max(0.5, min(5.0, point_size))  # Clamp between 0.5 and 5.0
-        logger.info(f"Estimated 3D point size: {point_size:.2f} for {n_points} spots")
-
-        # Shared plotting settings
-        text_kwargs = dict(text_font_size=15, text_loc="upper_edge")
-
-        # 1. Save all Annotation 3D plots
-        categorical_legend_kwargs = dict(categorical_legend_loc="center right")
-        for anno in annotation_cols:
-            logger.info(f"Generating 3D plot for annotation: {anno}")
-
-            # Use same colormap logic as distribution plots
-            if pd.api.types.is_numeric_dtype(adata_vis.obs[anno]):
-                color_map = P_COLOR
-            else:
-                unique_vals = adata_vis.obs[anno].unique()
-                color_map = _create_color_map(unique_vals, hex=True, rng=42)
-
-            safe_anno = "".join(c if c.isalnum() else "_" for c in anno)
-            anno_plot_name = three_d_web_dir / f"spatial_3d_anno_{safe_anno}"
-
-            plotter_anno = three_d_plot(
-                adata=adata_vis,
-                spatial_key="spatial",
-                keys=[anno],
-                cmaps=[color_map],
-                point_size=point_size,
-                texts=[anno],
-                off_screen=True,
-                jupyter=False,
-                background="white",
-                legend_kwargs=categorical_legend_kwargs,
-                text_kwargs=text_kwargs,
-                window_size=(win_w, win_h),
-            )
-            three_d_plot_save(plotter_anno, filename=str(anno_plot_name))
-
-        # 2. Save each Trait 3D plot
-        legend_kwargs = dict(scalar_bar_title_size=30, scalar_bar_label_size=30, fmt="%.1e")
-
-        for trait in continuous_cols:
-            logger.info(f"Generating 3D plot for trait: {trait}")
-
-            # Calculate opacity based on LogP (exponential scaling)
-            trait_values = adata_vis.obs[trait].fillna(0).values
-            bins = np.linspace(trait_values.min(), trait_values.max(), 5)
-            # Handle case where min == max to avoid bins error
-            if bins[0] == bins[-1]:
-                opacity_show = 1.0
-            else:
-                alpha = np.exp(np.linspace(0.1, 1.0, num=(len(bins) - 1))) - 1
-                alpha = alpha / max(alpha)
-                opacity_show = pd.cut(
-                    trait_values, bins=bins, labels=alpha, include_lowest=True
-                ).tolist()
-
-            # Set the clim (median of top 20 spots)
-            sorted_vals = np.sort(trait_values)[::-1]
-            max_v = (
-                np.round(np.median(sorted_vals[0:20]))
-                if len(sorted_vals) >= 20
-                else sorted_vals[0]
-            )
-            if max_v <= 0:
-                max_v = 1.0
-
-            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-            trait_plot_name = three_d_web_dir / f"spatial_3d_trait_{safe_trait}"
-
-            plotter_trait = three_d_plot(
-                adata=adata_vis,
-                spatial_key="spatial",
-                keys=[trait],
-                cmaps=[P_COLOR],
-                point_size=point_size,
-                opacity=opacity_show,
-                clim=[0, max_v],
-                scalar_bar_titles=["-log10(p)"],
-                texts=[trait],
-                off_screen=True,
-                jupyter=False,
-                background="white",
-                legend_kwargs=legend_kwargs,
-                text_kwargs=text_kwargs,
-                window_size=(win_w, win_h),
-            )
-            three_d_plot_save(plotter_trait, filename=str(trait_plot_name))
-
-        # Return the relative path of the first available plot
-        if annotation_cols:
-            safe_first = "".join(c if c.isalnum() else "_" for c in annotation_cols[0])
-            return f"spatial_3d/spatial_3d_anno_{safe_first}.html"
-        elif continuous_cols:
-            safe_first_trait = "".join(c if c.isalnum() else "_" for c in continuous_cols[0])
-            return f"spatial_3d/spatial_3d_trait_{safe_first_trait}.html"
-
-        return None
-
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Failed to create 3D visualization: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return None
 
 
 # =============================================================================
@@ -1250,17 +1027,42 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
     has_3d_coords = coords_data.shape[1] >= 3
 
     z_axis = None
+    coordinate_info = None
     if is_3d_type and has_3d_coords:
         # True 3D coordinates
         logger.info("Detected 3D spatial coordinates")
-        coords_3d = coords_data[:, :3]
+        z_axis = int(getattr(report_config, "cross_slice_z_coordinate", -1))
+        if z_axis < 0:
+            z_axis += coords_data.shape[1]
+        if not 0 <= z_axis < coords_data.shape[1]:
+            raise IndexError(
+                f"cross_slice_z_coordinate is outside the {coords_data.shape[1]} "
+                "spatial coordinate columns"
+            )
+        if z_axis < 2:
+            raise ValueError(
+                "cross_slice_z_coordinate must identify a Z column after the first "
+                "two X/Y spatial coordinate columns"
+            )
 
-        # Detect Z axis
-        z_axis = _detect_z_axis(coords_3d, adata_concat.obs["sample_name"])
-
-        # Reorder coordinates so Z is last
-        reordered_coords, col_names = _reorder_coords_for_3d(coords_3d, z_axis)
-        coords = pd.DataFrame(reordered_coords, columns=col_names, index=adata_concat.obs_names)
+        report_coordinates = np.asarray(coords_data[:, [0, 1, z_axis]], dtype=np.float64)
+        z_scale = float(getattr(report_config, "cross_slice_z_scale", 1.0))
+        report_coordinates[:, 2] *= z_scale
+        coords = pd.DataFrame(
+            report_coordinates,
+            columns=["3d_x", "3d_y", "3d_z"],
+            index=adata_concat.obs_names,
+        )
+        coordinate_info = {
+            "schema_version": 2,
+            "z_source": "registered_coordinate",
+            "z_axis_input": z_axis,
+            "z_scale": z_scale,
+            "z_is_physical": True,
+            "default_aspect_mode": "physical",
+            "axis_titles": ["X", "Y", "Z"],
+            "note": (f"Z uses input coordinate axis {z_axis} with configured scale {z_scale:g}."),
+        }
 
         # Also keep 2D coords for compatibility (use x and y from reordered)
         coords["sx"] = coords["3d_x"]
@@ -1274,11 +1076,6 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
         coords_2d = coords_data[:, :2]
         coords = pd.DataFrame(coords_2d, columns=["sx", "sy"], index=adata_concat.obs_names)
 
-        # Calculate the span for pseudo Z axis
-        sx_span = coords["sx"].max() - coords["sx"].min()
-        sy_span = coords["sy"].max() - coords["sy"].min()
-        z_span = max(sx_span, sy_span)
-
         # Assign Z values based on sample order from report_config
         sample_names_all = adata_concat.obs["sample_name"]
         actual_samples_in_data = set(sample_names_all.unique())
@@ -1289,14 +1086,9 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
         assert not missing, f"Samples {missing} in config are not present in coordinates data."
 
         n_samples = len(ordered_samples)
-
-        # Create evenly spaced Z values for each sample in the specific order
-        if n_samples > 1:
-            z_values_per_sample = {
-                sample: z_span * i / (n_samples - 1) for i, sample in enumerate(ordered_samples)
-            }
-        else:
-            z_values_per_sample = {ordered_samples[0]: 0.0}
+        z_values_per_sample = {
+            sample: float(index) for index, sample in enumerate(ordered_samples)
+        }
 
         # Assign Z values to each spot
         pseudo_z = sample_names_all.map(z_values_per_sample).values
@@ -1305,8 +1097,25 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
         coords["3d_y"] = coords["sy"]
         coords["3d_z"] = pseudo_z
         z_axis = 2  # Pseudo Z is always the last dimension
+        coordinate_info = {
+            "schema_version": 2,
+            "z_source": "ordinal_section_order",
+            "z_axis_input": None,
+            "z_scale": None,
+            "z_is_physical": False,
+            "default_aspect_mode": "expanded",
+            "axis_titles": ["X", "Y", "Section order"],
+            "sample_z_positions": z_values_per_sample,
+            "note": (
+                "No measured Z coordinate was provided; Z encodes input section order only. "
+                "Section thickness, missing sections, and unequal spacing are not represented."
+            ),
+        }
 
-        logger.info(f"Created pseudo Z axis with span {z_span:.2f} for {n_samples} samples")
+        logger.warning(
+            f"Created an ordinal (non-physical) Z axis for {n_samples} samples. "
+            "Provide a three-column spatial key for measured 3D distances."
+        )
 
     else:
         # 2D coordinates (non-3D dataset type)
@@ -1314,6 +1123,8 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
         coords = pd.DataFrame(coords_2d, columns=["sx", "sy"], index=adata_concat.obs_names)
 
     coords = pd.concat([coords, sample_info], axis=1)
+    if coordinate_info is not None:
+        coords.attrs["spatial_3d_coordinate_info"] = coordinate_info
 
     # Close backed file
     if adata_concat.isbacked:
@@ -1473,6 +1284,29 @@ def _save_metadata(
     _atomic_to_csv(metadata, report_dir / "spot_metadata.csv", index=False)
 
     return metadata
+
+
+def _spatial_coordinate_info_is_current(path: Path, coordinate_info: dict | None) -> bool:
+    """Return whether cached Spatial3D coordinates use the current provenance/scaling."""
+
+    if coordinate_info is None:
+        return True
+    if not path.is_file():
+        return False
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return cached == coordinate_info
+
+
+def _write_spatial_coordinate_info(path: Path, coordinate_info: dict | None) -> None:
+    if coordinate_info is None:
+        return
+    _write_text_if_changed(
+        path,
+        json.dumps(coordinate_info, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+    )
 
 
 def _prepare_manhattan_for_trait(
@@ -1984,7 +1818,7 @@ def _save_report_metadata(
     chrom_tick_positions: dict | None = None,
     umap_info: dict | None = None,
     is_3d: bool = False,
-    spatial_3d_path: str | None = None,
+    spatial_3d_info: dict | None = None,
 ):
     """Save report configuration metadata as JSON."""
     logger.info("Saving report configuration metadata...")
@@ -2010,8 +1844,9 @@ def _save_report_metadata(
 
     # Add 3D visualization info
     report_meta["is_3d"] = is_3d
-    report_meta["has_3d_widget"] = spatial_3d_path is not None
-    report_meta["spatial_3d_widget_path"] = spatial_3d_path
+    report_meta["has_3d_widget"] = spatial_3d_info is not None
+    report_meta["spatial_3d"] = spatial_3d_info
+    report_meta["spatial_3d_widget_path"] = None
 
     # Add dataset type info for conditional section rendering
     dataset_type_value = report_config.dataset_type
@@ -2133,7 +1968,7 @@ def _per_sample_spatial_outputs_current(data_dir: Path, js_data_dir: Path, meta:
     except (OSError, ValueError):
         return False
 
-    if manifest.get("version") != 1:
+    if manifest.get("version") != SPATIAL_PAYLOAD_VERSION:
         return False
     if manifest.get("signature") != _sample_spatial_export_signature(data_dir, meta):
         return False
@@ -2176,125 +2011,52 @@ def export_data_as_js_modules(data_dir: Path):
     logger.info(f"JS modules exported to {js_data_dir}")
 
 
-def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict):
-    """
-    Export spatial metadata as per-sample JS files for efficient on-demand loading.
-
-    This creates:
-    - sample_index.js: Lightweight index mapping sample names to file info
-    - sample_{name}_spatial.js: Per-sample data with coordinates, traits, annotations
-
-    This approach is much more efficient than loading all samples at once,
-    especially for datasets with millions of spots.
-    """
+def _export_per_sample_spatial_js(
+    data_dir: Path,
+    js_data_dir: Path,
+    meta: dict,
+    metadata: pd.DataFrame | None = None,
+):
+    """Export compact per-sample geometry and lazy trait payloads."""
     metadata_file = data_dir / "spot_metadata.csv"
     if not metadata_file.exists():
         logger.warning("spot_metadata.csv not found, skipping per-sample spatial export")
         return
 
-    logger.info("Exporting per-sample spatial data as JS modules...")
-    df = pd.read_csv(metadata_file)
+    logger.info("Exporting compact per-sample spatial payloads...")
+    if metadata is None:
+        metadata = pd.read_csv(metadata_file)
 
     samples = meta.get("samples", [])
     traits = meta.get("traits", [])
     annotations = meta.get("annotations", [])
 
     if not samples:
-        # Fallback to unique sample names from data
-        samples = df["sample_name"].unique().tolist() if "sample_name" in df.columns else []
+        samples = (
+            metadata["sample_name"].drop_duplicates().tolist() if "sample_name" in metadata else []
+        )
 
-    # Detect whether spatial coordinates are available (absent for scRNA-seq)
-    has_spatial_coords = "sx" in df.columns and "sy" in df.columns
-
-    sample_index = {}
-    output_files = []
-    max_spots_2d = meta.get("downsampling_n_spots_2d", 250000)
-
-    for sample_name in samples:
-        sample_df = df[df["sample_name"] == sample_name]
-
-        if len(sample_df) == 0:
-            raise ValueError(f"No spot metadata found for configured sample: {sample_name}")
-
-        # Track original count before downsampling
-        n_spots_original = len(sample_df)
-
-        # Downsample if needed for 2D visualization performance
-        if has_spatial_coords and len(sample_df) > max_spots_2d:
-            logger.info(
-                f"Downsampling {sample_name} from {len(sample_df):,} to {max_spots_2d:,} spots for 2D visualization"
-            )
-            sample_df = sample_df.sample(n=max_spots_2d, random_state=42)
-
-        # Calculate point size for this sample (spatial only)
-        if has_spatial_coords:
-            _, point_size = estimate_plotly_point_size(
-                sample_df[["sx", "sy"]], DEFAULT_PIXEL_WIDTH=560
-            )
-        else:
-            point_size = 5.0  # default point size for non-spatial datasets
-
-        # Build columnar data structure for efficient ScatterGL rendering
-        data_struct = {
-            "spot": sample_df["spot"].tolist(),
-            "point_size": round(point_size, 2),
-        }
-
-        # Add spatial coordinates only when available
-        if has_spatial_coords:
-            data_struct["sx"] = sample_df["sx"].tolist()
-            data_struct["sy"] = sample_df["sy"].tolist()
-
-        # Add 3D coordinates if present
-        for coord in ["3d_x", "3d_y", "3d_z"]:
-            if coord in sample_df.columns:
-                data_struct[coord] = sample_df[coord].tolist()
-
-        # Add all annotation columns
-        for anno in annotations:
-            if anno in sample_df.columns:
-                data_struct[anno] = sample_df[anno].tolist()
-
-        # Add all trait columns (round to 1 decimal to reduce file size)
-        for trait in traits:
-            if trait in sample_df.columns:
-                data_struct[trait] = [
-                    round(v, 1) if pd.notna(v) else None for v in sample_df[trait]
-                ]
-
-        # Create safe filename (replace non-alphanumeric chars)
-        safe_name = "".join(c if c.isalnum() else "_" for c in sample_name)
-        var_name = f"GSMAP_SAMPLE_{safe_name}"
-        file_name = f"sample_{safe_name}_spatial.js"
-
-        # Write per-sample JS file
-        js_content = f"window.{var_name} = {json.dumps(data_struct, separators=(',', ':'))};"
-        _atomic_write_text(js_data_dir / file_name, js_content)
-        output_files.append(file_name)
-
-        # Track in sample index
-        sample_index[sample_name] = {
-            "var_name": var_name,
-            "file": file_name,
-            "n_spots": len(sample_df),
-            "n_spots_original": n_spots_original,
-            "point_size": round(point_size, 2),
-        }
-
-        if n_spots_original > len(sample_df):
-            logger.info(
-                f"  Exported {sample_name}: {len(sample_df):,} spots (downsampled from {n_spots_original:,}) -> {file_name}"
-            )
-        else:
-            logger.info(f"  Exported {sample_name}: {len(sample_df):,} spots -> {file_name}")
+    js_data_dir.mkdir(parents=True, exist_ok=True)
+    sample_index, output_files = export_sample_spatial_payloads(
+        metadata=metadata,
+        samples=samples,
+        traits=traits,
+        annotations=annotations,
+        js_data_dir=js_data_dir,
+        max_points=int(meta.get("downsampling_n_spots_2d", 250000)),
+    )
 
     # Export lightweight sample index (loaded upfront)
-    js_content = f"window.GSMAP_SAMPLE_INDEX = {json.dumps(sample_index, separators=(',', ':'))};"
+    js_content = (
+        "window.GSMAP_SAMPLE_INDEX="
+        + json.dumps(sample_index, ensure_ascii=False, separators=(",", ":"))
+        + ";"
+    )
     _atomic_write_text(js_data_dir / "sample_index.js", js_content)
     output_files.append("sample_index.js")
 
     manifest = {
-        "version": 1,
+        "version": SPATIAL_PAYLOAD_VERSION,
         "signature": _sample_spatial_export_signature(data_dir, meta),
         "outputs": sorted(output_files),
     }
@@ -2303,7 +2065,10 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
         json.dumps(manifest, separators=(",", ":"), sort_keys=True),
     )
 
-    logger.info(f"Exported {len(sample_index)} per-sample spatial JS files + sample_index.js")
+    logger.info(
+        f"Exported {len(sample_index)} compact sample bases and "
+        f"{sum(len(info['trait_files']) for info in sample_index.values())} lazy trait payloads"
+    )
 
 
 def _export_cauchy_js(data_dir: Path, js_data_dir: Path):

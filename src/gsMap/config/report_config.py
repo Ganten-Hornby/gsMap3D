@@ -31,11 +31,14 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     downsampling_n_spots_3d: Annotated[
         int,
         typer.Option(
-            help="Number of spots to downsample for 3D visualization if n_spots > this value",
+            help=(
+                "Maximum representative spots rendered in the browser's 3D view. "
+                "Trait-specific high-signal spots omitted by sampling are retained separately."
+            ),
             min=1000,
             max=2000000,
         ),
-    ] = 1000000
+    ] = 50000
 
     downsampling_n_spots_2d: Annotated[
         int,

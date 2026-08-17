@@ -21,6 +21,7 @@ from scipy.spatial import KDTree
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
 
 def remove_outliers_MAD(data, threshold=3.5):
@@ -343,7 +344,7 @@ def _create_color_map(category_list: list, hex=False, rng=42) -> dict[str, tuple
     if hex:
         # Convert RGB tuples to hex format
         color_map = {category: distinctipy.get_hex(color_map[category]) for category in color_map}
-        print("Generated color map in hex format")
+        logger.debug("Generated categorical color map in hex format")
     return color_map
 
 

@@ -19,6 +19,7 @@ from gsMap.report.report_data import (
     _sample_spatial_export_signature,
     _write_text_if_changed,
 )
+from gsMap.report.spatial_payload import SPATIAL_PAYLOAD_VERSION
 
 
 def test_available_cpu_count_prefers_slurm_allocation(monkeypatch):
@@ -163,7 +164,7 @@ def test_text_output_and_per_sample_cache_are_content_and_dependency_aware(tmp_p
 
     meta = {"samples": ["sample 1"]}
     manifest = {
-        "version": 1,
+        "version": SPATIAL_PAYLOAD_VERSION,
         "signature": _sample_spatial_export_signature(data_dir, meta),
         "outputs": [sample_index.name, sample_data.name],
     }

@@ -21,17 +21,19 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
 
     Output structure:
         project_dir/
-        ├── report_data/                    # Data files (CSV, h5ad)
+        ├── report_data/                    # Prepared data and export provenance
         │   ├── spot_metadata.csv
         │   ├── cauchy_results.csv
         │   ├── umap_data.csv
         │   ├── gene_list.csv
+        │   ├── spatial_3d_coordinate_info.json
         │   ├── gss_stats/
         │   │   └── gene_trait_correlation_{trait}.csv
         │   ├── manhattan_data/
         │   │   └── {trait}_manhattan.csv
         │   └── spatial_3d/
-        │       └── spatial_3d.h5ad
+        │       ├── spatial_3d_manifest.json
+        │       └── spatial_3d_display_spots.parquet
         │
         └── gsmap_web_report/               # Web report (self-contained)
             ├── index.html
@@ -41,13 +43,12 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
             │   └── ldsc_{trait}.png
             ├── gene_diagnostic_plots/
             ├── annotation_plots/
-            ├── spatial_3d/
-            │   └── *.html
             ├── js_lib/
             └── js_data/
                 ├── gss_stats/
                 ├── sample_index.js
-                ├── sample_{name}_spatial.js
+                ├── spatial_2d/             # Sample bases + lazy trait arrays
+                ├── spatial_3d/             # Shared geometry + lazy feature arrays
                 └── ... (other JS modules)
     """
     logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")

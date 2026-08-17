@@ -1,0 +1,201 @@
+import json
+from types import SimpleNamespace
+
+import anndata as ad
+import numpy as np
+import pandas as pd
+
+from gsMap.config.latent2gene_config import DatasetType
+from gsMap.report.report_data import _load_coordinates
+from gsMap.report.spatial_payload import (
+    SPATIAL_PAYLOAD_VERSION,
+    _stratified_positions,
+    _top_trait_positions,
+    decode_typed_array,
+    encode_typed_array,
+    export_sample_spatial_payloads,
+    export_spatial_3d_payloads,
+)
+
+
+def _assignment_payload(path):
+    content = path.read_text(encoding="utf-8")
+    assignment = content.split("]=", 1)[1] if "]=" in content else content.split("=", 1)[1]
+    return json.loads(assignment.rstrip(";"))
+
+
+def _metadata(n_rows=20):
+    return pd.DataFrame(
+        {
+            "spot": [f"spot_{index}" for index in range(n_rows)],
+            "sample_name": [
+                "sample_a" if index < n_rows // 2 else "sample_b" for index in range(n_rows)
+            ],
+            "sx": np.arange(n_rows, dtype=np.float32),
+            "sy": np.arange(n_rows, dtype=np.float32) * 2,
+            "3d_x": np.arange(n_rows, dtype=np.float32),
+            "3d_y": np.arange(n_rows, dtype=np.float32) * 2,
+            "3d_z": np.repeat([0.0, 10.0], [n_rows // 2, n_rows - n_rows // 2]),
+            "region": [
+                "rare" if index in (0, n_rows - 1) else "common" for index in range(n_rows)
+            ],
+            "trait": np.arange(n_rows, dtype=np.float32),
+        }
+    )
+
+
+def test_typed_array_payload_round_trip():
+    values = np.array([1.25, np.nan, -3.5], dtype=np.float64)
+    payload = encode_typed_array(values)
+
+    result = decode_typed_array(payload)
+
+    assert payload["dtype"] == "float32"
+    assert result.dtype == np.dtype("<f4")
+    np.testing.assert_allclose(result[[0, 2]], [1.25, -3.5])
+    assert np.isnan(result[1])
+
+
+def test_stratified_sampling_is_exact_and_reproducible():
+    metadata = _metadata(20)
+
+    first = _stratified_positions(metadata, 8, ["region"])
+    second = _stratified_positions(metadata, 8, ["region"])
+
+    assert len(first) == 8
+    np.testing.assert_array_equal(first, second)
+    assert set(metadata.iloc[first]["sample_name"]) == {"sample_a", "sample_b"}
+    assert "rare" in set(metadata.iloc[first]["region"])
+
+
+def test_top_trait_positions_exclude_display_sample():
+    values = np.arange(10, dtype=np.float32)
+    selected = np.zeros(10, dtype=bool)
+    selected[[9, 5]] = True
+
+    result = _top_trait_positions(values, selected, 3)
+
+    assert result.tolist() == [8, 7, 6]
+
+
+def test_spatial_3d_export_uses_shared_geometry_and_lazy_features(tmp_path):
+    metadata = _metadata(20)
+    report_data = tmp_path / "report_data"
+    web_report = tmp_path / "web"
+    report_data.mkdir()
+    metadata.to_csv(report_data / "spot_metadata.csv", index=False)
+
+    viewer = export_spatial_3d_payloads(
+        metadata,
+        traits=["trait"],
+        annotations=["region"],
+        report_data_dir=report_data,
+        web_report_dir=web_report,
+        max_points=8,
+        extreme_points_per_trait=3,
+    )
+
+    assert viewer == {
+        "schema_version": SPATIAL_PAYLOAD_VERSION,
+        "index_file": "js_data/spatial_3d/spatial_3d_index.js",
+        "n_points": 8,
+        "n_points_original": 20,
+        "downsampled": True,
+        "point_size": 4.0,
+        "coordinate_info": None,
+    }
+    base = _assignment_payload(web_report / "js_data/spatial_3d/spatial_3d_base.js")
+    trait = _assignment_payload(web_report / "js_data/spatial_3d/trait_trait.js")
+    assert len(decode_typed_array(base["x"])) == 8
+    assert base["coordinate_ranges"] == [19.0, 38.0, 10.0]
+    assert len(decode_typed_array(trait["values"])) == 8
+    assert trait["n_extra"] == 3
+    provenance = pd.read_parquet(report_data / "spatial_3d/spatial_3d_display_spots.parquet")
+    assert len(provenance) == 8
+
+
+def test_sample_export_splits_base_and_traits(tmp_path):
+    metadata = _metadata(20)
+
+    index, outputs = export_sample_spatial_payloads(
+        metadata,
+        samples=["sample_a", "sample_b"],
+        traits=["trait"],
+        annotations=["region"],
+        js_data_dir=tmp_path,
+        max_points=6,
+    )
+
+    assert index["sample_a"]["n_spots"] == 6
+    assert index["sample_a"]["n_spots_original"] == 10
+    assert index["sample_a"]["base_file"] == "spatial_2d/sample_sample_a_base.js"
+    assert index["sample_a"]["trait_files"]["trait"]["file"].endswith(
+        "sample_sample_a_trait_trait.js"
+    )
+    assert len(outputs) == 4
+    base = _assignment_payload(tmp_path / index["sample_a"]["base_file"])
+    assert len(decode_typed_array(base["sx"])) == 6
+    assert len(base["spot"]) == 6
+
+
+def test_2d_sections_use_explicitly_ordinal_nonphysical_z(tmp_path):
+    path = tmp_path / "sections.h5ad"
+    adata = ad.AnnData(np.ones((4, 1), dtype=np.float32))
+    adata.obs["sample_name"] = ["slice_b", "slice_b", "slice_a", "slice_a"]
+    adata.obsm["spatial"] = np.array([[0.0, 0.0], [1.0, 2.0], [10.0, 10.0], [11.0, 12.0]])
+    adata.write_h5ad(path)
+    config = SimpleNamespace(
+        concatenated_latent_adata_path=path,
+        spatial_key="spatial",
+        dataset_type=DatasetType.SPATIAL_3D,
+        sample_h5ad_dict={"slice_b": path, "slice_a": path},
+        cross_slice_z_scale=9.0,
+    )
+
+    coordinates, is_3d, z_axis = _load_coordinates(config)
+
+    assert is_3d
+    assert z_axis == 2
+    assert coordinates.groupby("sample_name", observed=True)["3d_z"].first().to_dict() == {
+        "slice_a": 1.0,
+        "slice_b": 0.0,
+    }
+    info = coordinates.attrs["spatial_3d_coordinate_info"]
+    assert info["z_source"] == "ordinal_section_order"
+    assert info["z_is_physical"] is False
+    assert info["default_aspect_mode"] == "expanded"
+    assert "not represented" in info["note"]
+
+
+def test_registered_z_is_detected_reordered_and_scaled(tmp_path):
+    path = tmp_path / "volume.h5ad"
+    adata = ad.AnnData(np.ones((4, 1), dtype=np.float32))
+    adata.obs["sample_name"] = ["slice_a", "slice_a", "slice_b", "slice_b"]
+    adata.obsm["spatial"] = np.array(
+        [
+            [0.0, 0.0, 99.0, 0.0],
+            [1.0, 2.0, 99.0, 0.0],
+            [10.0, 10.0, 99.0, 5.0],
+            [11.0, 12.0, 99.0, 5.0],
+        ]
+    )
+    adata.write_h5ad(path)
+    config = SimpleNamespace(
+        concatenated_latent_adata_path=path,
+        spatial_key="spatial",
+        dataset_type=DatasetType.SPATIAL_3D,
+        sample_h5ad_dict={"slice_a": path, "slice_b": path},
+        cross_slice_z_coordinate=3,
+        cross_slice_z_scale=4.0,
+    )
+
+    coordinates, is_3d, z_axis = _load_coordinates(config)
+
+    assert is_3d
+    assert z_axis == 3
+    assert coordinates["3d_z"].tolist() == [0.0, 0.0, 20.0, 20.0]
+    info = coordinates.attrs["spatial_3d_coordinate_info"]
+    assert info["z_source"] == "registered_coordinate"
+    assert info["z_scale"] == 4.0
+    assert info["z_is_physical"] is True
+    assert info["default_aspect_mode"] == "physical"
