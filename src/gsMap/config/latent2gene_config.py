@@ -44,6 +44,17 @@ class HomogeneousSelectionMode(StrEnum):
     HARD_NICHE_FILTER = "hard_niche_filter"
 
 
+def _effective_min_cells_per_type(
+    min_cells_per_type: int | None,
+    homogeneous_neighbors: int,
+) -> int:
+    return (
+        homogeneous_neighbors
+        if min_cells_per_type is None
+        else min(min_cells_per_type, homogeneous_neighbors)
+    )
+
+
 @dataclass
 class LatentToGeneComputeConfig:
     """Compute configuration for latent-to-gene step."""
@@ -445,10 +456,9 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
 
     def _configure_dataset_parameters(self):
         """Configure parameters based on dataset type"""
-        self.min_cells_per_type = (
-            self.homogeneous_neighbors
-            if self.min_cells_per_type is None
-            else min(self.min_cells_per_type, self.homogeneous_neighbors)
+        self.min_cells_per_type = _effective_min_cells_per_type(
+            self.min_cells_per_type,
+            self.homogeneous_neighbors,
         )
 
         if self.dataset_type == DatasetType.SPATIAL_2D:
@@ -600,7 +610,10 @@ def check_latent2gene_done(
             concatenated_adata_path=expected_outputs["concatenated_latent_adata"],
             annotation_key=config.annotation,
             data_layer=config.data_layer,
-            min_cells_per_type=config.min_cells_per_type,
+            min_cells_per_type=_effective_min_cells_per_type(
+                config.min_cells_per_type,
+                config.homogeneous_neighbors,
+            ),
         ):
             return False
 

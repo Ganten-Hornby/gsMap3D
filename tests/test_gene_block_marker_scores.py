@@ -10,6 +10,7 @@ import scipy.sparse as sp
 
 import gsMap.pipeline.quick_mode as quick_mode_module
 from gsMap.config.cauchy_config import check_cauchy_done
+from gsMap.config.latent2gene_config import check_latent2gene_done
 from gsMap.config.spatial_ldsc_config import check_spatial_ldsc_done
 from gsMap.latent2gene.gene_blocks import (
     GENE_BLOCK_FORMAT_VERSION,
@@ -518,13 +519,14 @@ def test_late_quick_mode_restart_rejects_stale_predecessors(monkeypatch):
         quick_mode_module._validate_late_start_prerequisites(config, 4)
 
 
-def test_late_quick_mode_restart_validates_stage_specific_configs(monkeypatch):
+def test_quick_mode_preserves_completion_check_config_api(monkeypatch):
     latent2gene_config = object()
     spatial_ldsc_config = object()
     cauchy_config = object()
     config = SimpleNamespace(
         marker_score_format="gene_block",
         start_step="report",
+        stop_step="report",
         sumstats_config_dict={"Height": "height.sumstats"},
         latent2gene_config=latent2gene_config,
         spatial_ldsc_config=spatial_ldsc_config,
@@ -547,14 +549,64 @@ def test_late_quick_mode_restart_validates_stage_specific_configs(monkeypatch):
         "check_cauchy_done",
         lambda stage_config, _: observed.append(("cauchy", stage_config)) or True,
     )
+    monkeypatch.setattr(
+        quick_mode_module,
+        "check_report_done",
+        lambda report_config, **_: observed.append(("report", report_config)) or True,
+    )
 
-    quick_mode_module._validate_late_start_prerequisites(config, 4)
+    quick_mode_module.run_quick_mode(config)
 
     assert observed == [
-        ("latent2gene", latent2gene_config),
-        ("spatial_ldsc", spatial_ldsc_config),
-        ("cauchy", cauchy_config),
+        ("latent2gene", config),
+        ("spatial_ldsc", config),
+        ("cauchy", config),
+        ("report", config),
     ]
+
+
+def test_latent2gene_completion_check_uses_effective_quick_mode_default(
+    tmp_path, monkeypatch
+):
+    concatenated_adata_path = tmp_path / "concatenated.h5ad"
+    rank_memmap_path = tmp_path / "ranks.dat"
+    mean_frac_path = tmp_path / "mean_frac.parquet"
+    metadata_path = tmp_path / "metadata.yaml"
+    manifest_path = tmp_path / "marker_blocks.json"
+    for path in (
+        concatenated_adata_path,
+        rank_memmap_path,
+        mean_frac_path,
+        manifest_path,
+    ):
+        path.touch()
+    metadata_path.write_text("outputs: {}\n")
+
+    observed = {}
+    monkeypatch.setattr(
+        "gsMap.latent2gene.rank_calculator.rank_outputs_match_inputs",
+        lambda **kwargs: observed.update(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        "gsMap.latent2gene.gene_blocks.gene_block_store_matches_inputs",
+        lambda *args, **kwargs: True,
+    )
+    config = SimpleNamespace(
+        _resolve_h5ad_inputs=lambda: None,
+        concatenated_latent_adata_path=concatenated_adata_path,
+        rank_memmap_path=rank_memmap_path,
+        mean_frac_path=mean_frac_path,
+        latent2gene_metadata_path=metadata_path,
+        marker_score_blocks_manifest_path=manifest_path,
+        sample_h5ad_dict={"sample": tmp_path / "sample.h5ad"},
+        annotation="ManualAnnotation",
+        data_layer="X",
+        min_cells_per_type=None,
+        homogeneous_neighbors=21,
+    )
+
+    assert check_latent2gene_done(config, require_marker_scores=False)
+    assert observed["min_cells_per_type"] == 21
 
 
 def test_downstream_outputs_older_than_gene_blocks_are_not_complete(tmp_path, monkeypatch):

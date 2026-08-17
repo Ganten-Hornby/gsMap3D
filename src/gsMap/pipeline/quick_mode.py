@@ -36,7 +36,7 @@ def _validate_late_start_prerequisites(
 
     gene_block_mode = config.marker_score_format == "gene_block"
     if not check_latent2gene_done(
-        config.latent2gene_config,
+        config,
         require_marker_scores=not gene_block_mode,
     ):
         raise RuntimeError(
@@ -49,7 +49,7 @@ def _validate_late_start_prerequisites(
         stale_traits = [
             trait
             for trait in config.sumstats_config_dict
-            if not check_spatial_ldsc_done(config.spatial_ldsc_config, trait)
+            if not check_spatial_ldsc_done(config, trait)
         ]
         if stale_traits:
             raise RuntimeError(
@@ -62,7 +62,7 @@ def _validate_late_start_prerequisites(
         stale_traits = [
             trait
             for trait in config.sumstats_config_dict
-            if not check_cauchy_done(config.cauchy_config, trait)
+            if not check_cauchy_done(config, trait)
         ]
         if stale_traits:
             raise RuntimeError(
@@ -123,7 +123,7 @@ def run_quick_mode(config: QuickModeConfig):
         gene_block_mode = config.marker_score_format == "gene_block"
 
         if check_latent2gene_done(
-            config.latent2gene_config,
+            config,
             require_marker_scores=not gene_block_mode,
         ):
             logger.info("Latent to gene mapping already done. Skipping...")
@@ -152,7 +152,7 @@ def run_quick_mode(config: QuickModeConfig):
 
         traits_remaining = {}
         for trait_name, sumstats_path in traits_to_process.items():
-            if check_spatial_ldsc_done(config.spatial_ldsc_config, trait_name):
+            if check_spatial_ldsc_done(config, trait_name):
                 logger.info(f"Spatial LDSC result already exists for {trait_name}. Skipping...")
             else:
                 traits_remaining[trait_name] = sumstats_path
@@ -173,8 +173,7 @@ def run_quick_mode(config: QuickModeConfig):
         start_time = time.time()
 
         cauchy_check_list = [
-            check_cauchy_done(config.cauchy_config, trait_name)
-            for trait_name in traits_to_process
+            check_cauchy_done(config, trait_name) for trait_name in traits_to_process
         ]
         if all(cauchy_check_list):
             logger.info("Cauchy combination already done for all traits. Skipping...")
