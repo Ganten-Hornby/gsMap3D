@@ -51,6 +51,7 @@ _SPARSE_RANK_BATCH_SIZE_CHOICES = (250, 500, 1000, 2000)
 _MAX_HISTOGRAM_RANK_VALUE = 65_536
 _RANK_LOG_PERCENT_STEP = 10
 _RANK_LOG_INTERVAL_SECONDS = 60.0
+_GENE_INDEX_REMAP_CHUNK = 8_000_000
 
 
 class _RankProgressReporter:
@@ -351,6 +352,7 @@ class _RankInputRequest:
     slice_id: int
     keep_mask: pd.Series
     data_layer: str
+    expected_var_names: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True)
@@ -368,6 +370,7 @@ class _RankInput:
     matrix_read_seconds: float
     obsm_read_seconds: float
     prepare_seconds: float
+    gene_order_aligned: bool
 
     @property
     def input_seconds(self) -> float:
@@ -394,6 +397,54 @@ def _subset_obsm_rows(
             subset = value[keep].copy()
         filtered[key] = subset
     return filtered
+
+
+def _gene_column_order(
+    current_var_names: list[str] | tuple[str, ...],
+    expected_var_names: tuple[str, ...],
+    *,
+    sample_name: str,
+) -> np.ndarray | None:
+    """Return canonical-to-current columns or fail on a true gene-set mismatch."""
+    if tuple(current_var_names) == expected_var_names:
+        return None
+
+    current_index = pd.Index(current_var_names)
+    expected_index = pd.Index(expected_var_names)
+    if not current_index.is_unique or not expected_index.is_unique:
+        current_duplicates = current_index[current_index.duplicated()].unique().tolist()
+        expected_duplicates = expected_index[expected_index.duplicated()].unique().tolist()
+        raise ValueError(
+            f"Gene names must be unique for {sample_name}: "
+            f"current_duplicates={current_duplicates[:10]}, "
+            f"expected_duplicates={expected_duplicates[:10]}"
+        )
+
+    canonical_to_current = current_index.get_indexer(expected_index)
+    missing = expected_index[canonical_to_current < 0].tolist()
+    extra = current_index.difference(expected_index, sort=False).tolist()
+    if missing or extra or len(current_index) != len(expected_index):
+        raise ValueError(
+            f"Gene set mismatch for {sample_name}: "
+            f"missing={missing[:10]}, extra={extra[:10]}, "
+            f"current={len(current_index)}, expected={len(expected_index)}"
+        )
+    return canonical_to_current
+
+
+def _align_csr_gene_columns(
+    X: csr_matrix, canonical_to_current: np.ndarray
+) -> csr_matrix:
+    """Relabel CSR column indices in bounded chunks without copying expression data."""
+    current_to_canonical = np.empty(X.shape[1], dtype=X.indices.dtype)
+    current_to_canonical[canonical_to_current] = np.arange(
+        X.shape[1], dtype=X.indices.dtype
+    )
+    for start in range(0, X.indices.size, _GENE_INDEX_REMAP_CHUNK):
+        end = min(start + _GENE_INDEX_REMAP_CHUNK, X.indices.size)
+        X.indices[start:end] = current_to_canonical[X.indices[start:end]]
+    X.has_sorted_indices = False
+    return X
 
 
 def _read_rank_input(request: _RankInputRequest) -> _RankInput:
@@ -434,6 +485,15 @@ def _read_rank_input(request: _RankInputRequest) -> _RankInput:
             f"Expression matrix for {request.sample_name} has shape {X.shape}; "
             f"expected ({obs.shape[0]}, {len(var_names)})"
         )
+    canonical_to_current = (
+        _gene_column_order(
+            var_names,
+            request.expected_var_names,
+            sample_name=request.sample_name,
+        )
+        if request.expected_var_names is not None
+        else None
+    )
 
     # Match AnnData.obs_names_make_unique() before filtering so observation
     # identities remain exactly the same when duplicate rows are removed.
@@ -454,6 +514,10 @@ def _read_rank_input(request: _RankInputRequest) -> _RankInput:
         X = X.tocsr()
         if X.dtype != np.float32:
             X = X.astype(np.float32)
+    gene_order_aligned = canonical_to_current is not None
+    if canonical_to_current is not None:
+        X = _align_csr_gene_columns(X, canonical_to_current)
+        var_names = list(request.expected_var_names)
     X.sum_duplicates()
     X.eliminate_zeros()
     X.sort_indices()
@@ -473,6 +537,7 @@ def _read_rank_input(request: _RankInputRequest) -> _RankInput:
         matrix_read_seconds=matrix_read_seconds,
         obsm_read_seconds=obsm_read_seconds,
         prepare_seconds=prepare_seconds,
+        gene_order_aligned=gene_order_aligned,
     )
 
 
@@ -774,11 +839,27 @@ class RankCalculator:
         total_cells_expected = 0
         filtering_stats = []
         sample_keep_indices = {}  # Store cell indices to keep for each sample
+        expected_var_names: tuple[str, ...] | None = None
+        reordered_gene_samples = []
 
         for sample_name, h5ad_path in sample_h5ad_dict.items():
             # Apply same filtering logic as in main loop
             with h5py.File(h5ad_path, "r") as f:
                 adata_temp_obs = read_elem(f["obs"])
+                current_var_names = tuple(
+                    read_elem(f["var"]).index.astype(str).tolist()
+                )
+                if expected_var_names is None:
+                    expected_var_names = current_var_names
+                elif (
+                    _gene_column_order(
+                        current_var_names,
+                        expected_var_names,
+                        sample_name=sample_name,
+                    )
+                    is not None
+                ):
+                    reordered_gene_samples.append(sample_name)
 
                 # Efficiently read gene counts per cell without loading full expression matrix
                 # For CSR format, we only need indptr to calculate non-zero counts
@@ -830,6 +911,15 @@ class RankCalculator:
                 total_cells_expected += stats["final_cells"]
 
                 filtering_stats.append({"Sample": sample_name, **stats})
+
+        if expected_var_names is None:
+            raise ValueError("At least one sample is required for rank calculation")
+        if reordered_gene_samples:
+            logger.warning(
+                "Detected identical genes in a different column order for "
+                f"{len(reordered_gene_samples)} samples; columns will be aligned to "
+                f"the first section: {reordered_gene_samples}"
+            )
 
         # Display filtering summary table
         table = Table(
@@ -894,6 +984,7 @@ class RankCalculator:
                 slice_id=st_id,
                 keep_mask=sample_keep_indices[sample_name],
                 data_layer=data_layer,
+                expected_var_names=expected_var_names,
             )
             for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items())
         ]
@@ -936,19 +1027,19 @@ class RankCalculator:
                         f"matrix={rank_input.matrix_read_seconds:.2f}s, "
                         f"obsm={rank_input.obsm_read_seconds:.2f}s, "
                         f"prepare={rank_input.prepare_seconds:.2f}s, "
+                        "gene_order="
+                        f"{'aligned' if rank_input.gene_order_aligned else 'canonical'}, "
                         f"exposed_wait={prefetch_wait_seconds:.2f}s"
                     )
-                    if self.show_rich_progress:
-                        section_progress.console.log(input_message)
-                    else:
-                        logger.info(input_message)
+                    logger.info(input_message)
 
                     # Get gene list (should be consistent across sections)
                     if gene_list is None:
                         gene_list = rank_input.var_names
-                    else:
-                        assert rank_input.var_names == gene_list, (
-                            f"Gene list mismatch in section {st_id}"
+                    elif rank_input.var_names != gene_list:
+                        raise RuntimeError(
+                            f"Internal gene alignment failure in section {st_id} "
+                            f"({sample_name})"
                         )
 
                     if rank_memmap is None:

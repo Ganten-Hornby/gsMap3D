@@ -97,6 +97,7 @@ def test_selective_reader_matches_full_anndata_semantics(tmp_path, monkeypatch):
     )
 
     assert result.matrix_source == "layers/counts"
+    assert result.gene_order_aligned is False
     assert "/layers/counts" in read_paths
     assert "/X" not in read_paths
     assert "/raw" not in read_paths
@@ -138,6 +139,44 @@ def test_selective_reader_rejects_wrong_mask_length(tmp_path):
                 slice_id=0,
                 keep_mask=pd.Series([True, False]),
                 data_layer="counts",
+            )
+        )
+
+
+def test_selective_reader_aligns_identical_genes_in_a_different_order(tmp_path):
+    path = tmp_path / "rank_input.h5ad"
+    _write_rank_fixture(path)
+    expected_var_names = ("g3", "g1", "g2")
+    result = _read_rank_input(
+        _RankInputRequest(
+            sample_name="sample-reordered",
+            h5ad_path=path,
+            slice_id=0,
+            keep_mask=pd.Series(np.ones(4, dtype=bool)),
+            data_layer="counts",
+            expected_var_names=expected_var_names,
+        )
+    )
+
+    original_counts = ad.read_h5ad(path).layers["counts"].toarray()
+    assert result.gene_order_aligned is True
+    assert result.var_names == list(expected_var_names)
+    np.testing.assert_array_equal(result.X.toarray(), original_counts[:, [2, 0, 1]])
+
+
+def test_selective_reader_rejects_true_gene_set_mismatch(tmp_path):
+    path = tmp_path / "rank_input.h5ad"
+    _write_rank_fixture(path)
+
+    with pytest.raises(ValueError, match="Gene set mismatch.*missing=.*g4"):
+        _read_rank_input(
+            _RankInputRequest(
+                sample_name="sample-mismatch",
+                h5ad_path=path,
+                slice_id=0,
+                keep_mask=pd.Series(np.ones(4, dtype=bool)),
+                data_layer="counts",
+                expected_var_names=("g1", "g2", "g4"),
             )
         )
 
@@ -207,15 +246,20 @@ def test_rank_calculator_runs_end_to_end_with_prefetched_inputs(tmp_path):
         counts = np.zeros((3, len(genes)), dtype=np.float32)
         counts[:, :20] = (np.arange(60, dtype=np.float32).reshape(3, 20) + sample_index) % 7 + 1
         expected_counts.append(counts)
+        file_order = (
+            np.arange(len(genes)) if sample_index == 0 else np.roll(np.arange(len(genes)), 7)
+        )
+        file_counts = counts[:, file_order]
+        file_genes = [genes[index] for index in file_order]
         adata = ad.AnnData(
-            X=csr_matrix(counts),
+            X=csr_matrix(file_counts),
             obs=pd.DataFrame(
                 {"celltype": pd.Categorical(["type", "type", "type"])},
                 index=[f"cell-{row}" for row in range(3)],
             ),
-            var=pd.DataFrame(index=genes),
+            var=pd.DataFrame(index=file_genes),
         )
-        adata.layers["counts"] = csr_matrix(counts)
+        adata.layers["counts"] = csr_matrix(file_counts)
         adata.obsm["emb_cell"] = np.full((3, 2), sample_index + 1, dtype=np.float32)
         sample_path = tmp_path / f"{sample_name}.h5ad"
         adata.write_h5ad(sample_path)
