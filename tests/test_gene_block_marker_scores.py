@@ -494,10 +494,16 @@ def test_gene_block_size_cannot_create_a_giant_single_mmap(tmp_path):
 
 
 def test_late_quick_mode_restart_rejects_stale_predecessors(monkeypatch):
+    latent2gene_config = object()
+    spatial_ldsc_config = object()
+    cauchy_config = object()
     config = SimpleNamespace(
         marker_score_format="gene_block",
         start_step="cauchy",
         sumstats_config_dict={"Height": "height.sumstats"},
+        latent2gene_config=latent2gene_config,
+        spatial_ldsc_config=spatial_ldsc_config,
+        cauchy_config=cauchy_config,
     )
     monkeypatch.setattr(quick_mode_module, "check_latent2gene_done", lambda *a, **k: True)
     monkeypatch.setattr(quick_mode_module, "check_spatial_ldsc_done", lambda *a, **k: False)
@@ -510,6 +516,45 @@ def test_late_quick_mode_restart_rejects_stale_predecessors(monkeypatch):
     monkeypatch.setattr(quick_mode_module, "check_cauchy_done", lambda *a, **k: False)
     with pytest.raises(RuntimeError, match="Restart from cauchy"):
         quick_mode_module._validate_late_start_prerequisites(config, 4)
+
+
+def test_late_quick_mode_restart_validates_stage_specific_configs(monkeypatch):
+    latent2gene_config = object()
+    spatial_ldsc_config = object()
+    cauchy_config = object()
+    config = SimpleNamespace(
+        marker_score_format="gene_block",
+        start_step="report",
+        sumstats_config_dict={"Height": "height.sumstats"},
+        latent2gene_config=latent2gene_config,
+        spatial_ldsc_config=spatial_ldsc_config,
+        cauchy_config=cauchy_config,
+    )
+    observed = []
+
+    monkeypatch.setattr(
+        quick_mode_module,
+        "check_latent2gene_done",
+        lambda stage_config, **_: observed.append(("latent2gene", stage_config)) or True,
+    )
+    monkeypatch.setattr(
+        quick_mode_module,
+        "check_spatial_ldsc_done",
+        lambda stage_config, _: observed.append(("spatial_ldsc", stage_config)) or True,
+    )
+    monkeypatch.setattr(
+        quick_mode_module,
+        "check_cauchy_done",
+        lambda stage_config, _: observed.append(("cauchy", stage_config)) or True,
+    )
+
+    quick_mode_module._validate_late_start_prerequisites(config, 4)
+
+    assert observed == [
+        ("latent2gene", latent2gene_config),
+        ("spatial_ldsc", spatial_ldsc_config),
+        ("cauchy", cauchy_config),
+    ]
 
 
 def test_downstream_outputs_older_than_gene_blocks_are_not_complete(tmp_path, monkeypatch):
