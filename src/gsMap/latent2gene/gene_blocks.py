@@ -412,6 +412,41 @@ class GeneBlockMarkerStore:
             del marker, memmap
             yield weight_columns, marker_copy
 
+    def read_subset(
+        self,
+        spot_indices: np.ndarray,
+        gene_indices: np.ndarray,
+    ) -> np.ndarray:
+        """Read an arbitrary spot-by-gene subset without materializing the full store."""
+
+        spot_indices = np.asarray(spot_indices, dtype=np.int64)
+        gene_indices = np.asarray(gene_indices, dtype=np.int64)
+        if spot_indices.ndim != 1 or gene_indices.ndim != 1:
+            raise ValueError("spot_indices and gene_indices must be one-dimensional")
+        if len(spot_indices) and (
+            spot_indices.min() < 0 or spot_indices.max() >= self.shape[0]
+        ):
+            raise IndexError("Requested spot subset is outside the marker store")
+        if len(gene_indices) and (
+            gene_indices.min() < 0 or gene_indices.max() >= self.shape[1]
+        ):
+            raise IndexError("Requested gene subset is outside the marker store")
+
+        result = np.empty((len(spot_indices), len(gene_indices)), dtype=np.float32)
+        for block in self.blocks:
+            in_block = (gene_indices >= block["start"]) & (gene_indices < block["end"])
+            output_columns = np.flatnonzero(in_block)
+            if not len(output_columns):
+                continue
+            local_columns = gene_indices[in_block] - block["start"]
+            memmap = self._open_block(block)
+            result[:, output_columns] = np.asarray(
+                memmap[np.ix_(spot_indices, local_columns)],
+                dtype=np.float32,
+            )
+            del memmap
+        return result
+
     def close(self) -> None:
         """Compatibility no-op: each block mapping is released after it is copied."""
 

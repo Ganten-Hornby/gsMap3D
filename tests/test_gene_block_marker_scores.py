@@ -25,11 +25,16 @@ from gsMap.latent2gene.marker_scores import (
     compute_marker_scores_3d_hierarchical_pool_jax,
     compute_marker_scores_jax,
 )
+from gsMap.latent2gene.provenance import artifact_signature, atomic_json_dump
 from gsMap.latent2gene.rank_calculator import (
     rank_outputs_match_inputs,
     write_rank_provenance,
 )
-from gsMap.latent2gene.provenance import artifact_signature, atomic_json_dump
+from gsMap.report.report_data import (
+    ReportDataManager,
+    _GeneBlockReportSource,
+    _load_gss_and_calculate_stats_base,
+)
 from gsMap.spatial_ldsc.result_writer import (
     RESULT_METADATA_FORMAT_VERSION,
     ResultWriter,
@@ -199,6 +204,135 @@ def test_gene_block_store_reads_only_common_columns_for_spot_chunk(tmp_path):
 
     np.testing.assert_allclose(actual, expected)
     store.close()
+
+
+def test_gene_block_store_reads_arbitrary_spot_and_gene_subset(tmp_path):
+    marker_scores = np.arange(42, dtype=np.float16).reshape(6, 7)
+    blocks = []
+    for start, end in ((0, 3), (3, 5), (5, 7)):
+        path = tmp_path / f"block_{start}_{end}.dat"
+        block = np.memmap(path, mode="w+", dtype=np.float16, shape=(6, end - start))
+        block[:] = marker_scores[:, start:end]
+        block.flush()
+        del block
+        blocks.append({"start": start, "end": end, "path": path.name, "complete": True})
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "format_version": GENE_BLOCK_FORMAT_VERSION,
+                "shape": [6, 7],
+                "dtype": "float16",
+                "gene_block_size": 3,
+                "complete": True,
+                "gene_names_sha256": gene_names_sha256(
+                    [f"gene-{index}" for index in range(7)]
+                ),
+                "source_fingerprint": "0" * 64,
+                "blocks": blocks,
+            }
+        )
+    )
+
+    store = GeneBlockMarkerStore(manifest_path)
+    spot_indices = np.asarray([5, 1, 3])
+    gene_indices = np.asarray([6, 0, 4, 2])
+
+    actual = store.read_subset(spot_indices, gene_indices)
+    expected = marker_scores[np.ix_(spot_indices, gene_indices)].astype(np.float32)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_report_reads_gene_block_marker_scores_without_full_memmap(tmp_path):
+    obs_names = pd.Index(["spot-a", "spot-b", "spot-c", "spot-d"])
+    gene_names = pd.Index(["gene-a", "gene-b", "gene-c"])
+    marker_scores = np.asarray(
+        [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], dtype=np.float16
+    )
+    block_dir = tmp_path / "marker_score_blocks"
+    block_dir.mkdir()
+    blocks = []
+    for start, end in ((0, 2), (2, 3)):
+        path = block_dir / f"block_{start}_{end}.dat"
+        block = np.memmap(path, mode="w+", dtype=np.float16, shape=(4, end - start))
+        block[:] = marker_scores[:, start:end]
+        block.flush()
+        del block
+        blocks.append({"start": start, "end": end, "path": path.name, "complete": True})
+    manifest_path = block_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "format_version": GENE_BLOCK_FORMAT_VERSION,
+                "shape": [4, 3],
+                "dtype": "float16",
+                "gene_block_size": 2,
+                "complete": True,
+                "gene_names_sha256": gene_names_sha256(gene_names),
+                "source_fingerprint": "0" * 64,
+                "blocks": blocks,
+            }
+        )
+    )
+    latent_path = tmp_path / "concatenated_latent_adata.h5ad"
+    ad.AnnData(
+        X=np.zeros((4, 3), dtype=np.float32),
+        obs=pd.DataFrame(
+            {"sample_name": ["s1", "s1", "s2", "s2"], "region": ["x", "x", "y", "y"]},
+            index=obs_names,
+        ),
+        var=pd.DataFrame(index=gene_names),
+    ).write_h5ad(latent_path)
+    mean_frac_path = tmp_path / "mean_frac.parquet"
+    pd.DataFrame({"frac": [0.5, 0.5, 0.5]}, index=gene_names).to_parquet(mean_frac_path)
+    ldsc_results = pd.DataFrame(
+        {"sample_name": ["s1", "s1", "s2", "s2"], "trait": [1.0, 2.0, 3.0, 4.0]},
+        index=obs_names,
+    )
+    config = SimpleNamespace(
+        marker_score_format="gene_block",
+        marker_score_blocks_manifest_path=manifest_path,
+        concatenated_latent_adata_path=latent_path,
+        downsampling_n_spots_pcc=None,
+        mean_frac_path=mean_frac_path,
+        annotation_list=["region"],
+        report_data_dir=tmp_path / "report_data",
+        web_report_dir=tmp_path / "gsmap_web_report",
+        sample_h5ad_dict={},
+        force_report_re_run=False,
+    )
+    config.get_gene_diagnostic_info_save_path = (
+        lambda trait: config.report_data_dir
+        / "gss_stats"
+        / f"gene_trait_correlation_{trait}.csv"
+    )
+
+    common_spots, source, gene_stats, analysis_spots = _load_gss_and_calculate_stats_base(
+        config,
+        ldsc_results,
+        pd.DataFrame(index=obs_names),
+        tmp_path,
+    )
+
+    assert isinstance(source, _GeneBlockReportSource)
+    np.testing.assert_array_equal(common_spots, obs_names.sort_values())
+    np.testing.assert_array_equal(analysis_spots, obs_names.sort_values())
+    np.testing.assert_array_equal(
+        source.read_subset(["spot-d", "spot-b"], ["gene-c", "gene-a"]),
+        marker_scores[np.ix_([3, 1], [2, 0])].astype(np.float32),
+    )
+    assert set(gene_stats["gene"]) == set(gene_names)
+    source.close()
+
+    manager = ReportDataManager(config)
+    manager.ldsc_results = ldsc_results
+    manager.traits = ["trait"]
+    manager.coords = pd.DataFrame(index=obs_names)
+    manager.prepare_gss_stats()
+    assert config.get_gene_diagnostic_info_save_path("trait").is_file()
+    manager.close()
 
 
 def test_gene_block_store_rejects_incomplete_or_noncontiguous_blocks(tmp_path):

@@ -612,7 +612,7 @@
                                 x-text="selectedAnnotationCategory"></span>
                         </div>
                         <div class="text-sm text-gray-500">
-                            <span x-text="umapData ? umapData.spot.length : 0"></span> spots
+                            <span x-text="umapData ? (umapData.n_points || umapData.spot.length) : 0"></span> spots
                         </div>
                     </div>
 
@@ -628,14 +628,22 @@
                                     <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
                                         -log10(p) - <span x-text="selectedTrait"></span>
                                     </h4>
-                                    <div id="umapCellPlotTrait" class="w-full" style="height: 400px;"></div>
+                                    <img x-show="umapData?.render_mode === 'scanpy_static'"
+                                        :src="umapData?.static_panels?.cell?.trait?.[selectedTrait]"
+                                        class="w-full h-auto" loading="lazy" alt="Cell embedding UMAP colored by trait">
+                                    <div x-show="umapData?.render_mode !== 'scanpy_static'" id="umapCellPlotTrait"
+                                        class="w-full" style="height: 400px;"></div>
                                 </div>
                                 <!-- Right: Annotation -->
                                 <div class="flex-1 min-w-[400px]">
                                     <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
                                         Annotation - <span x-text="selectedAnnotationCategory"></span>
                                     </h4>
-                                    <div id="umapCellPlotAnnotation" class="w-full" style="height: 400px;"></div>
+                                    <img x-show="umapData?.render_mode === 'scanpy_static'"
+                                        :src="umapData?.static_panels?.cell?.annotation?.[selectedAnnotationCategory]"
+                                        class="w-full h-auto" loading="lazy" alt="Cell embedding UMAP colored by annotation">
+                                    <div x-show="umapData?.render_mode !== 'scanpy_static'"
+                                        id="umapCellPlotAnnotation" class="w-full" style="height: 400px;"></div>
                                 </div>
                             </div>
                         </div>
@@ -650,14 +658,22 @@
                                     <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
                                         -log10(p) - <span x-text="selectedTrait"></span>
                                     </h4>
-                                    <div id="umapNichePlotTrait" class="w-full" style="height: 400px;"></div>
+                                    <img x-show="umapData?.render_mode === 'scanpy_static'"
+                                        :src="umapData?.static_panels?.niche?.trait?.[selectedTrait]"
+                                        class="w-full h-auto" loading="lazy" alt="Niche embedding UMAP colored by trait">
+                                    <div x-show="umapData?.render_mode !== 'scanpy_static'" id="umapNichePlotTrait"
+                                        class="w-full" style="height: 400px;"></div>
                                 </div>
                                 <!-- Right: Annotation -->
                                 <div class="flex-1 min-w-[400px]">
                                     <h4 class="text-center font-medium text-gray-600 mb-2 text-sm">
                                         Annotation - <span x-text="selectedAnnotationCategory"></span>
                                     </h4>
-                                    <div id="umapNichePlotAnnotation" class="w-full" style="height: 400px;"></div>
+                                    <img x-show="umapData?.render_mode === 'scanpy_static'"
+                                        :src="umapData?.static_panels?.niche?.annotation?.[selectedAnnotationCategory]"
+                                        class="w-full h-auto" loading="lazy" alt="Niche embedding UMAP colored by annotation">
+                                    <div x-show="umapData?.render_mode !== 'scanpy_static'"
+                                        id="umapNichePlotAnnotation" class="w-full" style="height: 400px;"></div>
                                 </div>
                             </div>
                         </div>
@@ -1216,7 +1232,7 @@
                         if (this.umapAnnotationColumns.length > 0) {
                             this.selectedUmapAnnotation = this.umapAnnotationColumns[0];
                         }
-                        console.log("Loaded UMAP data:", this.umapData.spot.length, "points, has_niche:", this.umapHasNiche);
+                        console.log("Loaded UMAP data:", this.umapData.n_points || this.umapData.spot.length, "points, has_niche:", this.umapHasNiche);
                     }
 
                     // Load 3D visualization state
@@ -1878,6 +1894,7 @@
                 // UMAP Plots - render both trait and annotation views
                 renderUmapPlots() {
                     if (!this.umapData || !this.plotlyReady) return;
+                    if (this.umapData.render_mode === 'scanpy_static') return;
                     this.renderUmapPlotTrait();
                     this.renderUmapPlotAnnotation();
                 },
@@ -1885,6 +1902,7 @@
                 // Render only trait-colored UMAP plots (called on trait change)
                 renderUmapPlotTrait() {
                     if (!this.umapData || !this.plotlyReady) return;
+                    if (this.umapData.render_mode === 'scanpy_static') return;
 
                     const trait = this.selectedTrait;
                     const traitColorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
@@ -1950,6 +1968,7 @@
                 // Render only annotation-colored UMAP plots (called on annotation change)
                 renderUmapPlotAnnotation() {
                     if (!this.umapData || !this.plotlyReady) return;
+                    if (this.umapData.render_mode === 'scanpy_static') return;
 
                     const anno = this.selectedAnnotationCategory;
                     if (!anno || !this.umapData[anno]) return;

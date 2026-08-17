@@ -29,22 +29,22 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     ] = 20000
 
     downsampling_n_spots_3d: Annotated[
-        int,
+        int | None,
         typer.Option(
-            help="Number of spots to downsample for 3D visualization if n_spots > this value",
+            help="Optional maximum spots for 3D visualization; omit to retain all spots",
             min=1000,
-            max=2000000,
+            max=10000000,
         ),
-    ] = 1000000
+    ] = None
 
     downsampling_n_spots_2d: Annotated[
-        int,
+        int | None,
         typer.Option(
-            help="Max spots per sample for 2D distribution plots. Samples with more spots will be randomly downsampled.",
+            help="Optional maximum spots per sample for 2D plots; omit to retain all spots",
             min=10000,
-            max=500000,
+            max=10000000,
         ),
-    ] = 250000
+    ] = None
 
     top_corr_genes: Annotated[
         int, typer.Option(help="Number of top correlated genes to display", min=1, max=500)
@@ -52,15 +52,22 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
 
     # Advanced visualization parameters
     single_sample_multi_trait_max_cols: int = 5
-    subsample_n_points: int | None = None
+    subsample_n_points: Annotated[
+        int | None,
+        typer.Option(
+            help="Optional maximum spots for UMAP and static plots; omit to retain all spots",
+            min=1000,
+            max=10000000,
+        ),
+    ] = None
     single_sample_multi_trait_subplot_width_inches: float = 4.0
-    single_sample_multi_trait_dpi: int = 300
+    single_sample_multi_trait_dpi: int = 320
     enable_pdf_output: bool = True
     hover_text_list: list | None = None
     single_trait_multi_sample_max_cols: int = 8
     single_trait_multi_sample_subplot_width_inches: float = 4.0
     single_trait_multi_sample_scaling_factor: float = 1.0
-    single_trait_multi_sample_dpi: int = 300
+    single_trait_multi_sample_dpi: int = 320
     share_coords: bool = False
 
     # Weather to generate single-feature multi-sample plots (LDSC, annotation, and gene diagnostic plots)

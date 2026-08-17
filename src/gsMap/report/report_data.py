@@ -12,6 +12,7 @@ import logging
 import shutil
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from importlib.metadata import version as package_version
 from pathlib import Path
 
 import anndata as ad
@@ -24,6 +25,7 @@ import scipy.sparse as sp
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import setup_data_layer
+from gsMap.latent2gene.gene_blocks import GeneBlockMarkerStore
 from gsMap.report.diagnosis import filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
 from gsMap.report.visualize import (
@@ -32,6 +34,36 @@ from gsMap.report.visualize import (
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 
 logger = logging.getLogger(__name__)
+
+
+class _GeneBlockReportSource:
+    """Expose gene-block marker scores to report code through bounded subset reads."""
+
+    def __init__(self, report_config: QuickModeConfig):
+        self.store = GeneBlockMarkerStore(report_config.marker_score_blocks_manifest_path)
+        metadata = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
+        try:
+            self.obs_names = metadata.obs_names.copy()
+            self.var_names = metadata.var_names.copy()
+        finally:
+            metadata.file.close()
+        if self.store.shape != (len(self.obs_names), len(self.var_names)):
+            raise ValueError(
+                "Gene-block marker-score shape does not match concatenated latent metadata"
+            )
+        self.store.validate_gene_names(self.var_names)
+
+    def read_subset(self, spot_names, gene_names) -> np.ndarray:
+        spot_indices = self.obs_names.get_indexer(spot_names)
+        gene_indices = self.var_names.get_indexer(gene_names)
+        if np.any(spot_indices < 0):
+            raise KeyError("Report requested spots absent from the gene-block marker store")
+        if np.any(gene_indices < 0):
+            raise KeyError("Report requested genes absent from the gene-block marker store")
+        return self.store.read_subset(spot_indices, gene_indices)
+
+    def close(self) -> None:
+        self.store.close()
 
 
 class ReportDataManager:
@@ -73,7 +105,9 @@ class ReportDataManager:
         """Release resources and close file handles."""
         if self.gss_adata is not None:
             logger.info("Closing GSS AnnData and memory maps...")
-            if "memmap_manager" in self.gss_adata.uns:
+            if isinstance(self.gss_adata, _GeneBlockReportSource):
+                self.gss_adata.close()
+            elif "memmap_manager" in self.gss_adata.uns:
                 self.gss_adata.uns["memmap_manager"].close()
             self.gss_adata = None
             gc.collect()
@@ -171,15 +205,19 @@ class ReportDataManager:
         high_expr_genes = exp_frac[exp_frac["frac"] > 0.01].index.tolist()
 
         # Use analysis_spots (subsampled) for PCC calculation
-        gss_adata_sub = self.gss_adata[self.analysis_spots, high_expr_genes]
-        gss_matrix = gss_adata_sub.X
-        if hasattr(gss_matrix, "toarray"):
-            gss_matrix = gss_matrix.toarray()
+        if isinstance(self.gss_adata, _GeneBlockReportSource):
+            gss_matrix = self.gss_adata.read_subset(self.analysis_spots, high_expr_genes)
+            gene_names = high_expr_genes
+        else:
+            gss_adata_sub = self.gss_adata[self.analysis_spots, high_expr_genes]
+            gss_matrix = gss_adata_sub.X
+            if hasattr(gss_matrix, "toarray"):
+                gss_matrix = gss_matrix.toarray()
+            gene_names = gss_adata_sub.var_names.tolist()
 
         gss_mean = gss_matrix.mean(axis=0).astype(np.float32)
         gss_centered = (gss_matrix - gss_mean).astype(np.float32)
         gss_ssq = np.sum(gss_centered**2, axis=0)
-        gene_names = gss_adata_sub.var_names.tolist()
 
         # Calculate PCC for each missing trait
         all_pcc = []
@@ -408,12 +446,16 @@ class ReportDataManager:
         """Prepare UMAP data from embeddings."""
         umap_file = self.report_data_dir / "umap_data.csv"
         umap_js = self.js_data_dir / "umap_data.js"
-        if self._is_step_complete([umap_file, umap_js]):
+        umap_audit = self.web_report_dir / "umap_scanpy" / "umap_audit.json"
+        if self._is_step_complete([umap_file, umap_js, umap_audit]):
             logger.info("UMAP data already exists. Skipping.")
             return
 
         self.umap_info = _prepare_umap_data(
-            self.report_config, self.metadata, self.report_data_dir
+            self.report_config,
+            self.metadata,
+            self.report_data_dir,
+            self.web_report_dir,
         )
         _export_umap_js(self.report_data_dir, self.js_data_dir, {"umap_info": self.umap_info})
 
@@ -478,7 +520,7 @@ def _render_single_sample_gene_plot_task(task_data: dict):
         values = task_data["values"]
         output_path = Path(task_data["output_path"])
         fig_width = task_data.get("fig_width", 6.0)
-        dpi = task_data.get("dpi", 150)
+        dpi = task_data.get("dpi", 320)
 
         if coords is None or values is None or len(coords) == 0:
             return f"No data for {gene} in {sample_name}"
@@ -669,14 +711,82 @@ def _calculate_umap_from_embeddings(
         return adata.obsm[umap_key]
 
     logger.info(f"Calculating UMAP for {embedding_key} with {adata.n_obs} spots using scanpy...")
-    sc.pp.neighbors(adata, use_rep=embedding_key)
-    sc.tl.umap(adata)
+    sc.pp.neighbors(adata, use_rep=embedding_key, n_neighbors=15, random_state=0)
+    sc.tl.umap(adata, min_dist=0.5, spread=1.0, random_state=0)
 
     return adata.obsm["X_umap"]
 
 
+def _render_scanpy_umap_panels(
+    adata: ad.AnnData,
+    coordinates: dict[str, np.ndarray],
+    traits: list[str],
+    annotations: list[str],
+    output_dir: Path,
+) -> tuple[dict, dict]:
+    """Render every UMAP panel with Scanpy and audit the stored PNGs."""
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    panel_paths: dict[str, dict[str, dict[str, str]]] = {}
+    image_audit = {}
+
+    for embedding_name, embedding_coordinates in coordinates.items():
+        adata.obsm["X_umap"] = embedding_coordinates
+        embedding_panels = {"trait": {}, "annotation": {}}
+
+        for panel_kind, columns in (("trait", traits), ("annotation", annotations)):
+            for column in columns:
+                if column not in adata.obs.columns:
+                    continue
+                safe_column = "".join(c if c.isalnum() else "_" for c in column)
+                filename = f"umap_{embedding_name}_{panel_kind}_{safe_column}.png"
+                output_path = output_dir / filename
+                fig = sc.pl.umap(
+                    adata,
+                    color=column,
+                    show=False,
+                    return_fig=True,
+                    frameon=False,
+                    title=f"{embedding_name.title()} embedding — {column}",
+                )
+                fig.savefig(output_path, dpi=320, bbox_inches="tight")
+                plt.close(fig)
+
+                with Image.open(output_path) as image:
+                    stored_dpi = image.info.get("dpi", (0.0, 0.0))
+                    image_audit[filename] = {
+                        "observations": adata.n_obs,
+                        "pixel_width": image.width,
+                        "pixel_height": image.height,
+                        "stored_dpi_x": float(stored_dpi[0]),
+                        "stored_dpi_y": float(stored_dpi[1]),
+                    }
+                embedding_panels[panel_kind][column] = f"umap_scanpy/{filename}"
+
+        panel_paths[embedding_name] = embedding_panels
+
+    audit = {
+        "scanpy_version": package_version("scanpy"),
+        "observations": adata.n_obs,
+        "render_dpi": 320,
+        "coordinate_settings": {
+            "neighbors": {"n_neighbors": 15, "random_state": 0},
+            "umap": {"min_dist": 0.5, "spread": 1.0, "random_state": 0},
+        },
+        "images": image_audit,
+    }
+    with open(output_dir / "umap_audit.json", "w", encoding="utf-8") as f:
+        json.dump(audit, f, indent=2)
+    return panel_paths, audit
+
+
 def _prepare_umap_data(
-    report_config: QuickModeConfig, metadata: pd.DataFrame, report_dir: Path
+    report_config: QuickModeConfig,
+    metadata: pd.DataFrame,
+    report_dir: Path,
+    web_report_dir: Path,
 ) -> dict | None:
     """
     Prepare UMAP data from cell and niche embeddings.
@@ -704,12 +814,12 @@ def _prepare_umap_data(
 
     has_niche = niche_emb_key is not None and niche_emb_key in adata.obsm
 
-    # Stratified subsampling
-    n_subsample = getattr(report_config, "downsampling_n_spots", 20000)
+    # Retain all spots unless the caller explicitly requests a limit.
+    n_subsample = report_config.subsample_n_points
     spot_names = adata.obs_names.values
     sample_names = adata.obs["sample_name"]
 
-    if len(spot_names) > n_subsample:
+    if n_subsample is not None and len(spot_names) > n_subsample:
         logger.info(f"Stratified subsampling from {len(spot_names)} to {n_subsample} spots...")
         selected_spots = _stratified_subsample(spot_names, sample_names, n_subsample)
         adata_sub = adata[selected_spots].copy()
@@ -720,6 +830,7 @@ def _prepare_umap_data(
     logger.info(f"Using {len(selected_spots)} spots for UMAP calculation")
 
     # Calculate UMAPs
+    cell_precomputed = "X_umap" in adata_sub.obsm
     umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key, umap_key="X_umap")
 
     # Estimate point size for UMAP cell
@@ -728,10 +839,14 @@ def _prepare_umap_data(
     umap_niche = None
     point_size_niche = None
     if has_niche:
+        niche_precomputed = "X_umap_niche" in adata_sub.obsm
         umap_niche = _calculate_umap_from_embeddings(
             adata_sub, niche_emb_key, umap_key="X_umap_niche"
         )
+        adata_sub.obsm["X_umap_niche"] = np.asarray(umap_niche).copy()
         _, point_size_niche = estimate_plotly_point_size(umap_niche, DEFAULT_PIXEL_WIDTH=600)
+    else:
+        niche_precomputed = False
 
     # Prepare metadata for the subsampled spots
     umap_metadata = pd.DataFrame(
@@ -771,6 +886,22 @@ def _prepare_umap_data(
                 )
             logger.info(f"Added trait {trait} to UMAP data with 1 decimal precision")
 
+    umap_metadata_indexed = umap_metadata.set_index("spot")
+    for column in [*available_traits, *report_config.annotation_list]:
+        if column in umap_metadata_indexed.columns:
+            adata_sub.obs[column] = umap_metadata_indexed.reindex(adata_sub.obs_names)[column].values
+
+    coordinate_sets = {"cell": np.asarray(umap_cell)}
+    if umap_niche is not None:
+        coordinate_sets["niche"] = np.asarray(umap_niche)
+    panel_paths, scanpy_audit = _render_scanpy_umap_panels(
+        adata_sub,
+        coordinate_sets,
+        available_traits,
+        [anno for anno in report_config.annotation_list if anno in adata_sub.obs.columns],
+        web_report_dir / "umap_scanpy",
+    )
+
     # Save to CSV
     umap_metadata.to_csv(report_dir / "umap_data.csv", index=False)
     logger.info(f"UMAP data saved with {len(umap_metadata)} points")
@@ -783,6 +914,13 @@ def _prepare_umap_data(
         "point_size_cell": float(point_size_cell),
         "point_size_niche": float(point_size_niche) if point_size_niche is not None else None,
         "default_opacity": 0.7,
+        "render_mode": "scanpy_static",
+        "static_panels": panel_paths,
+        "scanpy_audit": scanpy_audit,
+        "coordinate_sources": {
+            "cell": "precomputed" if cell_precomputed else "computed",
+            "niche": "precomputed" if niche_precomputed else "computed",
+        },
     }
 
 
@@ -851,8 +989,8 @@ def _prepare_3d_visualization(
     logger.info(f"Full 3D visualization data saved to {h5ad_path}")
 
     # 3. Stratified subsampling for HTML visualization (limit to reasonable size)
-    n_max_points = getattr(report_config, "downsampling_n_spots_3d", 1000000)
-    if len(metadata) > n_max_points:
+    n_max_points = report_config.downsampling_n_spots_3d
+    if n_max_points is not None and len(metadata) > n_max_points:
         sample_names = metadata["sample_name"]
         selected_idx = _stratified_subsample(metadata.index.values, sample_names, n_max_points)
         adata_vis = adata_vis_full[selected_idx].copy()
@@ -898,6 +1036,7 @@ def _prepare_3d_visualization(
 
         # Shared plotting settings
         text_kwargs = dict(text_font_size=15, text_loc="upper_edge")
+        export_point_counts = {}
 
         # 1. Save all Annotation 3D plots
         categorical_legend_kwargs = dict(categorical_legend_loc="center right")
@@ -929,6 +1068,7 @@ def _prepare_3d_visualization(
                 window_size=(win_w, win_h),
             )
             three_d_plot_save(plotter_anno, filename=str(anno_plot_name))
+            export_point_counts[f"{anno_plot_name.name}.html"] = n_points
 
         # 2. Save each Trait 3D plot
         legend_kwargs = dict(scalar_bar_title_size=30, scalar_bar_label_size=30, fmt="%.1e")
@@ -980,6 +1120,20 @@ def _prepare_3d_visualization(
                 window_size=(win_w, win_h),
             )
             three_d_plot_save(plotter_trait, filename=str(trait_plot_name))
+            export_point_counts[f"{trait_plot_name.name}.html"] = n_points
+
+        audit_path = three_d_web_dir / "spatial_3d_export_audit.json"
+        with open(audit_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "input_observations": n_spots_all,
+                    "exported_observations": n_points,
+                    "configured_max_observations": n_max_points,
+                    "assets": export_point_counts,
+                },
+                f,
+                indent=2,
+            )
 
         # Return the relative path of the first available plot
         if annotation_cols:
@@ -1151,11 +1305,14 @@ def _load_gss_and_calculate_stats_base(
     ldsc_results: pd.DataFrame,
     coords: pd.DataFrame,
     report_dir: Path,
-) -> tuple[np.ndarray, ad.AnnData, pd.DataFrame, np.ndarray]:
+) -> tuple[np.ndarray, ad.AnnData | _GeneBlockReportSource, pd.DataFrame, np.ndarray]:
     """Load GSS data, calculate general stats, and return analysis results."""
     logger.info("Loading GSS data...")
 
-    gss_adata = load_marker_scores_memmap_format(report_config)
+    if report_config.marker_score_format == "gene_block":
+        gss_adata = _GeneBlockReportSource(report_config)
+    else:
+        gss_adata = load_marker_scores_memmap_format(report_config)
     common_spots = np.intersect1d(gss_adata.obs_names, ldsc_results.index)
     logger.info(f"Common spots (gss & ldsc): {len(common_spots)}")
     assert len(common_spots) > 0, "No common spots found between GSS and LDSC results."
@@ -1177,9 +1334,13 @@ def _load_gss_and_calculate_stats_base(
     high_expr_genes = exp_frac[exp_frac["frac"] > 0.01].index.tolist()
     logger.info(f"Using {len(high_expr_genes)} high expression genes for PCC calculation.")
 
-    gss_adata_sub = gss_adata[analysis_spots, high_expr_genes]
-    gss_matrix = gss_adata_sub.X
-    gene_names = gss_adata_sub.var_names.tolist()
+    if isinstance(gss_adata, _GeneBlockReportSource):
+        gss_matrix = gss_adata.read_subset(analysis_spots, high_expr_genes)
+        gene_names = high_expr_genes
+    else:
+        gss_adata_sub = gss_adata[analysis_spots, high_expr_genes]
+        gss_matrix = gss_adata_sub.X
+        gene_names = gss_adata_sub.var_names.tolist()
     pd.DataFrame({"gene": gene_names}).to_csv(report_dir / "gene_list.csv", index=False)
 
     # Calculate gene annotation stats
@@ -1390,7 +1551,7 @@ def _render_gene_diagnostic_plots_refactored(
     report_config: QuickModeConfig,
     metadata: pd.DataFrame,
     common_spots: np.ndarray,
-    gss_adata: ad.AnnData,
+    gss_adata: ad.AnnData | _GeneBlockReportSource,
     n_rows: int,
     n_cols: int,
     web_report_dir: Path,
@@ -1513,7 +1674,16 @@ def _render_gene_diagnostic_plots_refactored(
 
                 # Extract to memory and then delete the large AnnData object to save RAM
                 adata_sample_exp = adata_rep[sample_spots, available_genes].copy()
-                adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
+                if isinstance(gss_adata, _GeneBlockReportSource):
+                    sample_gss = gss_adata.read_subset(sample_spots, available_genes)
+                    gss_gene_positions = {
+                        gene: index for index, gene in enumerate(available_genes)
+                    }
+                    adata_sample_gss = None
+                else:
+                    adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
+                    sample_gss = None
+                    gss_gene_positions = None
 
                 del adata_rep
                 gc.collect()
@@ -1533,11 +1703,14 @@ def _render_gene_diagnostic_plots_refactored(
                     if sp.issparse(adata_sample_exp[:, gene].X)
                     else adata_sample_exp[:, gene].X
                 ).astype(np.float32)
-                gss_vals = np.ravel(
-                    adata_sample_gss[:, gene].X.toarray()
-                    if sp.issparse(adata_sample_gss[:, gene].X)
-                    else adata_sample_gss[:, gene].X
-                ).astype(np.float32)
+                if sample_gss is not None:
+                    gss_vals = sample_gss[:, gss_gene_positions[gene]]
+                else:
+                    gss_vals = np.ravel(
+                        adata_sample_gss[:, gene].X.toarray()
+                        if sp.issparse(adata_sample_gss[:, gene].X)
+                        else adata_sample_gss[:, gene].X
+                    ).astype(np.float32)
 
                 # Submit Expression task with semaphore throttling
                 task_semaphore.acquire()
@@ -1555,7 +1728,7 @@ def _render_gene_diagnostic_plots_refactored(
                             / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
                             "plot_origin": report_config.plot_origin,
                             "fig_width": 6.0,
-                            "dpi": 150,
+                            "dpi": 320,
                         },
                     )
                     f_exp.add_done_callback(lambda _: task_semaphore.release())
@@ -1581,7 +1754,7 @@ def _render_gene_diagnostic_plots_refactored(
                             / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
                             "plot_origin": report_config.plot_origin,
                             "fig_width": 6.0,
-                            "dpi": 150,
+                            "dpi": 320,
                         },
                     )
                     f_gss.add_done_callback(lambda _: task_semaphore.release())
@@ -1592,7 +1765,7 @@ def _render_gene_diagnostic_plots_refactored(
                     raise
 
             # Cleanup sample slices
-            del adata_sample_exp, adata_sample_gss
+            del adata_sample_exp, adata_sample_gss, sample_gss, gss_gene_positions
             gc.collect()
 
         with ThreadPoolExecutor(max_workers=max_loading_threads) as loader:
@@ -1703,9 +1876,7 @@ def _save_report_metadata(
     report_meta["top_corr_genes"] = report_config.top_corr_genes
     report_meta["plot_origin"] = report_config.plot_origin
     report_meta["legend_marker_size"] = report_config.legend_marker_size
-    report_meta["downsampling_n_spots_2d"] = getattr(
-        report_config, "downsampling_n_spots_2d", 250000
-    )
+    report_meta["downsampling_n_spots_2d"] = report_config.downsampling_n_spots_2d
 
     # Add chromosome tick positions for Manhattan plot
     if chrom_tick_positions:
@@ -1823,7 +1994,7 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
     has_spatial_coords = "sx" in df.columns and "sy" in df.columns
 
     sample_index = {}
-    max_spots_2d = meta.get("downsampling_n_spots_2d", 250000)
+    max_spots_2d = meta.get("downsampling_n_spots_2d")
 
     for sample_name in samples:
         sample_df = df[df["sample_name"] == sample_name]
@@ -1836,7 +2007,7 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
         n_spots_original = len(sample_df)
 
         # Downsample if needed for 2D visualization performance
-        if has_spatial_coords and len(sample_df) > max_spots_2d:
+        if has_spatial_coords and max_spots_2d is not None and len(sample_df) > max_spots_2d:
             logger.info(
                 f"Downsampling {sample_name} from {len(sample_df):,} to {max_spots_2d:,} spots for 2D visualization"
             )
@@ -1971,6 +2142,27 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
     """Export UMAP data as JS module."""
     umap_file = data_dir / "umap_data.csv"
     if umap_file.exists():
+        umap_info = meta.get("umap_info") or {}
+        if umap_info.get("render_mode") == "scanpy_static":
+            static_panels = umap_info.get("static_panels", {})
+            cell_panels = static_panels.get("cell", {})
+            data_struct = {
+                "render_mode": "scanpy_static",
+                "n_points": umap_info.get("n_points", 0),
+                "spot": [],
+                "has_niche": umap_info.get("has_niche", False),
+                "annotation_columns": list(cell_panels.get("annotation", {})),
+                "static_panels": static_panels,
+            }
+            js_content = f"window.GSMAP_UMAP = {json.dumps(data_struct, separators=(',', ':'))};"
+            with open(js_data_dir / "umap_data.js", "w", encoding="utf-8") as f:
+                f.write(js_content)
+            logger.info(
+                "Exported compact Scanpy UMAP panel manifest with %s points",
+                data_struct["n_points"],
+            )
+            return
+
         df = pd.read_csv(umap_file)
 
         # Build efficient columnar structure for ScatterGL
