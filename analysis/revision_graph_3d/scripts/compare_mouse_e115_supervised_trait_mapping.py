@@ -143,7 +143,7 @@ def align_region_scores(two_d: pd.DataFrame, three_d: pd.DataFrame) -> pd.DataFr
     )
     if len(merged) != len(two_d) or len(merged) != len(three_d):
         raise ValueError(
-            "2D and 3D heart-region sets differ: "
+            "2D and 3D annotation-domain sets differ: "
             f"2D={len(two_d)}, 3D={len(three_d)}, common={len(merged)}"
         )
     merged["rank_2d"] = merged["score_2d"].rank(method="average", ascending=False)
@@ -251,12 +251,42 @@ def save_figure(fig: plt.Figure, output_dir: Path, stem: str) -> None:
     plt.close(fig)
 
 
+def subplot_grid(
+    n_panels: int,
+    *,
+    panel_width: float,
+    panel_height: float,
+) -> tuple[plt.Figure, list[plt.Axes]]:
+    if n_panels < 1:
+        raise ValueError("At least one trait is required")
+    n_columns = min(3, n_panels)
+    n_rows = (n_panels + n_columns - 1) // n_columns
+    fig, axes = plt.subplots(
+        n_rows,
+        n_columns,
+        figsize=(panel_width * n_columns, panel_height * n_rows),
+        constrained_layout=True,
+        squeeze=False,
+    )
+    flat_axes = list(axes.flat)
+    for unused_axis in flat_axes[n_panels:]:
+        unused_axis.remove()
+    return fig, flat_axes[:n_panels]
+
+
+def annotation_stem(annotation: str) -> str:
+    if annotation == "heart_regions":
+        return "heart_region"
+    stem = "".join(character if character.isalnum() else "_" for character in annotation)
+    return stem.strip("_") or "annotation_domain"
+
+
 def plot_spot_scatter(
     spot_data: pd.DataFrame, spot_metrics: pd.DataFrame, output_dir: Path
 ) -> None:
     traits = spot_metrics["trait"].tolist()
-    fig, axes = plt.subplots(3, 3, figsize=(18, 16), constrained_layout=True)
-    for ax, trait in zip(axes.flat, traits, strict=True):
+    fig, axes = subplot_grid(len(traits), panel_width=6, panel_height=5.3)
+    for ax, trait in zip(axes, traits, strict=True):
         data = spot_data.loc[spot_data["trait"] == trait]
         metric = spot_metrics.loc[spot_metrics["trait"] == trait].iloc[0]
         ax.scatter(
@@ -289,18 +319,21 @@ def plot_spot_scatter(
 
 
 def region_colors(regions: list[str]) -> dict[str, Any]:
-    cmap = plt.get_cmap("tab10")
-    return {region: cmap(index % 10) for index, region in enumerate(regions)}
+    cmap = plt.get_cmap("tab20")
+    return {region: cmap(index % 20) for index, region in enumerate(regions)}
 
 
 def plot_region_scatter(
-    region_data: pd.DataFrame, region_metrics: pd.DataFrame, output_dir: Path
+    region_data: pd.DataFrame,
+    region_metrics: pd.DataFrame,
+    annotation: str,
+    output_dir: Path,
 ) -> None:
     traits = region_metrics["trait"].tolist()
     regions = sorted(region_data["region"].unique())
     colors = region_colors(regions)
-    fig, axes = plt.subplots(3, 3, figsize=(18, 16), constrained_layout=True)
-    for ax, trait in zip(axes.flat, traits, strict=True):
+    fig, axes = subplot_grid(len(traits), panel_width=6, panel_height=5.3)
+    for ax, trait in zip(axes, traits, strict=True):
         data = region_data.loc[region_data["trait"] == trait]
         metric = region_metrics.loc[region_metrics["trait"] == trait].iloc[0]
         for row in data.itertuples(index=False):
@@ -330,8 +363,8 @@ def plot_region_scatter(
             f"score Spearman={metric['score_spearman']:.3f}; "
             f"rank Spearman={metric['rank_spearman']:.3f}"
         )
-        ax.set_xlabel("2D heart-region -log10(Cauchy p)")
-        ax.set_ylabel("3D heart-region -log10(Cauchy p)")
+        ax.set_xlabel(f"2D {annotation} -log10(Cauchy p)")
+        ax.set_ylabel(f"3D {annotation} -log10(Cauchy p)")
     handles = [
         plt.Line2D(
             [],
@@ -344,22 +377,25 @@ def plot_region_scatter(
         )
         for region in regions
     ]
-    fig.legend(handles=handles, loc="outside right center", frameon=False, title="heart_regions")
+    fig.legend(handles=handles, loc="outside right center", frameon=False, title=annotation)
     fig.suptitle(
-        "Mouse E11.5 supervised trait mapping: heart-region Cauchy scores",
+        f"Mouse E11.5 supervised trait mapping: {annotation} Cauchy scores",
         fontsize=15,
     )
-    save_figure(fig, output_dir, "per_trait_heart_region_cauchy_scatter")
+    save_figure(fig, output_dir, f"per_trait_{annotation_stem(annotation)}_cauchy_scatter")
 
 
 def plot_rank_flow(
-    region_data: pd.DataFrame, region_metrics: pd.DataFrame, output_dir: Path
+    region_data: pd.DataFrame,
+    region_metrics: pd.DataFrame,
+    annotation: str,
+    output_dir: Path,
 ) -> None:
     traits = region_metrics["trait"].tolist()
     regions = sorted(region_data["region"].unique())
     colors = region_colors(regions)
-    fig, axes = plt.subplots(3, 3, figsize=(16, 15), constrained_layout=True)
-    for ax, trait in zip(axes.flat, traits, strict=True):
+    fig, axes = subplot_grid(len(traits), panel_width=5.3, panel_height=5)
+    for ax, trait in zip(axes, traits, strict=True):
         data = region_data.loc[region_data["trait"] == trait]
         metric = region_metrics.loc[region_metrics["trait"] == trait].iloc[0]
         for row in data.itertuples(index=False):
@@ -375,7 +411,7 @@ def plot_rank_flow(
         ax.set_xticks([0, 1], [METHOD_2D, METHOD_3D])
         ax.set_yticks(np.arange(1, len(data) + 1))
         ax.set_ylim(len(data) + 0.4, 0.6)
-        ax.set_ylabel("Heart-region rank (1 = strongest)")
+        ax.set_ylabel(f"{annotation} rank (1 = strongest)")
         ax.set_title(
             f"{trait_title(trait)}\nrank Spearman={metric['rank_spearman']:.3f}"
         )
@@ -384,9 +420,9 @@ def plot_rank_flow(
         plt.Line2D([], [], color=colors[region], marker="o", label=region, linewidth=2)
         for region in regions
     ]
-    fig.legend(handles=handles, loc="outside right center", frameon=False, title="heart_regions")
-    fig.suptitle("Heart-region RankFlow: supervised 2D to supervised 3D", fontsize=15)
-    save_figure(fig, output_dir, "per_trait_heart_region_rankflow")
+    fig.legend(handles=handles, loc="outside right center", frameon=False, title=annotation)
+    fig.suptitle(f"{annotation} RankFlow: supervised 2D to supervised 3D", fontsize=15)
+    save_figure(fig, output_dir, f"per_trait_{annotation_stem(annotation)}_rankflow")
 
 
 def write_report(
@@ -395,18 +431,19 @@ def write_report(
     region_metrics: pd.DataFrame,
     annotation: str,
 ) -> None:
+    domain_stem = annotation_stem(annotation)
     lines = [
         "# Mouse E11.5 supervised 2D versus 3D trait mapping",
         "",
         "## Scope",
         "",
-        "Both downstream pipelines start from the existing `heart_regions`-supervised embeddings. "
-        "The 2D arm computes marker scores within each section; the 3D arm additionally uses "
-        "measured-z adjacent-section physical-window neighbors and hierarchical cross-section "
-        "pooling. The comparison therefore measures the complete downstream 2D-versus-3D "
-        "pipeline effect, not an isolated graph-only effect.",
+        f"Both pipelines use `{annotation}` as the training annotation. The 2D arm uses a "
+        "sectionwise spatial graph, whereas the 3D arm uses a section-aware graph with "
+        "measured-z adjacent-section physical-window neighbors. The comparison measures the "
+        "complete 2D-versus-3D pipeline effect, not an isolated graph-only effect.",
         "",
-        "Every matched spot and every heart region is included. No metric or figure is downsampled.",
+        f"Every matched spot and every `{annotation}` domain is included. No metric or figure "
+        "is downsampled.",
         "",
         "## Per-trait, per-spot agreement",
         "",
@@ -445,20 +482,21 @@ def write_report(
             "",
             "- [Per-trait per-spot scatter](per_trait_per_spot_2d_vs_3d_scatter.png) "
             "([PDF](per_trait_per_spot_2d_vs_3d_scatter.pdf))",
-            "- [Per-trait heart-region Cauchy scatter](per_trait_heart_region_cauchy_scatter.png) "
-            "([PDF](per_trait_heart_region_cauchy_scatter.pdf))",
-            "- [Heart-region RankFlow](per_trait_heart_region_rankflow.png) "
-            "([PDF](per_trait_heart_region_rankflow.pdf))",
+            f"- [Per-trait `{annotation}` Cauchy scatter]"
+            f"(per_trait_{domain_stem}_cauchy_scatter.png) "
+            f"([PDF](per_trait_{domain_stem}_cauchy_scatter.pdf))",
+            f"- [`{annotation}` RankFlow](per_trait_{domain_stem}_rankflow.png) "
+            f"([PDF](per_trait_{domain_stem}_rankflow.pdf))",
             "- `per_trait_per_spot_correlations.tsv`: per-trait correlations.",
             "- `per_trait_per_spot_aligned_scores.parquet`: all matched spot-level scores.",
-            "- `per_trait_heart_region_correlations.tsv`: region score/rank correlations.",
-            "- `per_trait_heart_region_aligned_scores.tsv`: all region scores and ranks.",
+            f"- `per_trait_{domain_stem}_correlations.tsv`: domain score/rank correlations.",
+            f"- `per_trait_{domain_stem}_aligned_scores.tsv`: all domain scores and ranks.",
             "",
             f"All PNGs are {RASTER_DPI} DPI; PDFs are included for scale-independent viewing.",
             "",
         ]
     )
-    (output_dir / "mouse_e115_supervised_trait_mapping_2d_vs_3d_report.md").write_text(
+    (output_dir / f"mouse_e115_{domain_stem}_trait_mapping_2d_vs_3d_report.md").write_text(
         "\n".join(lines)
     )
 
@@ -467,8 +505,6 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     traits = load_traits(args.trait_manifest)
-    if len(traits) != 9:
-        raise ValueError(f"Expected 9 heart-related traits, found {len(traits)}")
 
     spot_data, spot_metrics, region_data, audit = collect_results(
         args.workdir,
@@ -485,16 +521,21 @@ def main() -> None:
     spot_data.to_parquet(
         args.output_dir / "per_trait_per_spot_aligned_scores.parquet", index=False
     )
+    domain_stem = annotation_stem(args.annotation)
     region_metrics.to_csv(
-        args.output_dir / "per_trait_heart_region_correlations.tsv", sep="\t", index=False
+        args.output_dir / f"per_trait_{domain_stem}_correlations.tsv",
+        sep="\t",
+        index=False,
     )
     region_data.to_csv(
-        args.output_dir / "per_trait_heart_region_aligned_scores.tsv", sep="\t", index=False
+        args.output_dir / f"per_trait_{domain_stem}_aligned_scores.tsv",
+        sep="\t",
+        index=False,
     )
 
     plot_spot_scatter(spot_data, spot_metrics, args.output_dir)
-    plot_region_scatter(region_data, region_metrics, args.output_dir)
-    plot_rank_flow(region_data, region_metrics, args.output_dir)
+    plot_region_scatter(region_data, region_metrics, args.annotation, args.output_dir)
+    plot_rank_flow(region_data, region_metrics, args.annotation, args.output_dir)
     write_report(args.output_dir, spot_metrics, region_metrics, args.annotation)
 
     audit.update(
