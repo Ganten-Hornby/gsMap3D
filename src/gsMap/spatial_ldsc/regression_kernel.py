@@ -62,8 +62,10 @@ def process_chunk_jit(
 
         # Apply weights and combine features
         with jax.profiler.StepTraceAnnotation("feature_preparation"):
+            # Match the N / Nbar scaling already applied to baseline annotations.
+            spot_ann = spot_ld * N / Nbar
             x_focal = jnp.concatenate(
-                [(spot_ld.reshape(-1, 1) * weights_scaled), (baseline_ann * weights_scaled)],
+                [(spot_ann.reshape(-1, 1) * weights_scaled), (baseline_ann * weights_scaled)],
                 axis=1,
             )
             y_weighted = chisq.reshape(-1, 1) * weights_scaled
@@ -170,7 +172,8 @@ def process_chunk_batched_lowmem_jit(
     block_size = n_snps // n_blocks
     n_snps_used = block_size * n_blocks
 
-    spatial_blocks = spatial_ld[:n_snps_used].reshape(n_blocks, block_size, n_spots)
+    spatial_ann = spatial_ld * N_expanded / Nbar
+    spatial_blocks = spatial_ann[:n_snps_used].reshape(n_blocks, block_size, n_spots)
     baseline_blocks = baseline_ann[:n_snps_used].reshape(n_blocks, block_size, n_baseline)
     chisq_blocks = chisq[:n_snps_used].reshape(n_blocks, block_size)
     weights_sq_blocks = weights_sq[:n_snps_used].reshape(n_blocks, block_size, n_spots)
@@ -230,9 +233,9 @@ def process_chunk_batched_fullsolve_jit(
     """
     Process an entire chunk with batched matrix operations.
 
-    This kernel materializes the weighted design tensor. It is fastest on GPUs
-    when the chunk fits comfortably in device memory because XLA can fuse the
-    tensor construction with the block normal-equation reductions.
+    This reference kernel materializes the weighted design tensor before
+    constructing the block normal equations.  It is retained for validation
+    and explicit benchmarking against the lower-memory formulation.
     """
     n_snps, n_spots = spatial_ld.shape
 
@@ -253,7 +256,8 @@ def process_chunk_batched_fullsolve_jit(
     weights_sum = jnp.sum(weights, axis=0, keepdims=True)
     weights_scaled = weights / weights_sum
 
-    spatial_weighted = (spatial_ld * weights_scaled)[..., None]
+    spatial_ann = spatial_ld * N_expanded / Nbar
+    spatial_weighted = (spatial_ann * weights_scaled)[..., None]
     baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]
     x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
 
@@ -332,7 +336,8 @@ def process_chunk_batched_materialized_jit(
     weights_sum = jnp.sum(weights, axis=0, keepdims=True)
     weights_scaled = weights / weights_sum
 
-    spatial_weighted = (spatial_ld * weights_scaled)[..., None]
+    spatial_ann = spatial_ld * N_expanded / Nbar
+    spatial_weighted = (spatial_ann * weights_scaled)[..., None]
     baseline_weighted = baseline_ann[:, None, :] * weights_scaled[..., None]
     x_focal = jnp.concatenate([spatial_weighted, baseline_weighted], axis=2)
 
@@ -409,18 +414,67 @@ def process_chunk_batched_jit(
     w_ld: jnp.ndarray,
     Nbar: float,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Backward-compatible alias for the fastest batched implementation."""
+    """Backward-compatible alias for the materialized fullsolve implementation."""
     return process_chunk_batched_fullsolve_jit(
         n_blocks, spatial_ld, baseline_ld_sum, chisq, N, baseline_ann, w_ld, Nbar
     )
 
 
+def _estimate_lowmem_peak_gb(
+    n_blocks: int,
+    n_snps: int,
+    n_spots: int,
+    n_baseline_features: int,
+) -> float:
+    """Conservatively estimate the low-memory kernel's working set.
+
+    The dominant allocations are several SNP-by-spot weight/work arrays.  The
+    block normal equations become relevant when many baseline annotations are
+    used, so include two copies of those arrays as additional headroom.
+    """
+    float32_bytes = 4
+    spatial_bytes = n_snps * n_spots * float32_bytes
+    baseline_bytes = n_snps * n_baseline_features * float32_bytes
+    n_features = n_baseline_features + 1
+    normal_equation_bytes = (
+        n_blocks * n_spots * (n_features * n_features + n_features) * float32_bytes
+    )
+    estimated_bytes = 5 * spatial_bytes + baseline_bytes + 2 * normal_equation_bytes
+    return estimated_bytes / (1024**3)
+
+
+def _select_regression_kernel(
+    *,
+    n_blocks: int,
+    n_snps: int,
+    n_spots: int,
+    n_baseline_features: int,
+    is_gpu: bool,
+    available_device_gb: float | None = None,
+) -> str:
+    """Select the optimized kernel without exposing a user-facing tuning option."""
+    estimated_gb = _estimate_lowmem_peak_gb(
+        n_blocks=n_blocks,
+        n_snps=n_snps,
+        n_spots=n_spots,
+        n_baseline_features=n_baseline_features,
+    )
+    if is_gpu:
+        # Reserve 30% of the currently available device memory for JAX/XLA,
+        # other pipeline buffers, and estimation error.  Do not impose a fixed
+        # ceiling: larger GPUs should be able to keep larger chunks batched.
+        safe_gb = 2.0 if available_device_gb is None else available_device_gb * 0.70
+    else:
+        safe_gb = 8.0
+    return "lowmem" if estimated_gb <= safe_gb else "per_spot"
+
+
 def wrapper_of_process_chunk_jit(*args, **kwargs):
     """Wrapper to call the JIT-compiled processing function.
 
-    Automatically selects between the fully-batched implementation
-    (process_chunk_batched_jit) and the memory-efficient per-spot vmap
-    implementation (process_chunk_jit) based on estimated peak GPU/CPU memory.
+    Prefer the low-memory batched normal-equation implementation and use the
+    per-spot implementation only when its estimated working set exceeds a
+    conservative CPU/GPU budget.
 
     Args layout (positional, matching process_chunk_batched_jit):
         args[0]: n_blocks (int)
@@ -438,27 +492,19 @@ def wrapper_of_process_chunk_jit(*args, **kwargs):
 
     n_snps = spatial_ld.shape[0]
     n_spots = spatial_ld.shape[1]
-    # +1 because spatial_ld is concatenated with baseline_ann inside the JIT fn
-    n_features = 1 + baseline_ann.shape[1]
-
-    # Peak memory estimate: x_blocks shape = (n_snps, n_spots, n_features) × float32
-    est_gb = n_snps * n_spots * n_features * 4 / (1024**3)
-
-    # Use the fast materialized kernel when the estimated allocation fits.
-    # The previous fixed 2 GB GPU cap forced A100-class devices into the slow
-    # one-cell fallback for moderate chunks. Scale the cap with the actual JAX
-    # memory limit while keeping a conservative ceiling for other workloads.
     is_gpu = jax.default_backend() == "gpu"
-    if is_gpu:
-        available_gb = _estimate_available_device_gb()
-        _SAFE_GB = 2.0 if available_gb is None else min(max(available_gb * 0.30, 2.0), 10.0)
-    else:
-        _SAFE_GB = 8.0
-    if est_gb <= _SAFE_GB:
-        return process_chunk_batched_fullsolve_jit(*args, **kwargs)
+    selected = _select_regression_kernel(
+        n_blocks=n_blocks,
+        n_snps=n_snps,
+        n_spots=n_spots,
+        n_baseline_features=baseline_ann.shape[1],
+        is_gpu=is_gpu,
+        available_device_gb=_estimate_available_device_gb() if is_gpu else None,
+    )
 
-    if is_gpu:
+    if selected == "lowmem":
         return process_chunk_batched_lowmem_jit(*args, **kwargs)
 
-    # Insert batch_size=1 between n_blocks and spatial_ld for the CPU fallback.
+    # Insert batch_size=1 between n_blocks and spatial_ld for the automatically
+    # selected smallest-working-set fallback.
     return process_chunk_jit(n_blocks, 1, *args[1:], **kwargs)

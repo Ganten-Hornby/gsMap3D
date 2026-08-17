@@ -91,7 +91,7 @@ class SpatialLDChunkSource:
             chunk_all_snps = chunk_raw.toarray()
         else:
             chunk_all_snps = np.asarray(chunk_raw)
-        return chunk_all_snps[self.ldscore_snp_positions, :]
+        return np.take(chunk_all_snps, self.ldscore_snp_positions, axis=0)
 
     def _fetch_marker_score_chunk(self, row_selector: slice | np.ndarray) -> np.ndarray:
         if self.marker_score_adata is None or self.marker_score_gene_indices is None:
