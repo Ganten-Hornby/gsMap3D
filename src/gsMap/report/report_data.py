@@ -7,11 +7,15 @@ when opening index.html via file:// protocol.
 """
 
 import gc
+import hashlib
 import json
 import logging
+import os
 import shutil
 import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import anndata as ad
@@ -24,7 +28,7 @@ import scipy.sparse as sp
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import setup_data_layer
-from gsMap.report.diagnosis import filter_snps, load_gwas_data
+from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
 from gsMap.report.three_d_plot.three_d_plots import three_d_plot, three_d_plot_save
 from gsMap.report.visualize import (
     estimate_plotly_point_size,
@@ -32,6 +36,52 @@ from gsMap.report.visualize import (
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 
 logger = logging.getLogger(__name__)
+
+
+def _available_cpu_count() -> int:
+    """Return the CPU count assigned to this process, including under SLURM."""
+
+    for variable in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
+        value = os.environ.get(variable)
+        if value:
+            try:
+                count = int(value)
+            except ValueError:
+                continue
+            if count > 0:
+                return count
+
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return max(1, os.cpu_count() or 1)
+
+
+def _report_worker_count(report_config: QuickModeConfig, ceiling: int) -> int:
+    """Bound report workers by both runtime visibility and configured CPU intent."""
+
+    configured_hints = [
+        int(value)
+        for value in (
+            getattr(report_config, "ldsc_read_workers", 0),
+            getattr(report_config, "ldsc_compute_workers", 0),
+        )
+        if isinstance(value, int) and value > 0
+    ]
+    configured_limit = max(configured_hints, default=ceiling)
+    return max(1, min(ceiling, configured_limit, _available_cpu_count()))
+
+
+@dataclass(frozen=True)
+class _ManhattanWeightContext:
+    """Read-only weight resources shared by Manhattan worker threads."""
+
+    snp_index: pd.Index
+    chromosome: np.ndarray
+    base_pair: np.ndarray
+    matrix: object
+    target_gene_indices: np.ndarray
+    target_genes: np.ndarray
 
 
 class ReportDataManager:
@@ -81,40 +131,37 @@ class ReportDataManager:
     def _is_step_complete(self, files: list[Path]) -> bool:
         if self.force_re_run:
             return False
-        return all(f.exists() for f in files)
+        return all(f.is_file() and f.stat().st_size > 0 for f in files)
 
     def run(self):
         """Orchestrate the report data preparation."""
         logger.info("Starting report data preparation...")
+        step_timings: dict[str, float] = {}
         try:
-            # 1. Base Metadata
-            self.prepare_base_metadata()
-
-            # 2. GSS Statistics (PCC)
-            self.prepare_gss_stats()
-
-            # 3. Spot Metadata (depends on GSS stats for gene_list.csv)
-            self.prepare_spot_metadata()
-
-            # 4. Manhattan Data
-            self.prepare_manhattan_data()
-
-            # 5. Static Plots
-            self.render_static_plots()
-
-            # 6. Cauchy Results
-            self.collect_cauchy_results()
-
-            # 7. UMAP Data
-            self.prepare_umap_data()
-
-            # 8. 3D Visualization
-            self.prepare_3d_visualization()
-
-            # 9. Finalize Metadata and JS Assets
-            self.finalize_report()
+            steps = (
+                ("base metadata", self.prepare_base_metadata),
+                ("GSS statistics", self.prepare_gss_stats),
+                ("spot metadata", self.prepare_spot_metadata),
+                ("Manhattan data", self.prepare_manhattan_data),
+                ("static plots", self.render_static_plots),
+                ("Cauchy results", self.collect_cauchy_results),
+                ("UMAP data", self.prepare_umap_data),
+                ("3D visualization", self.prepare_3d_visualization),
+                ("final assets", self.finalize_report),
+            )
+            for step_name, step_function in steps:
+                started = time.perf_counter()
+                logger.info(f"Report step started: {step_name}")
+                step_function()
+                elapsed = time.perf_counter() - started
+                step_timings[step_name] = elapsed
+                logger.info(f"Report step completed: {step_name} in {elapsed:.2f}s")
 
             logger.info("Report data preparation complete.")
+            logger.info(
+                "Report timing summary: "
+                + ", ".join(f"{name}={seconds:.2f}s" for name, seconds in step_timings.items())
+            )
             logger.info(f"  Data files: {self.report_data_dir}")
             logger.info(f"  Web report: {self.web_report_dir}")
         finally:
@@ -182,7 +229,6 @@ class ReportDataManager:
         gene_names = gss_adata_sub.var_names.tolist()
 
         # Calculate PCC for each missing trait
-        all_pcc = []
         for trait in self.traits:
             # We check both the CSV in gss_stats and the JS in js_data/gss_stats
             csv_path = self.report_config.get_gene_diagnostic_info_save_path(trait)
@@ -204,7 +250,6 @@ class ReportDataManager:
                 gss_dir,
             )
             if trait_pcc is not None:
-                all_pcc.append(trait_pcc)
                 # Export to JS immediately after CSV creation
                 self._export_single_pcc_js(trait, trait_pcc)
 
@@ -213,11 +258,22 @@ class ReportDataManager:
         metadata_file = self.report_data_dir / "spot_metadata.csv"
         if self._is_step_complete([metadata_file]):
             self.metadata = pd.read_csv(metadata_file)
-            # Validate all configured traits exist in cached file
-            missing_traits = [t for t in self.traits if t not in self.metadata.columns]
-            if missing_traits:
+            required_columns = {
+                "spot",
+                "sample_name",
+                *self.traits,
+                *self.report_config.annotation_list,
+            }
+            if self.report_config.dataset_type in (
+                DatasetType.SPATIAL_2D,
+                DatasetType.SPATIAL_3D,
+            ):
+                required_columns.update(("sx", "sy"))
+            missing_columns = sorted(required_columns.difference(self.metadata.columns))
+            if missing_columns:
                 logger.warning(
-                    f"Cached spot_metadata.csv missing traits: {missing_traits}. Regenerating..."
+                    f"Cached spot_metadata.csv is missing required columns: {missing_columns}. "
+                    "Regenerating it."
                 )
                 self.metadata = _save_metadata(
                     self.ldsc_results, self.coords, self.report_data_dir
@@ -242,8 +298,7 @@ class ReportDataManager:
             f"GSMAP_GENE_TRAIT_CORRELATION_{''.join(c if c.isalnum() else '_' for c in trait)}"
         )
         js_content = f"window.{var_name} = {data_json};"
-        with open(gss_js_dir / f"gene_trait_correlation_{trait}.js", "w", encoding="utf-8") as f:
-            f.write(js_content)
+        _atomic_write_text(gss_js_dir / f"gene_trait_correlation_{trait}.js", js_content)
 
     def prepare_manhattan_data(self):
         """Prepare Manhattan data for all traits."""
@@ -252,14 +307,26 @@ class ReportDataManager:
 
         # Determine which traits need Manhattan data
         traits_to_run = []
+        chrom_tick_positions = {}
         for trait in self.traits:
             csv_path = manhattan_dir / f"{trait}_manhattan.csv"
             js_path = self.js_data_dir / f"manhattan_{trait}.js"
             if not self._is_step_complete([csv_path, js_path]):
                 traits_to_run.append(trait)
+            else:
+                ticks = _load_chrom_tick_positions(csv_path)
+                if ticks:
+                    chrom_tick_positions[trait] = ticks
+                else:
+                    logger.warning(
+                        f"Cached Manhattan output for {trait} has no valid chromosome "
+                        "coordinates. Regenerating it."
+                    )
+                    traits_to_run.append(trait)
 
         if not traits_to_run:
             logger.info("Manhattan data already complete for all traits. Skipping.")
+            self.chrom_tick_positions = chrom_tick_positions
             return
 
         logger.info(f"Processing Manhattan data for {len(traits_to_run)} traits...")
@@ -272,28 +339,87 @@ class ReportDataManager:
         genes_file = self.report_data_dir / "gene_list.csv"
         gene_names_ref = pd.read_csv(genes_file)["gene"].tolist() if genes_file.exists() else []
 
-        chrom_tick_positions = {}
-        for trait in traits_to_run:
-            try:
-                # Load trait-specific PCC data
-                trait_pcc_file = self.report_config.get_gene_diagnostic_info_save_path(trait)
-                trait_pcc_df = pd.read_csv(trait_pcc_file) if trait_pcc_file.exists() else None
+        gene_names_ref_set = set(gene_names_ref)
+        target_gene_indices = np.flatnonzero(
+            weight_adata.var_names.isin(gene_names_ref_set)
+            & (weight_adata.var_names != "unmapped")
+        )
+        target_genes = weight_adata.var_names.to_numpy(dtype=str)[target_gene_indices]
+        weight_matrix = weight_adata.X
+        if sp.issparse(weight_matrix):
+            weight_matrix = weight_matrix.tocsr(copy=False)
 
-                chrom_ticks = _prepare_manhattan_for_trait(
-                    self.report_config,
-                    trait,
-                    weight_adata,
-                    trait_pcc_df,
-                    gene_names_ref,
-                    manhattan_dir,
-                )
-                chrom_tick_positions[trait] = chrom_ticks
-                # Export to JS
-                _export_single_manhattan_js(
-                    trait, manhattan_dir / f"{trait}_manhattan.csv", self.js_data_dir
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Failed to prepare Manhattan data for {trait}: {e}")
+        weight_context = _ManhattanWeightContext(
+            snp_index=pd.Index(weight_adata.obs_names.astype(str)),
+            chromosome=pd.to_numeric(weight_adata.obs["CHR"], errors="coerce").to_numpy(),
+            base_pair=pd.to_numeric(weight_adata.obs["BP"], errors="coerce").to_numpy(),
+            matrix=weight_matrix,
+            target_gene_indices=target_gene_indices,
+            target_genes=target_genes,
+        )
+
+        max_workers = min(_report_worker_count(self.report_config, ceiling=4), len(traits_to_run))
+        logger.info(
+            f"Preparing Manhattan traits with {max_workers} worker(s); "
+            f"GWAS parser=pyarrow with pandas fallback"
+        )
+
+        def prepare_trait(trait: str) -> tuple[str, dict]:
+            started = time.perf_counter()
+            trait_pcc_file = self.report_config.get_gene_diagnostic_info_save_path(trait)
+            trait_pcc_df = pd.read_csv(trait_pcc_file) if trait_pcc_file.exists() else None
+            ticks = _prepare_manhattan_for_trait(
+                self.report_config,
+                trait,
+                weight_context,
+                trait_pcc_df,
+                manhattan_dir,
+            )
+            _export_single_manhattan_js(
+                trait, manhattan_dir / f"{trait}_manhattan.csv", self.js_data_dir
+            )
+            logger.info(
+                f"Manhattan trait complete: {trait} in {time.perf_counter() - started:.2f}s"
+            )
+            return trait, ticks
+
+        failures: list[tuple[str, Exception]] = []
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="report-manhattan"
+        ) as executor:
+            futures = {executor.submit(prepare_trait, trait): trait for trait in traits_to_run}
+            for future in as_completed(futures):
+                trait = futures[future]
+                try:
+                    completed_trait, ticks = future.result()
+                    chrom_tick_positions[completed_trait] = ticks
+                except Exception as error:
+                    failures.append((trait, error))
+                    logger.exception(f"Failed to prepare Manhattan data for {trait}")
+
+        del weight_adata, weight_matrix
+        gc.collect()
+
+        if failures:
+            failed_traits = ", ".join(trait for trait, _ in failures)
+            raise RuntimeError(
+                f"Failed to prepare Manhattan data for {len(failures)}/"
+                f"{len(traits_to_run)} traits: {failed_traits}"
+            ) from failures[0][1]
+
+        missing_outputs = []
+        for trait in self.traits:
+            csv_path = manhattan_dir / f"{trait}_manhattan.csv"
+            js_path = self.js_data_dir / f"manhattan_{trait}.js"
+            if not (csv_path.is_file() and csv_path.stat().st_size > 0):
+                missing_outputs.append(str(csv_path))
+            if not (js_path.is_file() and js_path.stat().st_size > 0):
+                missing_outputs.append(str(js_path))
+        if missing_outputs:
+            raise RuntimeError(
+                "Manhattan preparation completed with missing or empty outputs: "
+                + ", ".join(missing_outputs)
+            )
 
         self.chrom_tick_positions = chrom_tick_positions
 
@@ -366,13 +492,17 @@ class ReportDataManager:
         if self.metadata is None:
             self.prepare_spot_metadata()
 
-        # Ensure GSS data is loaded if we need to plot
-        if self.gss_adata is None:
-            self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = (
-                _load_gss_and_calculate_stats_base(
-                    self.report_config, self.ldsc_results, self.coords, self.report_data_dir
+        def load_gss_for_plots():
+            if self.gss_adata is None:
+                self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = (
+                    _load_gss_and_calculate_stats_base(
+                        self.report_config,
+                        self.ldsc_results,
+                        self.coords,
+                        self.report_data_dir,
+                    )
                 )
-            )
+            return self.gss_adata
 
         _render_gene_diagnostic_plots_refactored(
             self.report_config,
@@ -384,6 +514,7 @@ class ReportDataManager:
             self.web_report_dir,
             self.report_data_dir,
             self._is_step_complete,
+            load_gss_for_plots,
         )
 
     def collect_cauchy_results(self):
@@ -395,11 +526,20 @@ class ReportDataManager:
             # Validate all configured traits are covered in cached results
             df = pd.read_csv(cauchy_file)
             cached_traits = set(df["trait"].unique()) if "trait" in df.columns else set()
-            missing_traits = set(self.traits) - cached_traits
-            if not missing_traits:
+            cached_annotations = (
+                set(df["annotation_name"].unique()) if "annotation_name" in df.columns else set()
+            )
+            missing_traits = sorted(set(self.traits) - cached_traits)
+            missing_annotations = sorted(
+                set(self.report_config.annotation_list) - cached_annotations
+            )
+            if not missing_traits and not missing_annotations:
                 logger.info("Cauchy results already collected. Skipping.")
                 return
-            logger.warning(f"Cauchy results missing traits: {missing_traits}. Regenerating...")
+            logger.warning(
+                f"Cached Cauchy results are incomplete; missing traits={missing_traits}, "
+                f"missing annotations={missing_annotations}. Regenerating them."
+            )
 
         _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
         _export_cauchy_js(self.report_data_dir, self.js_data_dir)
@@ -409,8 +549,19 @@ class ReportDataManager:
         umap_file = self.report_data_dir / "umap_data.csv"
         umap_js = self.js_data_dir / "umap_data.js"
         if self._is_step_complete([umap_file, umap_js]):
-            logger.info("UMAP data already exists. Skipping.")
-            return
+            report_meta_path = self.web_report_dir / "report_meta.json"
+            if report_meta_path.is_file():
+                try:
+                    with report_meta_path.open() as handle:
+                        self.umap_info = json.load(handle).get("umap_info")
+                except (OSError, ValueError) as error:
+                    logger.warning(f"Could not restore cached UMAP metadata: {error}")
+            if self.umap_info:
+                logger.info("UMAP data already exists. Skipping.")
+                return
+            logger.warning(
+                "Cached UMAP data are missing their metadata; regenerating the UMAP export."
+            )
 
         self.umap_info = _prepare_umap_data(
             self.report_config, self.metadata, self.report_data_dir
@@ -434,7 +585,7 @@ class ReportDataManager:
     def finalize_report(self):
         """Save report metadata and final JS assets."""
         # 1. Save standard report metadata
-        _save_report_metadata(
+        meta = _save_report_metadata(
             self.report_config,
             self.traits,
             self.sample_names,
@@ -449,9 +600,12 @@ class ReportDataManager:
         _copy_js_assets(self.web_report_dir)
 
         # 3. Export per-sample spatial JS (highly important for performance)
-        with open(self.web_report_dir / "report_meta.json") as f:
-            meta = json.load(f)
-        _export_per_sample_spatial_js(self.report_data_dir, self.js_data_dir, meta)
+        if not self.force_re_run and _per_sample_spatial_outputs_current(
+            self.report_data_dir, self.js_data_dir, meta
+        ):
+            logger.info("Per-sample spatial JS is current. Skipping export.")
+        else:
+            _export_per_sample_spatial_js(self.report_data_dir, self.js_data_dir, meta)
         _export_report_meta_js(self.web_report_dir, self.js_data_dir, meta)
 
 
@@ -460,97 +614,120 @@ def _render_single_sample_gene_plot_task(task_data: dict):
     Parallel task to render single-sample Expression or GSS plot.
     Creates a single plot for one gene in one sample.
     """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+
+    gene = task_data["gene"]
+    sample_name = task_data["sample_name"]
+    plot_type = task_data["plot_type"]
+    coords = task_data["coords"]
+    values = task_data["values"]
+    output_path = Path(task_data["output_path"])
+    fig_width = task_data.get("fig_width", 6.0)
+    dpi = task_data.get("dpi", 150)
+
+    if coords is None or values is None or len(coords) == 0:
+        raise ValueError(f"No data for {gene} in {sample_name}")
+
+    custom_colors = [
+        "#313695",
+        "#4575b4",
+        "#74add1",
+        "#abd9e9",
+        "#e0f3f8",
+        "#fee090",
+        "#fdae61",
+        "#f46d43",
+        "#d73027",
+    ]
+    custom_cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", custom_colors)
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_width))
+
+    from gsMap.report.visualize import estimate_matplotlib_scatter_marker_size
+
+    point_size = estimate_matplotlib_scatter_marker_size(ax, coords)
+    point_size = min(max(point_size, 1), 200)
+
+    vmin = 0
+    with np.errstate(all="ignore"):
+        non_nan_values = values[np.isfinite(values)] if len(values) > 0 else np.array([])
+        vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
+
+    if not np.isfinite(vmax) or vmax <= vmin:
+        vmax = vmin + 1.0
+
+    scatter = ax.scatter(
+        coords[:, 0],
+        coords[:, 1],
+        c=values,
+        cmap=custom_cmap,
+        s=point_size,
+        vmin=vmin,
+        vmax=vmax,
+        marker="o",
+        edgecolors="none",
+        rasterized=True,
+    )
+
+    if task_data.get("plot_origin", "upper") == "upper":
+        ax.invert_yaxis()
+
+    ax.axis("off")
+    ax.set_aspect("equal")
+
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Expression" if plot_type == "exp" else "GSS", fontsize=10)
+    ax.set_title(
+        f"{gene} - {'Expression' if plot_type == 'exp' else 'GSS'}",
+        fontsize=12,
+        fontweight="bold",
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp.png")
+    temporary.unlink(missing_ok=True)
     try:
-        import gc
-        from pathlib import Path
-
-        import matplotlib
-        import matplotlib.colors as mcolors
-        import matplotlib.pyplot as plt
-        import numpy as np
-
-        matplotlib.use("Agg")
-
-        gene = task_data["gene"]
-        sample_name = task_data["sample_name"]
-        plot_type = task_data["plot_type"]
-        coords = task_data["coords"]
-        values = task_data["values"]
-        output_path = Path(task_data["output_path"])
-        fig_width = task_data.get("fig_width", 6.0)
-        dpi = task_data.get("dpi", 150)
-
-        if coords is None or values is None or len(coords) == 0:
-            return f"No data for {gene} in {sample_name}"
-
-        # Custom colormap
-        custom_colors = [
-            "#313695",
-            "#4575b4",
-            "#74add1",
-            "#abd9e9",
-            "#e0f3f8",
-            "#fee090",
-            "#fdae61",
-            "#f46d43",
-            "#d73027",
-        ]
-        custom_cmap = mcolors.LinearSegmentedColormap.from_list("custom_cmap", custom_colors)
-
-        fig, ax = plt.subplots(figsize=(fig_width, fig_width))
-
-        # Calculate point size based on data density
-        from gsMap.report.visualize import estimate_matplotlib_scatter_marker_size
-
-        point_size = estimate_matplotlib_scatter_marker_size(ax, coords)
-        point_size = min(max(point_size, 1), 200)
-
-        # Color scale
-        vmin = 0
-        with np.errstate(all="ignore"):
-            non_nan_values = values[np.isfinite(values)] if len(values) > 0 else np.array([])
-            vmax = np.percentile(non_nan_values, 99.5) if len(non_nan_values) > 0 else 1.0
-
-        if not np.isfinite(vmax) or vmax <= vmin:
-            vmax = vmin + 1.0
-
-        scatter = ax.scatter(
-            coords[:, 0],
-            coords[:, 1],
-            c=values,
-            cmap=custom_cmap,
-            s=point_size,
-            vmin=vmin,
-            vmax=vmax,
-            marker="o",
-            edgecolors="none",
-            rasterized=True,
-        )
-
-        if task_data.get("plot_origin", "upper") == "upper":
-            ax.invert_yaxis()
-
-        ax.axis("off")
-        ax.set_aspect("equal")
-
-        # Add colorbar
-        cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label("Expression" if plot_type == "exp" else "GSS", fontsize=10)
-
-        # Title
-        title_text = f"{gene} - {'Expression' if plot_type == 'exp' else 'GSS'}"
-        ax.set_title(title_text, fontsize=12, fontweight="bold")
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white")
+        fig.savefig(temporary, dpi=dpi, bbox_inches="tight", facecolor="white")
+        os.replace(temporary, output_path)
+    finally:
         plt.close(fig)
-        gc.collect()
+        temporary.unlink(missing_ok=True)
+    return True
 
-        return True
-    except Exception as e:  # noqa: BLE001
-        import traceback
 
-        return f"{str(e)}\n{traceback.format_exc()}"
+def _render_single_sample_gene_pair_task(task_data: dict):
+    """Render expression and GSS once for a unique sample-gene pair."""
+
+    common = {
+        "gene": task_data["gene"],
+        "sample_name": task_data["sample_name"],
+        "coords": task_data["coords"],
+        "plot_origin": task_data.get("plot_origin", "upper"),
+        "fig_width": task_data.get("fig_width", 6.0),
+        "dpi": task_data.get("dpi", 150),
+    }
+    _render_single_sample_gene_plot_task(
+        {
+            **common,
+            "plot_type": "exp",
+            "values": task_data["exp_values"],
+            "output_path": task_data["exp_output_path"],
+        }
+    )
+    _render_single_sample_gene_plot_task(
+        {
+            **common,
+            "plot_type": "gss",
+            "values": task_data["gss_values"],
+            "output_path": task_data["gss_output_path"],
+        }
+    )
+    gc.collect()
+    return True
 
 
 # =============================================================================
@@ -772,7 +949,7 @@ def _prepare_umap_data(
             logger.info(f"Added trait {trait} to UMAP data with 1 decimal precision")
 
     # Save to CSV
-    umap_metadata.to_csv(report_dir / "umap_data.csv", index=False)
+    _atomic_to_csv(umap_metadata, report_dir / "umap_data.csv", index=False)
     logger.info(f"UMAP data saved with {len(umap_metadata)} points")
 
     return {
@@ -1180,7 +1357,7 @@ def _load_gss_and_calculate_stats_base(
     gss_adata_sub = gss_adata[analysis_spots, high_expr_genes]
     gss_matrix = gss_adata_sub.X
     gene_names = gss_adata_sub.var_names.tolist()
-    pd.DataFrame({"gene": gene_names}).to_csv(report_dir / "gene_list.csv", index=False)
+    _atomic_to_csv(pd.DataFrame({"gene": gene_names}), report_dir / "gene_list.csv", index=False)
 
     # Calculate gene annotation stats
     adata_concat = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
@@ -1246,36 +1423,32 @@ def _calculate_pcc_for_single_trait_fast(
     # Save to gss_stats subfolder
     # Save result CSV
     diag_info_path = report_config.get_gene_diagnostic_info_save_path(trait)
-    trait_pcc_sorted.to_csv(diag_info_path, index=False)
+    _atomic_to_csv(trait_pcc_sorted, diag_info_path, index=False)
 
     return trait_pcc_sorted
 
 
 def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):
     """Export single trait Manhattan data to JS."""
-    try:
-        df = pd.read_csv(csv_path)
-        if "P" in df.columns and "logp" not in df.columns:
-            df["logp"] = -np.log10(df["P"] + 1e-300)
+    df = pd.read_csv(csv_path)
+    if "P" in df.columns and "logp" not in df.columns:
+        df["logp"] = -np.log10(df["P"] + 1e-300)
 
-        data_struct = {
-            "x": df["BP_cum"].tolist(),
-            "y": df["logp"].tolist(),
-            "gene": df["GENE"].fillna("").tolist(),
-            "chr": df["CHR"].astype(int).tolist(),
-            "snp": df["SNP"].tolist() if "SNP" in df.columns else [],
-            "is_top": df["is_top_pcc"].astype(int).tolist() if "is_top_pcc" in df.columns else [],
-            "bp": df["BP"].astype(int).tolist() if "BP" in df.columns else [],
-        }
+    data_struct = {
+        "x": df["BP_cum"].tolist(),
+        "y": df["logp"].tolist(),
+        "gene": df["GENE"].fillna("").tolist(),
+        "chr": df["CHR"].astype(int).tolist(),
+        "snp": df["SNP"].tolist() if "SNP" in df.columns else [],
+        "is_top": df["is_top_pcc"].astype(int).tolist() if "is_top_pcc" in df.columns else [],
+        "bp": df["BP"].astype(int).tolist() if "BP" in df.columns else [],
+    }
 
-        json_str = json.dumps(data_struct, separators=(",", ":"))
-        safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-        js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
+    json_str = json.dumps(data_struct, separators=(",", ":"))
+    safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+    js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
 
-        with open(js_data_dir / f"manhattan_{trait}.js", "w", encoding="utf-8") as f:
-            f.write(js_content)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Failed to export Manhattan JS for {trait}: {e}")
+    _atomic_write_text(js_data_dir / f"manhattan_{trait}.js", js_content)
 
 
 # =============================================================================
@@ -1297,7 +1470,7 @@ def _save_metadata(
     metadata.index.name = "spot"
     metadata = metadata.reset_index()
     metadata = metadata.loc[:, ~metadata.columns.duplicated()]
-    metadata.to_csv(report_dir / "spot_metadata.csv", index=False)
+    _atomic_to_csv(metadata, report_dir / "spot_metadata.csv", index=False)
 
     return metadata
 
@@ -1305,9 +1478,8 @@ def _save_metadata(
 def _prepare_manhattan_for_trait(
     report_config: QuickModeConfig,
     trait: str,
-    weight_adata: ad.AnnData,
+    weight_context: _ManhattanWeightContext,
     trait_pcc_df: pd.DataFrame | None,
-    gene_names_ref: list[str],
     manhattan_dir: Path,
 ) -> dict:
     """Prepare Manhattan data for a single trait."""
@@ -1318,13 +1490,48 @@ def _prepare_manhattan_for_trait(
         return {}
 
     logger.info(f"Processing Manhattan for {trait}...")
-    gwas_data = load_gwas_data(sumstats_file)
+    gwas_data = load_gwas_data(
+        sumstats_file,
+        calculate_p=False,
+    )
+    if gwas_data.empty:
+        raise ValueError(f"GWAS file contains no rows: {sumstats_file}")
 
-    common_snps = weight_adata.obs_names[weight_adata.obs_names.isin(gwas_data["SNP"])]
-    gwas_subset = gwas_data.set_index("SNP").loc[common_snps].reset_index()
+    if gwas_data["SNP"].duplicated().any():
+        duplicate_count = int(gwas_data["SNP"].duplicated().sum())
+        logger.warning(
+            f"Dropping {duplicate_count:,} duplicate SNP rows before Manhattan processing for "
+            f"{trait}"
+        )
+        gwas_data = gwas_data.drop_duplicates("SNP", keep="first")
 
-    gwas_subset = gwas_subset.drop(columns=[c for c in ["CHR", "BP"] if c in gwas_subset.columns])
-    gwas_subset = gwas_subset.set_index("SNP").join(weight_adata.obs[["CHR", "BP"]]).reset_index()
+    gwas_snp_index = pd.Index(gwas_data["SNP"])
+    gwas_positions = gwas_snp_index.get_indexer(weight_context.snp_index)
+    common_mask = gwas_positions >= 0
+    weight_rows = np.flatnonzero(common_mask)
+    if weight_rows.size == 0:
+        raise ValueError(f"No common SNPs between GWAS and weight data for {trait}")
+
+    selected_gwas_positions = gwas_positions[common_mask]
+    z_values = pd.to_numeric(gwas_data["Z"], errors="coerce").to_numpy()[selected_gwas_positions]
+    finite_mask = np.isfinite(z_values)
+    weight_rows = weight_rows[finite_mask]
+    selected_gwas_positions = selected_gwas_positions[finite_mask]
+    z_values = z_values[finite_mask]
+    if weight_rows.size == 0:
+        raise ValueError(f"No finite GWAS Z-scores remain for {trait}")
+
+    gwas_subset = gwas_data.iloc[selected_gwas_positions].reset_index(drop=True).copy()
+    gwas_subset = gwas_subset.drop(columns=[c for c in ["CHR", "BP", "P"] if c in gwas_subset])
+    # The legacy merge placed the join key first even when a source file stored SNP
+    # later in its schema. Preserve that stable report CSV contract.
+    gwas_subset = gwas_subset[["SNP", *[c for c in gwas_subset.columns if c != "SNP"]]]
+    gwas_subset["SNP"] = weight_context.snp_index.to_numpy()[weight_rows]
+    gwas_subset["Z"] = z_values
+    gwas_subset = convert_z_to_p(gwas_subset)
+    gwas_subset["CHR"] = weight_context.chromosome[weight_rows]
+    gwas_subset["BP"] = weight_context.base_pair[weight_rows]
+    gwas_subset["_weight_row"] = weight_rows
 
     snps2plot_ids = filter_snps(gwas_subset.sort_values("P"), SUBSAMPLE_SNP_NUMBER=50000)
     gwas_plot_data = gwas_subset[gwas_subset["SNP"].isin(snps2plot_ids)].copy()
@@ -1334,10 +1541,11 @@ def _prepare_manhattan_for_trait(
     gwas_plot_data = gwas_plot_data.dropna(subset=["CHR", "BP"])
 
     # Gene assignment
-    target_genes = [g for g in weight_adata.var_names if g in gene_names_ref and g != "unmapped"]
-    if target_genes:
-        sub_weight = weight_adata[gwas_plot_data["SNP"], target_genes].to_memory()
-        weights_matrix = sub_weight.X
+    if weight_context.target_genes.size:
+        selected_weight_rows = gwas_plot_data["_weight_row"].to_numpy(dtype=np.int64)
+        weights_matrix = weight_context.matrix[selected_weight_rows][
+            :, weight_context.target_gene_indices
+        ]
 
         if sp.issparse(weights_matrix):
             max_idx = np.array(weights_matrix.argmax(axis=1)).ravel()
@@ -1346,7 +1554,7 @@ def _prepare_manhattan_for_trait(
             max_idx = np.argmax(weights_matrix, axis=1)
             max_val = np.max(weights_matrix, axis=1)
 
-        gene_map = np.where(max_val > 1, np.array(target_genes)[max_idx], "None")
+        gene_map = np.where(max_val > 1, weight_context.target_genes[max_idx], "None")
         gwas_plot_data["GENE"] = gene_map
 
         if trait_pcc_df is not None:
@@ -1363,6 +1571,8 @@ def _prepare_manhattan_for_trait(
     if "is_top_pcc" not in gwas_plot_data.columns:
         gwas_plot_data["is_top_pcc"] = False
 
+    gwas_plot_data = gwas_plot_data.drop(columns="_weight_row")
+
     # Calculate cumulative positions
     chrom_ticks = {}
     try:
@@ -1377,8 +1587,25 @@ def _prepare_manhattan_for_trait(
         gwas_plot_data["BP_cum"] = np.arange(len(gwas_plot_data))
         gwas_plot_data["CHR_INDEX"] = gwas_plot_data["CHR"] % 2
 
-    gwas_plot_data.to_csv(manhattan_dir / f"{trait}_manhattan.csv", index=False)
+    _atomic_to_csv(gwas_plot_data, manhattan_dir / f"{trait}_manhattan.csv", index=False)
     return chrom_ticks
+
+
+def _load_chrom_tick_positions(csv_path: Path) -> dict[int, float]:
+    """Restore chromosome ticks when cached Manhattan outputs are reused."""
+
+    try:
+        data = pd.read_csv(csv_path, usecols=["CHR", "BP_cum"])
+        data["CHR"] = pd.to_numeric(data["CHR"], errors="coerce")
+        data["BP_cum"] = pd.to_numeric(data["BP_cum"], errors="coerce")
+        data = data.dropna(subset=["CHR", "BP_cum"])
+        return {
+            int(chromosome): float(positions.median())
+            for chromosome, positions in data.groupby("CHR")["BP_cum"]
+        }
+    except (OSError, ValueError, KeyError, pd.errors.ParserError) as error:
+        logger.warning(f"Could not restore chromosome ticks from {csv_path}: {error}")
+        return {}
 
 
 # =============================================================================
@@ -1386,18 +1613,41 @@ def _prepare_manhattan_for_trait(
 # =============================================================================
 
 
+def _materialize_plot_alias(source: Path, target: Path) -> None:
+    """Create a portable trait-specific alias for an identical plot."""
+
+    if source == target:
+        return
+    if not source.is_file() or source.stat().st_size == 0:
+        raise FileNotFoundError(f"Cannot alias missing or empty diagnostic plot: {source}")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        try:
+            os.link(source, temporary)
+        except OSError:
+            shutil.copyfile(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _render_gene_diagnostic_plots_refactored(
     report_config: QuickModeConfig,
     metadata: pd.DataFrame,
     common_spots: np.ndarray,
-    gss_adata: ad.AnnData,
+    gss_adata: ad.AnnData | None,
     n_rows: int,
     n_cols: int,
     web_report_dir: Path,
     report_data_dir: Path,
     is_step_complete_func,
+    load_gss_func=None,
 ):
     """Render gene expression and GSS diagnostic plots with completeness check."""
+    started = time.perf_counter()
     gene_plot_dir = web_report_dir / "gene_diagnostic_plots"
     gene_plot_dir.mkdir(exist_ok=True)
 
@@ -1409,13 +1659,10 @@ def _render_gene_diagnostic_plots_refactored(
     # 1. Identify all genes that need to be plotted from per-trait PCC files
     gss_stats_dir = report_data_dir / "gss_stats"
     trait_top_genes = {}
-    all_top_genes_set = set()
-
-    # We need to know which traits we have
-    traits = [
+    traits = sorted(
         p.name.replace("gene_trait_correlation_", "").replace(".csv", "")
         for p in gss_stats_dir.glob("gene_trait_correlation_*.csv")
-    ]
+    )
 
     for trait in traits:
         pcc_path = report_config.get_gene_diagnostic_info_save_path(trait)
@@ -1423,187 +1670,229 @@ def _render_gene_diagnostic_plots_refactored(
             group = pd.read_csv(pcc_path)
             genes = group.sort_values("PCC", ascending=False).head(top_n)["gene"].tolist()
             trait_top_genes[trait] = genes
-            all_top_genes_set.update(genes)
 
-    # Also collect all available traits for completeness check
-    sorted(all_top_genes_set)
     sample_names_sorted = list(report_config.sample_h5ad_dict.keys())
 
-    # Pre-filter metadata for common spots once
     metadata_common = metadata[metadata["spot"].isin(common_spots)]
 
     logger.info("Checking completeness for diagnostic plots...")
 
-    # Filter out combinations that already exist
-    tasks_to_run = []
-
+    force_re_run = getattr(report_config, "force_report_re_run", False)
+    targets_by_pair: dict[tuple[str, str], list[tuple[Path, Path]]] = {}
+    expected_paths: list[Path] = []
     for sample_name in sample_names_sorted:
         safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
         for trait in traits:
-            if trait not in trait_top_genes:
-                continue
-            for gene in trait_top_genes[trait]:
+            for gene in trait_top_genes.get(trait, []):
                 exp_path = gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_exp.png"
                 gss_path = gene_plot_dir / f"gene_{trait}_{gene}_{safe_sample}_gss.png"
-                if not is_step_complete_func([exp_path, gss_path]):
-                    tasks_to_run.append((sample_name, trait, gene))
+                targets_by_pair.setdefault((sample_name, gene), []).append((exp_path, gss_path))
+                expected_paths.extend((exp_path, gss_path))
 
-    if not tasks_to_run:
+    requests_by_sample: dict[str, list[dict]] = {}
+    alias_only_pairs = 0
+    for (sample_name, gene), targets in targets_by_pair.items():
+        complete_targets = [
+            (exp_path, gss_path)
+            for exp_path, gss_path in targets
+            if exp_path.is_file()
+            and exp_path.stat().st_size > 0
+            and gss_path.is_file()
+            and gss_path.stat().st_size > 0
+        ]
+        if not force_re_run and complete_targets:
+            source_exp, source_gss = complete_targets[0]
+            for exp_path, gss_path in targets:
+                if not is_step_complete_func([exp_path]):
+                    _materialize_plot_alias(source_exp, exp_path)
+                if not is_step_complete_func([gss_path]):
+                    _materialize_plot_alias(source_gss, gss_path)
+            alias_only_pairs += 1
+            continue
+
+        source_exp, source_gss = targets[0]
+        requests_by_sample.setdefault(sample_name, []).append(
+            {
+                "sample_name": sample_name,
+                "gene": gene,
+                "source_exp": source_exp,
+                "source_gss": source_gss,
+                "targets": targets,
+            }
+        )
+
+    trait_gene_pairs = sum(len(targets) for targets in targets_by_pair.values())
+    unique_pairs = len(targets_by_pair)
+    render_pairs = sum(len(requests) for requests in requests_by_sample.values())
+    logger.info(
+        f"Diagnostic plot plan: {trait_gene_pairs:,} trait-gene-sample pairs, "
+        f"{unique_pairs:,} unique sample-gene pairs, {render_pairs:,} pairs to render, "
+        f"{alias_only_pairs:,} pairs reused; expected PNG files={len(expected_paths):,}"
+    )
+
+    if render_pairs == 0:
         logger.info("All gene diagnostic plots already exist. Skipping.")
         return
 
-    logger.info(f"Rendering {len(tasks_to_run)} diagnostic plots...")
+    if gss_adata is None:
+        if load_gss_func is None:
+            raise ValueError("GSS data are required to render gene diagnostic plots")
+        gss_adata = load_gss_func()
 
-    # Process sample by sample to save memory
-    all_futures = []
+    max_workers = min(_report_worker_count(report_config, ceiling=20), render_pairs)
+    logger.info(
+        f"Rendering {render_pairs:,} unique sample-gene pairs "
+        f"({render_pairs * 2:,} PNGs) with {max_workers} process worker(s)..."
+    )
+
+    all_futures: dict = {}
     futures_lock = threading.Lock()
-    max_workers = 20
+    missing_genes: list[tuple[str, str]] = []
+    missing_genes_lock = threading.Lock()
 
-    # Use semaphore to limit the number of pending tasks in the executor queue.
-    max_pending_tasks = max_workers * 4  # e.g., 80 pending tasks
+    max_pending_tasks = max_workers * 4
     task_semaphore = threading.Semaphore(max_pending_tasks)
-
     max_loading_threads = min(4, len(sample_names_sorted))
-
-    # Group tasks by sample for efficient processing
-    tasks_by_sample = {}
-    for sample, trait, gene in tasks_to_run:
-        if sample not in tasks_by_sample:
-            tasks_by_sample[sample] = []
-        tasks_by_sample[sample].append((trait, gene))
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
 
         def process_sample(sample_name):
-            if sample_name not in tasks_by_sample:
+            sample_requests = requests_by_sample.get(sample_name, [])
+            if not sample_requests:
                 return
 
             h5ad_path = report_config.sample_h5ad_dict[sample_name]
             sample_metadata = metadata_common[metadata_common["sample_name"] == sample_name]
             if sample_metadata.empty:
-                return
+                raise ValueError(f"No report metadata rows found for sample {sample_name}")
 
             sample_spots = sample_metadata["spot"].values
             coords = sample_metadata[["sx", "sy"]].values
 
-            try:
-                adata_rep = ad.read_h5ad(h5ad_path)
-                suffix = f"|{sample_name}"
-                if not str(adata_rep.obs_names[0]).endswith(suffix):
-                    adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
+            adata_rep = ad.read_h5ad(h5ad_path)
+            suffix = f"|{sample_name}"
+            if adata_rep.n_obs and not str(adata_rep.obs_names[0]).endswith(suffix):
+                adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
 
-                if "log1p" in adata_rep.uns and adata_rep.X is not None:
-                    is_count = False
-                else:
-                    is_count, _ = setup_data_layer(
-                        adata_rep, report_config.data_layer, verbose=False
-                    )
+            if "log1p" in adata_rep.uns and adata_rep.X is not None:
+                is_count = False
+            else:
+                is_count, _ = setup_data_layer(adata_rep, report_config.data_layer, verbose=False)
 
-                if is_count:
-                    sc.pp.normalize_total(adata_rep, target_sum=1e4)
-                    sc.pp.log1p(adata_rep)
+            if is_count:
+                sc.pp.normalize_total(adata_rep, target_sum=1e4)
+                sc.pp.log1p(adata_rep)
 
-                sample_genes = [g for trait, g in tasks_by_sample[sample_name]]
-                unique_sample_genes = list(set(sample_genes))
-                available_genes = [g for g in unique_sample_genes if g in adata_rep.var_names]
+            unique_sample_genes = sorted({request["gene"] for request in sample_requests})
+            available_genes = [gene for gene in unique_sample_genes if gene in adata_rep.var_names]
+            unavailable_genes = sorted(set(unique_sample_genes).difference(available_genes))
+            if unavailable_genes:
+                with missing_genes_lock:
+                    missing_genes.extend((sample_name, gene) for gene in unavailable_genes)
 
-                if not available_genes:
-                    del adata_rep
-                    return
-
-                # Extract to memory and then delete the large AnnData object to save RAM
-                adata_sample_exp = adata_rep[sample_spots, available_genes].copy()
-                adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
-
+            if not available_genes:
                 del adata_rep
                 gc.collect()
-
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"Failed to load data for {sample_name}: {e}")
                 return
 
-            safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
+            adata_sample_exp = adata_rep[sample_spots, available_genes].copy()
+            adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
+            del adata_rep
+            gc.collect()
 
-            for trait, gene in tasks_by_sample[sample_name]:
+            exp_matrix = adata_sample_exp.X
+            gss_matrix = adata_sample_gss.X
+            gene_positions = {gene: index for index, gene in enumerate(available_genes)}
+
+            for request in sample_requests:
+                gene = request["gene"]
                 if gene not in available_genes:
                     continue
 
-                exp_vals = np.ravel(
-                    adata_sample_exp[:, gene].X.toarray()
-                    if sp.issparse(adata_sample_exp[:, gene].X)
-                    else adata_sample_exp[:, gene].X
-                ).astype(np.float32)
-                gss_vals = np.ravel(
-                    adata_sample_gss[:, gene].X.toarray()
-                    if sp.issparse(adata_sample_gss[:, gene].X)
-                    else adata_sample_gss[:, gene].X
-                ).astype(np.float32)
+                gene_index = gene_positions[gene]
+                exp_column = exp_matrix[:, gene_index]
+                gss_column = gss_matrix[:, gene_index]
+                exp_vals = (
+                    np.asarray(exp_column.toarray() if sp.issparse(exp_column) else exp_column)
+                    .ravel()
+                    .astype(np.float32, copy=False)
+                )
+                gss_vals = (
+                    np.asarray(gss_column.toarray() if sp.issparse(gss_column) else gss_column)
+                    .ravel()
+                    .astype(np.float32, copy=False)
+                )
 
-                # Submit Expression task with semaphore throttling
                 task_semaphore.acquire()
                 try:
-                    f_exp = executor.submit(
-                        _render_single_sample_gene_plot_task,
+                    future = executor.submit(
+                        _render_single_sample_gene_pair_task,
                         {
                             "gene": gene,
                             "sample_name": sample_name,
-                            "trait": trait,
-                            "plot_type": "exp",
                             "coords": coords.copy(),
-                            "values": exp_vals,
-                            "output_path": gene_plot_dir
-                            / f"gene_{trait}_{gene}_{safe_sample}_exp.png",
+                            "exp_values": exp_vals,
+                            "gss_values": gss_vals,
+                            "exp_output_path": request["source_exp"],
+                            "gss_output_path": request["source_gss"],
                             "plot_origin": report_config.plot_origin,
                             "fig_width": 6.0,
                             "dpi": 150,
                         },
                     )
-                    f_exp.add_done_callback(lambda _: task_semaphore.release())
+                    future.add_done_callback(lambda _: task_semaphore.release())
                     with futures_lock:
-                        all_futures.append(f_exp)
+                        all_futures[future] = request
                 except Exception:
                     task_semaphore.release()
                     raise
 
-                # Submit GSS task with semaphore throttling
-                task_semaphore.acquire()
-                try:
-                    f_gss = executor.submit(
-                        _render_single_sample_gene_plot_task,
-                        {
-                            "gene": gene,
-                            "sample_name": sample_name,
-                            "trait": trait,
-                            "plot_type": "gss",
-                            "coords": coords.copy(),
-                            "values": gss_vals,
-                            "output_path": gene_plot_dir
-                            / f"gene_{trait}_{gene}_{safe_sample}_gss.png",
-                            "plot_origin": report_config.plot_origin,
-                            "fig_width": 6.0,
-                            "dpi": 150,
-                        },
-                    )
-                    f_gss.add_done_callback(lambda _: task_semaphore.release())
-                    with futures_lock:
-                        all_futures.append(f_gss)
-                except Exception:
-                    task_semaphore.release()
-                    raise
-
-            # Cleanup sample slices
             del adata_sample_exp, adata_sample_gss
             gc.collect()
 
         with ThreadPoolExecutor(max_workers=max_loading_threads) as loader:
-            loader.map(process_sample, tasks_by_sample.keys())
+            list(loader.map(process_sample, requests_by_sample))
 
-        # Wait for all
-        logger.info(f"Waiting for {len(all_futures)} diagnostic plot tasks to complete...")
+        logger.info(f"Waiting for {len(all_futures):,} unique diagnostic tasks to complete...")
+        completed = 0
+        progress_interval = max(1, len(all_futures) // 10)
         for future in as_completed(all_futures):
+            request = all_futures[future]
             future.result()
+            source_exp = request["source_exp"]
+            source_gss = request["source_gss"]
+            for exp_path, gss_path in request["targets"]:
+                _materialize_plot_alias(source_exp, exp_path)
+                _materialize_plot_alias(source_gss, gss_path)
+            completed += 1
+            if completed % progress_interval == 0 or completed == len(all_futures):
+                elapsed = time.perf_counter() - started
+                logger.info(
+                    f"Diagnostic plot progress: {completed:,}/{len(all_futures):,} unique "
+                    f"pairs ({completed / max(elapsed, 1e-9):.1f} pairs/s)"
+                )
 
-    logger.info("Successfully finished rendering diagnostic plots.")
+    if missing_genes:
+        preview = ", ".join(f"{sample}:{gene}" for sample, gene in missing_genes[:10])
+        raise ValueError(
+            f"Could not render {len(missing_genes)} sample-gene pairs because genes were absent: "
+            f"{preview}"
+        )
+
+    missing_outputs = [
+        path for path in expected_paths if not path.is_file() or path.stat().st_size == 0
+    ]
+    if missing_outputs:
+        raise RuntimeError(
+            f"Diagnostic rendering left {len(missing_outputs)} missing or empty PNG files; "
+            f"first missing output: {missing_outputs[0]}"
+        )
+
+    elapsed = time.perf_counter() - started
+    logger.info(
+        f"Successfully prepared {len(expected_paths):,} diagnostic PNG files from "
+        f"{render_pairs:,} unique renders in {elapsed:.2f}s"
+    )
 
 
 # =============================================================================
@@ -1666,20 +1955,24 @@ def _collect_cauchy_results(report_config: QuickModeConfig, traits: list[str], r
             combined_cauchy = combined_cauchy.rename(columns={"sample": "sample_name"})
 
         cauchy_save_path = report_dir / "cauchy_results.csv"
-        combined_cauchy.to_csv(cauchy_save_path, index=False)
+        _atomic_to_csv(combined_cauchy, cauchy_save_path, index=False)
         logger.info(f"Saved {len(combined_cauchy)} Cauchy results to {cauchy_save_path}")
     else:
-        pd.DataFrame(
-            columns=[
-                "trait",
-                "annotation_name",
-                "mlog10_p_cauchy",
-                "mlog10_p_median",
-                "top_95_quantile",
-                "type",
-                "sample_name",
-            ]
-        ).to_csv(report_dir / "cauchy_results.csv", index=False)
+        _atomic_to_csv(
+            pd.DataFrame(
+                columns=[
+                    "trait",
+                    "annotation_name",
+                    "mlog10_p_cauchy",
+                    "mlog10_p_median",
+                    "top_95_quantile",
+                    "type",
+                    "sample_name",
+                ]
+            ),
+            report_dir / "cauchy_results.csv",
+            index=False,
+        )
         logger.warning("No Cauchy results found to save.")
 
 
@@ -1731,8 +2024,10 @@ def _save_report_metadata(
         "scRNA": "Single Cell RNA-seq",
     }.get(dataset_type_value, dataset_type_value)
 
-    with open(report_dir / "report_meta.json", "w") as f:
-        json.dump(report_meta, f)
+    _write_text_if_changed(
+        report_dir / "report_meta.json", json.dumps(report_meta, sort_keys=True)
+    )
+    return report_meta
 
 
 def _copy_js_assets(report_dir: Path):
@@ -1761,6 +2056,95 @@ def _copy_js_assets(report_dir: Path):
 # =============================================================================
 # JS Export Functions
 # =============================================================================
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write a text output through an atomic same-directory replacement."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_to_csv(frame: pd.DataFrame, path: Path, **kwargs) -> None:
+    """Write a CSV through an atomic same-directory replacement."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        frame.to_csv(temporary, **kwargs)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_text_if_changed(path: Path, content: str) -> bool:
+    """Atomically update a small text output only when its content changed."""
+
+    if path.is_file():
+        try:
+            if path.read_text(encoding="utf-8") == content:
+                return False
+        except OSError:
+            pass
+
+    _atomic_write_text(path, content)
+    return True
+
+
+def _sample_spatial_export_signature(data_dir: Path, meta: dict) -> dict:
+    """Build a cheap, stable signature for the per-sample export inputs."""
+
+    metadata_file = data_dir / "spot_metadata.csv"
+    stat = metadata_file.stat()
+    relevant_meta = {
+        key: meta.get(key)
+        for key in ("samples", "traits", "annotations", "downsampling_n_spots_2d")
+    }
+    meta_digest = hashlib.sha256(
+        json.dumps(relevant_meta, separators=(",", ":"), sort_keys=True).encode()
+    ).hexdigest()
+    return {
+        "metadata_inode": stat.st_ino,
+        "metadata_size": stat.st_size,
+        "metadata_mtime_ns": stat.st_mtime_ns,
+        "meta_sha256": meta_digest,
+    }
+
+
+def _per_sample_spatial_outputs_current(data_dir: Path, js_data_dir: Path, meta: dict) -> bool:
+    """Return whether per-sample JS outputs match a completed export manifest."""
+
+    metadata_file = data_dir / "spot_metadata.csv"
+    manifest_path = js_data_dir / "sample_spatial_manifest.json"
+    if not metadata_file.is_file() or metadata_file.stat().st_size == 0:
+        return False
+    if not manifest_path.is_file() or manifest_path.stat().st_size == 0:
+        return False
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+
+    if manifest.get("version") != 1:
+        return False
+    if manifest.get("signature") != _sample_spatial_export_signature(data_dir, meta):
+        return False
+
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        return False
+    return all(
+        (js_data_dir / filename).is_file() and (js_data_dir / filename).stat().st_size > 0
+        for filename in outputs
+    )
 
 
 def export_data_as_js_modules(data_dir: Path):
@@ -1823,14 +2207,14 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
     has_spatial_coords = "sx" in df.columns and "sy" in df.columns
 
     sample_index = {}
+    output_files = []
     max_spots_2d = meta.get("downsampling_n_spots_2d", 250000)
 
     for sample_name in samples:
         sample_df = df[df["sample_name"] == sample_name]
 
         if len(sample_df) == 0:
-            logger.warning(f"No data found for sample: {sample_name}")
-            continue
+            raise ValueError(f"No spot metadata found for configured sample: {sample_name}")
 
         # Track original count before downsampling
         n_spots_original = len(sample_df)
@@ -1885,8 +2269,8 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
 
         # Write per-sample JS file
         js_content = f"window.{var_name} = {json.dumps(data_struct, separators=(',', ':'))};"
-        with open(js_data_dir / file_name, "w", encoding="utf-8") as f:
-            f.write(js_content)
+        _atomic_write_text(js_data_dir / file_name, js_content)
+        output_files.append(file_name)
 
         # Track in sample index
         sample_index[sample_name] = {
@@ -1906,8 +2290,18 @@ def _export_per_sample_spatial_js(data_dir: Path, js_data_dir: Path, meta: dict)
 
     # Export lightweight sample index (loaded upfront)
     js_content = f"window.GSMAP_SAMPLE_INDEX = {json.dumps(sample_index, separators=(',', ':'))};"
-    with open(js_data_dir / "sample_index.js", "w", encoding="utf-8") as f:
-        f.write(js_content)
+    _atomic_write_text(js_data_dir / "sample_index.js", js_content)
+    output_files.append("sample_index.js")
+
+    manifest = {
+        "version": 1,
+        "signature": _sample_spatial_export_signature(data_dir, meta),
+        "outputs": sorted(output_files),
+    }
+    _atomic_write_text(
+        js_data_dir / "sample_spatial_manifest.json",
+        json.dumps(manifest, separators=(",", ":"), sort_keys=True),
+    )
 
     logger.info(f"Exported {len(sample_index)} per-sample spatial JS files + sample_index.js")
 
@@ -1919,8 +2313,7 @@ def _export_cauchy_js(data_dir: Path, js_data_dir: Path):
         df = pd.read_csv(cauchy_file)
         data_json = df.to_json(orient="records")
         js_content = f"window.GSMAP_CAUCHY = {data_json};"
-        with open(js_data_dir / "cauchy_results.js", "w", encoding="utf-8") as f:
-            f.write(js_content)
+        _atomic_write_text(js_data_dir / "cauchy_results.js", js_content)
 
 
 def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
@@ -1952,8 +2345,7 @@ def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
             safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
             js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
 
-            with open(js_data_dir / f"manhattan_{trait}.js", "w", encoding="utf-8") as f:
-                f.write(js_content)
+            _atomic_write_text(js_data_dir / f"manhattan_{trait}.js", js_content)
 
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to export Manhattan JS for {trait}: {e}")
@@ -1962,9 +2354,11 @@ def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
 def _export_report_meta_js(data_dir: Path, js_data_dir: Path, meta: dict):
     """Export report metadata as JS module."""
     if meta:
-        js_content = f"window.GSMAP_REPORT_META = {json.dumps(meta, separators=(',', ':'))};"
-        with open(js_data_dir / "report_meta.js", "w", encoding="utf-8") as f:
-            f.write(js_content)
+        js_content = (
+            "window.GSMAP_REPORT_META = "
+            f"{json.dumps(meta, separators=(',', ':'), sort_keys=True)};"
+        )
+        _write_text_if_changed(js_data_dir / "report_meta.js", js_content)
 
 
 def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
@@ -2031,6 +2425,5 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
         data_struct["color_maps"] = color_maps
 
         js_content = f"window.GSMAP_UMAP = {json.dumps(data_struct, separators=(',', ':'))};"
-        with open(js_data_dir / "umap_data.js", "w", encoding="utf-8") as f:
-            f.write(js_content)
+        _atomic_write_text(js_data_dir / "umap_data.js", js_content)
         logger.info(f"Exported UMAP data with {len(df)} points")
