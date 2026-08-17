@@ -1164,12 +1164,9 @@ def _prepare_3d_visualization(
 
         return None
 
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Failed to create 3D visualization: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return None
+    except Exception:
+        logger.exception("Failed to create 3D visualization")
+        raise
 
 
 # =============================================================================

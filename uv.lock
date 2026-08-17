@@ -1164,6 +1164,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "kaleido" },
     { name = "matplotlib" },
+    { name = "nest-asyncio2" },
     { name = "numba" },
     { name = "numpy" },
     { name = "pandas" },
@@ -1263,6 +1264,7 @@ requires-dist = [
     { name = "jinja2" },
     { name = "kaleido" },
     { name = "matplotlib" },
+    { name = "nest-asyncio2" },
     { name = "numba", specifier = ">=0.60" },
     { name = "numpy", specifier = "~=2.2" },
     { name = "pandas", specifier = ">=2.0,<3.0" },
@@ -2360,6 +2362,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e7/d1/82081750f8a78ad0399c6ed831d42623b891904e8e7b8a75878225cf1dce/nbsphinx-0.9.8.tar.gz", hash = "sha256:d0765908399a8ee2b57be7ae881cf2ea58d66db3af7bbf33e6eb48f83bea5495", size = 417469, upload-time = "2025-11-28T17:41:02.336Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/03/78/843bcf0cf31f88d2f8a9a063d2d80817b1901657d83d65b89b3aa835732e/nbsphinx-0.9.8-py3-none-any.whl", hash = "sha256:92d95ee91784e56bc633b60b767a6b6f23a0445f891e24641ce3c3f004759ccf", size = 31961, upload-time = "2025-11-28T17:41:00.796Z" },
+]
+
+[[package]]
+name = "nest-asyncio2"
+version = "1.7.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/73/731debf26e27e0a0323d7bda270dc2f634b398e38f040a09da1f4351d0aa/nest_asyncio2-1.7.2.tar.gz", hash = "sha256:1921d70b92cc4612c374928d081552efb59b83d91b2b789d935c665fa01729a8", size = 14743, upload-time = "2026-02-13T00:34:04.386Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c5/3c/3179b85b0e1c3659f0369940200cd6d0fa900e6cefcc7ea0bc6dd0e29ffb/nest_asyncio2-1.7.2-py3-none-any.whl", hash = "sha256:f5dfa702f3f81f6a03857e9a19e2ba578c0946a4ad417b4c50a24d7ba641fe01", size = 7843, upload-time = "2026-02-13T00:34:02.691Z" },
 ]
 
 [[package]]
