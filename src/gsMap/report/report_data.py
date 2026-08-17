@@ -41,6 +41,7 @@ class _GeneBlockReportSource:
 
     def __init__(self, report_config: QuickModeConfig):
         self.store = GeneBlockMarkerStore(report_config.marker_score_blocks_manifest_path)
+        self.staging_dir = getattr(report_config, "memmap_tmp_dir", None)
         metadata = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
         try:
             self.obs_names = metadata.obs_names.copy()
@@ -60,7 +61,11 @@ class _GeneBlockReportSource:
             raise KeyError("Report requested spots absent from the gene-block marker store")
         if np.any(gene_indices < 0):
             raise KeyError("Report requested genes absent from the gene-block marker store")
-        return self.store.read_subset(spot_indices, gene_indices)
+        return self.store.read_subset(
+            spot_indices,
+            gene_indices,
+            staging_dir=self.staging_dir,
+        )
 
     def close(self) -> None:
         self.store.close()
@@ -193,11 +198,18 @@ class ReportDataManager:
         logger.info(f"Processing GSS statistics for {len(traits_to_run)} traits...")
 
         # Load GSS and common spots
+        gss_matrix = None
+        gene_names = None
         if self.gss_adata is None:
-            self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = (
-                _load_gss_and_calculate_stats_base(
-                    self.report_config, self.ldsc_results, self.coords, self.report_data_dir
-                )
+            (
+                self.common_spots,
+                self.gss_adata,
+                self.gene_stats,
+                self.analysis_spots,
+                gss_matrix,
+                gene_names,
+            ) = _load_gss_and_calculate_stats_base(
+                self.report_config, self.ldsc_results, self.coords, self.report_data_dir
             )
 
         # Pre-filter to high expression genes and pre-calculate centered matrix
@@ -205,15 +217,16 @@ class ReportDataManager:
         high_expr_genes = exp_frac[exp_frac["frac"] > 0.01].index.tolist()
 
         # Use analysis_spots (subsampled) for PCC calculation
-        if isinstance(self.gss_adata, _GeneBlockReportSource):
-            gss_matrix = self.gss_adata.read_subset(self.analysis_spots, high_expr_genes)
-            gene_names = high_expr_genes
-        else:
-            gss_adata_sub = self.gss_adata[self.analysis_spots, high_expr_genes]
-            gss_matrix = gss_adata_sub.X
-            if hasattr(gss_matrix, "toarray"):
-                gss_matrix = gss_matrix.toarray()
-            gene_names = gss_adata_sub.var_names.tolist()
+        if gss_matrix is None:
+            if isinstance(self.gss_adata, _GeneBlockReportSource):
+                gss_matrix = self.gss_adata.read_subset(self.analysis_spots, high_expr_genes)
+                gene_names = high_expr_genes
+            else:
+                gss_adata_sub = self.gss_adata[self.analysis_spots, high_expr_genes]
+                gss_matrix = gss_adata_sub.X
+                if hasattr(gss_matrix, "toarray"):
+                    gss_matrix = gss_matrix.toarray()
+                gene_names = gss_adata_sub.var_names.tolist()
 
         gss_mean = gss_matrix.mean(axis=0).astype(np.float32)
         gss_centered = (gss_matrix - gss_mean).astype(np.float32)
@@ -406,11 +419,17 @@ class ReportDataManager:
 
         # Ensure GSS data is loaded if we need to plot
         if self.gss_adata is None:
-            self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = (
-                _load_gss_and_calculate_stats_base(
-                    self.report_config, self.ldsc_results, self.coords, self.report_data_dir
-                )
+            (
+                self.common_spots,
+                self.gss_adata,
+                self.gene_stats,
+                self.analysis_spots,
+                unused_gss_matrix,
+                unused_gene_names,
+            ) = _load_gss_and_calculate_stats_base(
+                self.report_config, self.ldsc_results, self.coords, self.report_data_dir
             )
+            del unused_gss_matrix, unused_gene_names
 
         _render_gene_diagnostic_plots_refactored(
             self.report_config,
@@ -1305,7 +1324,14 @@ def _load_gss_and_calculate_stats_base(
     ldsc_results: pd.DataFrame,
     coords: pd.DataFrame,
     report_dir: Path,
-) -> tuple[np.ndarray, ad.AnnData | _GeneBlockReportSource, pd.DataFrame, np.ndarray]:
+) -> tuple[
+    np.ndarray,
+    ad.AnnData | _GeneBlockReportSource,
+    pd.DataFrame,
+    np.ndarray,
+    np.ndarray,
+    list[str],
+]:
     """Load GSS data, calculate general stats, and return analysis results."""
     logger.info("Loading GSS data...")
 
@@ -1345,8 +1371,11 @@ def _load_gss_and_calculate_stats_base(
 
     # Calculate gene annotation stats
     adata_concat = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
-    anno_col = report_config.annotation_list[0]
-    annotations = adata_concat.obs.loc[analysis_spots, anno_col]
+    try:
+        anno_col = report_config.annotation_list[0]
+        annotations = adata_concat.obs.loc[analysis_spots, anno_col]
+    finally:
+        adata_concat.file.close()
 
     if hasattr(gss_matrix, "toarray"):
         gss_matrix = gss_matrix.toarray()
@@ -1363,7 +1392,7 @@ def _load_gss_and_calculate_stats_base(
     )
     gene_stats.dropna(subset=["Median_GSS"], inplace=True)
 
-    return common_spots, gss_adata, gene_stats, analysis_spots
+    return common_spots, gss_adata, gene_stats, analysis_spots, gss_matrix, gene_names
 
 
 def _calculate_pcc_for_single_trait_fast(

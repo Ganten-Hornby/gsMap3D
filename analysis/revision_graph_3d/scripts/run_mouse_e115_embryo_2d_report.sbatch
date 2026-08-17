@@ -16,11 +16,21 @@ readonly SNP_GENE_WEIGHTS=/storage/yangjianLab/lilounan/resources/1000GP3_GRCh37
 readonly W_LD_DIR=/storage/yangjianLab/lilounan/resources/gsMap_resource/LDSC_resource/weights_hm3_no_hla
 readonly N_SPOTS=6993667
 readonly PYTHON="${PROJECT_ROOT}/.venv/bin/python"
+readonly REPORT_TMP_DIR="/tmp/gsmap-${USER}/${SLURM_JOB_ID}"
 
-mkdir -p "${PROJECT_ROOT}/analysis/revision_graph_3d/logs"
+mkdir -p "${PROJECT_ROOT}/analysis/revision_graph_3d/logs" "${RUN_DIR}"
 
 record_exit() {
     local status=$?
+    trap - EXIT
+    case "${REPORT_TMP_DIR}" in
+        "/tmp/gsmap-${USER}/${SLURM_JOB_ID}")
+            rm -rf -- "${REPORT_TMP_DIR}"
+            ;;
+        *)
+            printf 'Refusing to clean unexpected report scratch path: %s\n' "${REPORT_TMP_DIR}" >&2
+            ;;
+    esac
     {
         printf 'job_id=%s\n' "${SLURM_JOB_ID:-unknown}"
         printf 'exit_code=%s\n' "${status}"
@@ -29,6 +39,11 @@ record_exit() {
     exit "${status}"
 }
 trap record_exit EXIT
+
+mkdir -p "${REPORT_TMP_DIR}"
+[[ -w "${REPORT_TMP_DIR}" ]]
+findmnt -T "${REPORT_TMP_DIR}"
+df -h "${REPORT_TMP_DIR}"
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
@@ -60,6 +75,7 @@ printf 'visualization_spots=%s (no downsampling)\n' "${N_SPOTS}"
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
     --marker-score-format gene_block \
+    --memmap-tmp-dir "${REPORT_TMP_DIR}" \
     --downsampling-n-spots-pcc 100000 \
     --downsampling-n-spots-2d "${N_SPOTS}" \
     --downsampling-n-spots-3d "${N_SPOTS}" \

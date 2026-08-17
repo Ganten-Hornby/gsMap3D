@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -302,6 +303,7 @@ class GeneBlockMarkerStore:
         self.blocks = self.manifest["blocks"]
         self.source_fingerprint = self.manifest.get("source_fingerprint")
         self.gene_names_checksum = self.manifest.get("gene_names_sha256")
+        self._subset_staging_lock = threading.Lock()
         self._validate_manifest_and_files()
 
     def _validate_manifest_and_files(self) -> None:
@@ -416,8 +418,10 @@ class GeneBlockMarkerStore:
         self,
         spot_indices: np.ndarray,
         gene_indices: np.ndarray,
+        *,
+        staging_dir: str | Path | None = None,
     ) -> np.ndarray:
-        """Read an arbitrary spot-by-gene subset without materializing the full store."""
+        """Read a spot-by-gene subset, optionally staging each block on local storage."""
 
         spot_indices = np.asarray(spot_indices, dtype=np.int64)
         gene_indices = np.asarray(gene_indices, dtype=np.int64)
@@ -432,19 +436,87 @@ class GeneBlockMarkerStore:
         ):
             raise IndexError("Requested gene subset is outside the marker store")
 
+        if staging_dir is None:
+            return self._read_subset(spot_indices, gene_indices, staging_dir=None)
+
+        # A report can load samples concurrently. Serialize staged reads so the
+        # job-local filesystem never holds more than one full gene block.
+        with self._subset_staging_lock:
+            return self._read_subset(
+                spot_indices,
+                gene_indices,
+                staging_dir=Path(staging_dir),
+            )
+
+    def _read_subset(
+        self,
+        spot_indices: np.ndarray,
+        gene_indices: np.ndarray,
+        *,
+        staging_dir: Path | None,
+    ) -> np.ndarray:
         result = np.empty((len(spot_indices), len(gene_indices)), dtype=np.float32)
+        if staging_dir is not None:
+            staging_dir.mkdir(parents=True, exist_ok=True)
+
         for block in self.blocks:
             in_block = (gene_indices >= block["start"]) & (gene_indices < block["end"])
             output_columns = np.flatnonzero(in_block)
             if not len(output_columns):
                 continue
             local_columns = gene_indices[in_block] - block["start"]
-            memmap = self._open_block(block)
-            result[:, output_columns] = np.asarray(
-                memmap[np.ix_(spot_indices, local_columns)],
-                dtype=np.float32,
-            )
-            del memmap
+
+            source_path = self.manifest_path.parent / block["path"]
+            staged_path = None
+            partial_path = None
+            memmap = None
+            try:
+                if staging_dir is not None:
+                    staging_token = f"{os.getpid()}-{id(self):x}"
+                    staged_path = staging_dir / f".gsmap-{staging_token}-{source_path.name}"
+                    partial_path = staging_dir / (
+                        f".gsmap-{staging_token}-{source_path.name}.partial"
+                    )
+                    staged_path.unlink(missing_ok=True)
+                    partial_path.unlink(missing_ok=True)
+                    required_bytes = source_path.stat().st_size
+                    reserve_bytes = 1024**3
+                    free_bytes = shutil.disk_usage(staging_dir).free
+                    if free_bytes < required_bytes + reserve_bytes:
+                        raise OSError(
+                            f"Insufficient local staging space in {staging_dir}: "
+                            f"need {(required_bytes + reserve_bytes) / 1024**3:.1f} GiB "
+                            f"including reserve, found {free_bytes / 1024**3:.1f} GiB"
+                        )
+                    logger.info(
+                        "Staging marker-score block %s (%.1f GiB) in %s",
+                        source_path.name,
+                        required_bytes / 1024**3,
+                        staging_dir,
+                    )
+                    shutil.copyfile(source_path, partial_path)
+                    os.replace(partial_path, staged_path)
+
+                if staged_path is None:
+                    memmap = self._open_block(block)
+                else:
+                    memmap = np.memmap(
+                        staged_path,
+                        mode="r",
+                        dtype=self.dtype,
+                        shape=(self.shape[0], block["end"] - block["start"]),
+                    )
+                result[:, output_columns] = np.asarray(
+                    memmap[np.ix_(spot_indices, local_columns)],
+                    dtype=np.float32,
+                )
+            finally:
+                del memmap
+                if staged_path is not None:
+                    staged_path.unlink(missing_ok=True)
+                    if partial_path is not None:
+                        partial_path.unlink(missing_ok=True)
+                    logger.info("Removed staged marker-score block %s", staged_path)
         return result
 
     def close(self) -> None:

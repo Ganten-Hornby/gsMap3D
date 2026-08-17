@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import anndata as ad
@@ -8,6 +9,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
+import gsMap.latent2gene.gene_blocks as gene_blocks_module
 import gsMap.pipeline.quick_mode as quick_mode_module
 from gsMap.config.cauchy_config import check_cauchy_done
 from gsMap.config.latent2gene_config import check_latent2gene_done
@@ -246,7 +248,68 @@ def test_gene_block_store_reads_arbitrary_spot_and_gene_subset(tmp_path):
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_report_reads_gene_block_marker_scores_without_full_memmap(tmp_path):
+def test_gene_block_store_stages_subset_blocks_locally_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    marker_scores = np.arange(24, dtype=np.float16).reshape(4, 6)
+    block_dir = tmp_path / "shared"
+    block_dir.mkdir()
+    blocks = []
+    for start, end in ((0, 3), (3, 6)):
+        path = block_dir / f"block_{start}_{end}.dat"
+        block = np.memmap(path, mode="w+", dtype=np.float16, shape=(4, end - start))
+        block[:] = marker_scores[:, start:end]
+        block.flush()
+        del block
+        blocks.append({"start": start, "end": end, "path": path.name, "complete": True})
+
+    manifest_path = block_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "format_version": GENE_BLOCK_FORMAT_VERSION,
+                "shape": [4, 6],
+                "dtype": "float16",
+                "gene_block_size": 3,
+                "complete": True,
+                "gene_names_sha256": gene_names_sha256(
+                    [f"gene-{index}" for index in range(6)]
+                ),
+                "source_fingerprint": "0" * 64,
+                "blocks": blocks,
+            }
+        )
+    )
+
+    staging_dir = tmp_path / "local-ssd"
+    opened_paths = []
+    original_memmap = np.memmap
+
+    def recording_memmap(filename, *args, **kwargs):
+        opened_paths.append(Path(filename))
+        return original_memmap(filename, *args, **kwargs)
+
+    monkeypatch.setattr(gene_blocks_module.np, "memmap", recording_memmap)
+    store = GeneBlockMarkerStore(manifest_path)
+    spot_indices = np.asarray([3, 1])
+    gene_indices = np.asarray([5, 0, 3])
+
+    actual = store.read_subset(
+        spot_indices,
+        gene_indices,
+        staging_dir=staging_dir,
+    )
+
+    np.testing.assert_array_equal(
+        actual,
+        marker_scores[np.ix_(spot_indices, gene_indices)].astype(np.float32),
+    )
+    assert opened_paths
+    assert all(path.parent == staging_dir for path in opened_paths)
+    assert list(staging_dir.iterdir()) == []
+
+
+def test_report_reads_gene_block_marker_scores_without_full_memmap(tmp_path, monkeypatch):
     obs_names = pd.Index(["spot-a", "spot-b", "spot-c", "spot-d"])
     gene_names = pd.Index(["gene-a", "gene-b", "gene-c"])
     marker_scores = np.asarray(
@@ -310,16 +373,20 @@ def test_report_reads_gene_block_marker_scores_without_full_memmap(tmp_path):
         / f"gene_trait_correlation_{trait}.csv"
     )
 
-    common_spots, source, gene_stats, analysis_spots = _load_gss_and_calculate_stats_base(
-        config,
-        ldsc_results,
-        pd.DataFrame(index=obs_names),
-        tmp_path,
+    common_spots, source, gene_stats, analysis_spots, gss_matrix, loaded_genes = (
+        _load_gss_and_calculate_stats_base(
+            config,
+            ldsc_results,
+            pd.DataFrame(index=obs_names),
+            tmp_path,
+        )
     )
 
     assert isinstance(source, _GeneBlockReportSource)
     np.testing.assert_array_equal(common_spots, obs_names.sort_values())
     np.testing.assert_array_equal(analysis_spots, obs_names.sort_values())
+    np.testing.assert_array_equal(gss_matrix, marker_scores.astype(np.float32))
+    assert loaded_genes == gene_names.tolist()
     np.testing.assert_array_equal(
         source.read_subset(["spot-d", "spot-b"], ["gene-c", "gene-a"]),
         marker_scores[np.ix_([3, 1], [2, 0])].astype(np.float32),
@@ -327,12 +394,22 @@ def test_report_reads_gene_block_marker_scores_without_full_memmap(tmp_path):
     assert set(gene_stats["gene"]) == set(gene_names)
     source.close()
 
+    read_count = 0
+    original_read_subset = GeneBlockMarkerStore.read_subset
+
+    def counting_read_subset(self, *args, **kwargs):
+        nonlocal read_count
+        read_count += 1
+        return original_read_subset(self, *args, **kwargs)
+
+    monkeypatch.setattr(GeneBlockMarkerStore, "read_subset", counting_read_subset)
     manager = ReportDataManager(config)
     manager.ldsc_results = ldsc_results
     manager.traits = ["trait"]
     manager.coords = pd.DataFrame(index=obs_names)
     manager.prepare_gss_stats()
     assert config.get_gene_diagnostic_info_save_path("trait").is_file()
+    assert read_count == 1
     manager.close()
 
 
