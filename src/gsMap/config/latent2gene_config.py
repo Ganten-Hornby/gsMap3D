@@ -3,6 +3,7 @@ Configuration for latent to gene mapping.
 """
 
 import logging
+import math
 from collections import OrderedDict
 from dataclasses import dataclass
 from enum import StrEnum
@@ -342,6 +343,16 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         """Initialize and validate configuration"""
         super().__post_init__()
 
+        # Dataclass construction does not coerce programmatic string values to
+        # StrEnum members (Typer does). Normalize both API and CLI calls so all
+        # downstream comparisons, logging, and metadata use one representation.
+        self.dataset_type = DatasetType(self.dataset_type)
+        self.cross_slice_marker_score_strategy = MarkerScoreCrossSliceStrategy(
+            self.cross_slice_marker_score_strategy
+        )
+        self.cross_slice_selection_mode = CrossSliceSelectionMode(self.cross_slice_selection_mode)
+        self.homogeneous_selection_mode = HomogeneousSelectionMode(self.homogeneous_selection_mode)
+
         # Step 1: Configure JAX platform
         configure_jax_platform(self.use_gpu)
 
@@ -483,9 +494,11 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
                 "latent_representation_niche is not provided. Spatial domain similarity will not be used."
             )
 
-        assert self.homogeneous_neighbors <= self.spatial_neighbors, (
-            f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors}) for spatial2D datasets"
-        )
+        if self.homogeneous_neighbors > self.spatial_neighbors:
+            raise ValueError(
+                f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= "
+                f"spatial_neighbors ({self.spatial_neighbors}) for spatial2D datasets"
+            )
 
     def _configure_spatial_3d(self):
         """Configure parameters for spatial 3D datasets"""
@@ -501,30 +514,37 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
                 "latent_representation_niche is not provided. Spatial domain similarity will not be used."
             )
 
-        assert self.adjacent_slice_spatial_neighbors <= self.spatial_neighbors, (
-            f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors})"
-        )
-        assert self.homogeneous_neighbors <= self.adjacent_slice_spatial_neighbors, (
-            f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors})"
-        )
+        if self.adjacent_slice_spatial_neighbors > self.spatial_neighbors:
+            raise ValueError(
+                f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors}) must be "
+                f"<= spatial_neighbors ({self.spatial_neighbors})"
+            )
+        if self.homogeneous_neighbors > self.adjacent_slice_spatial_neighbors:
+            raise ValueError(
+                f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= "
+                f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors})"
+            )
+
+        if not math.isfinite(self.cross_slice_z_scale) or self.cross_slice_z_scale <= 0:
+            raise ValueError("cross_slice_z_scale must be positive for spatial3D datasets")
 
         if self.cross_slice_selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
-            if self.cross_slice_max_distance is None or self.cross_slice_max_distance <= 0:
+            if (
+                self.cross_slice_max_distance is None
+                or not math.isfinite(self.cross_slice_max_distance)
+                or self.cross_slice_max_distance <= 0
+            ):
                 raise ValueError(
                     "cross_slice_max_distance must be positive when "
                     "cross_slice_selection_mode='physical_window'"
                 )
-            if self.cross_slice_z_scale <= 0:
-                raise ValueError(
-                    "cross_slice_z_scale must be positive when "
-                    "cross_slice_selection_mode='physical_window'"
-                )
-
         n_slices = 1 + self.n_adjacent_slices  # only focal + above slices
-        assert n_slices <= len(self.sample_h5ad_dict), (
-            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). "
-            f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce adjacent_slices."
-        )
+        if n_slices > len(self.sample_h5ad_dict):
+            raise ValueError(
+                f"3D cross-slice search requires at least {n_slices} slices (1 focal + "
+                f"{self.n_adjacent_slices} above or below). Only "
+                f"{len(self.sample_h5ad_dict)} samples were provided."
+            )
 
         if self.cross_slice_selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
             logger.info(
@@ -603,9 +623,9 @@ def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
 
         # Check metadata
         with open(expected_outputs["metadata"]) as f:
-            metadata = yaml.unsafe_load(f)
+            metadata = yaml.safe_load(f)
 
-        if "outputs" not in metadata:
+        if not isinstance(metadata, dict) or "outputs" not in metadata:
             return False
 
         return True

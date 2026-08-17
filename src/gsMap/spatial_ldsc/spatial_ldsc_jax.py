@@ -58,6 +58,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     n_loader_threads = 10 if jax.default_backend() == "gpu" else 2
 
     marker_score_adata = None
+    trait_failures: list[tuple[str, Exception]] = []
 
     try:
         if config.ldscore_h5ad_path is not None:
@@ -175,7 +176,15 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     logger.error(
                         f"Trait {trait_name} failed; continuing with the next trait: {error}"
                     )
+                    trait_failures.append((trait_name, error))
                     continue  # Move on to the next trait even if this one fails
+
+            if trait_failures:
+                failed_traits = ", ".join(name for name, _ in trait_failures)
+                raise RuntimeError(
+                    f"Spatial LDSC failed for {len(trait_failures)}/"
+                    f"{len(traits_to_process)} traits: {failed_traits}"
+                ) from trait_failures[0][1]
 
         finally:
             # Cleanup once: close memmap/adata if needed

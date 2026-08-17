@@ -244,9 +244,9 @@ def build_radius_spatial_graph(
     """
 
     coords = _validate_coordinates(coords)
-    if radius <= 0:
+    if not np.isfinite(radius) or radius <= 0:
         raise ValueError("radius must be positive")
-    if sigma is not None and sigma <= 0:
+    if sigma is not None and (not np.isfinite(sigma) or sigma <= 0):
         raise ValueError("sigma must be positive")
     if coords.shape[0] <= 1:
         return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)

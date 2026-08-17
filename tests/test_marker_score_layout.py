@@ -16,6 +16,7 @@ from gsMap.latent2gene.marker_layout import (
 from gsMap.latent2gene.marker_scores import MarkerScoreCalculator
 from gsMap.latent2gene.memmap_io import (
     MemMapDense,
+    ParallelMarkerScoreWriter,
     _automatic_lustre_stripe_count,
     _should_use_tmp_storage,
 )
@@ -330,6 +331,49 @@ def test_marker_input_reuses_live_rank_scratch_mapping(tmp_path, monkeypatch):
     rank.close()
 
 
+def test_invalid_marker_input_closes_live_rank_scratch_mapping(tmp_path, monkeypatch):
+    project_dir = tmp_path / "project"
+    scratch_dir = tmp_path / "scratch"
+    project_dir.mkdir()
+    scratch_dir.mkdir()
+    rank_path = project_dir / "ranks.dat"
+    adata_path = project_dir / "concatenated_latent_adata.h5ad"
+    _force_distinct_scratch_with_capacity(monkeypatch)
+
+    rank = MemMapDense(
+        rank_path,
+        shape=(3, 2),
+        dtype=np.float16,
+        mode="w",
+        num_write_workers=0,
+        tmp_dir=scratch_dir,
+    )
+    rank.publish()
+    scratch_subdir = rank.tmp_subdir
+
+    ad.AnnData(
+        X=np.zeros((2, 2), dtype=np.float32),
+        obs=pd.DataFrame(index=["a", "b"]),
+        var=pd.DataFrame(index=["g1", "g2"]),
+    ).write_h5ad(adata_path)
+
+    calculator = object.__new__(MarkerScoreCalculator)
+    calculator.config = SimpleNamespace(
+        high_quality_neighbor_filter=False,
+        memmap_tmp_dir=scratch_dir,
+    )
+    calculator.load_global_stats = lambda path: (
+        np.zeros(2, dtype=np.float32),
+        np.ones(2, dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="Cell count mismatch"):
+        calculator._load_input_data(adata_path, rank, "unused.parquet")
+
+    assert rank._closed
+    assert not scratch_subdir.exists()
+
+
 def test_staged_marker_output_publishes_data_metadata_and_mapping_together(
     tmp_path,
     monkeypatch,
@@ -373,4 +417,145 @@ def test_staged_marker_output_publishes_data_metadata_and_mapping_together(
     finally:
         completed._mmap.close()
     assert marker_obs_indices_path(marker_path).is_file()
+    assert not list(scratch_dir.glob("memmap_*"))
+
+
+def test_check_complete_accepts_metadata_path(tmp_path):
+    marker_path = tmp_path / "marker_scores.dat"
+    _write_marker_memmap(marker_path, np.zeros((2, 3), dtype=np.float16))
+
+    metadata_path = marker_path.with_suffix(".meta.json")
+    assert MemMapDense.check_complete(metadata_path)[0]
+
+
+def test_memmap_open_rejects_metadata_dtype_mismatch(tmp_path):
+    marker_path = tmp_path / "marker_scores.dat"
+    _write_marker_memmap(marker_path, np.zeros((2, 3), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="Dtype mismatch"):
+        MemMapDense(marker_path, shape=(2, 3), dtype=np.float16, mode="r")
+
+
+def test_zero_worker_memmap_write_batch_is_synchronous(tmp_path):
+    marker_path = tmp_path / "marker_scores.dat"
+    marker = MemMapDense(
+        marker_path,
+        shape=(3, 2),
+        dtype=np.float16,
+        mode="w",
+        num_write_workers=0,
+    )
+    values = np.arange(6, dtype=np.float16).reshape(3, 2)
+
+    marker.write_batch(values, slice(0, 3))
+    marker.close()
+
+    completed = np.memmap(marker_path, dtype=np.float16, mode="r", shape=(3, 2))
+    try:
+        np.testing.assert_array_equal(completed, values)
+    finally:
+        completed._mmap.close()
+
+
+def test_parallel_marker_writer_rejects_zero_workers(tmp_path):
+    marker = MemMapDense(
+        tmp_path / "marker_scores.dat",
+        shape=(1, 1),
+        dtype=np.float16,
+        mode="w",
+        num_write_workers=0,
+    )
+    try:
+        with pytest.raises(ValueError, match="at least one worker"):
+            ParallelMarkerScoreWriter(marker, num_workers=0)
+    finally:
+        marker.abort()
+
+
+def test_annotation_free_marker_mode_does_not_create_invalid_obs_column(tmp_path):
+    calculator = object.__new__(MarkerScoreCalculator)
+    calculator.config = SimpleNamespace(annotation=None)
+    adata = ad.AnnData(
+        X=np.zeros((2, 1), dtype=np.float32),
+        obs=pd.DataFrame(index=["a", "b"]),
+        var=pd.DataFrame(index=["g1"]),
+    )
+
+    assert calculator._get_cell_types(adata) == ["all"]
+    assert None not in adata.obs.columns
+    adata.write_h5ad(tmp_path / "annotation_free.h5ad")
+
+
+def test_parallel_marker_writer_surfaces_write_failure_without_deadlock(tmp_path):
+    marker_path = tmp_path / "marker_scores.dat"
+    marker = MemMapDense(
+        marker_path,
+        shape=(2, 2),
+        dtype=np.float16,
+        mode="w",
+        num_write_workers=0,
+    )
+    writer = ParallelMarkerScoreWriter(marker, num_workers=1, queue_size=2)
+
+    class BrokenArray:
+        def __setitem__(self, key, value):
+            del key, value
+            raise OSError("synthetic marker write failure")
+
+    writer.shared_memmap = BrokenArray()
+    writer.write_queue.put((0, np.ones((1, 2), dtype=np.float16), np.asarray([0], dtype=np.int64)))
+    try:
+        with pytest.raises(RuntimeError, match="synthetic marker write failure"):
+            writer.close()
+    finally:
+        writer.abort()
+        marker.abort()
+
+    assert not MemMapDense.check_complete(marker_path)[0]
+
+
+def test_memmap_abort_removes_scratch_without_publishing(tmp_path, monkeypatch):
+    project_dir = tmp_path / "project"
+    scratch_dir = tmp_path / "scratch"
+    project_dir.mkdir()
+    scratch_dir.mkdir()
+    marker_path = project_dir / "marker_scores.dat"
+    _force_distinct_scratch_with_capacity(monkeypatch)
+
+    marker = MemMapDense(
+        marker_path,
+        shape=(2, 3),
+        dtype=np.float16,
+        mode="w",
+        num_write_workers=0,
+        tmp_dir=scratch_dir,
+    )
+    scratch_subdir = marker.tmp_subdir
+    marker.memmap[:] = 1
+    marker.abort()
+
+    assert not scratch_subdir.exists()
+    assert not marker_path.exists()
+    assert not marker_path.with_suffix(".meta.json").exists()
+
+
+def test_memmap_constructor_failure_removes_staged_scratch(tmp_path, monkeypatch):
+    project_dir = tmp_path / "project"
+    scratch_dir = tmp_path / "scratch"
+    project_dir.mkdir()
+    scratch_dir.mkdir()
+    rank_path = project_dir / "ranks.dat"
+    _write_marker_memmap(rank_path, np.zeros((3, 2), dtype=np.float16))
+    _force_distinct_scratch_with_capacity(monkeypatch)
+
+    with pytest.raises(ValueError, match="Dtype mismatch"):
+        MemMapDense(
+            rank_path,
+            shape=(3, 2),
+            dtype=np.float32,
+            mode="r",
+            num_write_workers=0,
+            tmp_dir=scratch_dir,
+        )
+
     assert not list(scratch_dir.glob("memmap_*"))

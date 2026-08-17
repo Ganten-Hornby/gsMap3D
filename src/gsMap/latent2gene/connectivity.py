@@ -192,13 +192,29 @@ def find_spatial_neighbors_with_slices(
                 "physical_window cross-section selection requires a spatial key "
                 "with at least three coordinate columns"
             )
-        if cross_slice_max_distance is None or cross_slice_max_distance <= 0:
+        if (
+            cross_slice_max_distance is None
+            or not np.isfinite(cross_slice_max_distance)
+            or cross_slice_max_distance <= 0
+        ):
             raise ValueError(
                 "cross_slice_max_distance must be positive for physical_window selection"
             )
-        if cross_slice_z_scale <= 0:
+        if not np.isfinite(cross_slice_z_scale) or cross_slice_z_scale <= 0:
             raise ValueError("cross_slice_z_scale must be positive for physical_window selection")
-        z_column = cross_slice_z_coordinate % coords.shape[1]
+        z_column = cross_slice_z_coordinate
+        if z_column < 0:
+            z_column += coords.shape[1]
+        if not 0 <= z_column < coords.shape[1]:
+            raise IndexError(
+                f"cross_slice_z_coordinate={cross_slice_z_coordinate} is outside "
+                f"the {coords.shape[1]} spatial coordinate columns"
+            )
+        if z_column < 2:
+            raise ValueError(
+                "cross_slice_z_coordinate must identify a registered z column after "
+                "the first two x/y spatial coordinates"
+            )
         slice_z_positions = {
             slice_id: float(
                 np.median(coords[slice_ids == slice_id, z_column]) * cross_slice_z_scale
@@ -211,7 +227,8 @@ def find_spatial_neighbors_with_slices(
     for slice_id in unique_slice_ids:
         target_count = 2 * n_adjacent_slices
         if selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
-            assert slice_z_positions is not None
+            if slice_z_positions is None:
+                raise RuntimeError("Physical z positions were not initialized")
             focal_z = slice_z_positions[slice_id]
             adjacent_slices = []
             for candidate_slice in unique_slice_ids:
@@ -469,7 +486,6 @@ def _find_homogeneous_3d_memory_efficient(
         homogeneous_niche_sims: Niche/Spatial similarity scores for selected neighbors
     """
     n_masked = emb_indv_masked_jax.shape[0]
-    1 + 2 * n_adjacent_slices
 
     homogeneous_neighbors_all_slices = []
     homogeneous_cell_sims_all_slices = []

@@ -27,9 +27,7 @@ def _run_directories(project_dir: Path) -> list[Path]:
     return sorted(
         path
         for path in (project_dir / "logs").iterdir()
-        if path.name != "latest"
-        and path.is_dir()
-        and (path / "run_manifest.json").is_file()
+        if path.name != "latest" and path.is_dir() and (path / "run_manifest.json").is_file()
     )
 
 
@@ -61,12 +59,10 @@ def test_console_levels_and_plain_debug_file(tmp_path, capsys):
     assert "console-warning-message" in captured.err
     assert "debug-only-message" not in captured.out + captured.err
     assert "\x1b[" not in captured.out + captured.err
-    assert len(
-        [line for line in captured.out.splitlines() if "console-info-message" in line]
-    ) == 1
-    assert len(
-        [line for line in captured.err.splitlines() if "console-warning-message" in line]
-    ) == 1
+    assert len([line for line in captured.out.splitlines() if "console-info-message" in line]) == 1
+    assert (
+        len([line for line in captured.err.splitlines() if "console-warning-message" in line]) == 1
+    )
 
     log_text = (run_dir / "02_latent_to_gene.log").read_text()
     assert "debug-only-message" in log_text
@@ -126,6 +122,19 @@ def test_nested_stages_are_split_and_same_stage_is_idempotent(tmp_path):
         ("quick_mode", "complete"),
         ("find_latent", "complete"),
     ]
+
+
+def test_caught_nested_same_stage_failure_remains_failed(tmp_path):
+    with stage_logging(tmp_path, "find_latent") as session:
+        run_dir = session.run_dir
+        with pytest.raises(RuntimeError, match="nested failure"):
+            with stage_logging(tmp_path, "find_latent"):
+                raise RuntimeError("nested failure")
+
+    manifest = _manifest(run_dir)
+    assert manifest["status"] == "failed"
+    assert manifest["stages"][0]["status"] == "failed"
+    assert manifest["stages"][0]["error_message"] == "nested failure"
 
 
 def test_trait_failure_has_traceback_and_marks_partial_run(tmp_path, capsys):

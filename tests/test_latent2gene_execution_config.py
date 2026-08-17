@@ -10,9 +10,9 @@ from scipy.stats import rankdata
 from gsMap.config.latent2gene_config import LatentToGeneComputeConfig
 from gsMap.latent2gene.memmap_io import set_memmap_advice
 from gsMap.latent2gene.rank_calculator import (
-    _RankProgressReporter,
     _automatic_sparse_rank_batch_size,
     _build_log_rank_lookup,
+    _RankProgressReporter,
     _sparse_log_rank_bits,
 )
 

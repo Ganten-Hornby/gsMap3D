@@ -75,3 +75,38 @@ def test_hierarchical_transform_preserves_representable_pooled_value():
     # slice is representable. It must therefore be pooled before final saturation.
     expected = np.float16(transformed_score / 2.0)
     assert abs(float(result[0, 0]) - transformed_score / 2.0) <= float(np.spacing(expected))
+
+
+def test_standard_marker_score_returns_zero_for_fully_filtered_neighborhood():
+    result = np.asarray(
+        compute_marker_scores_jax(
+            jnp.zeros((2, 3), dtype=jnp.float32),
+            jnp.zeros((1, 2), dtype=jnp.float32),
+            1,
+            2,
+            jnp.zeros(3, dtype=jnp.float32),
+            jnp.zeros(3, dtype=jnp.float32),
+            True,
+        )
+    )
+
+    assert np.isfinite(result).all()
+    np.testing.assert_array_equal(result, np.zeros((1, 3), dtype=np.float16))
+
+
+def test_hierarchical_marker_score_returns_zero_when_every_slice_is_missing():
+    result = np.asarray(
+        compute_marker_scores_3d_hierarchical_pool_jax(
+            jnp.zeros((4, 3), dtype=jnp.float32),
+            jnp.zeros((1, 4), dtype=jnp.float32),
+            1,
+            2,
+            2,
+            jnp.zeros(3, dtype=jnp.float32),
+            jnp.zeros(3, dtype=jnp.float32),
+            True,
+        )
+    )
+
+    assert np.isfinite(result).all()
+    np.testing.assert_array_equal(result, np.zeros((1, 3), dtype=np.float16))

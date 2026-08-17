@@ -146,7 +146,9 @@ def compute_marker_scores_jax(
     log_ranks_3d = log_ranks.reshape(batch_size, num_neighbors, n_genes)
 
     # Compute weighted geometric mean in log space
-    weights = weights / weights.sum(axis=1, keepdims=True)  # Normalize weights
+    weight_sums = weights.sum(axis=1, keepdims=True)
+    valid_neighborhood = weight_sums > 0
+    weights = weights / jnp.where(valid_neighborhood, weight_sums, 1.0)
     weighted_log_mean = jnp.einsum("bn,bng->bg", weights, log_ranks_3d)
 
     # Calculate marker score
@@ -177,6 +179,10 @@ def compute_marker_scores_jax(
         marker_score = jnp.where(frac_mask, marker_score, 0.0)
 
     marker_score = jnp.minimum(jnp.exp(marker_score**1.5) - 1.0, _FLOAT16_MARKER_SCORE_MAX)
+    # A fully filtered neighborhood carries no evidence. In particular, do not
+    # let an all-zero weight vector become NaN or a non-zero score when the
+    # expression-fraction filter is disabled.
+    marker_score = jnp.where(valid_neighborhood, marker_score, 0.0)
 
     # Return as float16 for memory efficiency
     return marker_score.astype(jnp.float16)
@@ -210,8 +216,6 @@ def compute_marker_scores_3d_hierarchical_pool_jax(
         (batch_size, n_genes) marker scores using average cross slices
     """
     n_genes = log_ranks.shape[1]
-    n_slices * num_homogeneous_per_slice
-
     # Reshape to separate slices: (batch_size, n_slices, num_homogeneous_per_slice, n_genes)
     log_ranks_4d = log_ranks.reshape(batch_size, n_slices, num_homogeneous_per_slice, n_genes)
 
@@ -376,11 +380,16 @@ class MarkerScoreCalculator:
 
     def _display_input_summary(self, adata, cell_types, n_cells, n_genes):
         """Display summary of input data and cell types"""
-        ct_counts = adata.obs[self.config.annotation].value_counts()
+        dataset_type = getattr(self.config.dataset_type, "value", self.config.dataset_type)
+        ct_counts = (
+            adata.obs[self.config.annotation].value_counts()
+            if self.config.annotation is not None
+            else pd.Series({"all": adata.n_obs})
+        )
         if not self.show_rich_output:
             logger.info(
                 f"Marker score input: {n_cells:,} cells, {n_genes:,} genes, "
-                f"{len(cell_types):,} cell types, dataset={self.config.dataset_type.value}, "
+                f"{len(cell_types):,} cell types, dataset={dataset_type}, "
                 f"annotation={self.config.annotation}"
             )
             logger.debug(f"Cell type counts: {ct_counts.to_dict()}")
@@ -397,7 +406,7 @@ class MarkerScoreCalculator:
         table.add_row("Total Cells", str(n_cells))
         table.add_row("Total Genes", str(n_genes))
         table.add_row("Cell Types", str(len(cell_types)))
-        table.add_row("Dataset Type", str(self.config.dataset_type.value))
+        table.add_row("Dataset Type", str(dataset_type))
         table.add_row("Annotation Key", str(self.config.annotation))
 
         self.console.print(table)
@@ -456,43 +465,70 @@ class MarkerScoreCalculator:
                 tmp_dir=self.config.memmap_tmp_dir,
             )
             logger.info(f"Opened rank memory map from {rank_memmap_path}")
-        n_cells = adata.n_obs
-        n_cells_rank = rank_memmap.shape[0]
-        n_genes = rank_memmap.shape[1]
+        try:
+            n_cells = adata.n_obs
+            n_cells_rank = rank_memmap.shape[0]
+            n_genes = rank_memmap.shape[1]
 
-        logger.info(f"AnnData dimensions: {n_cells} cells × {adata.n_vars} genes")
-        logger.info(f"Rank MemMap dimensions: {n_cells_rank} cells × {n_genes} genes")
+            logger.info(f"AnnData dimensions: {n_cells} cells × {adata.n_vars} genes")
+            logger.info(f"Rank MemMap dimensions: {n_cells_rank} cells × {n_genes} genes")
 
-        # Cells should match exactly since filtering is done before rank memmap creation
-        assert n_cells == n_cells_rank, (
-            f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has {n_cells_rank} cells. "
-            f"This indicates the filtering was not applied consistently during rank calculation."
-        )
-
-        # Load high quality mask based on configuration
-        if self.config.high_quality_neighbor_filter:
-            if "High_quality" not in adata.obs.columns:
+            # Cells and genes must match exactly because rank rows/columns are
+            # positional. Use runtime checks rather than assertions, which disappear
+            # when Python is invoked with optimization enabled.
+            if n_cells != n_cells_rank:
                 raise ValueError(
-                    "High_quality column not found in AnnData obs. Please ensure QC was applied during find_latent_representation step."
+                    f"Cell count mismatch: AnnData has {n_cells} cells, Rank MemMap has "
+                    f"{n_cells_rank} cells. This indicates the filtering was not applied "
+                    "consistently during rank calculation."
                 )
-            high_quality_mask = adata.obs["High_quality"].values.astype(bool)
-            logger.info(
-                f"Loaded high quality mask: {high_quality_mask.sum()}/{len(high_quality_mask)} cells marked as high quality"
-            )
-        else:
-            # Create all-True mask when high quality filtering is disabled
-            high_quality_mask = np.ones(n_cells, dtype=bool)
-            logger.info("High quality filtering disabled - using all cells")
+            if adata.n_vars != n_genes:
+                raise ValueError(
+                    f"Gene count mismatch: AnnData has {adata.n_vars} genes, Rank MemMap has "
+                    f"{n_genes} genes."
+                )
+            if global_log_gmean.shape != (n_genes,) or global_expr_frac.shape != (n_genes,):
+                raise ValueError(
+                    "Global-statistic dimensions do not match the rank matrix: "
+                    f"G_Mean={global_log_gmean.shape}, frac={global_expr_frac.shape}, "
+                    f"expected=({n_genes},)"
+                )
 
-        return (
-            adata,
-            rank_memmap,
-            global_log_gmean,
-            global_expr_frac,
-            n_cells,
-            n_genes,
-            high_quality_mask,
-        )
+            # Load high quality mask based on configuration
+            if self.config.high_quality_neighbor_filter:
+                if "High_quality" not in adata.obs.columns:
+                    raise ValueError(
+                        "High_quality column not found in AnnData obs. Please ensure QC was "
+                        "applied during find_latent_representation step."
+                    )
+                high_quality_mask = adata.obs["High_quality"].values.astype(bool)
+                logger.info(
+                    f"Loaded high quality mask: {high_quality_mask.sum()}/"
+                    f"{len(high_quality_mask)} cells marked as high quality"
+                )
+            else:
+                # Create all-True mask when high quality filtering is disabled
+                high_quality_mask = np.ones(n_cells, dtype=bool)
+                logger.info("High quality filtering disabled - using all cells")
+
+            return (
+                adata,
+                rank_memmap,
+                global_log_gmean,
+                global_expr_frac,
+                n_cells,
+                n_genes,
+                high_quality_mask,
+            )
+        except BaseException:
+            # Tuple assignment in calculate_marker_scores() has not completed yet,
+            # so its outer finally block cannot see this handle. Close it here to
+            # release the mapping and any staged scratch copy on validation errors.
+            try:
+                rank_memmap.close()
+            except Exception as cleanup_error:  # noqa: BLE001
+                logger.error(f"Failed to close invalid rank memmap: {cleanup_error}")
+            raise
 
     def _prepare_embeddings(
         self, adata: ad.AnnData
@@ -566,9 +602,8 @@ class MarkerScoreCalculator:
         annotation_key = self.config.annotation
 
         if annotation_key is not None:
-            assert annotation_key in adata.obs.columns, (
-                f"Annotation key '{annotation_key}' not found in adata.obs"
-            )
+            if annotation_key not in adata.obs.columns:
+                raise KeyError(f"Annotation key '{annotation_key}' not found in adata.obs")
             # Get unique cell types, excluding NaN values
             cell_types = adata.obs[annotation_key].dropna().unique()
 
@@ -579,11 +614,8 @@ class MarkerScoreCalculator:
                     f"Found {nan_count} cells with NaN annotation in '{annotation_key}', these will be skipped"
                 )
         else:
-            logger.warning(
-                f"Annotation {annotation_key} not found, processing all cells as one type"
-            )
+            logger.info("No annotation configured; processing all cells as one type")
             cell_types = ["all"]
-            adata.obs[annotation_key] = "all"
 
         logger.info(f"Processing {len(cell_types)} cell types")
         return cell_types
@@ -711,7 +743,11 @@ class MarkerScoreCalculator:
             output_start = 0 if output_rows.start is None else output_rows.start
             output_stop = output_rows.stop
             output_step = 1 if output_rows.step is None else output_rows.step
-            if output_stop is None or output_step != 1 or output_stop - output_start != n_focal_cells:
+            if (
+                output_stop is None
+                or output_step != 1
+                or output_stop - output_start != n_focal_cells
+            ):
                 raise ValueError("Contiguous marker output slice does not match focal cells")
         else:
             output_rows = np.asarray(output_rows)
@@ -1059,7 +1095,7 @@ class MarkerScoreCalculator:
         self,
         adata: ad.AnnData,
         cell_type: str,
-        annotation_key: str,
+        annotation_key: str | None,
         coords: np.ndarray | None,
         emb_niche: np.ndarray,
         emb_indv: np.ndarray,
@@ -1075,7 +1111,12 @@ class MarkerScoreCalculator:
             or None if cell type should be skipped
         """
         # Get cells of this type, excluding NaN values
-        cell_mask = (adata.obs[annotation_key] == cell_type) & (adata.obs[annotation_key].notna())
+        if annotation_key is None:
+            cell_mask = np.ones(adata.n_obs, dtype=bool)
+        else:
+            cell_mask = (adata.obs[annotation_key] == cell_type) & (
+                adata.obs[annotation_key].notna()
+            )
         cell_indices = np.where(cell_mask)[0]
         n_cells = len(cell_indices)
 
@@ -1105,10 +1146,17 @@ class MarkerScoreCalculator:
         gc.collect()
 
         # Validate neighbor indices
+        if neighbor_indices.size == 0:
+            raise ValueError(f"No homogeneous-neighbor slots were generated for {cell_type}")
         max_valid_idx = rank_shape[0] - 1
-        assert neighbor_indices.max() <= max_valid_idx, (
-            f"Neighbor indices exceed bounds (max: {neighbor_indices.max()}, limit: {max_valid_idx})"
-        )
+        min_neighbor_idx = int(neighbor_indices.min())
+        max_neighbor_idx = int(neighbor_indices.max())
+        if min_neighbor_idx < -1 or max_neighbor_idx > max_valid_idx:
+            raise IndexError(
+                "Homogeneous-neighbor indices are outside the rank matrix: "
+                f"observed=[{min_neighbor_idx}, {max_neighbor_idx}], "
+                f"allowed=[-1, {max_valid_idx}]"
+            )
 
         # A missing cross-section slot is represented by index -1 and weight 0.
         # Substitute the focal row before rank access; its rank is multiplied by
@@ -1267,7 +1315,7 @@ class MarkerScoreCalculator:
         coords: np.ndarray | None,
         emb_niche: np.ndarray,
         emb_indv: np.ndarray,
-        annotation_key: str,
+        annotation_key: str | None,
         slice_ids: np.ndarray | None = None,
         high_quality_mask: np.ndarray = None,
     ) -> None:
@@ -1335,45 +1383,53 @@ class MarkerScoreCalculator:
         else:
             output_path = Path(output_path)
 
-        # Load all input data
-        (
-            adata,
-            rank_memmap,
-            global_log_gmean,
-            global_expr_frac,
-            n_cells,
-            n_genes,
-            high_quality_mask,
-        ) = self._load_input_data(adata_path, rank_memmap_path, mean_frac_path)
-
-        # Initialize output memory map
-        output_memmap = MemMapDense(
-            output_path,
-            shape=(n_cells, n_genes),
-            dtype=np.float16,  # Use float16 to save memory
-            mode="w",
-            # ParallelMarkerScoreWriter owns output writes. Starting the
-            # MemMapDense asynchronous pool here creates idle duplicate threads.
-            num_write_workers=0,
-            tmp_dir=self.config.memmap_tmp_dir,
-        )
-        self.marker_row_writer = SequentialMarkerRowWriter(output_path, n_cells)
-
-        # Get cell types to process
-        cell_types = self._get_cell_types(adata)
-        annotation_key = self.config.annotation
-        self._clear_homogeneous_outputs(adata)
-
-        # Display summary
-        self._display_input_summary(adata, cell_types, n_cells, n_genes)
-
-        # Prepare embeddings
-        coords, emb_niche, emb_indv, slice_ids = self._prepare_embeddings(adata)
-
-        # Initialize processing pipeline
-        self._initialize_pipeline(rank_memmap, output_memmap, global_log_gmean, global_expr_frac)
-
+        rank_memmap = None
+        output_memmap = None
+        self.marker_row_writer = None
+        self.writer = None
+        completed = False
         try:
+            # Load all input data
+            (
+                adata,
+                rank_memmap,
+                global_log_gmean,
+                global_expr_frac,
+                n_cells,
+                n_genes,
+                high_quality_mask,
+            ) = self._load_input_data(adata_path, rank_memmap_path, mean_frac_path)
+
+            # Initialize output memory map
+            output_memmap = MemMapDense(
+                output_path,
+                shape=(n_cells, n_genes),
+                dtype=np.float16,  # Use float16 to save memory
+                mode="w",
+                # ParallelMarkerScoreWriter owns output writes. Starting the
+                # MemMapDense asynchronous pool here creates idle duplicate threads.
+                num_write_workers=0,
+                tmp_dir=self.config.memmap_tmp_dir,
+            )
+            self.marker_row_writer = SequentialMarkerRowWriter(output_path, n_cells)
+
+            # Get cell types to process
+            cell_types = self._get_cell_types(adata)
+            annotation_key = self.config.annotation
+            self._clear_homogeneous_outputs(adata)
+
+            # Display summary
+            self._display_input_summary(adata, cell_types, n_cells, n_genes)
+
+            # Prepare embeddings and initialize the bounded processing pipeline.
+            coords, emb_niche, emb_indv, slice_ids = self._prepare_embeddings(adata)
+            self._initialize_pipeline(
+                rank_memmap,
+                output_memmap,
+                global_log_gmean,
+                global_expr_frac,
+            )
+
             # Process each cell type. Marker output is contiguous in this
             # processing order; the companion permutation preserves alignment
             # to the unchanged concatenated AnnData.
@@ -1389,27 +1445,52 @@ class MarkerScoreCalculator:
                     high_quality_mask,
                 )
 
+            # Surface background failures before publishing either the row
+            # permutation or the completed marker memmap.
+            logger.info("Closing the marker-score writer...")
+            self.writer.close()
+
+            logger.info(f"Saving updated AnnData with homogeneous spot matrices to {adata_path}")
+            adata.write_h5ad(adata_path)
             row_layout = self.marker_row_writer.finalize()
-        except Exception:
-            self.marker_row_writer.abort()
-            raise
-
-        # Save updated AnnData with neighbor matrices
-        logger.info(f"Saving updated AnnData with homogeneous spot matrices to {adata_path}")
-        adata.write_h5ad(adata_path)
-
-        # Close the shared writer after all cell types are processed.
-        logger.info("Closing the marker-score writer...")
-        self.writer.close()
-
-        # Close memory maps
-        rank_memmap.close()
-        output_memmap.close(
-            metadata_updates={
-                "marker_score_layout_version": MARKER_SCORE_LAYOUT_VERSION,
-                "row_layout": row_layout,
-            }
-        )
+            output_memmap.close(
+                metadata_updates={
+                    "marker_score_layout_version": MARKER_SCORE_LAYOUT_VERSION,
+                    "row_layout": row_layout,
+                }
+            )
+            completed = True
+        finally:
+            # Cleanup must also run for JAX errors, asynchronous writer errors,
+            # failed AnnData writes, and user interrupts. Never publish a partial
+            # marker matrix or leave scratch mappings/background threads alive.
+            if not completed:
+                cleanup_actions = []
+                if self.writer is not None:
+                    cleanup_actions.append(("marker writer", self.writer.abort))
+                if self.marker_row_writer is not None:
+                    cleanup_actions.append(("row-layout writer", self.marker_row_writer.abort))
+                    if self.marker_row_writer.finalized:
+                        cleanup_actions.append(
+                            (
+                                "published row layout",
+                                lambda: self.marker_row_writer.final_path.unlink(missing_ok=True),
+                            )
+                        )
+                if output_memmap is not None:
+                    cleanup_actions.append(("marker memmap", output_memmap.abort))
+                for label, cleanup in cleanup_actions:
+                    try:
+                        cleanup()
+                    except Exception as cleanup_error:  # noqa: BLE001
+                        logger.error(f"Failed to clean up {label}: {cleanup_error}")
+            if rank_memmap is not None:
+                try:
+                    rank_memmap.close()
+                except Exception as cleanup_error:
+                    if completed:
+                        raise
+                    logger.error(f"Failed to close rank memmap: {cleanup_error}")
 
         if self.show_rich_output:
             self.console.print(

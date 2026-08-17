@@ -235,7 +235,7 @@ def process_h5ad_inputs(config, input_options):
 
     # Ensure at most one option is provided
     if len(options_provided) > 1:
-        raise AssertionError(
+        raise ValueError(
             f"At most one input option can be provided. Got {len(options_provided)}: {', '.join(options_provided)}. "
             f"Please provide only one of: {', '.join(input_options.keys())}"
         )
@@ -252,6 +252,8 @@ def process_h5ad_inputs(config, input_options):
             yaml_parent_dir = yaml_file_path.parent
             with open(field_value) as f:
                 h5ad_data = yaml.safe_load(f)
+                if not isinstance(h5ad_data, dict) or not h5ad_data:
+                    raise ValueError(f"H5AD YAML must contain a non-empty mapping: {field_value}")
                 for sample_name, h5ad_path in h5ad_data.items():
                     h5ad_path = Path(h5ad_path)
                     # Resolve relative paths relative to yaml file location

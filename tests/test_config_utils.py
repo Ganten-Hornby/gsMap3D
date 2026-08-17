@@ -8,9 +8,7 @@ from gsMap.config.utils import configure_jax_platform
 
 
 @pytest.mark.parametrize("existing_value", [None, "caller-value"])
-def test_cpu_jax_discovery_temporarily_skips_cuda_constraint_probe(
-    monkeypatch, existing_value
-):
+def test_cpu_jax_discovery_temporarily_skips_cuda_constraint_probe(monkeypatch, existing_value):
     observations: list[tuple[str, str | None]] = []
     config_updates: list[tuple[str, str]] = []
     fake_jax = ModuleType("jax")

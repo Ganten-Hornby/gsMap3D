@@ -15,6 +15,7 @@ from scipy.stats import rankdata
 from gsMap.latent2gene import rank_calculator
 from gsMap.latent2gene.rank_calculator import (
     RankCalculator,
+    _gene_column_order,
     _prefetched_rank_inputs,
     _RankInputRequest,
     _read_rank_input,
@@ -125,6 +126,32 @@ def test_selective_reader_falls_back_to_x(tmp_path):
 
     assert result.matrix_source == "X"
     np.testing.assert_array_equal(result.X.toarray(), ad.read_h5ad(path).X.toarray())
+
+
+def test_x_configuration_never_selects_a_layer_named_x(tmp_path):
+    path = tmp_path / "rank_input_with_x_layer.h5ad"
+    _write_rank_fixture(path)
+    adata = ad.read_h5ad(path)
+    adata.layers["X"] = csr_matrix(np.full(adata.shape, 999, dtype=np.float32))
+    adata.write_h5ad(path)
+
+    result = _read_rank_input(
+        _RankInputRequest(
+            sample_name="sample-x",
+            h5ad_path=path,
+            slice_id=0,
+            keep_mask=pd.Series(np.ones(4, dtype=bool)),
+            data_layer="X",
+        )
+    )
+
+    assert result.matrix_source == "X"
+    np.testing.assert_array_equal(result.X.toarray(), adata.X.toarray())
+
+
+def test_equal_duplicate_gene_orders_are_rejected():
+    with pytest.raises(ValueError, match="Gene names must be unique"):
+        _gene_column_order(["g1", "g1"], ("g1", "g1"), sample_name="duplicates")
 
 
 def test_selective_reader_rejects_wrong_mask_length(tmp_path):
@@ -317,3 +344,84 @@ def test_rank_calculator_runs_end_to_end_with_prefetched_inputs(tmp_path):
             ]
         ),
     )
+
+
+def test_rank_filtering_uses_the_same_configured_layer_as_ranking(tmp_path):
+    genes = [f"g{index}" for index in range(25)]
+    counts = np.zeros((3, len(genes)), dtype=np.float32)
+    counts[:, :20] = 1
+    adata = ad.AnnData(
+        X=csr_matrix(np.zeros_like(counts)),
+        obs=pd.DataFrame(index=["a", "b", "c"]),
+        var=pd.DataFrame(index=genes),
+    )
+    adata.layers["counts"] = csr_matrix(counts)
+    adata.obsm["emb_cell"] = np.ones((3, 2), dtype=np.float32)
+    input_path = tmp_path / "section.h5ad"
+    adata.write_h5ad(input_path)
+
+    output_dir = tmp_path / "latent2gene"
+    config = SimpleNamespace(
+        latent_dir=tmp_path,
+        latent2gene_dir=output_dir,
+        concatenated_latent_adata_path=output_dir / "concatenated.h5ad",
+        rank_memmap_path=output_dir / "ranks",
+        mean_frac_path=output_dir / "mean_frac.parquet",
+        sample_h5ad_dict={"section": input_path},
+        annotation=None,
+        min_cells_per_type=1,
+        rank_batch_size=2,
+        rank_write_interval=1,
+        mkscore_write_workers=1,
+        memmap_tmp_dir=None,
+    )
+
+    outputs = RankCalculator(config).calculate_ranks_and_concatenate(data_layer="counts")
+    rank_handle = outputs["rank_memmap_handle"]
+    try:
+        assert rank_handle.shape == (3, 25)
+    finally:
+        rank_handle.close()
+    assert ad.read_h5ad(config.concatenated_latent_adata_path).n_obs == 3
+
+
+def test_failed_rank_sidecar_write_aborts_checkpoint_and_can_be_retried(tmp_path, monkeypatch):
+    genes = [f"g{index}" for index in range(20)]
+    adata = ad.AnnData(
+        X=csr_matrix(np.ones((2, 20), dtype=np.float32)),
+        obs=pd.DataFrame(index=["a", "b"]),
+        var=pd.DataFrame(index=genes),
+    )
+    input_path = tmp_path / "section.h5ad"
+    adata.write_h5ad(input_path)
+    output_dir = tmp_path / "latent2gene"
+    config = SimpleNamespace(
+        latent_dir=tmp_path,
+        latent2gene_dir=output_dir,
+        concatenated_latent_adata_path=output_dir / "concatenated.h5ad",
+        rank_memmap_path=output_dir / "ranks",
+        mean_frac_path=output_dir / "mean_frac.parquet",
+        sample_h5ad_dict={"section": input_path},
+        annotation=None,
+        min_cells_per_type=1,
+        rank_batch_size=2,
+        rank_write_interval=1,
+        mkscore_write_workers=1,
+        memmap_tmp_dir=None,
+    )
+
+    original_to_parquet = pd.DataFrame.to_parquet
+
+    def fail_to_parquet(*args, **kwargs):
+        del args, kwargs
+        raise OSError("synthetic parquet failure")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", fail_to_parquet)
+    with pytest.raises(OSError, match="synthetic parquet failure"):
+        RankCalculator(config).calculate_ranks_and_concatenate(data_layer="X")
+    assert not rank_calculator.MemMapDense.check_complete(config.rank_memmap_path)[0]
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", original_to_parquet)
+    outputs = RankCalculator(config).calculate_ranks_and_concatenate(data_layer="X")
+    outputs["rank_memmap_handle"].close()
+    assert rank_calculator.MemMapDense.check_complete(config.rank_memmap_path)[0]

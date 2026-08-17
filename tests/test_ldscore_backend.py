@@ -1,12 +1,15 @@
+import queue
 import threading
+import time
 
 import numpy as np
+import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-from gsMap.spatial_ldsc import ldscore_backend
+from gsMap.spatial_ldsc import ldscore_backend, pipeline
 from gsMap.spatial_ldsc.chunk_source import SpatialLDChunkSource
-from gsMap.spatial_ldsc.pipeline import ParallelLDScoreComputer
+from gsMap.spatial_ldsc.pipeline import ParallelLDScoreComputer, ParallelLDScoreReader
 
 
 class _FakeTorchBackend:
@@ -135,6 +138,72 @@ def test_chunk_source_reads_noncontiguous_sample_rows_correctly():
     np.testing.assert_array_equal(deferred[4], marker_scores[[0, 2, 4]][:, [0, 2]].T)
     assert list(deferred[1]) == ["cell0", "cell2", "cell4"]
     assert deferred[2:4] == (0, 5)
+
+
+def test_noncontiguous_chunk_progress_counts_rows_not_source_span():
+    class ReadyArray:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        def block_until_ready(self):
+            return self
+
+        def __array__(self, dtype=None, copy=None):
+            del copy
+            return np.asarray(self.values, dtype=dtype)
+
+    added = []
+    computer = ParallelLDScoreComputer.__new__(ParallelLDScoreComputer)
+    computer.throughput_lock = threading.Lock()
+    computer.throughput = pipeline.ComponentThroughput()
+    computer.stats_lock = threading.Lock()
+    computer.total_cells_processed = 0
+    computer.total_chunks_processed = 0
+    computer.results_lock = threading.Lock()
+    computer.processor = type(
+        "Processor",
+        (),
+        {"_add_chunk_result": lambda self, *args: added.append(args)},
+    )()
+
+    computer._finalize_chunk(
+        (
+            0,
+            pd.Index(["cell0", "cell2", "cell4"]),
+            0,
+            5,
+            ReadyArray([1, 2, 3]),
+            ReadyArray([0.1, 0.2, 0.3]),
+            object(),
+            time.time(),
+        )
+    )
+
+    assert computer.get_stats() == (3, 1)
+    assert len(added) == 1
+
+
+def test_reader_close_unblocks_a_full_result_queue():
+    fetched = threading.Event()
+
+    class Processor:
+        def _fetch_ldscore_chunk(self, chunk_idx):
+            fetched.set()
+            return np.zeros((1, 1)), [f"cell{chunk_idx}"], chunk_idx, chunk_idx + 1
+
+    result_queue = queue.Queue(maxsize=1)
+    result_queue.put({"occupied": True})
+    reader = ParallelLDScoreReader(
+        Processor(),
+        num_workers=1,
+        output_queue=result_queue,
+    )
+    reader.submit_chunk(0)
+    assert fetched.wait(timeout=2)
+
+    reader.close()
+
+    assert not reader.workers[0].is_alive()
 
 
 def test_prepare_ldscore_backend_follows_shared_use_gpu(monkeypatch):

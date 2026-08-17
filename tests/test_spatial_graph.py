@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import anndata
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sp
 import torch
 
@@ -114,6 +115,22 @@ def test_weighted_radius_graph_has_symmetric_edges_and_weights():
     assert set(edge_weight) == {(0, 1), (1, 0)}
     assert np.isclose(edge_weight[(0, 1)], np.exp(-0.5))
     assert edge_weight[(0, 1)] == edge_weight[(1, 0)]
+
+
+@pytest.mark.parametrize("radius", [0.0, -1.0, np.nan, np.inf])
+def test_radius_graph_rejects_nonpositive_or_nonfinite_radius(radius):
+    with pytest.raises(ValueError, match="radius must be positive"):
+        build_radius_spatial_graph(np.asarray([[0.0, 0.0], [1.0, 0.0]]), radius=radius)
+
+
+@pytest.mark.parametrize("sigma", [0.0, -1.0, np.nan, np.inf])
+def test_weighted_radius_graph_rejects_nonpositive_or_nonfinite_sigma(sigma):
+    with pytest.raises(ValueError, match="sigma must be positive"):
+        build_radius_spatial_graph(
+            np.asarray([[0.0, 0.0], [1.0, 0.0]]),
+            radius=2.0,
+            sigma=sigma,
+        )
 
 
 def test_gcn_propagation_is_row_permutation_equivariant():

@@ -62,9 +62,7 @@ class SequentialMarkerRowWriter:
             raise TypeError("Original observation indices must be a one-dimensional integer array")
         end = self.cursor + rows.size
         if end > self.n_obs:
-            raise ValueError(
-                f"Marker row layout exceeds {self.n_obs} observations at row {end}"
-            )
+            raise ValueError(f"Marker row layout exceeds {self.n_obs} observations at row {end}")
         if rows.size and (rows.min() < 0 or rows.max() >= self.n_obs):
             raise IndexError("Original observation indices are outside the AnnData row range")
         start = self.cursor
@@ -163,9 +161,7 @@ def open_marker_obs_indices(
     mapping_path = marker_data_path(marker_path).parent / mapping_name
     expected_bytes = expected_obs * MARKER_ROW_MAPPING_DTYPE.itemsize
     if not mapping_path.is_file() or mapping_path.stat().st_size != expected_bytes:
-        raise ValueError(
-            f"Marker row mapping is missing or has the wrong size: {mapping_path}"
-        )
+        raise ValueError(f"Marker row mapping is missing or has the wrong size: {mapping_path}")
     return np.memmap(
         mapping_path,
         dtype=MARKER_ROW_MAPPING_DTYPE,

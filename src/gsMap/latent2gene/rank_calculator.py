@@ -128,9 +128,7 @@ def _automatic_sparse_rank_batch_size(genes: int) -> int:
     """Select a batch near 64 MiB for the encoded float16 rank output."""
     if genes < 1:
         raise ValueError("Gene count must be positive")
-    unconstrained = _TARGET_SPARSE_RANK_BATCH_BYTES // (
-        genes * np.dtype("float16").itemsize
-    )
+    unconstrained = _TARGET_SPARSE_RANK_BATCH_BYTES // (genes * np.dtype("float16").itemsize)
     eligible = [size for size in _SPARSE_RANK_BATCH_SIZE_CHOICES if size <= unconstrained]
     return eligible[-1] if eligible else _SPARSE_RANK_BATCH_SIZE_CHOICES[0]
 
@@ -191,11 +189,7 @@ def _sparse_log_rank_bits(
         for position in range(start, end):
             value = data[position]
             integer_value = int(value)
-            if (
-                value <= 0
-                or value != integer_value
-                or integer_value > _MAX_HISTOGRAM_RANK_VALUE
-            ):
+            if value <= 0 or value != integer_value or integer_value > _MAX_HISTOGRAM_RANK_VALUE:
                 use_histogram = False
                 break
             if integer_value > max_value:
@@ -406,9 +400,6 @@ def _gene_column_order(
     sample_name: str,
 ) -> np.ndarray | None:
     """Return canonical-to-current columns or fail on a true gene-set mismatch."""
-    if tuple(current_var_names) == expected_var_names:
-        return None
-
     current_index = pd.Index(current_var_names)
     expected_index = pd.Index(expected_var_names)
     if not current_index.is_unique or not expected_index.is_unique:
@@ -419,6 +410,9 @@ def _gene_column_order(
             f"current_duplicates={current_duplicates[:10]}, "
             f"expected_duplicates={expected_duplicates[:10]}"
         )
+
+    if tuple(current_var_names) == expected_var_names:
+        return None
 
     canonical_to_current = current_index.get_indexer(expected_index)
     missing = expected_index[canonical_to_current < 0].tolist()
@@ -432,19 +426,25 @@ def _gene_column_order(
     return canonical_to_current
 
 
-def _align_csr_gene_columns(
-    X: csr_matrix, canonical_to_current: np.ndarray
-) -> csr_matrix:
+def _align_csr_gene_columns(X: csr_matrix, canonical_to_current: np.ndarray) -> csr_matrix:
     """Relabel CSR column indices in bounded chunks without copying expression data."""
     current_to_canonical = np.empty(X.shape[1], dtype=X.indices.dtype)
-    current_to_canonical[canonical_to_current] = np.arange(
-        X.shape[1], dtype=X.indices.dtype
-    )
+    current_to_canonical[canonical_to_current] = np.arange(X.shape[1], dtype=X.indices.dtype)
     for start in range(0, X.indices.size, _GENE_INDEX_REMAP_CHUNK):
         end = min(start + _GENE_INDEX_REMAP_CHUNK, X.indices.size)
         X.indices[start:end] = current_to_canonical[X.indices[start:end]]
     X.has_sorted_indices = False
     return X
+
+
+def _select_rank_matrix_element(
+    handle: h5py.File,
+    data_layer: str,
+) -> tuple[h5py.Dataset | h5py.Group, str]:
+    """Resolve the expression element identically in both rank passes."""
+    if data_layer != "X" and "layers" in handle and data_layer in handle["layers"]:
+        return handle["layers"][data_layer], f"layers/{data_layer}"
+    return handle["X"], "X"
 
 
 def _read_rank_input(request: _RankInputRequest) -> _RankInput:
@@ -462,12 +462,8 @@ def _read_rank_input(request: _RankInputRequest) -> _RankInput:
         metadata_read_seconds = time.perf_counter() - metadata_started_at
 
         matrix_started_at = time.perf_counter()
-        if "layers" in handle and request.data_layer in handle["layers"]:
-            matrix_source = f"layers/{request.data_layer}"
-            X = read_elem(handle["layers"][request.data_layer])
-        else:
-            matrix_source = "X"
-            X = read_elem(handle["X"])
+        matrix_element, matrix_source = _select_rank_matrix_element(handle, request.data_layer)
+        X = read_elem(matrix_element)
         matrix_read_seconds = time.perf_counter() - matrix_started_at
 
         obsm_started_at = time.perf_counter()
@@ -625,9 +621,21 @@ def rank_data_jax(
     Returns:
         Tuple of (sum_log_ranks, sum_frac) as numpy arrays
     """
-    assert X.nnz != 0, "Input matrix must not be empty"
-
     n_rows, n_cols = X.shape
+    if n_rows < 1:
+        raise ValueError("Input matrix must contain at least one cell")
+    if n_cols != n_genes:
+        raise ValueError(
+            f"Input matrix has {n_cols} genes but rank calculation expected {n_genes}"
+        )
+    if X.nnz == 0:
+        raise ValueError("Input matrix must contain at least one non-zero expression value")
+    if chunk_size < 1:
+        raise ValueError("Rank chunk_size must be positive")
+    if write_interval < 1:
+        raise ValueError("Rank write_interval must be positive")
+    if current_row_offset < 0:
+        raise ValueError("Rank current_row_offset cannot be negative")
 
     # Initialize accumulators (use float32 for accumulators to avoid precision loss)
     sum_log_ranks = np.zeros(n_genes, dtype=np.float32)
@@ -670,15 +678,13 @@ def rank_data_jax(
         valid_rows = end_idx - start_idx
         compute_started_at = time.perf_counter()
         if use_sparse_backend:
-            chunk_log_rank_bits, chunk_sum_log_ranks, chunk_sum_frac = (
-                _sparse_log_rank_bits(
-                    chunk_X.indptr,
-                    chunk_X.indices,
-                    chunk_X.data,
-                    n_genes,
-                    log_rank_float32,
-                    log_rank_float16_bits,
-                )
+            chunk_log_rank_bits, chunk_sum_log_ranks, chunk_sum_frac = _sparse_log_rank_bits(
+                chunk_X.indptr,
+                chunk_X.indices,
+                chunk_X.data,
+                n_genes,
+                log_rank_float32,
+                log_rank_float16_bits,
             )
             chunk_log_ranks_np = chunk_log_rank_bits.view(np.float16)
         else:
@@ -707,9 +713,7 @@ def rank_data_jax(
         chunks_processed += 1
 
         # Write to memory map periodically
-        if memmap_dense and (
-            chunks_processed % write_interval == 0 or end_idx == n_rows
-        ):
+        if memmap_dense and (chunks_processed % write_interval == 0 or end_idx == n_rows):
             output_started_at = time.perf_counter()
             # Combine pending chunks for batch write
             combined_data = (
@@ -771,6 +775,30 @@ class RankCalculator:
         self.show_rich_progress = is_interactive_output()
 
     def calculate_ranks_and_concatenate(
+        self,
+        sample_h5ad_dict: dict[str, Path] | None = None,
+        annotation_key: str | None = None,
+        data_layer: str = "counts",
+    ) -> dict[str, Any]:
+        """Run rank construction and abort any unpublished mapping on failure."""
+        self._active_rank_memmap: MemMapDense | None = None
+        try:
+            return self._calculate_ranks_and_concatenate(
+                sample_h5ad_dict=sample_h5ad_dict,
+                annotation_key=annotation_key,
+                data_layer=data_layer,
+            )
+        except BaseException:
+            if self._active_rank_memmap is not None:
+                try:
+                    self._active_rank_memmap.abort()
+                except Exception as cleanup_error:  # noqa: BLE001 preserve primary failure
+                    logger.error(f"Failed to abort incomplete rank memmap: {cleanup_error}")
+            raise
+        finally:
+            self._active_rank_memmap = None
+
+    def _calculate_ranks_and_concatenate(
         self,
         sample_h5ad_dict: dict[str, Path] | None = None,
         annotation_key: str | None = None,
@@ -846,10 +874,13 @@ class RankCalculator:
             # Apply same filtering logic as in main loop
             with h5py.File(h5ad_path, "r") as f:
                 adata_temp_obs = read_elem(f["obs"])
-                current_var_names = tuple(
-                    read_elem(f["var"]).index.astype(str).tolist()
-                )
+                current_var_names = tuple(read_elem(f["var"]).index.astype(str).tolist())
                 if expected_var_names is None:
+                    _gene_column_order(
+                        current_var_names,
+                        current_var_names,
+                        sample_name=sample_name,
+                    )
                     expected_var_names = current_var_names
                 elif (
                     _gene_column_order(
@@ -863,7 +894,7 @@ class RankCalculator:
 
                 # Efficiently read gene counts per cell without loading full expression matrix
                 # For CSR format, we only need indptr to calculate non-zero counts
-                X_group = f["X"]
+                X_group, _matrix_source = _select_rank_matrix_element(f, data_layer)
                 if (
                     "encoding-type" in X_group.attrs
                     and X_group.attrs["encoding-type"] == "csr_matrix"
@@ -881,10 +912,11 @@ class RankCalculator:
                     use_precomputed_counts = False
 
                 if annotation_key is not None:
-                    assert annotation_key
-                    assert annotation_key in adata_temp_obs.columns, (
-                        f"Annotation key '{annotation_key}' not found in the obs of {sample_name}"
-                    )
+                    if annotation_key not in adata_temp_obs.columns:
+                        raise KeyError(
+                            f"Annotation key '{annotation_key}' not found in the obs of "
+                            f"{sample_name}"
+                        )
 
                 # Apply unified filtering function
                 if use_precomputed_counts:
@@ -914,6 +946,10 @@ class RankCalculator:
 
         if expected_var_names is None:
             raise ValueError("At least one sample is required for rank calculation")
+        if total_cells_expected == 0:
+            raise ValueError(
+                "No cells remain after annotation, cell-type-size, and gene-count filtering"
+            )
         if reordered_gene_samples:
             logger.warning(
                 "Detected identical genes in a different column order for "
@@ -987,6 +1023,7 @@ class RankCalculator:
                 expected_var_names=expected_var_names,
             )
             for st_id, (sample_name, h5ad_path) in enumerate(sample_h5ad_dict.items())
+            if int(sample_keep_indices[sample_name].sum()) > 0
         ]
         cumulative_input_seconds = 0.0
         exposed_input_wait_seconds = 0.0
@@ -1006,7 +1043,7 @@ class RankCalculator:
         ) as section_progress:
             # Overall section progress task
             section_task = section_progress.add_task(
-                "Processing sections", total=len(sample_h5ad_dict)
+                "Processing sections", total=len(rank_input_requests)
             )
 
             processed_cells_total = 0
@@ -1038,8 +1075,7 @@ class RankCalculator:
                         gene_list = rank_input.var_names
                     elif rank_input.var_names != gene_list:
                         raise RuntimeError(
-                            f"Internal gene alignment failure in section {st_id} "
-                            f"({sample_name})"
+                            f"Internal gene alignment failure in section {st_id} ({sample_name})"
                         )
 
                     if rank_memmap is None:
@@ -1067,6 +1103,7 @@ class RankCalculator:
                             num_write_workers=rank_writer_workers,
                             tmp_dir=self.config.memmap_tmp_dir,
                         )
+                        self._active_rank_memmap = rank_memmap
                         sum_log_ranks = np.zeros(n_genes, dtype=np.float64)
                         sum_frac = np.zeros(n_genes, dtype=np.float64)
 
@@ -1154,26 +1191,6 @@ class RankCalculator:
                 f"({hidden_input_fraction:.1%})"
             )
 
-            # Publish one sequential project-side checkpoint while retaining
-            # the scratch mapping for marker-score calculation.
-            if rank_memmap is not None:
-                publish_started_at = time.perf_counter()
-                rank_memmap.publish()
-                publish_seconds = time.perf_counter() - publish_started_at
-                rank_output_bytes = total_cells_expected * n_genes * np.dtype(np.float16).itemsize
-                publish_mib_per_second = (
-                    rank_output_bytes / _MIB / publish_seconds if publish_seconds > 0 else 0.0
-                )
-                logger.info(
-                    f"Published rank matrix to {rank_memmap_path}; "
-                    f"marker scoring will read {rank_memmap.data_path}"
-                )
-                logger.info(
-                    f"Rank output finalization: {rank_output_bytes / 1024**3:.2f} GiB in "
-                    f"{publish_seconds:.2f}s ({publish_mib_per_second:,.0f} MiB/s); "
-                    f"scratch_used={rank_memmap.using_tmp}"
-                )
-
             rank_section_seconds = time.perf_counter() - rank_section_started_at
             active_rank_seconds = (
                 rank_progress_reporter.active_seconds if rank_progress_reporter else 0.0
@@ -1246,6 +1263,28 @@ class RankCalculator:
                 # Clean up
                 del adata_list, concatenated_adata
                 gc.collect()
+
+        # Publish the rank checkpoint only after both sidecar outputs are
+        # durable. Otherwise a failed parquet/H5AD write leaves a completed rank
+        # file that refuses safe recreation on the next run.
+        if rank_memmap is None:
+            raise RuntimeError("Rank memmap was not initialized")
+        publish_started_at = time.perf_counter()
+        rank_memmap.publish()
+        publish_seconds = time.perf_counter() - publish_started_at
+        rank_output_bytes = total_cells_expected * n_genes * np.dtype(np.float16).itemsize
+        publish_mib_per_second = (
+            rank_output_bytes / _MIB / publish_seconds if publish_seconds > 0 else 0.0
+        )
+        logger.info(
+            f"Published rank matrix to {rank_memmap_path}; "
+            f"marker scoring will read {rank_memmap.data_path}"
+        )
+        logger.info(
+            f"Rank output finalization: {rank_output_bytes / 1024**3:.2f} GiB in "
+            f"{publish_seconds:.2f}s ({publish_mib_per_second:,.0f} MiB/s); "
+            f"scratch_used={rank_memmap.using_tmp}"
+        )
 
         # Final completion message
         logger.info("Rank calculation and concatenation completed successfully")

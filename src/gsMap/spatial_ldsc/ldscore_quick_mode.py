@@ -171,11 +171,18 @@ class SpatialLDSCProcessor:
             # Adjust for filtered spots
             start_cell = max(0, start_cell)
             end_cell = min(end_cell, self.n_spots_filtered)
+            if start_cell >= end_cell:
+                raise ValueError(
+                    f"cell_indices_range [{start_cell}, {end_cell}) is empty after "
+                    f"clamping to {self.n_spots_filtered} available cells"
+                )
             self.chunk_starts = list(range(start_cell, end_cell, self.chunk_size))
             self._cell_end = end_cell  # cap for the last (possibly partial) chunk
             logger.info(f"Processing cell range [{start_cell}, {end_cell})")
             self.total_cells_to_process = end_cell - start_cell
         else:
+            if self.n_spots_filtered == 0:
+                raise ValueError("No cells are available for spatial LDSC")
             self.chunk_starts = list(range(0, self.n_spots_filtered, self.chunk_size))
             self._cell_end = self.n_spots_filtered
             self.total_cells_to_process = self.n_spots_filtered
@@ -363,6 +370,7 @@ class SpatialLDSCProcessor:
             pipeline_depth=pipeline_depth,
         )
 
+        start_time = time.time()
         try:
             # Submit all chunks to reader
             for chunk_idx in range(self.total_chunks):
@@ -416,7 +424,6 @@ class SpatialLDSCProcessor:
                     description, total=self.total_cells_to_process, speed="0", r_to_c_queue="0"
                 )
 
-                start_time = time.time()
                 last_update_time = start_time
                 last_chunks_processed = 0
 

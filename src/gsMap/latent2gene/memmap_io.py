@@ -247,6 +247,8 @@ class MemMapDense:
         self.dtype = dtype
         self.mode = mode
         self.num_write_workers = num_write_workers
+        if self.num_write_workers < 0:
+            raise ValueError("num_write_workers cannot be negative")
         self.flush_interval = flush_interval
         self.tmp_dir = Path(tmp_dir) if tmp_dir else None
         self.using_tmp = False
@@ -284,7 +286,11 @@ class MemMapDense:
             self.tmp_dir,
             file_bytes,
         ):
-            self._setup_tmp_paths()
+            try:
+                self._setup_tmp_paths()
+            except BaseException:
+                self._cleanup_tmp()
+                raise
         else:
             self.tmp_dir = None
             self.path = self.original_path
@@ -293,15 +299,20 @@ class MemMapDense:
         self.data_path = self.path.with_suffix(".dat")
         self.meta_path = self.path.with_suffix(".meta.json")
 
-        # Initialize memory map
-        if mode == "w":
-            self._create_memmap()
-        elif mode == "r":
-            self._open_memmap_readonly()
-        elif mode == "r+":
-            self._open_memmap_readwrite()
-        else:
-            raise ValueError(f"Invalid mode: {mode}. Must be 'w', 'r', or 'r+'")
+        # Initialize the mapping. Constructor failures occur before a caller can
+        # hold and close this object, so clean any staged scratch copy here.
+        try:
+            if mode == "w":
+                self._create_memmap()
+            elif mode == "r":
+                self._open_memmap_readonly()
+            elif mode == "r+":
+                self._open_memmap_readwrite()
+            else:
+                raise ValueError(f"Invalid mode: {mode}. Must be 'w', 'r', or 'r+'")
+        except BaseException:
+            self._cleanup_tmp()
+            raise
 
         # Async writing setup (only for write modes)
         self.write_queue = queue.Queue(maxsize=100)
@@ -368,9 +379,10 @@ class MemMapDense:
         storage_layout = _prepare_memmap_data_file(original_data_path, file_bytes)
         destination_mode = "r+b" if original_data_path.exists() else "wb"
         logger.info("Syncing memmap data from temporary to original storage sequentially...")
-        with tmp_data_path.open("rb") as source, original_data_path.open(
-            destination_mode
-        ) as destination:
+        with (
+            tmp_data_path.open("rb") as source,
+            original_data_path.open(destination_mode) as destination,
+        ):
             shutil.copyfileobj(source, destination, length=_COPY_BUFFER_BYTES)
             destination.truncate(file_bytes)
 
@@ -448,6 +460,12 @@ class MemMapDense:
         # Validate shape and dtype
         if tuple(meta["shape"]) != self.shape:
             raise ValueError(f"Shape mismatch: expected {self.shape}, got {tuple(meta['shape'])}")
+        metadata_dtype = np.dtype(meta["dtype"])
+        requested_dtype = np.dtype(self.dtype)
+        if metadata_dtype != requested_dtype:
+            raise ValueError(
+                f"Dtype mismatch: expected {requested_dtype.name}, got {metadata_dtype.name}"
+            )
 
         # Open memory map
         self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="r", shape=self.shape)
@@ -463,10 +481,17 @@ class MemMapDense:
         with open(self.meta_path) as f:
             meta = json.load(f)
 
+        if tuple(meta["shape"]) != self.shape:
+            raise ValueError(f"Shape mismatch: expected {self.shape}, got {tuple(meta['shape'])}")
+        metadata_dtype = np.dtype(meta["dtype"])
+        requested_dtype = np.dtype(self.dtype)
+        if metadata_dtype != requested_dtype:
+            raise ValueError(
+                f"Dtype mismatch: expected {requested_dtype.name}, got {metadata_dtype.name}"
+            )
+
         # Open memory map
-        self.memmap = np.memmap(
-            self.data_path, dtype=self.dtype, mode="r+", shape=tuple(meta["shape"])
-        )
+        self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="r+", shape=self.shape)
 
         logger.info(f"Opened MemMapDense at {self.data_path} in read-write mode")
 
@@ -541,6 +566,19 @@ class MemMapDense:
             logger.warning("Cannot write to read-only MemMapDense")
             return
 
+        # A zero-worker mapping is useful when a caller already serializes its
+        # output. Keep write_batch functional instead of enqueuing work that no
+        # thread can ever consume.
+        if not self.writer_threads:
+            if isinstance(row_indices, slice):
+                self.memmap[row_indices, col_slice] = data
+            elif isinstance(row_indices, int | np.integer):
+                start_row = int(row_indices)
+                self.memmap[start_row : start_row + data.shape[0], col_slice] = data
+            else:
+                self.memmap[row_indices, col_slice] = data
+            return
+
         self.write_queue.put((data, row_indices, col_slice))
 
     def read_batch(
@@ -575,7 +613,7 @@ class MemMapDense:
         if self.mode in ("w", "r+"):
             logger.info("Marking memmap as complete")
             # Ensure all writes are flushed
-            if self.writer_threads and not self.write_queue.empty():
+            if self.writer_threads:
                 logger.info("Waiting for remaining writes before marking complete...")
                 self.write_queue.join()
 
@@ -625,7 +663,7 @@ class MemMapDense:
             # Derive metadata path from memmap path
             if memmap_path.suffix == ".dat":
                 meta_path = memmap_path.with_suffix(".meta.json")
-            elif memmap_path.suffix == ".meta.json":
+            elif memmap_path.name.endswith(".meta.json"):
                 meta_path = memmap_path
             else:
                 # Assume no extension, add .meta.json
@@ -642,10 +680,19 @@ class MemMapDense:
             if not meta.get("complete", False):
                 return False, meta
 
-            data_path = memmap_path if memmap_path.suffix == ".dat" else memmap_path.with_suffix(".dat")
-            expected_bytes = int(np.prod(meta["shape"], dtype=np.int64)) * np.dtype(
-                meta["dtype"]
-            ).itemsize
+            if memmap_path.name.endswith(".meta.json"):
+                data_path = memmap_path.with_name(
+                    f"{memmap_path.name.removesuffix('.meta.json')}.dat"
+                )
+            else:
+                data_path = (
+                    memmap_path
+                    if memmap_path.suffix == ".dat"
+                    else memmap_path.with_suffix(".dat")
+                )
+            expected_bytes = (
+                int(np.prod(meta["shape"], dtype=np.int64)) * np.dtype(meta["dtype"]).itemsize
+            )
             if not data_path.is_file() or data_path.stat().st_size != expected_bytes:
                 logger.warning(f"Memmap data file is missing or has the wrong size: {data_path}")
                 return False, meta
@@ -725,8 +772,27 @@ class MemMapDense:
         self._cleanup_tmp()
         self._closed = True
 
+    def abort(self) -> None:
+        """Close an unpublished mapping without marking or syncing it complete."""
+        if self._closed:
+            return
+        logger.info("Aborting incomplete MemMapDense output")
+        if self.mode in ("w", "r+"):
+            self._stop_writer_threads()
+        self._close_memmap_handle()
+        self._cleanup_tmp()
+        self._closed = True
+
     def __enter__(self):
         return self
+
+    def __exit__(self, exc_type, exc_value, traceback_obj):
+        del exc_value, traceback_obj
+        if exc_type is None:
+            self.close()
+        else:
+            self.abort()
+        return False
 
     @property
     def attrs(self):
@@ -795,6 +861,8 @@ class ParallelMarkerScoreWriter:
         self.shape = output_memmap.shape
         self.dtype = output_memmap.dtype
         self.num_workers = num_workers
+        if self.num_workers < 1:
+            raise ValueError("Marker-score writer requires at least one worker")
 
         # Queue for write requests
         if queue_size < 1:
@@ -813,6 +881,9 @@ class ParallelMarkerScoreWriter:
         # Exception handling
         self.exception_queue = queue.Queue()
         self.has_error = threading.Event()
+        self.error_lock = threading.Lock()
+        self.writer_error: tuple[int, BaseException, str] | None = None
+        self._closed = False
 
         # Start worker threads
         self.workers = []
@@ -832,11 +903,18 @@ class ParallelMarkerScoreWriter:
         logger.debug(f"Writer worker {worker_id} started")
 
         while not self.stop_workers.is_set():
+            item = None
             try:
                 # Get write request
                 item = self.write_queue.get(timeout=1)
                 if item is None:
                     break
+
+                # Once one write fails, drain subsequent requests without
+                # touching the output. Every dequeued request still receives a
+                # task_done() call so callers can never wedge on Queue.join().
+                if self.has_error.is_set():
+                    continue
 
                 batch_idx, marker_scores, cell_indices = item
 
@@ -857,17 +935,19 @@ class ParallelMarkerScoreWriter:
                 with self.completed_lock:
                     self.completed_count += 1
 
-                self.write_queue.task_done()
-
             except queue.Empty:
                 continue
             except Exception as e:  # noqa: BLE001
                 error_trace = traceback.format_exc()
                 logger.error(f"Writer worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
-                self.exception_queue.put((worker_id, e, error_trace))
+                with self.error_lock:
+                    if self.writer_error is None:
+                        self.writer_error = (worker_id, e, error_trace)
+                        self.exception_queue.put(self.writer_error)
                 self.has_error.set()
-                self.stop_workers.set()  # Signal all workers to stop
-                break
+            finally:
+                if item is not None:
+                    self.write_queue.task_done()
 
         # We do not close or delete the shared memmap here.
         # Flushing is handled by the main thread or MemMapDense wrapper.
@@ -894,30 +974,46 @@ class ParallelMarkerScoreWriter:
     def check_errors(self):
         """Check if any worker encountered an error"""
         if self.has_error.is_set():
-            try:
-                worker_id, exception, error_trace = self.exception_queue.get_nowait()
-                raise RuntimeError(
-                    f"Writer worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
-                ) from exception
-            except queue.Empty:
+            with self.error_lock:
+                error = self.writer_error
+            if error is None:
                 raise RuntimeError("Writer worker failed with unknown error") from None
+            worker_id, exception, error_trace = error
+            raise RuntimeError(
+                f"Writer worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
+            ) from exception
 
-    def close(self):
-        """Close writer pool"""
+    def close(self, *, wait: bool = True, raise_errors: bool = True):
+        """Close the writer pool, optionally discarding pending writes."""
+        if self._closed:
+            if raise_errors:
+                self.check_errors()
+            return
         logger.info("Closing writer pool...")
 
-        # Wait for queue to empty
-        if not self.write_queue.empty():
+        if wait:
             logger.info("Waiting for remaining writes...")
             self.write_queue.join()
+        else:
+            while True:
+                try:
+                    self.write_queue.get_nowait()
+                except queue.Empty:
+                    break
+                else:
+                    self.write_queue.task_done()
 
-        # Stop workers
         self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.write_queue.put(None)
-
-        # Wait for workers to finish
         for worker in self.workers:
             worker.join(timeout=5)
+            if worker.is_alive():
+                raise RuntimeError("Marker-score writer thread did not stop within 5 seconds")
 
+        self._closed = True
         logger.info("Writer pool closed")
+        if raise_errors:
+            self.check_errors()
+
+    def abort(self) -> None:
+        """Stop workers and discard queued output after a failed calculation."""
+        self.close(wait=False, raise_errors=False)

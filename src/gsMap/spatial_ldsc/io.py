@@ -475,9 +475,7 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
         )
         spatial_key = getattr(config, "spatial_key", None)
         obsm_keys = (
-            [spatial_key]
-            if spatial_key is not None and spatial_key in src_adata.obsm
-            else []
+            [spatial_key] if spatial_key is not None and spatial_key in src_adata.obsm else []
         )
         if row_order is None:
             obs = src_adata.obs.copy()

@@ -710,6 +710,7 @@ class RunLoggingSession:
                     "sink": sink,
                     "entry": entry,
                     "started": time.perf_counter(),
+                    "error": None,
                 }
                 self._write_manifest()
                 reused = False
@@ -722,11 +723,16 @@ class RunLoggingSession:
                 stage_context = f"{stage_context} trait={safe_trait}"
             log_method(f"{stage_context} started | run_id={self.run_id}")
 
-        error: BaseException | None = None
         try:
             yield path
         except BaseException as caught:
-            error = caught
+            with self._lock:
+                # A nested use of the same stage can fail and be caught by its
+                # caller while the outer stage continues. Preserve that failure
+                # on the shared active entry so the final reference cannot
+                # incorrectly overwrite it with "complete".
+                if self._active[key]["error"] is None:
+                    self._active[key]["error"] = caught
             if not any(caught is logged for logged in self._logged_exceptions):
                 self._logged_exceptions.append(caught)
                 logger.error(
@@ -739,15 +745,16 @@ class RunLoggingSession:
                 active = self._active[key]
                 active["references"] -= 1
                 if active["references"] == 0:
+                    stage_error = active["error"]
                     entry = active["entry"]
                     entry["finished_at_utc"] = _utc_now()
                     entry["duration_seconds"] = time.perf_counter() - active["started"]
-                    if error is None:
+                    if stage_error is None:
                         entry["status"] = "complete"
                     else:
                         entry["status"] = "failed"
-                        entry["error_type"] = type(error).__name__
-                        entry["error_message"] = str(error)
+                        entry["error_type"] = type(stage_error).__name__
+                        entry["error_message"] = str(stage_error)
                         self._failed_stage_seen = True
                     self._write_manifest()
                     completion_target = f"Stage {normalized}"
@@ -758,7 +765,7 @@ class RunLoggingSession:
                             f"{resource_label} | stage={normalized} trait={safe_trait}"
                         )
                     _log_resource_snapshot(resource_label, psutil.Process(self.owner_pid))
-                    if error is None:
+                    if stage_error is None:
                         logger.info(
                             f"{completion_target} completed in {entry['duration_seconds']:.2f}s"
                         )

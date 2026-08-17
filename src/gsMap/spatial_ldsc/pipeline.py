@@ -78,6 +78,8 @@ class ParallelLDScoreReader:
         logger.debug(f"Reader worker {worker_id} started")
 
         while not self.stop_workers.is_set():
+            item = None
+            chunk_idx = -1
             try:
                 item = self.read_queue.get(timeout=1)
                 if item is None:
@@ -97,7 +99,7 @@ class ParallelLDScoreReader:
                 with self.throughput_lock:
                     self.throughput.record_batch(elapsed)
 
-                self.result_queue.put(
+                self._put_result_until_stopped(
                     {
                         "chunk_idx": chunk_idx,
                         "ldscore": ldscore,
@@ -109,7 +111,6 @@ class ParallelLDScoreReader:
                         "success": True,
                     }
                 )
-                self.read_queue.task_done()
 
             except queue.Empty:
                 continue
@@ -121,17 +122,30 @@ class ParallelLDScoreReader:
                 )
                 self.exception_queue.put((worker_id, e, error_trace))
                 self.has_error.set()
-                self.result_queue.put(
+                self._put_result_until_stopped(
                     {
-                        "chunk_idx": chunk_idx if "chunk_idx" in locals() else -1,
+                        "chunk_idx": chunk_idx,
                         "worker_id": worker_id,
                         "success": False,
                         "error": str(e),
                     }
                 )
                 break
+            finally:
+                if item is not None:
+                    self.read_queue.task_done()
 
         logger.debug(f"Reader worker {worker_id} stopped")
+
+    def _put_result_until_stopped(self, result: dict) -> bool:
+        """Publish a result without trapping a reader behind a failed consumer."""
+        while not self.stop_workers.is_set():
+            try:
+                self.result_queue.put(result, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
 
     def submit_chunk(self, chunk_idx: int):
         self.read_queue.put(chunk_idx)
@@ -155,10 +169,18 @@ class ParallelLDScoreReader:
 
     def close(self):
         self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.read_queue.put(None)
+        while True:
+            try:
+                self.read_queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                self.read_queue.task_done()
         for worker in self.workers:
             worker.join(timeout=5)
+        live_workers = [worker.name for worker in self.workers if worker.is_alive()]
+        if live_workers:
+            logger.warning(f"Reader workers did not stop within 5 seconds: {live_workers}")
         logger.info("Reader pool closed")
 
 
@@ -327,7 +349,9 @@ class ParallelLDScoreComputer:
         betas_np = np.array(betas)
         ses_np = np.array(ses)
         elapsed = time.time() - start_time
-        n_cells_in_chunk = abs_end - abs_start
+        # A sample-filtered chunk may contain non-contiguous source rows, so
+        # the enclosing absolute range is not its cell count.
+        n_cells_in_chunk = len(spot_names)
 
         with self.throughput_lock:
             self.throughput.record_batch(elapsed)
@@ -433,8 +457,23 @@ class ParallelLDScoreComputer:
 
     def close(self):
         self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.compute_queue.put(None)
+        # A failed compute worker can leave the bounded reader->compute queue
+        # full. Blocking while adding sentinels would deadlock error cleanup;
+        # discard pending work and let waiting workers observe stop_workers on
+        # their bounded get timeout.
+        while True:
+            try:
+                self.compute_queue.get_nowait()
+            except queue.Empty:
+                break
         for worker in self.workers:
             worker.join(timeout=5)
+        live_workers = [worker.name for worker in self.workers if worker.is_alive()]
+        if live_workers:
+            logger.warning(f"Compute workers did not stop within 5 seconds: {live_workers}")
+        else:
+            ldscore_backend = getattr(self, "ldscore_backend", None)
+            if ldscore_backend is not None:
+                ldscore_backend.close()
+            self.ldscore_backend = None
         logger.info("Compute pool closed")
