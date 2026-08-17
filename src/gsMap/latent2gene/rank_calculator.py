@@ -5,6 +5,7 @@ Extracts and processes the rank calculation logic from find_latent_representatio
 
 import gc
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ import pandas as pd
 import scanpy as sc
 from anndata._io.specs import read_elem
 from jax import jit
+from numba import get_num_threads, get_thread_id, njit, prange, set_num_threads
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -39,25 +41,218 @@ from .memmap_io import MemMapDense
 logger = logging.getLogger(__name__)
 
 _MIB = 1024**2
-_TARGET_RANK_BATCH_BYTES = 32 * _MIB
-_RANK_BATCH_SIZE_CHOICES = (64, 128, 250, 500, 1000)
-_TARGET_RANK_WRITE_CELLS = 5000
+_TARGET_SPARSE_RANK_BATCH_BYTES = 64 * _MIB
+_SPARSE_RANK_BATCH_SIZE_CHOICES = (250, 500, 1000, 2000)
+_MAX_HISTOGRAM_RANK_VALUE = 65_536
+_RANK_LOG_PERCENT_STEP = 10
+_RANK_LOG_INTERVAL_SECONDS = 60.0
 
 
-def _automatic_rank_batch_size(genes: int, dtype: np.dtype = np.dtype("float32")) -> int:
-    """Select a rank batch whose dense input payload is about 32 MiB."""
+class _RankProgressReporter:
+    """Persist coarse rank progress without copying Rich terminal output into logs."""
+
+    def __init__(
+        self,
+        total_cells: int,
+        *,
+        percent_step: int = _RANK_LOG_PERCENT_STEP,
+        log_interval_seconds: float = _RANK_LOG_INTERVAL_SECONDS,
+    ) -> None:
+        if total_cells < 1:
+            raise ValueError("Rank progress requires at least one cell")
+        if not 1 <= percent_step <= 100:
+            raise ValueError("Rank progress percent_step must be between 1 and 100")
+        if log_interval_seconds <= 0:
+            raise ValueError("Rank progress log_interval_seconds must be positive")
+
+        self.total_cells = total_cells
+        self.percent_step = percent_step
+        self.log_interval_seconds = log_interval_seconds
+        self.processed_cells = 0
+        self.active_seconds = 0.0
+        self._next_percent = percent_step
+        self._last_log_at = time.perf_counter()
+        self._finished = False
+
+    @property
+    def throughput(self) -> float:
+        if self.active_seconds <= 0:
+            return 0.0
+        return self.processed_cells / self.active_seconds
+
+    def update(
+        self,
+        *,
+        processed_cells: int,
+        active_seconds: float,
+        sample_name: str,
+        sample_processed_cells: int,
+        sample_total_cells: int,
+    ) -> None:
+        """Record one completed chunk and log at 10% or 60-second boundaries."""
+        if self._finished:
+            return
+        if not self.processed_cells <= processed_cells <= self.total_cells:
+            raise ValueError("Rank progress must be monotonic and cannot exceed total cells")
+        if active_seconds < 0:
+            raise ValueError("Rank active time cannot be negative")
+
+        self.processed_cells = processed_cells
+        self.active_seconds += active_seconds
+        percent_complete = 100.0 * processed_cells / self.total_cells
+        now = time.perf_counter()
+        percent_due = percent_complete >= self._next_percent
+        interval_due = now - self._last_log_at >= self.log_interval_seconds
+        complete = processed_cells == self.total_cells
+        if not (percent_due or interval_due or complete):
+            return
+
+        while self._next_percent <= percent_complete:
+            self._next_percent += self.percent_step
+        logger.info(
+            f"Rank progress: {processed_cells:,}/{self.total_cells:,} cells "
+            f"({percent_complete:.1f}%); active throughput={self.throughput:,.0f} cells/s; "
+            f"sample={sample_name} ({sample_processed_cells:,}/{sample_total_cells:,})"
+        )
+        self._last_log_at = now
+        self._finished = complete
+
+
+def _automatic_sparse_rank_batch_size(genes: int) -> int:
+    """Select a batch near 64 MiB for the encoded float16 rank output."""
     if genes < 1:
         raise ValueError("Gene count must be positive")
-    unconstrained = _TARGET_RANK_BATCH_BYTES // (genes * np.dtype(dtype).itemsize)
-    eligible = [size for size in _RANK_BATCH_SIZE_CHOICES if size <= unconstrained]
-    return eligible[-1] if eligible else _RANK_BATCH_SIZE_CHOICES[0]
+    unconstrained = _TARGET_SPARSE_RANK_BATCH_BYTES // (
+        genes * np.dtype("float16").itemsize
+    )
+    eligible = [size for size in _SPARSE_RANK_BATCH_SIZE_CHOICES if size <= unconstrained]
+    return eligible[-1] if eligible else _SPARSE_RANK_BATCH_SIZE_CHOICES[0]
 
 
-def _automatic_rank_write_interval(batch_size: int) -> int:
-    """Flush rank writes after approximately five thousand cells."""
-    if batch_size < 1:
-        raise ValueError("Batch size must be positive")
-    return max(1, round(_TARGET_RANK_WRITE_CELLS / batch_size))
+def _configure_rank_numba_threads() -> int:
+    """Use the process CPU affinity, which reflects a SLURM job's cgroup allocation."""
+    try:
+        available_cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        available_cpus = os.cpu_count() or 1
+    resolved_threads = max(1, min(available_cpus, get_num_threads()))
+    set_num_threads(resolved_threads)
+    return resolved_threads
+
+
+def _build_log_rank_lookup(n_genes: int) -> tuple[np.ndarray, np.ndarray]:
+    """Build float32 log ranks and their final float16 storage bit patterns."""
+    doubled_ranks = np.arange(2 * n_genes + 1, dtype=np.float32)
+    doubled_ranks[0] = 2.0
+    log_rank_float32 = np.log(doubled_ranks * np.float32(0.5)).astype(np.float32)
+    log_rank_float16_bits = log_rank_float32.astype(np.float16).view(np.uint16)
+    return log_rank_float32, log_rank_float16_bits
+
+
+@njit
+def _all_finite(values: np.ndarray) -> bool:
+    for value in values:
+        if not np.isfinite(value):
+            return False
+    return True
+
+
+@njit(parallel=True)
+def _sparse_log_rank_bits(
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    data: np.ndarray,
+    n_genes: int,
+    log_rank_float32: np.ndarray,
+    log_rank_float16_bits: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Exactly rank sparse rows while directly encoding float16 output bits."""
+    n_rows = indptr.size - 1
+    n_threads = get_num_threads()
+    output = np.empty((n_rows, n_genes), dtype=np.uint16)
+    thread_sums = np.zeros((n_threads, n_genes), dtype=np.float32)
+    thread_fractions = np.zeros((n_threads, n_genes), dtype=np.int32)
+
+    for row in prange(n_rows):
+        thread = get_thread_id()
+        start = indptr[row]
+        end = indptr[row + 1]
+        nonzero_count = end - start
+        zero_count = n_genes - nonzero_count
+
+        use_histogram = True
+        max_value = 0
+        for position in range(start, end):
+            value = data[position]
+            integer_value = int(value)
+            if (
+                value <= 0
+                or value != integer_value
+                or integer_value > _MAX_HISTOGRAM_RANK_VALUE
+            ):
+                use_histogram = False
+                break
+            if integer_value > max_value:
+                max_value = integer_value
+
+        if use_histogram:
+            zero_rank_code = zero_count + 1
+        else:
+            values = data[start:end]
+            order = np.argsort(values)
+            negative_count = 0
+            while negative_count < nonzero_count and values[order[negative_count]] < 0:
+                negative_count += 1
+            zero_rank_code = 2 * negative_count + zero_count + 1
+
+        zero_log_rank = log_rank_float32[zero_rank_code]
+        zero_log_rank_bits = log_rank_float16_bits[zero_rank_code]
+        for gene in range(n_genes):
+            output[row, gene] = zero_log_rank_bits
+            thread_sums[thread, gene] += zero_log_rank
+
+        if use_histogram:
+            counts = np.zeros(max_value + 1, dtype=np.int32)
+            for position in range(start, end):
+                counts[int(data[position])] += 1
+
+            cumulative = zero_count
+            rank_codes = np.empty(max_value + 1, dtype=np.int32)
+            for value in range(1, max_value + 1):
+                count = counts[value]
+                if count:
+                    rank_codes[value] = 2 * cumulative + count + 1
+                    cumulative += count
+            for position in range(start, end):
+                gene = indices[position]
+                rank_code = rank_codes[int(data[position])]
+                output[row, gene] = log_rank_float16_bits[rank_code]
+                thread_sums[thread, gene] += log_rank_float32[rank_code] - zero_log_rank
+                thread_fractions[thread, gene] += 1
+        else:
+            group_start = 0
+            while group_start < nonzero_count:
+                group_end = group_start + 1
+                value = values[order[group_start]]
+                while group_end < nonzero_count and values[order[group_end]] == value:
+                    group_end += 1
+                offset = zero_count if value > 0 else 0
+                rank_code = 2 * offset + group_start + 1 + group_end
+                for sorted_position in range(group_start, group_end):
+                    source_position = start + order[sorted_position]
+                    gene = indices[source_position]
+                    output[row, gene] = log_rank_float16_bits[rank_code]
+                    thread_sums[thread, gene] += log_rank_float32[rank_code] - zero_log_rank
+                    thread_fractions[thread, gene] += 1
+                group_start = group_end
+
+    sum_log_ranks = np.zeros(n_genes, dtype=np.float32)
+    sum_fractions = np.zeros(n_genes, dtype=np.float32)
+    for thread in range(n_threads):
+        for gene in range(n_genes):
+            sum_log_ranks[gene] += thread_sums[thread, gene]
+            sum_fractions[gene] += thread_fractions[thread, gene]
+    return output, sum_log_ranks, sum_fractions
 
 
 def filter_cells(
@@ -143,17 +338,17 @@ def filter_cells(
 
 
 @jit
-def jax_process_chunk(dense_matrix, n_genes):
+def jax_process_chunk(dense_matrix, valid_rows):
     nonzero_mask = dense_matrix != 0
 
     ranks = jax.scipy.stats.rankdata(dense_matrix, method="average", axis=1)
     log_ranks = jnp.log(ranks)
-    # Sum log ranks (with fill_zero)
-    sum_log_ranks = log_ranks.sum(axis=0)
-    # Sum fraction (count of non-zeros)
-    sum_frac = nonzero_mask.sum(axis=0)
+    valid_mask = (jnp.arange(dense_matrix.shape[0]) < valid_rows)[:, None]
+    # Preserve float32 accumulators while transferring only the final float16 payload.
+    sum_log_ranks = jnp.where(valid_mask, log_ranks, 0).sum(axis=0)
+    sum_frac = jnp.where(valid_mask, nonzero_mask, False).sum(axis=0)
 
-    return log_ranks, sum_log_ranks, sum_frac
+    return log_ranks.astype(jnp.float16), sum_log_ranks, sum_frac
 
 
 def rank_data_jax(
@@ -166,8 +361,9 @@ def rank_data_jax(
     current_row_offset: int = 0,
     progress=None,
     progress_task=None,
+    progress_reporter: _RankProgressReporter | None = None,
 ):
-    """JAX-optimized rank calculation with batched writing to memory-mapped storage.
+    """Exact sparse rank calculation with a fixed-shape dense-JAX fallback.
 
     Args:
         X: Input sparse matrix
@@ -179,6 +375,7 @@ def rank_data_jax(
         current_row_offset: Offset for writing to memory map (for multiple sections)
         progress: Progress instance for updates
         progress_task: Task ID for progress updates
+        progress_reporter: Optional durable logger for global rank progress and throughput
 
     Returns:
         Tuple of (sum_log_ranks, sum_frac) as numpy arrays
@@ -188,8 +385,23 @@ def rank_data_jax(
     n_rows, n_cols = X.shape
 
     # Initialize accumulators (use float32 for accumulators to avoid precision loss)
-    sum_log_ranks = jnp.zeros(n_genes, dtype=jnp.float32)
-    sum_frac = jnp.zeros(n_genes, dtype=jnp.float32)
+    sum_log_ranks = np.zeros(n_genes, dtype=np.float32)
+    sum_frac = np.zeros(n_genes, dtype=np.float32)
+
+    use_sparse_backend = _all_finite(X.data)
+    if use_sparse_backend:
+        rank_threads = _configure_rank_numba_threads()
+        log_rank_float32, log_rank_float16_bits = _build_log_rank_lookup(n_genes)
+        backend_name = "sparse-numba"
+        logger.info(
+            f"Rank backend for {metadata.get('name', 'unknown') if metadata else 'unknown'}: "
+            f"sparse-numba with {rank_threads} threads"
+        )
+    else:
+        log_rank_float32 = None
+        log_rank_float16_bits = None
+        backend_name = "dense-jax"
+        logger.warning("Non-finite expression values detected; using dense-JAX rank fallback")
 
     # Process in chunks to manage memory
     chunk_size = min(chunk_size, n_rows)
@@ -198,29 +410,50 @@ def rank_data_jax(
     chunks_processed = 0
 
     # Track speed at chunk level
-    chunk_start_time = time.time()
+    sample_started_at = time.perf_counter()
     processed_cells = 0
+    sample_name = str(metadata.get("name", "unknown")) if metadata else "unknown"
+    compute_seconds = 0.0
+    accumulation_seconds = 0.0
+    output_enqueue_seconds = 0.0
 
     for start_idx in range(0, n_rows, chunk_size):
+        chunk_started_at = time.perf_counter()
         end_idx = min(start_idx + chunk_size, n_rows)
 
-        # Convert chunk to dense - use JAX asarray for zero-copy when possible
         chunk_X = X[start_idx:end_idx]
-        chunk_dense = chunk_X.toarray().astype(np.float32)
-        chunk_jax = jnp.asarray(chunk_dense)  # Use asarray for zero-copy conversion
-
-        # Process chunk with JIT-compiled function (ranking + accumulators)
-        chunk_log_ranks, chunk_sum_log_ranks, chunk_sum_frac = jax_process_chunk(
-            chunk_jax, n_genes
-        )
+        valid_rows = end_idx - start_idx
+        compute_started_at = time.perf_counter()
+        if use_sparse_backend:
+            chunk_log_rank_bits, chunk_sum_log_ranks, chunk_sum_frac = (
+                _sparse_log_rank_bits(
+                    chunk_X.indptr,
+                    chunk_X.indices,
+                    chunk_X.data,
+                    n_genes,
+                    log_rank_float32,
+                    log_rank_float16_bits,
+                )
+            )
+            chunk_log_ranks_np = chunk_log_rank_bits.view(np.float16)
+        else:
+            chunk_dense = chunk_X.toarray().astype(np.float32, copy=False)
+            if valid_rows < chunk_size:
+                padded = np.zeros((chunk_size, n_cols), dtype=np.float32)
+                padded[:valid_rows] = chunk_dense
+                chunk_dense = padded
+            chunk_log_ranks, chunk_sum_log_ranks, chunk_sum_frac = jax_process_chunk(
+                jnp.asarray(chunk_dense), valid_rows
+            )
+            chunk_log_ranks_np = np.asarray(chunk_log_ranks[:valid_rows])
+        compute_seconds += time.perf_counter() - compute_started_at
 
         # Update global accumulators
-        sum_log_ranks += chunk_sum_log_ranks
-        sum_frac += chunk_sum_frac
+        accumulation_started_at = time.perf_counter()
+        sum_log_ranks += np.asarray(chunk_sum_log_ranks, dtype=np.float32)
+        sum_frac += np.asarray(chunk_sum_frac, dtype=np.float32)
+        accumulation_seconds += time.perf_counter() - accumulation_started_at
 
-        # Convert JAX array to numpy float16 for storage efficiency
-        # This reduces memory usage by 50% compared to float32
-        chunk_log_ranks_np = np.array(chunk_log_ranks, dtype=np.float16)
         pending_chunks.append(chunk_log_ranks_np)
         # Calculate global indices for this chunk
         global_start = current_row_offset + start_idx
@@ -229,9 +462,14 @@ def rank_data_jax(
         chunks_processed += 1
 
         # Write to memory map periodically
-        if memmap_dense and chunks_processed % write_interval == 0:
+        if memmap_dense and (
+            chunks_processed % write_interval == 0 or end_idx == n_rows
+        ):
+            output_started_at = time.perf_counter()
             # Combine pending chunks for batch write
-            combined_data = np.vstack(pending_chunks)
+            combined_data = (
+                pending_chunks[0] if len(pending_chunks) == 1 else np.vstack(pending_chunks)
+            )
             # Calculate row indices for batch write
             start_row = pending_indices[0][0]
             end_row = pending_indices[-1][1]
@@ -239,23 +477,35 @@ def rank_data_jax(
             memmap_dense.write_batch(combined_data, row_indices=slice(start_row, end_row))
             pending_chunks.clear()
             pending_indices.clear()
+            output_enqueue_seconds += time.perf_counter() - output_started_at
+
+        chunk_cells = end_idx - start_idx
+        processed_cells += chunk_cells
+        chunk_elapsed = time.perf_counter() - chunk_started_at
+        if progress_reporter is not None:
+            progress_reporter.update(
+                processed_cells=current_row_offset + end_idx,
+                active_seconds=chunk_elapsed,
+                sample_name=sample_name,
+                sample_processed_cells=end_idx,
+                sample_total_cells=n_rows,
+            )
 
         # Update progress bar with speed calculation
         if progress and progress_task is not None:
-            chunk_cells = end_idx - start_idx
-            processed_cells += chunk_cells
-            elapsed_time = time.time() - chunk_start_time
+            elapsed_time = time.perf_counter() - sample_started_at
             speed = processed_cells / elapsed_time if elapsed_time > 0 else 0
             progress.update(progress_task, advance=chunk_cells, speed=f"{speed:.0f}")
 
-    # Write any remaining chunks
-    if memmap_dense and pending_chunks:
-        combined_data = np.vstack(pending_chunks)
-        start_row = pending_indices[0][0]
-        end_row = pending_indices[-1][1]
-        memmap_dense.write_batch(combined_data, row_indices=slice(start_row, end_row))
-
-    return np.array(sum_log_ranks), np.array(sum_frac)
+    elapsed_seconds = time.perf_counter() - sample_started_at
+    logger.info(
+        f"Rank backend summary for {sample_name}: backend={backend_name}, "
+        f"cells={n_rows:,}, elapsed={elapsed_seconds:.2f}s "
+        f"({n_rows / elapsed_seconds:,.0f} cells/s); "
+        f"compute={compute_seconds:.2f}s, accumulate={accumulation_seconds:.2f}s, "
+        f"output enqueue={output_enqueue_seconds:.2f}s"
+    )
+    return sum_log_ranks, sum_frac
 
 
 class RankCalculator:
@@ -436,6 +686,14 @@ class RankCalculator:
 
         self.console.print(table)
         logger.info(f"Expected total cells after filtering: {total_cells_expected}")
+        rank_progress_reporter = (
+            _RankProgressReporter(total_cells_expected) if total_cells_expected > 0 else None
+        )
+        rank_section_started_at = time.perf_counter()
+        logger.info(
+            f"Rank progress will be logged every {_RANK_LOG_PERCENT_STEP}% or "
+            f"{_RANK_LOG_INTERVAL_SECONDS:.0f}s for {total_cells_expected:,} cells"
+        )
 
         # Create overall section progress tracking
         with Progress(
@@ -481,19 +739,18 @@ class RankCalculator:
                 if gene_list is None:
                     gene_list = adata.var_names.tolist()
                     n_genes = len(gene_list)
-                    rank_batch_size = self.config.rank_batch_size or _automatic_rank_batch_size(
-                        n_genes
+                    rank_batch_size = (
+                        self.config.rank_batch_size
+                        or _automatic_sparse_rank_batch_size(n_genes)
                     )
-                    rank_write_interval = (
-                        self.config.rank_write_interval
-                        or _automatic_rank_write_interval(rank_batch_size)
-                    )
+                    # Sparse batches are already tens of MiB and can be handed directly
+                    # to the asynchronous writer without an extra np.vstack copy.
+                    rank_write_interval = self.config.rank_write_interval or 1
                     rank_writer_workers = self.config.mkscore_write_workers
                     logger.info(
-                        "Resolved rank plan: batch=%d, write interval=%d, writers=%d",
-                        rank_batch_size,
-                        rank_write_interval,
-                        rank_writer_workers,
+                        f"Resolved rank plan: backend=sparse-numba, "
+                        f"batch={rank_batch_size}, write interval={rank_write_interval}, "
+                        f"writers={rank_writer_workers}"
                     )
                     # Initialize rank memory map as dense matrix with float16 for 50% space savings
                     # Log ranks typically have sufficient precision with float16
@@ -528,8 +785,11 @@ class RankCalculator:
                     if X.dtype != np.float32:
                         X = X.astype(np.float32)
 
-                # Pre-allocate output arrays for efficiency
-                X.sort_indices()  # Sort indices for better cache performance
+                # Canonical CSR rows make sparse ranking identical to dense conversion,
+                # including inputs that contain duplicate coordinates or explicit zeros.
+                X.sum_duplicates()
+                X.eliminate_zeros()
+                X.sort_indices()
 
                 # Get number of cells after filtering
                 n_cells = X.shape[0]
@@ -553,6 +813,7 @@ class RankCalculator:
 
                     # Use JAX rank calculation with nested progress
                     metadata = {"name": sample_name, "cells": n_cells, "study_id": st_id}
+                    sample_rank_started_at = time.perf_counter()
 
                     batch_sum_log_ranks, batch_frac = rank_data_jax(
                         X,
@@ -564,7 +825,16 @@ class RankCalculator:
                         current_row_offset=current_row_offset,
                         progress=chunk_progress,
                         progress_task=chunk_task,
+                        progress_reporter=rank_progress_reporter,
                     )
+                    sample_rank_seconds = time.perf_counter() - sample_rank_started_at
+
+                sample_rank_throughput = n_cells / sample_rank_seconds
+                logger.info(
+                    f"Rank sample complete: {sample_name} "
+                    f"({st_id + 1}/{len(sample_h5ad_dict)}); {n_cells:,} cells in "
+                    f"{sample_rank_seconds:.2f}s ({sample_rank_throughput:,.0f} cells/s)"
+                )
 
                 # Update global sums
                 sum_log_ranks += batch_sum_log_ranks
@@ -594,11 +864,42 @@ class RankCalculator:
             # Publish one sequential project-side checkpoint while retaining
             # the scratch mapping for marker-score calculation.
             if rank_memmap is not None:
+                publish_started_at = time.perf_counter()
                 rank_memmap.publish()
+                publish_seconds = time.perf_counter() - publish_started_at
+                rank_output_bytes = (
+                    total_cells_expected * n_genes * np.dtype(np.float16).itemsize
+                )
+                publish_mib_per_second = (
+                    rank_output_bytes / _MIB / publish_seconds if publish_seconds > 0 else 0.0
+                )
                 logger.info(
                     f"Published rank matrix to {rank_memmap_path}; "
                     f"marker scoring will read {rank_memmap.data_path}"
                 )
+                logger.info(
+                    f"Rank output finalization: {rank_output_bytes / 1024**3:.2f} GiB in "
+                    f"{publish_seconds:.2f}s ({publish_mib_per_second:,.0f} MiB/s); "
+                    f"scratch_used={rank_memmap.using_tmp}"
+                )
+
+            rank_section_seconds = time.perf_counter() - rank_section_started_at
+            active_rank_seconds = (
+                rank_progress_reporter.active_seconds if rank_progress_reporter else 0.0
+            )
+            active_rank_throughput = (
+                rank_progress_reporter.throughput if rank_progress_reporter else 0.0
+            )
+            wall_rank_throughput = (
+                processed_cells_total / rank_section_seconds if rank_section_seconds > 0 else 0.0
+            )
+            logger.info(
+                f"Rank calculation summary: {processed_cells_total:,} cells; "
+                f"active={active_rank_seconds:.2f}s "
+                f"({active_rank_throughput:,.0f} cells/s); "
+                f"section wall={rank_section_seconds:.2f}s "
+                f"({wall_rank_throughput:,.0f} cells/s)"
+            )
 
         # Calculate mean log ranks and mean fraction
         mean_log_ranks = sum_log_ranks / total_cells

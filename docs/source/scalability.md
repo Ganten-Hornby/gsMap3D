@@ -169,13 +169,15 @@ Scratch is not required. If the configured directory cannot safely hold a file, 
 
 gsMap3D processes data in batches to balance memory usage and computational efficiency:
 
-| Parameter                    | Description                          | Default |
-| ---------------------------- | ------------------------------------ | ------- |
-| `rank_batch_size`            | Spots per batch for rank calculation | 500     |
-| `mkscore_batch_size`         | Spots per batch for marker score     | 500     |
-| `spots_per_chunk_quick_mode` | Spots per chunk for Spatial LDSC     | 50      |
+| Parameter                    | Description                          | Default       |
+| ---------------------------- | ------------------------------------ | ------------- |
+| `rank_batch_size`            | Spots per batch for rank calculation | Automatic (0) |
+| `mkscore_batch_size`         | Spots per batch for marker score     | Automatic (0) |
+| `spots_per_chunk_quick_mode` | Spots per chunk for Spatial LDSC     | 50            |
 
-Larger batch sizes can improve throughput but require more memory. Adjust based on your available RAM and GPU memory.
+The automatic rank batch targets about 64 MiB of final float16 output and selects
+from bounded batch sizes. Explicitly larger batches can require substantially more
+memory without improving an I/O-bound run.
 
 ## Performance Recommendations
 
@@ -183,7 +185,7 @@ Larger batch sizes can improve throughput but require more memory. Adjust based 
 
 1. **Use GPU acceleration**: GPU significantly speeds up both latent-to-gene and Spatial LDSC computation. Enabled by default with `--use-gpu`.
 1. **Use storage appropriate to the file size**: Leave `memmap_tmp_dir` unset when the memmaps exceed local capacity. New Lustre files are striped automatically, and marker output remains sequential. Use local NVMe only when the full staged files fit.
-1. **Increase batch sizes**: If memory allows, larger batches improve throughput
+1. **Keep automatic batch sizing initially**: Override it only after profiling shows that the default batch is limiting throughput.
 
 ### For CPU-Only Systems
 
