@@ -180,10 +180,20 @@ def test_spatial_3d_export_uses_shared_geometry_and_lazy_features(tmp_path):
     }
     base = _assignment_payload(web_report / "js_data/spatial_3d/spatial_3d_base.js")
     trait = _assignment_payload(web_report / "js_data/spatial_3d/trait_trait.js")
+    index = _assignment_payload(web_report / "js_data/spatial_3d/spatial_3d_index.js")
+    region = _assignment_payload(web_report / "js_data/spatial_3d/annotation_region.js")
     assert len(decode_typed_array(base["x"])) == 8
     assert base["coordinate_ranges"] == [19.0, 38.0, 10.0]
     assert len(decode_typed_array(trait["values"])) == 8
     assert trait["n_extra"] == 3
+    assert set(trait["extra"]["annotation_codes"]) == {"region"}
+    extra_region_codes = decode_typed_array(trait["extra"]["annotation_codes"]["region"])
+    assert len(extra_region_codes) == trait["n_extra"]
+    extra_positions = decode_typed_array(trait["extra"]["x"]).astype(int)
+    assert [region["categories"][code] for code in extra_region_codes] == [
+        metadata.loc[position, "region"] for position in extra_positions
+    ]
+    assert index["trait_extra_annotation_codes"] == ["region"]
     provenance = pd.read_parquet(report_data / "spatial_3d/spatial_3d_display_spots.parquet")
     assert len(provenance) == 8
 

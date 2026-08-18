@@ -167,6 +167,27 @@ def _categorical_payload(
     }
 
 
+def _categorical_code_arrays(
+    metadata: pd.DataFrame,
+    schemas: dict[str, tuple[list[str], list[str]]],
+) -> dict[str, tuple[np.ndarray, str]]:
+    """Encode full-row annotation codes against canonical category schemas."""
+
+    encoded = {}
+    for annotation, (categories, _) in schemas.items():
+        values = metadata[annotation].astype("string").fillna("NaN").astype(str)
+        categorical = pd.Categorical(values, categories=categories)
+        if (categorical.codes < 0).any():
+            raise ValueError(f"Categorical schema for {annotation} is incomplete")
+        dtype = "uint16" if len(categories) <= np.iinfo(np.uint16).max else "uint32"
+        numpy_dtype = np.dtype("<u2" if dtype == "uint16" else "<u4")
+        encoded[annotation] = (
+            np.asarray(categorical.codes, dtype=numpy_dtype),
+            dtype,
+        )
+    return encoded
+
+
 def _stratified_positions(
     metadata: pd.DataFrame,
     target_size: int,
@@ -420,6 +441,7 @@ def export_spatial_3d_payloads(
         "extreme_points_per_trait": extreme_points_per_trait,
         "traits": available_traits,
         "annotations": available_annotations,
+        "trait_extra_annotation_codes": True,
         "coordinate_info": coordinate_info,
         "source": source_signature,
         "coordinate_bounds": coordinate_bounds,
@@ -457,6 +479,7 @@ def export_spatial_3d_payloads(
         annotation: _categorical_schema(metadata[annotation])
         for annotation in available_annotations
     }
+    annotation_codes = _categorical_code_arrays(metadata, annotation_schemas)
 
     base_payload = {
         "version": SPATIAL_PAYLOAD_VERSION,
@@ -491,6 +514,10 @@ def export_spatial_3d_payloads(
             "y": encode_typed_array(all_coordinates[extra_positions, 1]),
             "z": encode_typed_array(all_coordinates[extra_positions, 2]),
             "values": encode_typed_array(values[extra_positions]),
+            "annotation_codes": {
+                annotation: encode_typed_array(codes[extra_positions], dtype=dtype)
+                for annotation, (codes, dtype) in annotation_codes.items()
+            },
         }
         payload = {
             "values": encode_typed_array(values[positions]),
@@ -530,6 +557,7 @@ def export_spatial_3d_payloads(
         "annotations": annotation_index,
         "colorscale": P_VALUE_COLORS,
         "extreme_points_per_trait": extreme_points_per_trait,
+        "trait_extra_annotation_codes": available_annotations,
         "coordinate_info": coordinate_info,
     }
     index_relative = "js_data/spatial_3d/spatial_3d_index.js"
@@ -623,17 +651,7 @@ def export_sample_spatial_payloads(
         for annotation in annotations
         if annotation in metadata
     }
-    annotation_codes = {}
-    for annotation, (categories, _) in annotation_schemas.items():
-        values = metadata[annotation].astype("string").fillna("NaN").astype(str)
-        categorical = pd.Categorical(values, categories=categories)
-        if (categorical.codes < 0).any():
-            raise ValueError(f"Categorical schema for {annotation} is incomplete")
-        dtype = "uint16" if len(categories) <= np.iinfo(np.uint16).max else "uint32"
-        annotation_codes[annotation] = (
-            np.asarray(categorical.codes, dtype=np.dtype("<u2" if dtype == "uint16" else "<u4")),
-            dtype,
-        )
+    annotation_codes = _categorical_code_arrays(metadata, annotation_schemas)
 
     for sample_name in samples:
         all_positions = np.flatnonzero(sample_values == str(sample_name))

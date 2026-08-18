@@ -179,7 +179,29 @@ def test_umap_uses_readable_geometry_hover_and_canonical_annotation_colors(
     assert "strongest trait signals are drawn on top" in report_template
     assert "currentAnnotationLegend" in report_template
     assert "this.getAnnotationColorMap(anno)" in report_template
-    assert "<b>Spot:</b>" in report_template
+    hover_builder = report_template[
+        report_template.index("buildUmapHoverText(includeTrait = false)") : report_template.index(
+            "// Render only trait-colored UMAP plots"
+        )
+    ]
+    assert "<b>Spot:</b>" not in hover_builder
+    assert "<b>Sample:</b>" not in hover_builder
+    assert "bindUmapHoverTooltip" in report_template
+    assert "pointer.clientX + gap" in report_template
+    assert "customdata: rendering.hoverColors" in report_template
+    assert "customdata: indices.map(() => color)" in report_template
+
+
+def test_shared_annotation_selection_filters_all_point_maps(report_template: str) -> None:
+    assert "visibleUmapPointIndices()" in report_template
+    assert "const annotation = this.spatial3dAnnotationCache?.[annotationName]" in report_template
+    assert "feature.extra.annotation_codes?.[annotationName]" in report_template
+    assert "compactTraitPayload.extra.annotation_codes?.[annotationName]" in report_template
+    assert "this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait')" in report_template
+    assert (
+        "if (this.spatial3dViewMode !== 'annotation') this.renderSpatial3dTrait()"
+        in report_template
+    )
 
 
 def test_enrichment_uses_shared_annotation_color_reference(report_template: str) -> None:
@@ -188,6 +210,21 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
     assert "getAnnotationColor(row.annotation, row.annotation_name)" in report_template
     assert "annotationColorTrace" in report_template
     assert "Same color as spatial and UMAP views" in report_template
+    assert "toggleCauchyAnnotationFocus(row.annotation)" in report_template
+    assert "clearCauchyAnnotationFocus()" in report_template
+
+    table_filter = report_template[
+        report_template.index("get filteredCauchyTable()") : report_template.index(
+            "// Wait for Plotly to load"
+        )
+    ]
+    heatmap = report_template[
+        report_template.index("                renderCauchyHeatmap() {") : report_template.index(
+            "// Simple Hierarchical Clustering"
+        )
+    ]
+    assert "isAnnotationCategoryVisible" not in table_filter
+    assert "isAnnotationCategoryVisible" not in heatmap
 
 
 def test_annotation_first_layout_and_shared_interactive_legend(report_template: str) -> None:
@@ -203,8 +240,15 @@ def test_annotation_first_layout_and_shared_interactive_legend(report_template: 
     assert 'style="order: 2"' in report_template
     assert 'style="order: 3"' in report_template
     assert 'style="order: 4"' in report_template
-    assert "Click to hide/show; double-click to isolate." in report_template
+    assert "Click to hide; double-click to isolate in point maps." in report_template
     assert "scheduleAnnotationLegendToggle(entry.category)" in report_template
     assert "isolateAnnotationCategory(entry.category)" in report_template
     assert "filterCategoricalPlotPoints" in report_template
     assert "visible: this.isAnnotationCategoryVisible(val, annoName)" in report_template
+
+
+def test_dataset_counts_are_only_in_top_overview(report_template: str) -> None:
+    assert report_template.count('x-text="traits.length.toLocaleString()"') == 1
+    assert report_template.count('x-text="samples.length.toLocaleString()"') == 1
+    assert report_template.count('x-text="annotations.length.toLocaleString()"') == 1
+    assert ">Dataset</h3>" not in report_template
