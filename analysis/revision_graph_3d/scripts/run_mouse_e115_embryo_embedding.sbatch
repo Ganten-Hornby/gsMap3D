@@ -3,9 +3,9 @@
 #SBATCH --chdir=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 #SBATCH --output=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.out
 #SBATCH --error=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.err
-# 11950209/11950210: 8-CPU runs used ~4.5 cores and reached the 160G memory ceiling.
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=192G
+# 11950209/11950210 reached the 160G ceiling; this doubles the 16-worker trial.
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=400G
 
 set -Eeuo pipefail
 
