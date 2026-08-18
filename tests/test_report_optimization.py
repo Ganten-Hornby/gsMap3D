@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+from gsMap.config.report_config import ReportConfig
 from gsMap.report.diagnosis import load_gwas_data
 from gsMap.report.report_data import (
     _available_cpu_count,
@@ -20,6 +21,12 @@ from gsMap.report.report_data import (
     _write_text_if_changed,
 )
 from gsMap.report.spatial_payload import SPATIAL_PAYLOAD_VERSION
+
+
+def test_report_3d_display_default_balances_density_and_interaction():
+    field = ReportConfig.__dataclass_fields__["downsampling_n_spots_3d"]
+
+    assert field.default == 100_000
 
 
 def test_available_cpu_count_prefers_slurm_allocation(monkeypatch):

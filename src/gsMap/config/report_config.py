@@ -38,12 +38,15 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
             min=1000,
             max=2000000,
         ),
-    ] = 50000
+    ] = 100000
 
     downsampling_n_spots_2d: Annotated[
         int,
         typer.Option(
-            help="Max spots per sample for 2D distribution plots. Samples with more spots will be randomly downsampled.",
+            help=(
+                "Maximum representative spots per sample in the browser's 2D view. "
+                "Larger samples use deterministic annotation-aware sampling."
+            ),
             min=10000,
             max=500000,
         ),

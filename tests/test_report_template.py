@@ -137,3 +137,19 @@ def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     assert "bindSpatial2dViewportSync" in report_template
     assert "Retained high-signal spots" in report_template
     assert "Color scale is shared across samples" in report_template
+
+
+def test_spatial_views_can_toggle_retained_hotspot_emphasis(report_template: str) -> None:
+    assert "spatial3dHighlightHotspots: true" in report_template
+    assert "spatial2dHighlightHotspots: true" in report_template
+    assert report_template.count("Top 500 highlighted") == 2
+    assert report_template.count("Top 500 normal size") == 2
+    assert "const highlight = this.spatial3dHighlightHotspots" in report_template
+    assert "const highlight = this.spatial2dHighlightHotspots" in report_template
+
+
+def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:
+    assert report_template.count("<b>Retained top signal</b>") == 2
+    assert "−log10(P): %{marker.color:.2f}" in report_template
+    assert "annotationHoverLabels" in report_template
+    assert "base.n_points <= 200000" in report_template

@@ -679,6 +679,14 @@
                                     @input.debounce.80ms="renderSpatial3dViews()"
                                     class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600">
                             </label>
+                            <button type="button"
+                                @click="spatial3dHighlightHotspots = !spatial3dHighlightHotspots; renderSpatial3dTrait()"
+                                :aria-pressed="spatial3dHighlightHotspots.toString()"
+                                :class="spatial3dHighlightHotspots ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-slate-300 bg-white text-slate-600'"
+                                class="rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm hover:border-primary-400"
+                                title="Retained high-signal spots remain visible when highlighting is off">
+                                <span x-text="spatial3dHighlightHotspots ? 'Top 500 highlighted' : 'Top 500 normal size'"></span>
+                            </button>
                             <button type="button" @click="resetSpatial3dCamera()"
                                 class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50">
                                 Reset camera
@@ -689,7 +697,11 @@
                                 Rendering <strong class="text-slate-700" x-text="spatial3dIndex?.n_points?.toLocaleString()"></strong>
                                 of <strong class="text-slate-700" x-text="spatial3dIndex?.n_points_original?.toLocaleString()"></strong> spots
                             </span>
-                            <span x-show="spatial3dIndex?.downsampled">Representative sampling is stratified; each trait also retains omitted high-signal spots.</span>
+                            <span x-show="spatial3dIndex?.downsampled">
+                                Representative sampling is stratified; each trait also retains omitted high-signal spots at
+                                <strong class="text-slate-700" x-text="spatial3dHighlightHotspots ? 'highlighted' : 'normal'"></strong>
+                                size.
+                            </span>
                             <span x-show="spatial3dCoordinateInfo?.note" class="basis-full text-slate-600" x-text="spatial3dCoordinateInfo?.note"></span>
                             <span x-show="spatial3dAspectMode === 'expanded'" class="font-semibold text-amber-700">Z is visually expanded and is not shown at physical scale.</span>
                         </div>
@@ -771,7 +783,7 @@
                 <div id="content-gsmap" class="section-content" :class="sections.gsmap ? 'expanded' : 'collapsed'">
                     <!-- Spatial 2D Controls -->
                     <div class="border-b border-slate-200 bg-slate-50 p-4">
-                        <div class="grid gap-4 xl:grid-cols-[auto_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
+                        <div class="grid gap-4 xl:grid-cols-[auto_auto_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
                             <div>
                                 <span class="control-label">View</span>
                                 <div class="inline-flex rounded-lg border border-slate-300 bg-white p-1 shadow-sm"
@@ -790,6 +802,14 @@
                                         class="rounded-md px-3 py-1.5 text-sm font-semibold">Compare</button>
                                 </div>
                             </div>
+                            <button type="button"
+                                @click="spatial2dHighlightHotspots = !spatial2dHighlightHotspots; renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait')"
+                                :aria-pressed="spatial2dHighlightHotspots.toString()"
+                                :class="spatial2dHighlightHotspots ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-slate-300 bg-white text-slate-600'"
+                                class="rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm hover:border-primary-400"
+                                title="Retained high-signal spots remain visible when highlighting is off">
+                                <span x-text="spatial2dHighlightHotspots ? 'Top 500 highlighted' : 'Top 500 normal size'"></span>
+                            </button>
                             <label>
                                 <span class="control-label flex justify-between gap-3">
                                     <span>Point size</span>
@@ -823,7 +843,9 @@
                             </span>
                             <span x-show="currentSpatial2dTraitPayload?.n_extra">
                                 The active trait retains <strong class="text-slate-700" x-text="currentSpatial2dTraitPayload?.n_extra?.toLocaleString()"></strong>
-                                omitted high-signal spots.
+                                omitted high-signal spots at
+                                <strong class="text-slate-700" x-text="spatial2dHighlightHotspots ? 'highlighted' : 'normal'"></strong>
+                                size.
                             </span>
                             <span x-show="currentSpatial2dTraitPayload?.cmax">
                                 Color scale is shared across samples: 0–<strong class="text-slate-700" x-text="Number(currentSpatial2dTraitPayload?.cmax || 0).toFixed(2)"></strong>.
@@ -1455,6 +1477,7 @@
                 spatial3dAspectMode: 'physical',
                 spatial3dPointSize: 1.2,
                 spatial3dOpacity: 0.72,
+                spatial3dHighlightHotspots: true,
                 spatial3dError: '',
                 _scriptPromises: {},
                 _spatial3dSyncing: false,
@@ -1467,6 +1490,7 @@
                 spatial2dViewMode: 'compare',
                 spatial2dPointScale: 1.0,
                 spatial2dOpacity: 0.82,
+                spatial2dHighlightHotspots: true,
                 spatial2dError: '',
                 _spatial2dObserver: null,
                 _spatial2dSyncing: false,
@@ -2243,21 +2267,28 @@
                         type: 'scatter3d', mode: 'markers',
                         x: base.x, y: base.y, z: base.z,
                         marker,
-                        hoverinfo: 'skip',
+                        hovertemplate: '<b>Association</b><br>−log10(P): %{marker.color:.2f}' +
+                            '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
                         name: this.selectedTrait
                     }];
                     if (feature.n_extra > 0 && feature.extra?.x?.length) {
+                        const highlight = this.spatial3dHighlightHotspots;
                         traces.push({
                             type: 'scatter3d', mode: 'markers',
                             x: feature.extra.x, y: feature.extra.y, z: feature.extra.z,
                             marker: {
                                 ...marker,
-                                size: Math.max(2, Number(this.spatial3dPointSize) * 1.7),
+                                size: highlight
+                                    ? Math.max(2, Number(this.spatial3dPointSize) * 1.7)
+                                    : Number(this.spatial3dPointSize),
                                 color: feature.extra.values,
-                                opacity: Math.max(0.8, Number(this.spatial3dOpacity)),
+                                opacity: highlight
+                                    ? Math.max(0.8, Number(this.spatial3dOpacity))
+                                    : Number(this.spatial3dOpacity),
                                 showscale: false
                             },
-                            hoverinfo: 'skip',
+                            hovertemplate: '<b>Retained top signal</b><br>−log10(P): %{marker.color:.2f}' +
+                                '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
                             name: 'Retained high-signal spots'
                         });
                     }
@@ -2276,9 +2307,20 @@
                     const feature = this.spatial3dAnnotationData;
                     if (!plot || !base || !feature || !this.plotlyReady) return;
                     const tickValues = feature.categories.map((_, index) => index);
+                    let annotationHoverLabels = null;
+                    if (base.n_points <= 200000) {
+                        if (!feature._hoverLabels) {
+                            feature._hoverLabels = Object.freeze(Array.from(
+                                feature.codes,
+                                code => feature.categories[code] ?? 'Unknown'
+                            ));
+                        }
+                        annotationHoverLabels = feature._hoverLabels;
+                    }
                     const trace = {
                         type: 'scatter3d', mode: 'markers',
                         x: base.x, y: base.y, z: base.z,
+                        text: annotationHoverLabels,
                         marker: {
                             size: Number(this.spatial3dPointSize),
                             color: feature.codes,
@@ -2296,7 +2338,11 @@
                                 tickfont: { size: 9 }
                             }
                         },
-                        hoverinfo: 'skip',
+                        hovertemplate: annotationHoverLabels
+                            ? `<b>${this.selectedAnnotationCategory}</b>: %{text}` +
+                                '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>'
+                            : `<b>${this.selectedAnnotationCategory}</b> code: %{marker.color:.0f}` +
+                                '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
                         name: this.selectedAnnotationCategory
                     };
                     Plotly.react(
@@ -3402,7 +3448,10 @@
                         traces.push({
                             x, y, mode: 'markers', type: 'scattergl',
                             text: hoverText,
-                            hoverinfo: enableHover ? 'text' : 'skip',
+                            hoverinfo: enableHover ? 'text' : undefined,
+                            hovertemplate: enableHover ? undefined
+                                : '<b>Association</b><br>−log10(P): %{marker.color:.1f}' +
+                                    '<br>X: %{x:.2f}<br>Y: %{y:.2f}<extra></extra>',
                             marker: {
                                 size: pointSize,
                                 color: colorValues,
@@ -3417,19 +3466,21 @@
                             }
                         });
                         if (compactTraitPayload?.n_extra > 0 && compactTraitPayload.extra?.x?.length) {
+                            const highlight = this.spatial2dHighlightHotspots;
                             traces.push({
                                 x: compactTraitPayload.extra.x,
                                 y: compactTraitPayload.extra.y,
                                 mode: 'markers',
                                 type: 'scattergl',
-                                hoverinfo: 'skip',
+                                hovertemplate: '<b>Retained top signal</b><br>−log10(P): %{marker.color:.1f}' +
+                                    '<br>X: %{x:.2f}<br>Y: %{y:.2f}<extra></extra>',
                                 name: 'Retained high-signal spots',
                                 marker: {
-                                    size: Math.max(2, pointSize * 1.55),
+                                    size: highlight ? Math.max(2, pointSize * 1.55) : pointSize,
                                     color: compactTraitPayload.extra.values,
                                     colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
                                     ...colorLimits,
-                                    opacity: Math.max(0.85, opacity),
+                                    opacity: highlight ? Math.max(0.85, opacity) : opacity,
                                     showscale: false
                                 }
                             });
@@ -3458,7 +3509,10 @@
                         traces.push({
                             x, y, mode: 'markers', type: 'scattergl',
                             text: hoverText,
-                            hoverinfo: enableHover ? 'text' : 'skip',
+                            hoverinfo: enableHover ? 'text' : undefined,
+                            hovertemplate: enableHover ? undefined
+                                : `<b>${anno}</b> code: %{marker.color:.0f}` +
+                                    '<br>X: %{x:.2f}<br>Y: %{y:.2f}<extra></extra>',
                             marker: {
                                 size: pointSize,
                                 color: annotation.codes,
