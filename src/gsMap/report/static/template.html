@@ -783,7 +783,7 @@
                 <div id="content-gsmap" class="section-content" :class="sections.gsmap ? 'expanded' : 'collapsed'">
                     <!-- Spatial 2D Controls -->
                     <div class="border-b border-slate-200 bg-slate-50 p-4">
-                        <div class="grid gap-4 xl:grid-cols-[auto_auto_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
+                        <div class="grid gap-4 xl:grid-cols-[auto_minmax(14rem,1fr)_auto] xl:items-end">
                             <div>
                                 <span class="control-label">View</span>
                                 <div class="inline-flex rounded-lg border border-slate-300 bg-white p-1 shadow-sm"
@@ -802,31 +802,14 @@
                                         class="rounded-md px-3 py-1.5 text-sm font-semibold">Compare</button>
                                 </div>
                             </div>
-                            <button type="button"
-                                @click="spatial2dHighlightHotspots = !spatial2dHighlightHotspots; renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait')"
-                                :aria-pressed="spatial2dHighlightHotspots.toString()"
-                                :class="spatial2dHighlightHotspots ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-slate-300 bg-white text-slate-600'"
-                                class="rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm hover:border-primary-400"
-                                title="Retained high-signal spots remain visible when highlighting is off">
-                                <span x-text="spatial2dHighlightHotspots ? 'Top 500 highlighted' : 'Top 500 normal size'"></span>
-                            </button>
                             <label>
                                 <span class="control-label flex justify-between gap-3">
                                     <span>Point size</span>
-                                    <span x-text="spatial2dPointScale.toFixed(1) + '×'"></span>
+                                    <span x-text="((Number(currentSampleData?.point_size || 1.5) * Number(spatial2dPointScale))).toFixed(1) + ' px'"></span>
                                 </span>
-                                <input type="range" min="0.5" max="2.5" step="0.1" x-model.number="spatial2dPointScale"
+                                <input type="range" min="0.5" max="12" step="0.25" x-model.number="spatial2dPointScale"
                                     @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
                                     aria-label="2D point-size multiplier">
-                            </label>
-                            <label>
-                                <span class="control-label flex justify-between gap-3">
-                                    <span>Opacity</span>
-                                    <span x-text="Number(spatial2dOpacity).toFixed(2)"></span>
-                                </span>
-                                <input type="range" min="0.2" max="1" step="0.05" x-model.number="spatial2dOpacity"
-                                    @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
-                                    aria-label="2D point opacity">
                             </label>
                             <button type="button" @click="resetSpatial2dView()"
                                 class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm hover:border-slate-400 hover:text-slate-900">
@@ -843,9 +826,7 @@
                             </span>
                             <span x-show="currentSpatial2dTraitPayload?.n_extra">
                                 The active trait retains <strong class="text-slate-700" x-text="currentSpatial2dTraitPayload?.n_extra?.toLocaleString()"></strong>
-                                omitted high-signal spots at
-                                <strong class="text-slate-700" x-text="spatial2dHighlightHotspots ? 'highlighted' : 'normal'"></strong>
-                                size.
+                                omitted high-signal spots as an emphasized overlay.
                             </span>
                             <span x-show="currentSpatial2dTraitPayload?.cmax">
                                 Color scale is shared across samples: 0–<strong class="text-slate-700" x-text="Number(currentSpatial2dTraitPayload?.cmax || 0).toFixed(2)"></strong>.
@@ -1489,8 +1470,6 @@
                 spatial2dActivated: false,
                 spatial2dViewMode: 'compare',
                 spatial2dPointScale: 1.0,
-                spatial2dOpacity: 0.82,
-                spatial2dHighlightHotspots: true,
                 spatial2dError: '',
                 _spatial2dObserver: null,
                 _spatial2dSyncing: false,
@@ -2647,7 +2626,12 @@
                                 extra: encoded.extra ? {
                                     x: this.decodeTypedArray(encoded.extra.x),
                                     y: this.decodeTypedArray(encoded.extra.y),
-                                    values: this.decodeTypedArray(encoded.extra.values)
+                                    values: this.decodeTypedArray(encoded.extra.values),
+                                    annotation_codes: Object.fromEntries(
+                                        Object.entries(encoded.extra.annotation_codes || {}).map(
+                                            ([name, codes]) => [name, this.decodeTypedArray(codes)]
+                                        )
+                                    )
                                 } : null
                             };
                             this.sampleTraitCache[compoundKey] = decoded;
@@ -3395,6 +3379,54 @@
                     }
                 },
 
+                escapeSpatial2dHoverValue(value) {
+                    return String(value ?? 'Unknown').replace(/[&<>"']/g, character => ({
+                        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+                    })[character]);
+                },
+
+                // Materialize annotation labels only for the active sample, then reuse them
+                // across trait and annotation renders. Extra trait spots pass their own codes.
+                buildSpatial2dAnnotationHoverText(data, annotationCodes = null) {
+                    if (!data) return null;
+                    if (!annotationCodes && data._annotationHoverText) {
+                        return data._annotationHoverText;
+                    }
+
+                    const annotations = Object.entries(data.annotations || {});
+                    const firstCodes = annotationCodes
+                        ? Object.values(annotationCodes).find(codes => codes?.length !== undefined)
+                        : null;
+                    const nPoints = annotationCodes
+                        ? Number(firstCodes?.length || 0)
+                        : Number(data.sx?.length || 0);
+                    if (!nPoints) return null;
+
+                    const includeSpots = !annotationCodes && Array.isArray(data.spot)
+                        && data.spot.length === nPoints;
+                    const hoverText = new Array(nPoints);
+                    for (let index = 0; index < nPoints; index++) {
+                        const lines = [];
+                        if (includeSpots) {
+                            lines.push(`<b>Spot:</b> ${this.escapeSpatial2dHoverValue(data.spot[index])}`);
+                        }
+                        for (const [name, payload] of annotations) {
+                            const codes = annotationCodes ? annotationCodes[name] : payload.codes;
+                            if (!codes) continue;
+                            const category = payload.categories?.[codes[index]] ?? 'Unknown';
+                            lines.push(
+                                `<b>${this.escapeSpatial2dHoverValue(name)}:</b> ` +
+                                this.escapeSpatial2dHoverValue(category)
+                            );
+                        }
+                        hoverText[index] = lines.join('<br>');
+                    }
+
+                    const frozen = Object.freeze(hoverText);
+                    if (!annotationCodes) data._annotationHoverText = frozen;
+                    return frozen;
+                },
+
                 // Render one compact 2D payload. Large categorical data remain a single WebGL trace.
                 renderSpatial2DPlotSingle(divId, plotType) {
                     const plotDiv = document.getElementById(divId);
@@ -3416,7 +3448,7 @@
                     // Use pre-computed point size if available, otherwise calculate
                     const pointSize = (data.point_size || this.estimateSpatialPointSize(x, y))
                         * Number(this.spatial2dPointScale);
-                    const opacity = Number(this.spatial2dOpacity);
+                    const opacity = 0.9;
 
                     let traces = [];
 
@@ -3433,25 +3465,12 @@
                         const colorLimits = Number.isFinite(cmax) && cmax > 0
                             ? { cmin: Number(compactTraitPayload?.cmin || 0), cmax }
                             : {};
-                        const enableHover = Array.isArray(data.spot) && data.spot.length <= 50000;
-                        const annotation = data.annotations?.[this.selectedAnnotationCategory];
-                        const legacyAnnotation = data[this.selectedAnnotationCategory];
-                        const hoverText = enableHover ? data.spot.map((spot, index) => {
-                            const annotationValue = annotation
-                                ? annotation.categories[annotation.codes[index]]
-                                : legacyAnnotation?.[index];
-                            const value = Number(colorValues[index]);
-                            return `<b>Spot:</b> ${spot}` +
-                                (annotationValue !== undefined ? `<br><b>${this.selectedAnnotationCategory}:</b> ${annotationValue}` : '') +
-                                `<br><b>−log10(P):</b> ${Number.isFinite(value) ? value.toFixed(1) : 'N/A'}`;
-                        }) : null;
+                        const hoverText = this.buildSpatial2dAnnotationHoverText(data);
                         traces.push({
                             x, y, mode: 'markers', type: 'scattergl',
                             text: hoverText,
-                            hoverinfo: enableHover ? 'text' : undefined,
-                            hovertemplate: enableHover ? undefined
-                                : '<b>Association</b><br>−log10(P): %{marker.color:.1f}' +
-                                    '<br>X: %{x:.2f}<br>Y: %{y:.2f}<extra></extra>',
+                            hovertemplate: '%{text}<br><b>−log10(P):</b> %{marker.color:.1f}' +
+                                '<br><b>X:</b> %{x:.2f}<br><b>Y:</b> %{y:.2f}<extra></extra>',
                             marker: {
                                 size: pointSize,
                                 color: colorValues,
@@ -3466,21 +3485,26 @@
                             }
                         });
                         if (compactTraitPayload?.n_extra > 0 && compactTraitPayload.extra?.x?.length) {
-                            const highlight = this.spatial2dHighlightHotspots;
+                            const extraHoverText = this.buildSpatial2dAnnotationHoverText(
+                                data,
+                                compactTraitPayload.extra.annotation_codes
+                            );
                             traces.push({
                                 x: compactTraitPayload.extra.x,
                                 y: compactTraitPayload.extra.y,
                                 mode: 'markers',
                                 type: 'scattergl',
-                                hovertemplate: '<b>Retained top signal</b><br>−log10(P): %{marker.color:.1f}' +
-                                    '<br>X: %{x:.2f}<br>Y: %{y:.2f}<extra></extra>',
+                                text: extraHoverText,
+                                hovertemplate: '<b>Retained top signal</b><br>%{text}' +
+                                    '<br><b>−log10(P):</b> %{marker.color:.1f}' +
+                                    '<br><b>X:</b> %{x:.2f}<br><b>Y:</b> %{y:.2f}<extra></extra>',
                                 name: 'Retained high-signal spots',
                                 marker: {
-                                    size: highlight ? Math.max(2, pointSize * 1.55) : pointSize,
+                                    size: Math.max(2.5, pointSize * 1.5),
                                     color: compactTraitPayload.extra.values,
                                     colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
                                     ...colorLimits,
-                                    opacity: highlight ? Math.max(0.85, opacity) : opacity,
+                                    opacity: 1,
                                     showscale: false
                                 }
                             });
@@ -3502,17 +3526,12 @@
                                 colors: categories.map((value, index) => umapColorMap?.[value] || defaults[index % defaults.length])
                             };
                         }
-                        const enableHover = Array.isArray(data.spot) && data.spot.length <= 50000;
-                        const hoverText = enableHover ? data.spot.map((spot, index) =>
-                            `<b>Spot:</b> ${spot}<br><b>${anno}:</b> ${annotation.categories[annotation.codes[index]]}`
-                        ) : null;
+                        const hoverText = this.buildSpatial2dAnnotationHoverText(data);
                         traces.push({
                             x, y, mode: 'markers', type: 'scattergl',
                             text: hoverText,
-                            hoverinfo: enableHover ? 'text' : undefined,
-                            hovertemplate: enableHover ? undefined
-                                : `<b>${anno}</b> code: %{marker.color:.0f}` +
-                                    '<br>X: %{x:.2f}<br>Y: %{y:.2f}<extra></extra>',
+                            hovertemplate: '%{text}<br><b>X:</b> %{x:.2f}' +
+                                '<br><b>Y:</b> %{y:.2f}<extra></extra>',
                             marker: {
                                 size: pointSize,
                                 color: annotation.codes,

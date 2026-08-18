@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SPATIAL_PAYLOAD_VERSION = 4
+SPATIAL_PAYLOAD_VERSION = 5
 P_VALUE_COLORS = [
     "#313695",
     "#4575b4",
@@ -342,6 +342,21 @@ def _point_size_3d(n_points: int) -> float:
     return round(float(np.clip(520.0 / np.sqrt(max(1, n_points)), 1.0, 4.0)), 2)
 
 
+def _point_size_2d(coordinates: np.ndarray) -> float:
+    """Choose a visible full-extent marker size without hiding tissue structure."""
+
+    n_points = len(coordinates)
+    if n_points <= 1:
+        return 6.0
+
+    from gsMap.report.visualize import estimate_plotly_point_size
+
+    _, geometric_size = estimate_plotly_point_size(coordinates, 560)
+    density_size = 420.0 / np.sqrt(n_points)
+    point_size = max(float(geometric_size) * 1.25, float(density_size))
+    return round(float(np.clip(point_size, 1.25, 6.0)), 2)
+
+
 def _outputs_exist(root: Path, outputs: list[str]) -> bool:
     return bool(outputs) and all(
         (root / relative_path).is_file() and (root / relative_path).stat().st_size > 0
@@ -608,6 +623,17 @@ def export_sample_spatial_payloads(
         for annotation in annotations
         if annotation in metadata
     }
+    annotation_codes = {}
+    for annotation, (categories, _) in annotation_schemas.items():
+        values = metadata[annotation].astype("string").fillna("NaN").astype(str)
+        categorical = pd.Categorical(values, categories=categories)
+        if (categorical.codes < 0).any():
+            raise ValueError(f"Categorical schema for {annotation} is incomplete")
+        dtype = "uint16" if len(categories) <= np.iinfo(np.uint16).max else "uint32"
+        annotation_codes[annotation] = (
+            np.asarray(categorical.codes, dtype=np.dtype("<u2" if dtype == "uint16" else "<u4")),
+            dtype,
+        )
 
     for sample_name in samples:
         all_positions = np.flatnonzero(sample_values == str(sample_name))
@@ -634,18 +660,19 @@ def export_sample_spatial_payloads(
         if has_spatial_coordinates:
             sx = sx_all[positions]
             sy = sy_all[positions]
-            from gsMap.report.visualize import estimate_plotly_point_size
-
-            _, point_size = estimate_plotly_point_size(np.column_stack((sx, sy)), 560)
+            point_size = _point_size_2d(np.column_stack((sx, sy)))
         else:
             sx = sy = None
             point_size = 5.0
 
         annotation_payloads = {}
         for annotation, (categories, colors) in annotation_schemas.items():
-            annotation_payloads[annotation] = _categorical_payload(
-                metadata[annotation].iloc[positions], categories, colors
-            )
+            codes, dtype = annotation_codes[annotation]
+            annotation_payloads[annotation] = {
+                "codes": encode_typed_array(codes[positions], dtype=dtype),
+                "categories": categories,
+                "colors": colors,
+            }
         include_spot_labels = len(positions) <= 50_000
         base_payload = {
             "version": SPATIAL_PAYLOAD_VERSION,
@@ -710,6 +737,10 @@ def export_sample_spatial_payloads(
                     "values": encode_nonnegative_quantized_array(
                         all_values[extra_positions], quantization_scale
                     ),
+                    "annotation_codes": {
+                        annotation: encode_typed_array(codes[extra_positions], dtype=dtype)
+                        for annotation, (codes, dtype) in annotation_codes.items()
+                    },
                 }
                 if has_spatial_coordinates
                 else None,

@@ -133,7 +133,9 @@ def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     assert "spatial2dViewMode: 'compare'" in report_template
     assert "setSpatial2dViewMode('annotation')" in report_template
     assert 'aria-label="2D point-size multiplier"' in report_template
-    assert 'aria-label="2D point opacity"' in report_template
+    assert 'max="12" step="0.25"' in report_template
+    assert 'aria-label="2D point opacity"' not in report_template
+    assert "spatial2dOpacity" not in report_template
     assert "bindSpatial2dViewportSync" in report_template
     assert "Retained high-signal spots" in report_template
     assert "Color scale is shared across samples" in report_template
@@ -141,11 +143,11 @@ def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
 
 def test_spatial_views_can_toggle_retained_hotspot_emphasis(report_template: str) -> None:
     assert "spatial3dHighlightHotspots: true" in report_template
-    assert "spatial2dHighlightHotspots: true" in report_template
-    assert report_template.count("Top 500 highlighted") == 2
-    assert report_template.count("Top 500 normal size") == 2
+    assert "spatial2dHighlightHotspots" not in report_template
+    assert report_template.count("Top 500 highlighted") == 1
+    assert report_template.count("Top 500 normal size") == 1
     assert "const highlight = this.spatial3dHighlightHotspots" in report_template
-    assert "const highlight = this.spatial2dHighlightHotspots" in report_template
+    assert "size: Math.max(2.5, pointSize * 1.5)" in report_template
 
 
 def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:
@@ -153,3 +155,7 @@ def test_spatial_views_offer_scalable_hover_details(report_template: str) -> Non
     assert "−log10(P): %{marker.color:.2f}" in report_template
     assert "annotationHoverLabels" in report_template
     assert "base.n_points <= 200000" in report_template
+    assert "buildSpatial2dAnnotationHoverText(data)" in report_template
+    assert "compactTraitPayload.extra.annotation_codes" in report_template
+    assert "Object.entries(data.annotations || {})" in report_template
+    assert "<b>${anno}</b> code: %{marker.color:.0f}" not in report_template

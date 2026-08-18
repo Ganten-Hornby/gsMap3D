@@ -2,19 +2,24 @@ import json
 import os
 from types import SimpleNamespace
 
+import anndata as ad
 import numpy as np
 import pandas as pd
 from scipy import sparse
 
 from gsMap.config.report_config import ReportConfig
+from gsMap.latent2gene.marker_layout import SequentialMarkerRowWriter
 from gsMap.report.diagnosis import load_gwas_data
 from gsMap.report.report_data import (
     _available_cpu_count,
+    _calculate_pcc_for_traits_fast,
     _load_chrom_tick_positions,
+    _load_gss_pcc_sample,
     _ManhattanWeightContext,
     _materialize_plot_alias,
     _per_sample_spatial_outputs_current,
     _prepare_manhattan_for_trait,
+    _read_marker_score_rows,
     _render_single_sample_gene_plot_task,
     _report_worker_count,
     _sample_spatial_export_signature,
@@ -44,6 +49,121 @@ def test_report_worker_count_uses_existing_cpu_configuration(monkeypatch):
 
     assert _report_worker_count(config, ceiling=20) == 15
     assert _report_worker_count(config, ceiling=4) == 4
+
+
+def test_report_marker_reader_preserves_requested_row_and_gene_order(tmp_path):
+    values = np.arange(40, dtype=np.float16).reshape(8, 5)
+    data_path = tmp_path / "marker_scores.dat"
+    values.tofile(data_path)
+
+    result = _read_marker_score_rows(
+        data_path=data_path,
+        shape=values.shape,
+        dtype=values.dtype,
+        marker_rows=np.array([6, 1, 2, 7]),
+        gene_positions=np.array([4, 0, 2]),
+        n_workers=3,
+    )
+
+    np.testing.assert_array_equal(result, values[[6, 1, 2, 7]][:, [4, 0, 2]])
+
+
+def test_batched_pcc_matches_independent_trait_correlations():
+    rng = np.random.default_rng(17)
+    spots = np.array([f"spot_{index}" for index in range(80)])
+    marker_scores = rng.normal(size=(80, 9)).astype(np.float32)
+    centered = marker_scores - marker_scores.mean(axis=0)
+    ssq = np.sum(centered**2, axis=0)
+    traits = ["trait_a", "trait_b", "trait_c"]
+    trait_values = rng.normal(size=(80, len(traits))).astype(np.float32)
+    ldsc_results = pd.DataFrame(trait_values, index=spots, columns=traits)
+
+    result = _calculate_pcc_for_traits_fast(
+        traits,
+        ldsc_results,
+        spots,
+        centered,
+        ssq,
+    )
+    expected = np.column_stack(
+        [
+            np.array(
+                [
+                    np.corrcoef(marker_scores[:, gene], trait_values[:, trait])[0, 1]
+                    for gene in range(marker_scores.shape[1])
+                ]
+            )
+            for trait in range(len(traits))
+        ]
+    )
+
+    np.testing.assert_allclose(result, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_pcc_sample_reader_honors_sequential_marker_row_layout(tmp_path):
+    latent_dir = tmp_path / "latent_to_gene"
+    latent_dir.mkdir()
+    source_path = latent_dir / "concatenated_latent_adata.h5ad"
+    obs_names = ["spot_a", "spot_b", "spot_c", "spot_d"]
+    var_names = ["g1", "g2", "g3"]
+    source = ad.AnnData(
+        X=np.zeros((4, 3), dtype=np.float32),
+        obs=pd.DataFrame(
+            {
+                "sample_name": ["sample"] * 4,
+                "cell_type": ["A", "B", "C", "D"],
+            },
+            index=obs_names,
+        ),
+        var=pd.DataFrame(index=var_names),
+    )
+    source.write_h5ad(source_path)
+
+    marker_path = latent_dir / "marker_scores.dat"
+    marker_values = np.array(
+        [[20, 21, 22], [0, 1, 2], [30, 31, 32], [10, 11, 12]],
+        dtype=np.float16,
+    )
+    marker_values.tofile(marker_path)
+    layout_writer = SequentialMarkerRowWriter(marker_path, n_obs=4)
+    layout_writer.append(np.array([2, 0, 3, 1]))
+    row_layout = layout_writer.finalize()
+    marker_path.with_suffix(".meta.json").write_text(
+        json.dumps(
+            {
+                "shape": [4, 3],
+                "dtype": "float16",
+                "complete": True,
+                "row_layout": row_layout,
+            }
+        )
+    )
+    mean_frac_path = latent_dir / "mean_frac.parquet"
+    pd.DataFrame({"frac": [0.5, 0.5]}, index=["g2", "g1"]).to_parquet(mean_frac_path)
+    ldsc_results = pd.DataFrame(
+        {"sample_name": ["sample"] * 4, "trait": np.arange(4)},
+        index=obs_names,
+    )
+    config = SimpleNamespace(
+        marker_scores_memmap_path=marker_path,
+        concatenated_latent_adata_path=source_path,
+        mean_frac_path=mean_frac_path,
+        downsampling_n_spots_pcc=4,
+        annotation_list=["cell_type"],
+        memmap_tmp_dir=None,
+        ldsc_read_workers=2,
+        ldsc_compute_workers=2,
+    )
+
+    sample = _load_gss_pcc_sample(config, ldsc_results, tmp_path / "report_data")
+
+    assert sample.analysis_spots.tolist() == obs_names
+    assert sample.gene_names == ["g2", "g1"]
+    assert sample.annotations.tolist() == ["A", "B", "C", "D"]
+    np.testing.assert_array_equal(
+        sample.marker_scores,
+        marker_values[[1, 3, 0, 2]][:, [1, 0]],
+    )
 
 
 def test_load_gwas_data_can_select_columns_and_calculate_p(tmp_path):

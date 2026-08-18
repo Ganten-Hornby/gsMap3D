@@ -10,6 +10,7 @@ from gsMap.config.latent2gene_config import DatasetType
 from gsMap.report.report_data import _load_coordinates
 from gsMap.report.spatial_payload import (
     SPATIAL_PAYLOAD_VERSION,
+    _point_size_2d,
     _stratified_positions,
     _top_trait_positions,
     decode_typed_array,
@@ -132,6 +133,25 @@ def test_top_trait_positions_exclude_display_sample():
     assert result.tolist() == [8, 7, 6]
 
 
+def test_2d_point_size_has_visible_density_aware_bounds():
+    dense_x, dense_y = np.meshgrid(
+        np.linspace(0, 100, 400, dtype=np.float32),
+        np.linspace(0, 100, 400, dtype=np.float32),
+    )
+    sparse_x, sparse_y = np.meshgrid(
+        np.linspace(0, 100, 200, dtype=np.float32),
+        np.linspace(0, 100, 200, dtype=np.float32),
+    )
+    dense_grid = np.column_stack((dense_x.ravel(), dense_y.ravel()))
+    sparse_grid = np.column_stack((sparse_x.ravel(), sparse_y.ravel()))
+
+    dense_size = _point_size_2d(dense_grid)
+    sparse_size = _point_size_2d(sparse_grid)
+
+    assert 1.25 <= dense_size <= 6.0
+    assert dense_size < sparse_size <= 6.0
+
+
 def test_spatial_3d_export_uses_shared_geometry_and_lazy_features(tmp_path):
     metadata = _metadata(20)
     report_data = tmp_path / "report_data"
@@ -203,6 +223,7 @@ def test_sample_export_splits_base_and_traits(tmp_path):
     assert sample_a_trait["values"]["dtype"] == "uint16"
     assert sample_a_trait["values"]["scale"] == 0.1
     assert sample_a_trait["n_extra"] == 2
+    assert set(sample_a_trait["extra"]["annotation_codes"]) == {"region"}
     base_x = set(decode_typed_array(base["sx"]).tolist())
     extra_x = decode_typed_array(sample_a_trait["extra"]["x"])
     assert base_x.isdisjoint(extra_x.tolist())
@@ -210,6 +231,11 @@ def test_sample_export_splits_base_and_traits(tmp_path):
     assert decode_typed_array(sample_a_trait["extra"]["values"]).tolist() == pytest.approx(
         expected_top_omitted
     )
+    region_codes = decode_typed_array(sample_a_trait["extra"]["annotation_codes"]["region"])
+    region_categories = base["annotations"]["region"]["categories"]
+    assert [region_categories[code] for code in region_codes] == [
+        metadata.loc[position, "region"] for position in expected_top_omitted
+    ]
 
 
 def test_2d_sections_use_explicitly_ordinal_nonphysical_z(tmp_path):

@@ -48,6 +48,8 @@ def _shared_marker_cache_base(
     memmap_path: Path,
     tmp_dir: Path,
     marker_metadata: dict,
+    *,
+    populate: bool = True,
 ) -> Path:
     """Stage one immutable marker file per node/cache directory.
 
@@ -88,6 +90,13 @@ def _shared_marker_cache_base(
     if _cached_marker_memmap_is_valid(cache_base, expected_bytes):
         logger.info(f"Reusing shared marker-score cache: {cache_data}")
         return cache_base
+
+    if not populate:
+        logger.info(
+            f"No complete shared marker-score cache is available in {cache_dir}; "
+            f"reading selected rows directly from {source_data}"
+        )
+        return memmap_path
 
     with lock_path.open("a+b") as lock_handle:
         logger.info(f"Waiting for shared marker-score cache lock: {lock_path}")
@@ -154,6 +163,31 @@ def _shared_marker_cache_base(
         finally:
             partial_data.unlink(missing_ok=True)
             partial_metadata.unlink(missing_ok=True)
+
+
+def resolve_marker_scores_memmap_path(
+    config: SpatialLDSCConfig,
+    marker_metadata: dict,
+    *,
+    populate_cache: bool = True,
+) -> Path:
+    """Resolve the marker memmap base path for a read workload.
+
+    Full spatial LDSC scans benefit from staging the complete marker matrix on
+    configured scratch storage. Report PCC preparation reads only a sampled set
+    of rows, so it can set ``populate_cache=False`` to reuse an existing cache
+    without paying to copy the whole matrix when no cache exists yet.
+    """
+
+    memmap_path = Path(config.marker_scores_memmap_path)
+    if config.memmap_tmp_dir is None:
+        return memmap_path
+    return _shared_marker_cache_base(
+        memmap_path,
+        Path(config.memmap_tmp_dir),
+        marker_metadata,
+        populate=populate_cache,
+    )
 
 
 def _read_sumstats(fh, alleles=False, dropna=False):
@@ -597,13 +631,10 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
                 f"AnnData shape {shape}"
             )
 
-        effective_memmap_path = memmap_path
-        if config.memmap_tmp_dir is not None:
-            effective_memmap_path = _shared_marker_cache_base(
-                memmap_path,
-                Path(config.memmap_tmp_dir),
-                marker_metadata,
-            )
+        effective_memmap_path = resolve_marker_scores_memmap_path(
+            config,
+            marker_metadata,
+        )
 
         mm = MemMapDense(
             effective_memmap_path,

@@ -28,6 +28,8 @@ import scipy.sparse as sp
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import setup_data_layer
+from gsMap.latent2gene.marker_layout import open_marker_obs_indices
+from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
 from gsMap.report.spatial_payload import (
     SPATIAL_PAYLOAD_VERSION,
@@ -37,7 +39,10 @@ from gsMap.report.spatial_payload import (
 from gsMap.report.visualize import (
     estimate_plotly_point_size,
 )
-from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
+from gsMap.spatial_ldsc.io import (
+    load_marker_scores_memmap_format,
+    resolve_marker_scores_memmap_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +91,17 @@ class _ManhattanWeightContext:
     matrix: object
     target_gene_indices: np.ndarray
     target_genes: np.ndarray
+
+
+@dataclass(frozen=True)
+class _GssPccSample:
+    """Marker-score rows and aligned metadata used by report PCC calculations."""
+
+    common_spots: np.ndarray
+    analysis_spots: np.ndarray
+    gene_names: list[str]
+    marker_scores: np.ndarray
+    annotations: pd.Series
 
 
 class ReportDataManager:
@@ -191,7 +207,7 @@ class ReportDataManager:
         # However, _export_per_sample_spatial_js is what we use now.
 
     def prepare_gss_stats(self):
-        """Load GSS data, calculate PCC per trait, and split results."""
+        """Load one sampled GSS matrix and calculate all missing trait PCCs."""
         gss_dir = self.report_data_dir / "gss_stats"
         gss_dir.mkdir(exist_ok=True)
 
@@ -209,55 +225,65 @@ class ReportDataManager:
             logger.info("GSS statistics (PCC) already complete for all traits. Skipping.")
             return
 
+        if not traits_to_run:
+            exp_frac = pd.read_parquet(self.report_config.mean_frac_path)
+            gene_names = exp_frac.index[exp_frac["frac"] > 0.01].astype(str).tolist()
+            _atomic_to_csv(pd.DataFrame({"gene": gene_names}), gene_list_file, index=False)
+            logger.info(f"Rebuilt the report gene list with {len(gene_names):,} genes.")
+            return
+
         logger.info(f"Processing GSS statistics for {len(traits_to_run)} traits...")
+        sample = _load_gss_pcc_sample(
+            self.report_config,
+            self.ldsc_results,
+            self.report_data_dir,
+        )
+        self.common_spots = sample.common_spots
+        self.analysis_spots = sample.analysis_spots
 
-        # Load GSS and common spots
-        if self.gss_adata is None:
-            self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = (
-                _load_gss_and_calculate_stats_base(
-                    self.report_config, self.ldsc_results, self.coords, self.report_data_dir
-                )
-            )
+        stats_started = time.perf_counter()
+        self.gene_stats = _calculate_gene_annotation_stats(
+            sample.marker_scores,
+            sample.analysis_spots,
+            sample.gene_names,
+            sample.annotations,
+        )
+        logger.info(
+            f"Calculated gene annotation medians in {time.perf_counter() - stats_started:.2f}s"
+        )
 
-        # Pre-filter to high expression genes and pre-calculate centered matrix
-        exp_frac = pd.read_parquet(self.report_config.mean_frac_path)
-        high_expr_genes = exp_frac[exp_frac["frac"] > 0.01].index.tolist()
+        center_started = time.perf_counter()
+        gss_mean = sample.marker_scores.mean(axis=0).astype(np.float32)
+        gss_centered = (sample.marker_scores - gss_mean).astype(np.float32)
+        gss_ssq = np.einsum(
+            "ij,ij->j",
+            gss_centered,
+            gss_centered,
+            dtype=np.float32,
+            optimize=True,
+        )
+        logger.info(
+            f"Centered the sampled marker matrix in {time.perf_counter() - center_started:.2f}s"
+        )
 
-        # Use analysis_spots (subsampled) for PCC calculation
-        gss_adata_sub = self.gss_adata[self.analysis_spots, high_expr_genes]
-        gss_matrix = gss_adata_sub.X
-        if hasattr(gss_matrix, "toarray"):
-            gss_matrix = gss_matrix.toarray()
+        pcc_matrix = _calculate_pcc_for_traits_fast(
+            traits_to_run,
+            self.ldsc_results,
+            sample.analysis_spots,
+            gss_centered,
+            gss_ssq,
+        )
+        del gss_centered
 
-        gss_mean = gss_matrix.mean(axis=0).astype(np.float32)
-        gss_centered = (gss_matrix - gss_mean).astype(np.float32)
-        gss_ssq = np.sum(gss_centered**2, axis=0)
-        gene_names = gss_adata_sub.var_names.tolist()
-
-        # Calculate PCC for each missing trait
-        for trait in self.traits:
-            # We check both the CSV in gss_stats and the JS in js_data/gss_stats
-            csv_path = self.report_config.get_gene_diagnostic_info_save_path(trait)
-            js_path = self.js_data_dir / "gss_stats" / f"gene_trait_correlation_{trait}.js"
-
-            if self._is_step_complete([csv_path, js_path]):
-                continue
-
-            trait_pcc = _calculate_pcc_for_single_trait_fast(
+        for trait_index, trait in enumerate(traits_to_run):
+            trait_pcc = _save_pcc_for_trait(
                 trait,
-                self.ldsc_results,
-                self.analysis_spots,
-                gss_centered,
-                gss_ssq,
-                gene_names,
+                pcc_matrix[:, trait_index],
+                sample.gene_names,
                 self.gene_stats,
                 self.report_config,
-                self.report_data_dir,
-                gss_dir,
             )
-            if trait_pcc is not None:
-                # Export to JS immediately after CSV creation
-                self._export_single_pcc_js(trait, trait_pcc)
+            self._export_single_pcc_js(trait, trait_pcc)
 
     def prepare_spot_metadata(self):
         """Save spot metadata and coordinates."""
@@ -514,13 +540,9 @@ class ReportDataManager:
 
         def load_gss_for_plots():
             if self.gss_adata is None:
-                self.common_spots, self.gss_adata, self.gene_stats, self.analysis_spots = (
-                    _load_gss_and_calculate_stats_base(
-                        self.report_config,
-                        self.ldsc_results,
-                        self.coords,
-                        self.report_data_dir,
-                    )
+                self.common_spots, self.gss_adata = _load_gss_for_report_plots(
+                    self.report_config,
+                    self.ldsc_results,
                 )
             return self.gss_adata
 
@@ -1134,109 +1156,307 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
     return coords, is_3d_type, z_axis
 
 
-def _load_gss_and_calculate_stats_base(
+def _load_gss_for_report_plots(
     report_config: QuickModeConfig,
     ldsc_results: pd.DataFrame,
-    coords: pd.DataFrame,
-    report_dir: Path,
-) -> tuple[np.ndarray, ad.AnnData, pd.DataFrame, np.ndarray]:
-    """Load GSS data, calculate general stats, and return analysis results."""
-    logger.info("Loading GSS data...")
+) -> tuple[np.ndarray, ad.AnnData]:
+    """Load the full marker wrapper only when diagnostic plots require it."""
 
+    logger.info("Loading the full GSS wrapper for diagnostic plots...")
     gss_adata = load_marker_scores_memmap_format(report_config)
     common_spots = np.intersect1d(gss_adata.obs_names, ldsc_results.index)
-    logger.info(f"Common spots (gss & ldsc): {len(common_spots)}")
-    assert len(common_spots) > 0, "No common spots found between GSS and LDSC results."
+    if len(common_spots) == 0:
+        raise ValueError("No common spots found between GSS and LDSC results.")
+    logger.info(f"Common spots (GSS and LDSC): {len(common_spots):,}")
+    return common_spots, gss_adata
 
-    # Stratified subsample if requested
-    analysis_spots = common_spots
-    if (
-        report_config.downsampling_n_spots_pcc
-        and len(common_spots) > report_config.downsampling_n_spots_pcc
-    ):
-        sample_names = ldsc_results.loc[common_spots, "sample_name"]
-        analysis_spots = _stratified_subsample(
-            common_spots, sample_names, report_config.downsampling_n_spots_pcc
+
+def _read_marker_score_rows(
+    data_path: Path,
+    shape: tuple[int, int],
+    dtype: np.dtype,
+    marker_rows: np.ndarray,
+    gene_positions: np.ndarray,
+    n_workers: int,
+) -> np.ndarray:
+    """Read selected dense marker rows concurrently while preserving row order."""
+
+    marker_rows = np.asarray(marker_rows, dtype=np.int64)
+    gene_positions = np.asarray(gene_positions, dtype=np.int64)
+    output = np.empty((len(marker_rows), len(gene_positions)), dtype=dtype)
+    if len(marker_rows) == 0:
+        return output
+
+    io_order = np.argsort(marker_rows, kind="stable")
+    sorted_marker_rows = marker_rows[io_order]
+    row_bytes = shape[1] * dtype.itemsize
+    source_bytes = len(marker_rows) * row_bytes
+    task_rows = 256
+    tasks = [
+        (start, min(start + task_rows, len(marker_rows)))
+        for start in range(0, len(marker_rows), task_rows)
+    ]
+    progress_interval = max(10_000, len(marker_rows) // 10)
+    next_progress = progress_interval
+    started = time.perf_counter()
+    file_descriptor = os.open(data_path, os.O_RDONLY)
+
+    def read_task(bounds: tuple[int, int]) -> int:
+        start, stop = bounds
+        source_rows = sorted_marker_rows[start:stop]
+        destination_rows = io_order[start:stop]
+        local_index = 0
+        while local_index < len(source_rows):
+            run_stop = local_index + 1
+            while (
+                run_stop < len(source_rows)
+                and source_rows[run_stop] == source_rows[run_stop - 1] + 1
+            ):
+                run_stop += 1
+
+            first_row = int(source_rows[local_index])
+            run_length = run_stop - local_index
+            raw = os.pread(
+                file_descriptor,
+                run_length * row_bytes,
+                first_row * row_bytes,
+            )
+            expected_bytes = run_length * row_bytes
+            if len(raw) != expected_bytes:
+                raise OSError(
+                    f"Short marker-score read at row {first_row:,}: "
+                    f"received {len(raw):,}/{expected_bytes:,} bytes"
+                )
+            block = np.frombuffer(raw, dtype=dtype).reshape(run_length, shape[1])
+            output[destination_rows[local_index:run_stop]] = block[:, gene_positions]
+            local_index = run_stop
+        return stop - start
+
+    completed = 0
+    try:
+        with ThreadPoolExecutor(
+            max_workers=n_workers,
+            thread_name_prefix="report-gss-reader",
+        ) as executor:
+            for completed_rows in executor.map(read_task, tasks):
+                completed += completed_rows
+                if completed >= next_progress or completed == len(marker_rows):
+                    elapsed = time.perf_counter() - started
+                    logger.info(
+                        f"Sampled marker read: {completed:,}/{len(marker_rows):,} rows "
+                        f"({completed / max(elapsed, 1e-9):,.0f} rows/s)"
+                    )
+                    while next_progress <= completed:
+                        next_progress += progress_interval
+    finally:
+        os.close(file_descriptor)
+
+    elapsed = time.perf_counter() - started
+    logger.info(
+        f"Read {source_bytes / 1024**3:.2f} GiB of selected marker rows from {data_path} "
+        f"in {elapsed:.2f}s ({source_bytes / 1024**2 / max(elapsed, 1e-9):.1f} MiB/s); "
+        f"sampled matrix={output.nbytes / 1024**3:.2f} GiB"
+    )
+    return output
+
+
+def _load_gss_pcc_sample(
+    report_config: QuickModeConfig,
+    ldsc_results: pd.DataFrame,
+    report_dir: Path,
+) -> _GssPccSample:
+    """Load exactly one deterministic marker-score sample for report PCC."""
+
+    started = time.perf_counter()
+    marker_path = Path(report_config.marker_scores_memmap_path)
+    is_complete, marker_metadata = MemMapDense.check_complete(marker_path)
+    if not is_complete or marker_metadata is None:
+        raise ValueError(
+            f"Marker score at {marker_path} is incomplete or corrupted. Please recompute."
         )
-        logger.info(f"Stratified subsampled to {len(analysis_spots)} spots for PCC calculation.")
 
-    # Filter to high expression genes
-    exp_frac = pd.read_parquet(report_config.mean_frac_path)
-    high_expr_genes = exp_frac[exp_frac["frac"] > 0.01].index.tolist()
-    logger.info(f"Using {len(high_expr_genes)} high expression genes for PCC calculation.")
+    source_adata = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
+    row_order = None
+    try:
+        shape = (source_adata.n_obs, source_adata.n_vars)
+        if tuple(marker_metadata["shape"]) != shape:
+            raise ValueError(
+                f"Marker score shape {tuple(marker_metadata['shape'])} does not match "
+                f"AnnData shape {shape}"
+            )
 
-    gss_adata_sub = gss_adata[analysis_spots, high_expr_genes]
-    gss_matrix = gss_adata_sub.X
-    gene_names = gss_adata_sub.var_names.tolist()
-    _atomic_to_csv(pd.DataFrame({"gene": gene_names}), report_dir / "gene_list.csv", index=False)
+        common_spots = np.intersect1d(source_adata.obs_names, ldsc_results.index)
+        if len(common_spots) == 0:
+            raise ValueError("No common spots found between GSS and LDSC results.")
+        logger.info(f"Common spots (GSS and LDSC): {len(common_spots):,}")
 
-    # Calculate gene annotation stats
-    adata_concat = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
-    anno_col = report_config.annotation_list[0]
-    annotations = adata_concat.obs.loc[analysis_spots, anno_col]
+        analysis_spots = common_spots
+        requested_spots = report_config.downsampling_n_spots_pcc
+        if requested_spots and len(common_spots) > requested_spots:
+            analysis_spots = _stratified_subsample(
+                common_spots,
+                ldsc_results.loc[common_spots, "sample_name"],
+                requested_spots,
+            )
+            logger.info(
+                f"Stratified subsampled {len(analysis_spots):,}/{len(common_spots):,} "
+                "spots for PCC calculation."
+            )
 
-    if hasattr(gss_matrix, "toarray"):
-        gss_matrix = gss_matrix.toarray()
+        exp_frac = pd.read_parquet(report_config.mean_frac_path)
+        gene_names = exp_frac.index[exp_frac["frac"] > 0.01].astype(str).tolist()
+        gene_positions = source_adata.var_names.get_indexer(gene_names)
+        if np.any(gene_positions < 0):
+            missing = np.asarray(gene_names, dtype=object)[gene_positions < 0]
+            raise ValueError(
+                f"{len(missing):,} high-expression genes are absent from marker scores; "
+                f"first missing gene: {missing[0]}"
+            )
+        _atomic_to_csv(
+            pd.DataFrame({"gene": gene_names}),
+            report_dir / "gene_list.csv",
+            index=False,
+        )
+        logger.info(f"Using {len(gene_names):,} high-expression genes for PCC calculation.")
 
-    gss_df_temp = pd.DataFrame(gss_matrix, index=analysis_spots, columns=gene_names)
-    grouped_gss = gss_df_temp.groupby(annotations).median()
+        original_rows = source_adata.obs_names.get_indexer(analysis_spots)
+        if np.any(original_rows < 0):
+            raise RuntimeError("A sampled report spot is absent from the source AnnData.")
 
+        row_order = open_marker_obs_indices(
+            marker_path,
+            marker_metadata,
+            expected_obs=source_adata.n_obs,
+        )
+        if row_order is None:
+            marker_rows = original_rows
+        else:
+            inverse_row_order = np.empty(source_adata.n_obs, dtype=np.int64)
+            inverse_row_order[np.asarray(row_order)] = np.arange(
+                source_adata.n_obs,
+                dtype=np.int64,
+            )
+            marker_rows = inverse_row_order[original_rows]
+
+        annotation = report_config.annotation_list[0]
+        annotations = source_adata.obs.iloc[original_rows][annotation].copy()
+    finally:
+        if row_order is not None:
+            row_order._mmap.close()
+        if source_adata.isbacked:
+            source_adata.file.close()
+
+    effective_marker_path = resolve_marker_scores_memmap_path(
+        report_config,
+        marker_metadata,
+        populate_cache=False,
+    )
+    data_path = effective_marker_path.with_suffix(".dat")
+    n_workers = _report_worker_count(report_config, ceiling=32)
+    logger.info(
+        f"Reading the report marker sample with {n_workers} I/O workers from {data_path}; "
+        "the complete marker matrix will not be staged solely for PCC."
+    )
+    marker_scores = _read_marker_score_rows(
+        data_path=data_path,
+        shape=shape,
+        dtype=np.dtype(marker_metadata["dtype"]),
+        marker_rows=marker_rows,
+        gene_positions=gene_positions,
+        n_workers=n_workers,
+    )
+    logger.info(f"Prepared the PCC marker sample in {time.perf_counter() - started:.2f}s")
+    return _GssPccSample(
+        common_spots=common_spots,
+        analysis_spots=analysis_spots,
+        gene_names=gene_names,
+        marker_scores=marker_scores,
+        annotations=annotations,
+    )
+
+
+def _calculate_gene_annotation_stats(
+    marker_scores: np.ndarray,
+    analysis_spots: np.ndarray,
+    gene_names: list[str],
+    annotations: pd.Series,
+) -> pd.DataFrame:
+    """Assign each gene to the annotation with the largest median GSS."""
+
+    gss_frame = pd.DataFrame(marker_scores, index=analysis_spots, columns=gene_names)
+    grouped_gss = gss_frame.groupby(annotations).median()
     gene_stats = pd.DataFrame(
         {
-            "gene": grouped_gss.idxmax().index,
-            "Annotation": grouped_gss.idxmax().values,
-            "Median_GSS": grouped_gss.max().values,
+            "gene": grouped_gss.columns,
+            "Annotation": grouped_gss.idxmax().to_numpy(),
+            "Median_GSS": grouped_gss.max().to_numpy(),
         }
     )
     gene_stats.dropna(subset=["Median_GSS"], inplace=True)
+    return gene_stats
 
-    return common_spots, gss_adata, gene_stats, analysis_spots
 
-
-def _calculate_pcc_for_single_trait_fast(
-    trait: str,
+def _calculate_pcc_for_traits_fast(
+    traits: list[str],
     ldsc_results: pd.DataFrame,
     analysis_spots: np.ndarray,
     gss_centered: np.ndarray,
     gss_ssq: np.ndarray,
+) -> np.ndarray:
+    """Calculate every requested gene-trait PCC in one BLAS matrix multiply."""
+
+    missing_traits = [trait for trait in traits if trait not in ldsc_results.columns]
+    if missing_traits:
+        raise KeyError(f"Traits are absent from combined LDSC results: {missing_traits}")
+
+    trait_matrix = ldsc_results.loc[analysis_spots, traits].to_numpy(
+        dtype=np.float32,
+        copy=True,
+    )
+    if np.isnan(trait_matrix).any():
+        affected = [
+            trait for index, trait in enumerate(traits) if np.isnan(trait_matrix[:, index]).any()
+        ]
+        raise ValueError(f"NaN values found in LDSC results for traits: {affected}")
+
+    trait_matrix -= trait_matrix.mean(axis=0, keepdims=True)
+    trait_ssq = np.einsum(
+        "ij,ij->j",
+        trait_matrix,
+        trait_matrix,
+        dtype=np.float32,
+        optimize=True,
+    )
+    started = time.perf_counter()
+    pcc_matrix = gss_centered.T @ trait_matrix
+    pcc_matrix /= np.sqrt(gss_ssq[:, None] * trait_ssq[None, :]) + 1e-12
+    elapsed = time.perf_counter() - started
+    logger.info(
+        f"Calculated {len(traits):,} trait correlations together for "
+        f"{len(analysis_spots):,} spots and {gss_centered.shape[1]:,} genes in {elapsed:.2f}s"
+    )
+    return pcc_matrix
+
+
+def _save_pcc_for_trait(
+    trait: str,
+    pccs: np.ndarray,
     gene_names: list[str],
-    gene_stats: pd.DataFrame,
+    gene_stats: pd.DataFrame | None,
     report_config: QuickModeConfig,
-    report_dir: Path,
-    gss_dir: Path,
-) -> pd.DataFrame | None:
-    """Calculate PCC for a single trait using pre-calculated centered GSS matrix."""
-    if trait not in ldsc_results.columns:
-        logger.warning(
-            f"Trait {trait} not found in LDSC combined results. Skipping PCC calculation."
-        )
-        return None
-
-    def fast_corr(centered_matrix, ssq_matrix, vector):
-        v_centered = vector - vector.mean()
-        numerator = np.dot(v_centered, centered_matrix)
-        denominator = np.sqrt(np.sum(v_centered**2) * ssq_matrix)
-        return numerator / (denominator + 1e-12)
-
-    logger.info(f"Processing PCC for trait: {trait}")
-
-    logp_vec = ldsc_results.loc[analysis_spots, trait].values.astype(np.float32)
-    assert not np.any(np.isnan(logp_vec)), f"NaN values found in LDSC results for trait {trait}."
-    pccs = fast_corr(gss_centered, gss_ssq, logp_vec)
+) -> pd.DataFrame:
+    """Attach gene metadata, sort, and atomically save one trait's PCC results."""
 
     trait_pcc = pd.DataFrame({"gene": gene_names, "PCC": pccs, "trait": trait})
-
     if gene_stats is not None:
         trait_pcc = trait_pcc.merge(gene_stats, on="gene", how="left")
-
-    trait_pcc_sorted = trait_pcc.sort_values("PCC", ascending=False)
-
-    # Save to gss_stats subfolder
-    # Save result CSV
-    diag_info_path = report_config.get_gene_diagnostic_info_save_path(trait)
-    _atomic_to_csv(trait_pcc_sorted, diag_info_path, index=False)
-
-    return trait_pcc_sorted
+    trait_pcc.sort_values("PCC", ascending=False, inplace=True)
+    _atomic_to_csv(
+        trait_pcc,
+        report_config.get_gene_diagnostic_info_save_path(trait),
+        index=False,
+    )
+    return trait_pcc
 
 
 def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):

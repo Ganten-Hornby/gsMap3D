@@ -70,6 +70,27 @@ def test_shared_marker_read_cache_is_reused(tmp_path, monkeypatch):
     assert len(list((cache_dir / "gsmap_read_cache").glob("*.dat"))) == 1
 
 
+def test_shared_marker_read_cache_can_be_reused_without_populating(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    cache_dir = tmp_path / "cache"
+    source_dir.mkdir()
+    cache_dir.mkdir()
+    marker_path = source_dir / "marker_scores.dat"
+    np.arange(12, dtype=np.float16).tofile(marker_path)
+    metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+
+    resolved = _shared_marker_cache_base(
+        marker_path,
+        cache_dir,
+        metadata,
+        populate=False,
+    )
+
+    assert resolved == marker_path
+    assert not list((cache_dir / "gsmap_read_cache").glob("*.dat"))
+
+
 @pytest.mark.parametrize(
     "rows",
     [
