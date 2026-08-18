@@ -221,7 +221,7 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
     assert "getAnnotationColor(row.annotation, row.annotation_name)" in report_template
     assert "annotationColorTrace" in report_template
     assert "Same color as spatial and UMAP views" in report_template
-    assert "isolateAnnotationFromEnrichment(row.annotation, row.annotation_name)" in report_template
+    assert "toggleAnnotationFromEnrichment(row.annotation, row.annotation_name)" in report_template
     assert "showAllAnnotationCategories()" in report_template
     assert "Point maps:" in report_template
 
@@ -238,6 +238,28 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
     assert "isAnnotationCategoryVisible" not in table_filter
     assert "cauchyFocusedAnnotation" not in table_filter
     assert "isAnnotationCategoryVisible" not in heatmap
+
+
+def test_enrichment_annotation_badges_support_point_map_multi_selection(
+    report_template: str,
+) -> None:
+    assert "pointMapAnnotationSelectionActive" in report_template
+    assert "pointMapAnnotationSelectionLabel" in report_template
+    assert "isPointMapAnnotationSelected(row.annotation, row.annotation_name)" in report_template
+
+    toggle_start = report_template.index(
+        "                toggleAnnotationFromEnrichment(category, annotationName) {"
+    )
+    toggle_handler = report_template[
+        toggle_start : report_template.index(
+            "                showAllAnnotationCategories() {", toggle_start
+        )
+    ]
+    assert "if (!selectionActive)" in toggle_handler
+    assert "delete hidden[categoryKey]" in toggle_handler
+    assert "if (visibleCount <= 1)" in toggle_handler
+    assert "hidden[categoryKey] = true" in toggle_handler
+    assert "for (const key of Object.keys(hidden)) delete hidden[key]" in toggle_handler
 
 
 def test_annotation_first_layout_and_shared_interactive_legend(report_template: str) -> None:

@@ -1213,13 +1213,17 @@
                                 <option value="sample">Per Sample</option>
                             </select>
                         </div>
-                        <div x-show="isolatedAnnotationCategory"
+                        <div x-show="pointMapAnnotationSelectionActive"
                             class="inline-flex items-center gap-2 rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs text-primary-800">
-                            <span>Point maps: <strong x-text="isolatedAnnotationCategory"></strong></span>
+                            <span class="inline-flex min-w-0 items-center gap-1">
+                                Point maps:
+                                <strong class="max-w-64 truncate" x-text="pointMapAnnotationSelectionLabel"
+                                    :title="pointMapAnnotationSelection.join(', ')"></strong>
+                            </span>
                             <button type="button" @click="showAllAnnotationCategories()"
                                 class="inline-flex h-5 w-5 items-center justify-center rounded-full font-bold text-primary-600 hover:bg-primary-100 hover:text-primary-900"
                                 title="Show all annotations in point maps"
-                                aria-label="Cancel annotation isolation in the 3D, 2D, and UMAP views">
+                                aria-label="Restore all annotations in the 3D, 2D, and UMAP views">
                                 ×
                             </button>
                         </div>
@@ -1252,11 +1256,11 @@
                                     <tr class="table-row-hover">
                                         <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
                                         <td class="px-4 py-2 text-sm">
-                                            <button type="button" @click="isolateAnnotationFromEnrichment(row.annotation, row.annotation_name)"
-                                                :aria-pressed="(isolatedAnnotationCategory === row.annotation).toString()"
-                                                title="Isolate this annotation in the 3D, 2D, and UMAP views"
+                                            <button type="button" @click="toggleAnnotationFromEnrichment(row.annotation, row.annotation_name)"
+                                                :aria-pressed="isPointMapAnnotationSelected(row.annotation, row.annotation_name).toString()"
+                                                :title="isPointMapAnnotationSelected(row.annotation, row.annotation_name) ? 'Remove this annotation from the 3D, 2D, and UMAP views' : (pointMapAnnotationSelectionActive ? 'Add this annotation to the 3D, 2D, and UMAP views' : 'Isolate this annotation in the 3D, 2D, and UMAP views')"
                                                 class="inline-flex max-w-xs items-center gap-2 rounded-full border px-2 py-0.5 text-xs"
-                                                :class="isolatedAnnotationCategory === row.annotation ? 'border-primary-400 bg-primary-50 text-primary-800 ring-1 ring-primary-200' : 'border-slate-200 bg-white text-slate-700 hover:border-primary-300'">
+                                                :class="isPointMapAnnotationSelected(row.annotation, row.annotation_name) ? 'border-primary-400 bg-primary-50 text-primary-800 ring-1 ring-primary-200' : 'border-slate-200 bg-white text-slate-700 hover:border-primary-300'">
                                                 <span class="h-3 w-3 flex-none rounded-sm border border-black/10 shadow-sm"
                                                     :style="`background-color:${getAnnotationColor(row.annotation, row.annotation_name)}`"></span>
                                                 <span class="truncate" x-text="row.annotation"></span>
@@ -1583,11 +1587,22 @@
                     return this.currentAnnotationLegend.filter(entry => entry.visible).length;
                 },
 
-                get isolatedAnnotationCategory() {
-                    const legend = this.currentAnnotationLegend;
-                    if (legend.length < 2) return '';
-                    const visible = legend.filter(entry => entry.visible);
-                    return visible.length === 1 ? String(visible[0].category) : '';
+                get pointMapAnnotationSelectionActive() {
+                    return this.hasHiddenAnnotationCategories();
+                },
+
+                get pointMapAnnotationSelection() {
+                    if (!this.pointMapAnnotationSelectionActive) return [];
+                    return this.currentAnnotationLegend
+                        .filter(entry => entry.visible)
+                        .map(entry => String(entry.category));
+                },
+
+                get pointMapAnnotationSelectionLabel() {
+                    const selected = this.pointMapAnnotationSelection;
+                    if (!selected.length) return 'None';
+                    if (selected.length <= 3) return selected.join(', ');
+                    return `${selected.slice(0, 3).join(', ')} +${selected.length - 3}`;
                 },
 
                 get filteredTraits() {
@@ -2369,13 +2384,39 @@
                     this.renderAnnotationCategoryViews();
                 },
 
-                isolateAnnotationFromEnrichment(category, annotationName) {
+                isPointMapAnnotationSelected(category, annotationName) {
+                    return this.hasHiddenAnnotationCategories(annotationName) &&
+                        this.isAnnotationCategoryVisible(category, annotationName);
+                },
+
+                hasHiddenAnnotationCategories(annotationName = this.selectedAnnotationCategory) {
+                    const schema = this.getAnnotationSchema(annotationName);
+                    return Boolean(schema?.categories?.some(category =>
+                        !this.isAnnotationCategoryVisible(category, annotationName)
+                    ));
+                },
+
+                toggleAnnotationFromEnrichment(category, annotationName) {
                     if (annotationName !== this.selectedAnnotationCategory) return;
                     const categoryKey = this.annotationCategoryKey(category, annotationName);
-                    const hidden = {};
-                    for (const entry of this.currentAnnotationLegend) {
-                        const entryKey = this.annotationCategoryKey(entry.category, annotationName);
-                        if (entryKey !== categoryKey) hidden[entryKey] = true;
+                    const legend = this.currentAnnotationLegend;
+                    const hidden = { ...(this.annotationHiddenCategories[annotationName] || {}) };
+                    const selectionActive = legend.some(entry => !entry.visible);
+
+                    if (!selectionActive) {
+                        for (const entry of legend) {
+                            const entryKey = this.annotationCategoryKey(entry.category, annotationName);
+                            if (entryKey !== categoryKey) hidden[entryKey] = true;
+                        }
+                    } else if (hidden[categoryKey]) {
+                        delete hidden[categoryKey];
+                    } else {
+                        const visibleCount = legend.filter(entry => entry.visible).length;
+                        if (visibleCount <= 1) {
+                            for (const key of Object.keys(hidden)) delete hidden[key];
+                        } else {
+                            hidden[categoryKey] = true;
+                        }
                     }
                     this.annotationHiddenCategories = {
                         ...this.annotationHiddenCategories,
