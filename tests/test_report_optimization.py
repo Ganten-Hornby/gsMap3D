@@ -13,6 +13,7 @@ from gsMap.report.diagnosis import load_gwas_data
 from gsMap.report.report_data import (
     _available_cpu_count,
     _calculate_pcc_for_traits_fast,
+    _export_annotation_schemas_js,
     _load_chrom_tick_positions,
     _load_gss_pcc_sample,
     _ManhattanWeightContext,
@@ -32,6 +33,24 @@ def test_report_3d_display_default_balances_density_and_interaction():
     field = ReportConfig.__dataclass_fields__["downsampling_n_spots_3d"]
 
     assert field.default == 100_000
+
+
+def test_annotation_schema_export_is_small_canonical_palette(tmp_path):
+    metadata = pd.DataFrame(
+        {
+            "region": ["cortex", "thalamus", "cortex", None],
+            "unused": [1, 2, 3, 4],
+        }
+    )
+
+    _export_annotation_schemas_js(tmp_path, metadata, ["region", "missing"])
+
+    content = (tmp_path / "annotation_schemas.js").read_text(encoding="utf-8")
+    schemas = json.loads(content.split("=", 1)[1].rstrip(";"))
+    assert set(schemas) == {"region"}
+    assert schemas["region"]["categories"] == ["NaN", "cortex", "thalamus"]
+    assert len(schemas["region"]["colors"]) == 3
+    assert schemas["region"]["colors"][0] == "#d3d3d3"
 
 
 def test_available_cpu_count_prefers_slurm_allocation(monkeypatch):

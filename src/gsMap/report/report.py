@@ -46,6 +46,7 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
             ├── js_lib/
             └── js_data/
                 ├── gss_stats/
+                ├── annotation_schemas.js     # Shared categorical colors
                 ├── sample_index.js
                 ├── spatial_2d/             # Sample bases + lazy trait arrays
                 ├── spatial_3d/             # Shared geometry + lazy feature arrays

@@ -108,6 +108,15 @@ def test_spatial3d_is_lazy_direct_plotly_and_labels_nonphysical_geometry(
     assert "yRange / largestXyRange" in report_template
 
 
+def test_spatial3d_compare_waits_for_layout_then_resizes_and_recenters(
+    report_template: str,
+) -> None:
+    assert "await this.waitForLayoutPaint()" in report_template
+    assert "await this.resizeSpatial3dViews({ center: mode === 'compare' })" in report_template
+    assert "Plotly.Plots.resize(plot)" in report_template
+    assert "'scene.camera.center': origin" in report_template
+
+
 def test_large_secondary_datasets_are_loaded_near_their_sections(
     report_template: str,
 ) -> None:
@@ -159,3 +168,43 @@ def test_spatial_views_offer_scalable_hover_details(report_template: str) -> Non
     assert "compactTraitPayload.extra.annotation_codes" in report_template
     assert "Object.entries(data.annotations || {})" in report_template
     assert "<b>${anno}</b> code: %{marker.color:.0f}" not in report_template
+
+
+def test_umap_uses_readable_geometry_hover_and_canonical_annotation_colors(
+    report_template: str,
+) -> None:
+    assert 'class="umap-frame"' in report_template
+    assert "resolveUmapPointSize" in report_template
+    assert "scaleanchor: 'y'" in report_template
+    assert "strongest trait signals are drawn on top" in report_template
+    assert "currentAnnotationLegend" in report_template
+    assert "this.getAnnotationColorMap(anno)" in report_template
+    assert "<b>Spot:</b>" in report_template
+
+
+def test_enrichment_uses_shared_annotation_color_reference(report_template: str) -> None:
+    assert '<script src="js_data/annotation_schemas.js"></script>' in report_template
+    assert "window.GSMAP_ANNOTATION_SCHEMAS" in report_template
+    assert "getAnnotationColor(row.annotation, row.annotation_name)" in report_template
+    assert "annotationColorTrace" in report_template
+    assert "Same color as spatial and UMAP views" in report_template
+
+
+def test_annotation_first_layout_and_shared_interactive_legend(report_template: str) -> None:
+    section_order = [
+        report_template.index("{ key: 'show3d', id: 'sec-spatial3d'"),
+        report_template.index("{ key: 'show2dDistribution', id: 'sec-gsmap'"),
+        report_template.index("{ key: 'showUMAP', id: 'sec-umap'"),
+        report_template.index("{ key: 'showEnrichment', id: 'sec-cauchy'"),
+        report_template.index("{ key: 'showGSS', id: 'sec-genes'"),
+    ]
+    assert section_order == sorted(section_order)
+    assert 'style="order: 1"' in report_template
+    assert 'style="order: 2"' in report_template
+    assert 'style="order: 3"' in report_template
+    assert 'style="order: 4"' in report_template
+    assert "Click to hide/show; double-click to isolate." in report_template
+    assert "scheduleAnnotationLegendToggle(entry.category)" in report_template
+    assert "isolateAnnotationCategory(entry.category)" in report_template
+    assert "filterCategoricalPlotPoints" in report_template
+    assert "visible: this.isAnnotationCategoryVisible(val, annoName)" in report_template

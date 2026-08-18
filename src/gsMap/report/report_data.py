@@ -33,6 +33,7 @@ from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
 from gsMap.report.spatial_payload import (
     SPATIAL_PAYLOAD_VERSION,
+    _categorical_schema,
     export_sample_spatial_payloads,
     export_spatial_3d_payloads,
 )
@@ -643,10 +644,21 @@ class ReportDataManager:
         _copy_js_assets(self.web_report_dir)
 
         # 3. Export per-sample spatial JS (highly important for performance)
-        if not self.force_re_run and _per_sample_spatial_outputs_current(
+        spatial_outputs_current = not self.force_re_run and _per_sample_spatial_outputs_current(
             self.report_data_dir, self.js_data_dir, meta
-        ):
+        )
+        if spatial_outputs_current:
             logger.info("Per-sample spatial JS is current. Skipping export.")
+            annotation_schemas_path = self.js_data_dir / "annotation_schemas.js"
+            if (
+                not annotation_schemas_path.is_file()
+                or annotation_schemas_path.stat().st_size == 0
+            ):
+                _export_annotation_schemas_js(
+                    self.js_data_dir,
+                    self.metadata,
+                    meta.get("annotations", []),
+                )
         else:
             _export_per_sample_spatial_js(
                 self.report_data_dir,
@@ -2231,6 +2243,28 @@ def export_data_as_js_modules(data_dir: Path):
     logger.info(f"JS modules exported to {js_data_dir}")
 
 
+def _export_annotation_schemas_js(
+    js_data_dir: Path,
+    metadata: pd.DataFrame,
+    annotations: list[str],
+) -> None:
+    """Export the canonical annotation palette used by every report view."""
+
+    schemas = {}
+    for annotation in annotations:
+        if annotation not in metadata:
+            continue
+        categories, colors = _categorical_schema(metadata[annotation])
+        schemas[annotation] = {"categories": categories, "colors": colors}
+
+    js_content = (
+        "window.GSMAP_ANNOTATION_SCHEMAS="
+        + json.dumps(schemas, ensure_ascii=False, separators=(",", ":"))
+        + ";"
+    )
+    _write_text_if_changed(js_data_dir / "annotation_schemas.js", js_content)
+
+
 def _export_per_sample_spatial_js(
     data_dir: Path,
     js_data_dir: Path,
@@ -2274,6 +2308,7 @@ def _export_per_sample_spatial_js(
     )
     _atomic_write_text(js_data_dir / "sample_index.js", js_content)
     output_files.append("sample_index.js")
+    _export_annotation_schemas_js(js_data_dir, metadata, annotations)
 
     manifest = {
         "version": SPATIAL_PAYLOAD_VERSION,

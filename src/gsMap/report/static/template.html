@@ -254,6 +254,13 @@
             border-radius: 0.65rem;
         }
 
+        .umap-frame {
+            width: 100%;
+            height: clamp(25rem, 48vh, 30rem);
+            min-height: 25rem;
+            border-radius: 0.65rem;
+        }
+
         .plot-container {
             min-height: 450px;
             contain: layout style;
@@ -307,6 +314,11 @@
             .plot-frame-3d {
                 height: 70vh;
                 min-height: 28rem;
+            }
+
+            .umap-frame {
+                height: 26rem;
+                min-height: 26rem;
             }
 
             .plot-container {
@@ -503,6 +515,45 @@
                     </select>
                 </div>
 
+                <!-- Shared annotation legend -->
+                <div x-show="currentAnnotationLegend.length"
+                    class="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="min-w-0">
+                            <h3 class="truncate text-[11px] font-bold uppercase tracking-[0.14em] text-slate-600"
+                                x-text="selectedAnnotationCategory + ' colors'"></h3>
+                            <p class="mt-0.5 text-[10px] text-slate-400">
+                                <span x-text="visibleAnnotationCategoryCount"></span>/<span x-text="currentAnnotationLegend.length"></span> visible
+                            </p>
+                        </div>
+                        <button type="button" @click="showAllAnnotationCategories()"
+                            class="flex-none text-[11px] font-semibold text-primary-700 hover:text-primary-900">
+                            Show all
+                        </button>
+                    </div>
+                    <p class="mt-2 text-[10px] leading-4 text-slate-500">Click to hide/show; double-click to isolate.</p>
+                    <div class="mt-2 max-h-44 space-y-0.5 overflow-y-auto pr-1 custom-scrollbar"
+                        role="group" :aria-label="selectedAnnotationCategory + ' shared color legend'">
+                        <template x-for="entry in currentAnnotationLegend" :key="entry.category">
+                            <button type="button" @click="scheduleAnnotationLegendToggle(entry.category)"
+                                @dblclick.prevent.stop="isolateAnnotationCategory(entry.category)"
+                                :aria-pressed="entry.visible.toString()"
+                                class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[11px] transition"
+                                :class="entry.visible ? 'text-slate-700 hover:bg-white' : 'text-slate-400 opacity-45 hover:bg-white/70'"
+                                :title="entry.category">
+                                <span class="h-3 w-3 flex-none rounded-sm border border-black/10 shadow-sm"
+                                    :style="`background-color:${entry.color}`"></span>
+                                <span class="min-w-0 flex-1 truncate" :class="entry.visible ? '' : 'line-through'"
+                                    x-text="entry.category"></span>
+                                <svg x-show="entry.visible" class="h-3 w-3 flex-none text-slate-400" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="m5 12 4 4L19 6" />
+                                </svg>
+                            </button>
+                        </template>
+                    </div>
+                </div>
+
                 <!-- Gene Selector (only top genes) -->
                 <div>
                     <label for="gene-selector" class="control-label">
@@ -567,10 +618,10 @@
         </aside>
 
         <!-- ==================== MAIN CONTENT ==================== -->
-        <main id="main-content" tabindex="-1" class="min-w-0 flex-1 space-y-5 px-3 py-4 sm:px-5 sm:py-5 lg:px-7 lg:py-6">
+        <main id="main-content" tabindex="-1" class="flex min-w-0 flex-1 flex-col gap-5 px-3 py-4 sm:px-5 sm:py-5 lg:px-7 lg:py-6">
 
             <!-- Loading/error state -->
-            <div x-show="!dataLoaded" class="mx-auto mt-12 max-w-xl rounded-xl border p-6 text-center shadow-sm"
+            <div x-show="!dataLoaded" style="order: -1" class="mx-auto mt-12 max-w-xl rounded-xl border p-6 text-center shadow-sm"
                 :class="initializationError ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'"
                 role="status" aria-live="polite">
                 <template x-if="!initializationError">
@@ -594,7 +645,7 @@
             </div>
 
             <!-- Active analysis context -->
-            <section x-show="dataLoaded" class="report-overview p-4 sm:p-5" aria-labelledby="report-overview-title">
+            <section x-show="dataLoaded" style="order: 0" class="report-overview p-4 sm:p-5" aria-labelledby="report-overview-title">
                 <div class="relative z-10 flex flex-col justify-between gap-5 xl:flex-row xl:items-center">
                     <div class="min-w-0">
                         <p class="text-[11px] font-bold uppercase tracking-[0.17em] text-primary-700">Active analysis</p>
@@ -627,7 +678,7 @@
 
             <!-- ==================== SECTION 1: 3D SPATIAL VISUALIZATION ==================== -->
             <div id="sec-spatial3d" x-show="dataLoaded && currentSections.show3d && has3dWidget"
-                class="report-card">
+                class="report-card" style="order: 1">
                 <button type="button" class="report-card-header" @click="toggleSection('spatial3d', 'sec-spatial3d')"
                     :aria-expanded="sections.spatial3d.toString()" aria-controls="content-spatial3d">
                     <div class="min-w-0">
@@ -742,20 +793,6 @@
                                     </div>
                                 </div>
                                 <div id="spatial3dPlotAnnotation" class="plot-frame-3d" role="img" aria-label="Interactive 3D annotation plot"></div>
-                                <div x-show="spatial3dAnnotationData?.categories?.length"
-                                    class="mt-2 max-h-28 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2 custom-scrollbar">
-                                    <p class="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500"
-                                        x-text="`${spatial3dAnnotationData?.categories?.length || 0} categories`"></p>
-                                    <div class="flex flex-wrap gap-x-3 gap-y-1">
-                                        <template x-for="(category, index) in spatial3dAnnotationData?.categories || []" :key="category">
-                                            <span class="inline-flex max-w-full items-center gap-1.5 text-[11px] text-slate-600" :title="category">
-                                                <span class="h-2.5 w-2.5 flex-none rounded-sm border border-black/10"
-                                                    :style="`background-color:${spatial3dAnnotationData.colors[index]}`"></span>
-                                                <span class="max-w-[14rem] truncate" x-text="category"></span>
-                                            </span>
-                                        </template>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -764,7 +801,7 @@
 
             <!-- ==================== SECTION 2: gsMap 2D Distribution ==================== -->
             <div id="sec-gsmap" x-show="dataLoaded && currentSections.show2dDistribution"
-                class="report-card">
+                class="report-card" style="order: 2">
                 <button type="button" class="report-card-header" @click="toggleSection('gsmap', 'sec-gsmap')"
                     :aria-expanded="sections.gsmap.toString()" aria-controls="content-gsmap">
                     <div class="min-w-0">
@@ -886,27 +923,15 @@
                                     Annotation · <span x-text="selectedAnnotationCategory"></span>
                                 </h3>
                                 <div id="spatial2dPlotAnnotation" class="spatial-2d-plot"></div>
-                                <div x-show="currentSampleData?.annotations?.[selectedAnnotationCategory]?.categories?.length"
-                                    class="mt-2 max-h-28 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2 custom-scrollbar">
-                                    <div class="flex flex-wrap gap-x-3 gap-y-1">
-                                        <template x-for="(category, index) in currentSampleData?.annotations?.[selectedAnnotationCategory]?.categories || []" :key="category">
-                                            <span class="inline-flex max-w-full items-center gap-1.5 text-[11px] text-slate-600" :title="category">
-                                                <span class="h-2.5 w-2.5 flex-none rounded-sm border border-black/10"
-                                                    :style="`background-color:${currentSampleData.annotations[selectedAnnotationCategory].colors[index]}`"></span>
-                                                <span class="max-w-[14rem] truncate" x-text="category"></span>
-                                            </span>
-                                        </template>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ==================== SECTION 3: GSS Distribution ==================== -->
+            <!-- ==================== SECTION 5: GSS Distribution ==================== -->
             <div id="sec-genes" x-show="dataLoaded && currentSections.showGSS"
-                class="report-card">
+                class="report-card" style="order: 5">
                 <button type="button" class="report-card-header" @click="toggleSection('genes', 'sec-genes')"
                     :aria-expanded="sections.genes.toString()" aria-controls="content-genes">
                     <div class="min-w-0">
@@ -1052,9 +1077,9 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 5: UMAP EMBEDDINGS ==================== -->
+            <!-- ==================== SECTION 3: UMAP EMBEDDINGS ==================== -->
             <div id="sec-umap" x-show="dataLoaded && currentSections.showUMAP"
-                class="report-card">
+                class="report-card" style="order: 3">
                 <button type="button" class="report-card-header" @click="toggleSection('umap', 'sec-umap')"
                     :aria-expanded="sections.umap.toString()" aria-controls="content-umap">
                     <div class="min-w-0">
@@ -1075,65 +1100,62 @@
                         </svg>
                         Loading embedding data…
                     </div>
-                    <!-- UMAP Controls -->
-                    <div x-show="umapData" class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
-                        <div class="flex items-center gap-2">
-                            <label class="text-sm font-medium text-gray-700">Trait:</label>
-                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
-                                x-text="selectedTrait"></span>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <label class="text-sm font-medium text-gray-700">Annotation:</label>
-                            <span class="text-sm text-gray-600 bg-white px-3 py-2 rounded-lg border border-gray-300"
-                                x-text="selectedAnnotationCategory"></span>
-                        </div>
-                        <div class="text-sm text-gray-500">
-                            <span x-text="umapData ? umapData.spot.length : 0"></span> spots
-                        </div>
+                    <!-- UMAP context -->
+                    <div x-show="umapData" class="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50/80 p-4">
+                        <span class="context-chip">Trait <strong x-text="selectedTrait"></strong></span>
+                        <span class="context-chip">Annotation <strong x-text="selectedAnnotationCategory"></strong></span>
+                        <span class="context-chip">
+                            <strong x-text="umapData ? umapData.spot.length.toLocaleString() : 0"></strong> plotted spots
+                        </span>
+                        <span class="ml-auto text-xs text-slate-500">Pan or zoom to inspect local embedding structure.</span>
                     </div>
 
                     <!-- UMAP Plots Container -->
-                    <div x-show="umapData" class="p-4">
+                    <div x-show="umapData" class="space-y-6 p-3 sm:p-4">
                         <!-- Row 1: Cell Embedding -->
-                        <div class="mb-6">
-                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Cell
-                                Embedding</h3>
+                        <div>
+                            <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 pb-2">
+                                <h3 class="text-base font-semibold text-slate-800">Cell embedding</h3>
+                                <p class="text-xs text-slate-500">Equal-axis geometry · strongest trait signals are drawn on top</p>
+                            </div>
                             <div class="plot-grid">
                                 <!-- Left: Trait -log10(p) -->
                                 <div class="plot-panel">
                                     <h4 class="mb-2 text-center text-sm font-semibold text-slate-600">
                                         −log10(P) · <span x-text="selectedTrait"></span>
                                     </h4>
-                                    <div id="umapCellPlotTrait" class="w-full" style="height: 400px;"></div>
+                                    <div id="umapCellPlotTrait" class="umap-frame"></div>
                                 </div>
                                 <!-- Right: Annotation -->
                                 <div class="plot-panel">
                                     <h4 class="mb-2 text-center text-sm font-semibold text-slate-600">
                                         Annotation · <span x-text="selectedAnnotationCategory"></span>
                                     </h4>
-                                    <div id="umapCellPlotAnnotation" class="w-full" style="height: 400px;"></div>
+                                    <div id="umapCellPlotAnnotation" class="umap-frame"></div>
                                 </div>
                             </div>
                         </div>
 
                         <!-- Row 2: Niche Embedding (only if available) -->
                         <div x-show="umapHasNiche">
-                            <h3 class="text-lg font-medium text-gray-800 mb-3 border-b border-gray-200 pb-2">Niche
-                                Embedding</h3>
+                            <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 pb-2">
+                                <h3 class="text-base font-semibold text-slate-800">Niche embedding</h3>
+                                <p class="text-xs text-slate-500">Neighborhood representation of the same plotted spots</p>
+                            </div>
                             <div class="plot-grid">
                                 <!-- Left: Trait -log10(p) -->
                                 <div class="plot-panel">
                                     <h4 class="mb-2 text-center text-sm font-semibold text-slate-600">
                                         −log10(P) · <span x-text="selectedTrait"></span>
                                     </h4>
-                                    <div id="umapNichePlotTrait" class="w-full" style="height: 400px;"></div>
+                                    <div id="umapNichePlotTrait" class="umap-frame"></div>
                                 </div>
                                 <!-- Right: Annotation -->
                                 <div class="plot-panel">
                                     <h4 class="mb-2 text-center text-sm font-semibold text-slate-600">
                                         Annotation · <span x-text="selectedAnnotationCategory"></span>
                                     </h4>
-                                    <div id="umapNichePlotAnnotation" class="w-full" style="height: 400px;"></div>
+                                    <div id="umapNichePlotAnnotation" class="umap-frame"></div>
                                 </div>
                             </div>
                         </div>
@@ -1143,7 +1165,7 @@
 
             <!-- ==================== SECTION 6: MANHATTAN PLOT ==================== -->
             <div id="sec-manhattan" x-show="dataLoaded && currentSections.showManhattan"
-                class="report-card">
+                class="report-card" style="order: 6">
                 <button type="button" class="report-card-header" @click="toggleSection('manhattan', 'sec-manhattan')"
                     :aria-expanded="sections.manhattan.toString()" aria-controls="content-manhattan">
                     <div class="min-w-0">
@@ -1169,9 +1191,9 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 7: ENRICHMENT ANALYSIS ==================== -->
+            <!-- ==================== SECTION 4: ENRICHMENT ANALYSIS ==================== -->
             <div id="sec-cauchy" x-show="dataLoaded && currentSections.showEnrichment"
-                class="report-card">
+                class="report-card" style="order: 4">
                 <button type="button" class="report-card-header" @click="toggleSection('cauchy', 'sec-cauchy')"
                     :aria-expanded="sections.cauchy.toString()" aria-controls="content-cauchy">
                     <div class="min-w-0">
@@ -1229,9 +1251,13 @@
                                 <template x-for="(row, idx) in filteredCauchyTable" :key="idx">
                                     <tr class="table-row-hover">
                                         <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
-                                        <td class="px-4 py-2 text-sm"><span
-                                                class="px-2 py-0.5 text-xs rounded-full bg-primary-100 text-primary-700"
-                                                x-text="row.annotation"></span></td>
+                                        <td class="px-4 py-2 text-sm">
+                                            <span class="inline-flex max-w-xs items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-700">
+                                                <span class="h-3 w-3 flex-none rounded-sm border border-black/10 shadow-sm"
+                                                    :style="`background-color:${getAnnotationColor(row.annotation, row.annotation_name)}`"></span>
+                                                <span class="truncate" x-text="row.annotation"></span>
+                                            </span>
+                                        </td>
                                         <td x-show="cauchyViewMode === 'sample'" class="px-4 py-2 text-sm text-gray-600"
                                             x-text="row.sample_name"></td>
                                         <td class="px-4 py-2 text-sm font-mono text-gray-600"
@@ -1251,7 +1277,7 @@
                         <!-- Empty state message -->
                         <div x-show="filteredCauchyTable.length === 0" class="text-center py-8 text-gray-500">
                             <p class="text-sm">No enrichment results found for the selected trait and annotation.</p>
-                            <p class="text-xs mt-1 text-gray-400">Try selecting a different trait or annotation category.</p>
+                            <p class="text-xs mt-1 text-gray-400">Try another selection or restore hidden classes with “Show all” in the shared legend.</p>
                         </div>
                     </div>
 
@@ -1321,9 +1347,9 @@
                 </div>
             </div>
 
-            <!-- ==================== SECTION 8: REPORT INFORMATION ==================== -->
+            <!-- ==================== SECTION 7: REPORT INFORMATION ==================== -->
             <div id="sec-info" x-show="dataLoaded && currentSections.showInfo"
-                class="report-card">
+                class="report-card" style="order: 7">
                 <button type="button" class="report-card-header" @click="toggleSection('info', 'sec-info')"
                     :aria-expanded="sections.info.toString()" aria-controls="content-info">
                     <div class="min-w-0">
@@ -1382,6 +1408,7 @@
     <!-- Data Scripts - MUST load before Alpine initializes -->
     <script src="js_data/report_meta.js"></script>
     <script src="js_data/sample_index.js"></script>
+    <script src="js_data/annotation_schemas.js"></script>
     <!-- Gene trait correlation data is now loaded per-trait on demand from js_data/gss_stats/ -->
 
     <script>
@@ -1521,12 +1548,10 @@
                 sectionDefs: [
                     { key: 'show3d', id: 'sec-spatial3d', title: 'gsMap 3D Exploration' },
                     { key: 'show2dDistribution', id: 'sec-gsmap', title: 'gsMap 2D Distribution' },
-                    { key: 'showGSS', id: 'sec-genes', title: 'GSS Distribution' },
-                    // Annotation section merged into sec-gsmap, removed from navigation
-                    // { key: 'showAnnotations', id: 'sec-annotation', title: 'Annotations 2D Distribution' },
                     { key: 'showUMAP', id: 'sec-umap', title: 'Embedding UMAP' },
-                    { key: 'showManhattan', id: 'sec-manhattan', title: 'Manhattan Plot' },
                     { key: 'showEnrichment', id: 'sec-cauchy', title: 'Enrichment Analysis' },
+                    { key: 'showGSS', id: 'sec-genes', title: 'GSS Distribution' },
+                    { key: 'showManhattan', id: 'sec-manhattan', title: 'Manhattan Plot' },
                     { key: 'showInfo', id: 'sec-info', title: 'Report Information' }
                 ],
 
@@ -1553,6 +1578,20 @@
                     const payload = this.currentSampleData?.traits?.[this.selectedTrait];
                     if (!payload || ArrayBuffer.isView(payload) || Array.isArray(payload)) return null;
                     return payload.values ? payload : null;
+                },
+
+                get currentAnnotationLegend() {
+                    const schema = this.getAnnotationSchema(this.selectedAnnotationCategory);
+                    if (!schema?.categories?.length) return [];
+                    return schema.categories.map((category, index) => ({
+                        category,
+                        color: schema.colors[index] || '#94a3b8',
+                        visible: this.isAnnotationCategoryVisible(category)
+                    }));
+                },
+
+                get visibleAnnotationCategoryCount() {
+                    return this.currentAnnotationLegend.filter(entry => entry.visible).length;
                 },
 
                 get filteredTraits() {
@@ -1597,11 +1636,13 @@
                 _cauchyFilterKey: '',
 
                 // Performance optimization caches
-                _umapTraitColorCache: null,      // { trait, colors }
+                _umapTraitColorCache: null,      // { values, order, cmax }
                 _umapAnnoColorCache: null,       // { anno, traces } for discrete annotations
                 _spatial2dTraitColorCache: null, // { sample, trait, colors }
                 _spatial2dAnnoTracesCache: null, // { sample, anno, traces }
                 _traitChangeDebounceTimer: null, // Debounce timer for trait changes
+                annotationHiddenCategories: {}, // { annotationName: { category: true } }
+                _annotationLegendClickTimer: null,
 
                 // Virtual scrolling state
                 geneTableScroll: 0,
@@ -1670,7 +1711,8 @@
 
                 // Memoized: filtered cauchy table
                 get filteredCauchyTable() {
-                    const key = `${this.selectedTrait}|${this.selectedAnnotationCategory}|${this.cauchyViewMode}|${this.cauchySortKey}|${this.cauchySortAsc}`;
+                    const visibilityKey = this.annotationVisibilityKey(this.selectedAnnotationCategory);
+                    const key = `${this.selectedTrait}|${this.selectedAnnotationCategory}|${this.cauchyViewMode}|${this.cauchySortKey}|${this.cauchySortAsc}|${visibilityKey}`;
                     if (this._cauchyFilterKey === key && this._cauchyFilterCache) {
                         return this._cauchyFilterCache;
                     }
@@ -1679,7 +1721,8 @@
                     data = data.filter(r =>
                         (this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample') &&
                         r.trait === this.selectedTrait &&
-                        r.annotation_name === this.selectedAnnotationCategory
+                        r.annotation_name === this.selectedAnnotationCategory &&
+                        this.isAnnotationCategoryVisible(r.annotation, r.annotation_name)
                     );
                     const sortKey = this.cauchySortKey, asc = this.cauchySortAsc;
                     const result = [...data].sort((a, b) => {
@@ -2165,10 +2208,219 @@
                         if (mode !== 'annotation') tasks.push(this.loadSpatial3dTrait(this.selectedTrait));
                         if (mode !== 'trait') tasks.push(this.loadSpatial3dAnnotation(this.selectedAnnotationCategory));
                         await Promise.all(tasks);
-                        this.$nextTick(() => this.renderSpatial3dViews());
+                        await this.waitForLayoutPaint();
+                        await this.renderSpatial3dViews();
+                        await this.resizeSpatial3dViews({ center: mode === 'compare' });
                     } catch (error) {
                         this.spatial3dError = `Unable to change the 3D view: ${error.message}`;
                     }
+                },
+
+                waitForLayoutPaint() {
+                    return new Promise(resolve => {
+                        this.$nextTick(() => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    });
+                },
+
+                async resizeSpatial3dViews({ center = false } = {}) {
+                    await this.waitForLayoutPaint();
+                    const visibleIds = this.spatial3dViewMode === 'trait'
+                        ? ['spatial3dPlotTrait']
+                        : this.spatial3dViewMode === 'annotation'
+                            ? ['spatial3dPlotAnnotation']
+                            : ['spatial3dPlotTrait', 'spatial3dPlotAnnotation'];
+                    const plots = visibleIds
+                        .map(id => document.getElementById(id))
+                        .filter(plot => plot?.data);
+                    if (!plots.length) return;
+
+                    this._spatial3dSyncing = true;
+                    try {
+                        await Promise.all(plots.map(plot => Promise.resolve(Plotly.Plots.resize(plot))));
+                        if (center) {
+                            const origin = { x: 0, y: 0, z: 0 };
+                            await Promise.all(plots.map(plot => Promise.resolve(
+                                Plotly.relayout(plot, { 'scene.camera.center': origin })
+                            )));
+                        }
+                    } finally {
+                        this._spatial3dSyncing = false;
+                    }
+                },
+
+                getAnnotationSchema(annotationName) {
+                    if (!annotationName) return null;
+                    const canonical = window.GSMAP_ANNOTATION_SCHEMAS?.[annotationName];
+                    if (canonical?.categories?.length) return canonical;
+
+                    const sampleSchema = this.currentSampleData?.annotations?.[annotationName];
+                    if (sampleSchema?.categories?.length) return sampleSchema;
+                    const spatial3dSchema = this.spatial3dAnnotationCache?.[annotationName];
+                    if (spatial3dSchema?.categories?.length) return spatial3dSchema;
+
+                    const umapMap = this.umapData?.color_maps?.[annotationName];
+                    if (umapMap && !Array.isArray(umapMap)) {
+                        const categories = Object.keys(umapMap);
+                        return { categories, colors: categories.map(category => umapMap[category]) };
+                    }
+                    return null;
+                },
+
+                getAnnotationColorMap(annotationName) {
+                    const schema = this.getAnnotationSchema(annotationName);
+                    if (!schema?.categories?.length) return null;
+                    const colorMap = Object.fromEntries(schema.categories.map((category, index) => [
+                        String(category), schema.colors[index] || '#94a3b8'
+                    ]));
+                    for (const category of schema.categories) {
+                        if (!['nan', 'none', 'null'].includes(String(category).toLowerCase())) continue;
+                        const missingColor = colorMap[String(category)];
+                        for (const alias of ['NaN', 'nan', 'None', 'none', 'null']) {
+                            colorMap[alias] = missingColor;
+                        }
+                    }
+                    return colorMap;
+                },
+
+                getAnnotationColor(value, annotationName = this.selectedAnnotationCategory) {
+                    const schema = this.getAnnotationSchema(annotationName);
+                    if (!schema?.categories?.length) return '#94a3b8';
+                    const normalized = value == null ? 'NaN' : String(value);
+                    const isMissing = ['nan', 'none', 'null'].includes(normalized.toLowerCase());
+                    const index = schema.categories.findIndex(category =>
+                        String(category) === normalized ||
+                        (isMissing && ['nan', 'none', 'null'].includes(String(category).toLowerCase()))
+                    );
+                    return index >= 0 ? (schema.colors[index] || '#94a3b8') : '#94a3b8';
+                },
+
+                annotationVisibilityKey(annotationName = this.selectedAnnotationCategory) {
+                    return Object.keys(this.annotationHiddenCategories?.[annotationName] || {})
+                        .filter(category => this.annotationHiddenCategories[annotationName][category])
+                        .sort()
+                        .join('\u001f');
+                },
+
+                isAnnotationCategoryVisible(category, annotationName = this.selectedAnnotationCategory) {
+                    return !this.annotationHiddenCategories?.[annotationName]?.[String(category)];
+                },
+
+                setAnnotationCategoryVisible(category, visible) {
+                    const annotationName = this.selectedAnnotationCategory;
+                    const hidden = { ...(this.annotationHiddenCategories[annotationName] || {}) };
+                    const key = String(category);
+                    if (visible) delete hidden[key];
+                    else hidden[key] = true;
+                    this.annotationHiddenCategories = {
+                        ...this.annotationHiddenCategories,
+                        [annotationName]: hidden
+                    };
+                    this.renderAnnotationCategoryViews();
+                },
+
+                scheduleAnnotationLegendToggle(category) {
+                    if (this._annotationLegendClickTimer) {
+                        clearTimeout(this._annotationLegendClickTimer);
+                    }
+                    this._annotationLegendClickTimer = setTimeout(() => {
+                        this._annotationLegendClickTimer = null;
+                        this.setAnnotationCategoryVisible(
+                            category,
+                            !this.isAnnotationCategoryVisible(category)
+                        );
+                    }, 220);
+                },
+
+                isolateAnnotationCategory(category) {
+                    if (this._annotationLegendClickTimer) {
+                        clearTimeout(this._annotationLegendClickTimer);
+                        this._annotationLegendClickTimer = null;
+                    }
+                    const annotationName = this.selectedAnnotationCategory;
+                    const categoryKey = String(category);
+                    const visible = this.currentAnnotationLegend
+                        .filter(entry => entry.visible)
+                        .map(entry => String(entry.category));
+                    const restoreAll = visible.length === 1 && visible[0] === categoryKey;
+                    const hidden = {};
+                    if (!restoreAll) {
+                        for (const entry of this.currentAnnotationLegend) {
+                            if (String(entry.category) !== categoryKey) hidden[String(entry.category)] = true;
+                        }
+                    }
+                    this.annotationHiddenCategories = {
+                        ...this.annotationHiddenCategories,
+                        [annotationName]: hidden
+                    };
+                    this.renderAnnotationCategoryViews();
+                },
+
+                showAllAnnotationCategories() {
+                    const annotationName = this.selectedAnnotationCategory;
+                    this.annotationHiddenCategories = {
+                        ...this.annotationHiddenCategories,
+                        [annotationName]: {}
+                    };
+                    this.renderAnnotationCategoryViews();
+                },
+
+                renderAnnotationCategoryViews() {
+                    this._cauchyFilterCache = null;
+                    this._cauchyFilterKey = '';
+                    requestAnimationFrame(() => {
+                        if (this.spatial3dViewMode !== 'trait') this.renderSpatial3dAnnotation();
+                        if (this.spatial2dViewMode !== 'trait' && this.currentSampleData) {
+                            this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
+                        }
+                        if (this.umapActivated) this.renderUmapPlotAnnotation();
+                        if (this.cauchyActivated) this.renderCauchyHeatmap();
+                    });
+                },
+
+                filterCategoricalPlotPoints(x, y, z, schema, annotationName) {
+                    const visibilityKey = this.annotationVisibilityKey(annotationName);
+                    if (!visibilityKey) {
+                        delete schema._visiblePointCache;
+                        return { x, y, z, codes: schema.codes, indices: null };
+                    }
+                    const cached = schema._visiblePointCache;
+                    if (cached?.visibilityKey === visibilityKey && cached.sourceX === x &&
+                        cached.sourceY === y && cached.sourceZ === z) {
+                        return cached.points;
+                    }
+
+                    const hidden = this.annotationHiddenCategories?.[annotationName] || {};
+                    const indices = [];
+                    for (let index = 0; index < schema.codes.length; index++) {
+                        const category = String(schema.categories[schema.codes[index]] ?? 'NaN');
+                        if (!hidden[category]) indices.push(index);
+                    }
+                    const select = source => {
+                        if (source == null) return null;
+                        if (ArrayBuffer.isView(source)) {
+                            const selected = new source.constructor(indices.length);
+                            for (let index = 0; index < indices.length; index++) {
+                                selected[index] = source[indices[index]];
+                            }
+                            return selected;
+                        }
+                        return indices.map(index => source[index]);
+                    };
+                    const points = {
+                        x: select(x),
+                        y: select(y),
+                        z: select(z),
+                        codes: select(schema.codes),
+                        indices
+                    };
+                    schema._visiblePointCache = {
+                        visibilityKey,
+                        sourceX: x,
+                        sourceY: y,
+                        sourceZ: z,
+                        points
+                    };
+                    return points;
                 },
 
                 discreteColorScale(colors) {
@@ -2221,6 +2473,7 @@
                         margin: { l: 0, r: 0, t: 35, b: 0 },
                         paper_bgcolor: '#ffffff',
                         plot_bgcolor: '#ffffff',
+                        autosize: true,
                         uirevision: `spatial3d-${this.spatial3dAspectMode}`,
                         showlegend: false
                     };
@@ -2271,13 +2524,16 @@
                             name: 'Retained high-signal spots'
                         });
                     }
-                    Plotly.react(
+                    const rendered = Plotly.react(
                         plot,
                         traces,
                         this.spatial3dLayout(`Trait: ${this.selectedTrait}`),
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
-                    this.bindSpatial3dCameraSync('spatial3dPlotTrait', 'spatial3dPlotAnnotation');
+                    Promise.resolve(rendered).then(() => {
+                        this.bindSpatial3dCameraSync('spatial3dPlotTrait', 'spatial3dPlotAnnotation');
+                    });
+                    return rendered;
                 },
 
                 renderSpatial3dAnnotation() {
@@ -2286,6 +2542,13 @@
                     const feature = this.spatial3dAnnotationData;
                     if (!plot || !base || !feature || !this.plotlyReady) return;
                     const tickValues = feature.categories.map((_, index) => index);
+                    const points = this.filterCategoricalPlotPoints(
+                        base.x,
+                        base.y,
+                        base.z,
+                        feature,
+                        this.selectedAnnotationCategory
+                    );
                     let annotationHoverLabels = null;
                     if (base.n_points <= 200000) {
                         if (!feature._hoverLabels) {
@@ -2294,15 +2557,17 @@
                                 code => feature.categories[code] ?? 'Unknown'
                             ));
                         }
-                        annotationHoverLabels = feature._hoverLabels;
+                        annotationHoverLabels = points.indices
+                            ? points.indices.map(index => feature._hoverLabels[index])
+                            : feature._hoverLabels;
                     }
                     const trace = {
                         type: 'scatter3d', mode: 'markers',
-                        x: base.x, y: base.y, z: base.z,
+                        x: points.x, y: points.y, z: points.z,
                         text: annotationHoverLabels,
                         marker: {
                             size: Number(this.spatial3dPointSize),
-                            color: feature.codes,
+                            color: points.codes,
                             colorscale: this.discreteColorScale(feature.colors),
                             cmin: -0.5,
                             cmax: Math.max(0.5, feature.categories.length - 0.5),
@@ -2324,19 +2589,24 @@
                                 '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
                         name: this.selectedAnnotationCategory
                     };
-                    Plotly.react(
+                    const rendered = Plotly.react(
                         plot,
                         [trace],
                         this.spatial3dLayout(`Annotation: ${this.selectedAnnotationCategory}`),
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
-                    this.bindSpatial3dCameraSync('spatial3dPlotAnnotation', 'spatial3dPlotTrait');
+                    Promise.resolve(rendered).then(() => {
+                        this.bindSpatial3dCameraSync('spatial3dPlotAnnotation', 'spatial3dPlotTrait');
+                    });
+                    return rendered;
                 },
 
-                renderSpatial3dViews() {
+                async renderSpatial3dViews() {
                     if (!this.spatial3dBase) return;
-                    if (this.spatial3dViewMode !== 'annotation') this.renderSpatial3dTrait();
-                    if (this.spatial3dViewMode !== 'trait') this.renderSpatial3dAnnotation();
+                    const renders = [];
+                    if (this.spatial3dViewMode !== 'annotation') renders.push(this.renderSpatial3dTrait());
+                    if (this.spatial3dViewMode !== 'trait') renders.push(this.renderSpatial3dAnnotation());
+                    await Promise.all(renders.filter(Boolean).map(render => Promise.resolve(render)));
                 },
 
                 bindSpatial3dCameraSync(sourceId, targetId) {
@@ -2354,7 +2624,11 @@
                 },
 
                 resetSpatial3dCamera() {
-                    const camera = { eye: { x: 1.25, y: 1.25, z: 1.25 }, up: { x: 0, y: 0, z: 1 } };
+                    const camera = {
+                        eye: { x: 1.25, y: 1.25, z: 1.25 },
+                        up: { x: 0, y: 0, z: 1 },
+                        center: { x: 0, y: 0, z: 0 }
+                    };
                     for (const id of ['spatial3dPlotTrait', 'spatial3dPlotAnnotation']) {
                         const plot = document.getElementById(id);
                         if (plot?.data) Plotly.relayout(plot, { 'scene.camera': camera });
@@ -2935,7 +3209,8 @@
 
                     let data = this.cauchyData.filter(r =>
                         (this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample') &&
-                        r.annotation_name === this.selectedAnnotationCategory
+                        r.annotation_name === this.selectedAnnotationCategory &&
+                        this.isAnnotationCategoryVisible(r.annotation, r.annotation_name)
                     );
                     if (data.length === 0) {
                         Plotly.purge(plotDiv);
@@ -3048,7 +3323,31 @@
                         colorscale: colorscale.map((c, i) => [i / (colorscale.length - 1), c]),
                         reversescale: false,
                         customdata: hoverZData,
-                        hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{customdata:.2f}<extra></extra>`
+                        hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{customdata:.2f}<extra></extra>`,
+                        colorbar: {
+                            title: { text: metricLabel, side: 'top', font: { size: 11 } },
+                            thickness: 14,
+                            len: 0.62,
+                            x: 1.035,
+                            outlinewidth: 0
+                        }
+                    };
+
+                    const annotationColors = finalAnnotations.map(annotation =>
+                        this.getAnnotationColor(annotation, this.selectedAnnotationCategory)
+                    );
+                    const annotationColorTrace = {
+                        z: finalAnnotations.map((_, index) => [index]),
+                        x: ['Annotation color'],
+                        y: finalAnnotations,
+                        type: 'heatmap',
+                        xaxis: 'x2',
+                        yaxis: 'y',
+                        colorscale: this.discreteColorScale(annotationColors),
+                        cmin: -0.5,
+                        cmax: Math.max(0.5, finalAnnotations.length - 0.5),
+                        showscale: false,
+                        hovertemplate: '<b>%{y}</b><br>Same color as spatial and UMAP views<extra></extra>'
                     };
 
                     // Add text annotations on cells when small enough
@@ -3058,12 +3357,22 @@
                         heatmapTrace.textfont = { size: Math.min(11, Math.max(7, Math.round(200 / Math.max(nAnnotations, nTraits)))) };
                     }
 
-                    Plotly.react(plotDiv, [heatmapTrace], {
+                    Plotly.react(plotDiv, [heatmapTrace, annotationColorTrace], {
                         title: { text: `Cauchy Enrichment Heatmap: ${metricLabel}`, font: { size: 16 } },
-                        xaxis: { title: 'Trait', tickangle: 45, automargin: true },
+                        xaxis: { title: 'Trait', tickangle: 45, automargin: true, domain: [0, 0.925] },
+                        xaxis2: {
+                            domain: [0.95, 0.975],
+                            anchor: 'y',
+                            showgrid: false,
+                            zeroline: false,
+                            showticklabels: false,
+                            fixedrange: true
+                        },
                         yaxis: { title: 'Annotation', automargin: true, tickfont: { size: tickFontSize } },
-                        margin: { l: 150, r: 50, t: 80, b: 150 },
-                        height: plotHeight
+                        margin: { l: 150, r: 90, t: 80, b: 150 },
+                        height: plotHeight,
+                        paper_bgcolor: '#ffffff',
+                        plot_bgcolor: '#ffffff'
                     }, this.getPlotlyConfig());
                 },
 
@@ -3141,19 +3450,18 @@
                         traitColorValues = new Array(this.umapData.spot.length).fill(0);
                     }
 
-                    // Build hover text for trait view (cached implicitly by browser)
-                    const anno = this.selectedAnnotationCategory;
+                    // Build informative hover labels once for both embedding geometries.
                     const traitHoverText = this.umapData.spot.map((spot, i) => {
-                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
-                        // Include annotation value
-                        if (anno && this.umapData[anno]) {
-                            const annoVal = this.umapData[anno][i];
-                            text += `<br><b>${anno}:</b> ${typeof annoVal === 'number' ? annoVal.toFixed(1) : annoVal}`;
+                        let text = `<b>Spot:</b> ${this.escapeSpatial2dHoverValue(spot)}` +
+                            `<br><b>Sample:</b> ${this.escapeSpatial2dHoverValue(this.umapData.sample_name[i])}`;
+                        for (const annotation of this.annotations) {
+                            if (!this.umapData[annotation]) continue;
+                            text += `<br><b>${this.escapeSpatial2dHoverValue(annotation)}:</b> ` +
+                                this.escapeSpatial2dHoverValue(this.umapData[annotation][i]);
                         }
-                        // Include trait log10p value
                         if (trait && this.umapData[trait]) {
                             const traitVal = this.umapData[trait][i];
-                            text += `<br><b>-log10(p):</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
+                            text += `<br><b>−log10(P):</b> ${typeof traitVal === 'number' ? traitVal.toFixed(1) : traitVal}`;
                         }
                         return text;
                     });
@@ -3198,13 +3506,18 @@
                     if (!anno || !this.umapData[anno]) return;
 
                     const annoColorValues = this.umapData[anno];
-                    const annoColorMap = (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
+                    const annoColorMap = this.getAnnotationColorMap(anno) ||
+                        (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
 
                     // Build hover text for annotation view
                     const annoHoverText = this.umapData.spot.map((spot, i) => {
-                        let text = `<b>Sample:</b> ${this.umapData.sample_name[i]}`;
-                        const val = this.umapData[anno][i];
-                        text += `<br><b>${anno}:</b> ${typeof val === 'number' ? val.toFixed(1) : val}`;
+                        let text = `<b>Spot:</b> ${this.escapeSpatial2dHoverValue(spot)}` +
+                            `<br><b>Sample:</b> ${this.escapeSpatial2dHoverValue(this.umapData.sample_name[i])}`;
+                        for (const annotation of this.annotations) {
+                            if (!this.umapData[annotation]) continue;
+                            text += `<br><b>${this.escapeSpatial2dHoverValue(annotation)}:</b> ` +
+                                this.escapeSpatial2dHoverValue(this.umapData[annotation][i]);
+                        }
                         return text;
                     });
 
@@ -3240,45 +3553,91 @@
                     }
                 },
 
-                // Optimized: render continuous (trait) UMAP - single trace, fast update
+                resolveUmapPointSize(estimatedSize) {
+                    const nPoints = Math.max(1, Number(this.umapData?.spot?.length || 1));
+                    const densityFloor = Math.max(1.6, Math.min(5, 320 / Math.sqrt(nPoints)));
+                    const estimate = Number.isFinite(Number(estimatedSize)) ? Number(estimatedSize) : 0;
+                    return Math.max(densityFloor, Math.min(8, estimate * 1.35));
+                },
+
+                umapLayout(divId, rightMargin = 12) {
+                    const axis = {
+                        showgrid: false,
+                        zeroline: false,
+                        showline: false,
+                        showticklabels: false,
+                        title: '',
+                        automargin: false
+                    };
+                    return {
+                        xaxis: { ...axis, scaleanchor: 'y', scaleratio: 1 },
+                        yaxis: { ...axis },
+                        hovermode: 'closest',
+                        dragmode: 'pan',
+                        margin: { l: 12, r: rightMargin, t: 10, b: 12 },
+                        paper_bgcolor: '#ffffff',
+                        plot_bgcolor: '#f8fafc',
+                        showlegend: false,
+                        uirevision: `umap-${divId}`
+                    };
+                },
+
+                // Render continuous UMAP with low signals first so hotspots remain visible.
                 renderSingleUmapContinuous(divId, x, y, colorValues, colorMap, hoverText, title, colorLabel, pointSize) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
 
-                    const opacity = this.umapData.default_opacity || 0.9;
+                    const opacity = Math.max(0.75, Number(this.umapData.default_opacity || 0.8));
+                    let rendering = this._umapTraitColorCache;
+                    if (!rendering || rendering.values !== colorValues) {
+                        const order = Array.from({ length: colorValues.length }, (_, index) => index);
+                        order.sort((left, right) => {
+                            const leftValue = Number(colorValues[left]);
+                            const rightValue = Number(colorValues[right]);
+                            if (!Number.isFinite(leftValue)) return Number.isFinite(rightValue) ? -1 : 0;
+                            if (!Number.isFinite(rightValue)) return 1;
+                            return leftValue - rightValue;
+                        });
+                        const finiteValues = order
+                            .map(index => Number(colorValues[index]))
+                            .filter(Number.isFinite);
+                        const nTop = Math.min(20, Math.max(1, Math.ceil(finiteValues.length * 0.001)));
+                        const topValues = finiteValues.slice(-nTop);
+                        const cmax = topValues.length
+                            ? topValues[Math.floor(topValues.length / 2)]
+                            : 1;
+                        rendering = { values: colorValues, order, cmax: cmax > 0 ? cmax : 1 };
+                        this._umapTraitColorCache = rendering;
+                    }
+                    const ordered = values => rendering.order.map(index => values[index]);
 
                     const trace = {
-                        x: x,
-                        y: y,
+                        x: ordered(x),
+                        y: ordered(y),
                         mode: 'markers',
                         type: 'scattergl',
-                        text: hoverText,
+                        text: ordered(hoverText),
                         hovertemplate: '%{text}<extra></extra>',
                         marker: {
-                            size: pointSize,
-                            color: colorValues,
+                            size: this.resolveUmapPointSize(pointSize),
+                            color: ordered(colorValues),
                             colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
+                            cmin: 0,
+                            cmax: rendering.cmax,
                             opacity: opacity,
                             showscale: true,
                             colorbar: {
-                                title: colorLabel,
-                                thickness: 15,
-                                len: 0.5,
-                                y: 0.5
+                                title: { text: '−log10(P)', side: 'top', font: { size: 11 } },
+                                thickness: 13,
+                                len: 0.6,
+                                y: 0.5,
+                                outlinewidth: 0,
+                                tickfont: { size: 10 }
                             }
                         }
                     };
 
-                    const layout = {
-                        title: { text: title, font: { size: 14 } },
-                        xaxis: { title: 'UMAP 1', showgrid: false, zeroline: false },
-                        yaxis: { title: 'UMAP 2', showgrid: false, zeroline: false },
-                        hovermode: 'closest',
-                        margin: { l: 50, r: 20, t: 40, b: 50 },
-                        showlegend: false
-                    };
-
-                    Plotly.react(plotDiv, [trace], layout, this.getPlotlyConfig());
+                    Plotly.react(plotDiv, [trace], this.umapLayout(divId, 64), this.getPlotlyConfig());
                 },
 
                 // Optimized: render discrete (annotation) UMAP with cached trace indices
@@ -3286,49 +3645,37 @@
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
 
-                    const opacity = this.umapData.default_opacity || 0.8;
-                    const uniqueValues = [...new Set(annoValues)].sort();
+                    const opacity = Math.max(0.78, Number(this.umapData.default_opacity || 0.8));
+                    const groups = new Map();
+                    annoValues.forEach((value, index) => {
+                        const key = String(value);
+                        if (!groups.has(key)) groups.set(key, []);
+                        groups.get(key).push(index);
+                    });
+                    const uniqueValues = [...groups.keys()].sort((left, right) => left.localeCompare(right));
                     const defaultColors = this.getUmapColorScale(uniqueValues.length);
 
-                    // Build traces - indices are computed once per annotation
+                    // A compact HTML key below the plot replaces Plotly's space-consuming legend.
                     const traces = uniqueValues.map((val, i) => {
-                        const indices = [];
-                        for (let idx = 0; idx < annoValues.length; idx++) {
-                            if (annoValues[idx] === val) indices.push(idx);
-                        }
+                        const indices = groups.get(val);
                         return {
                             x: indices.map(idx => x[idx]),
                             y: indices.map(idx => y[idx]),
                             mode: 'markers',
                             type: 'scattergl',
                             name: val,
+                            visible: this.isAnnotationCategoryVisible(val, annoName),
                             text: indices.map(idx => hoverText[idx]),
                             hovertemplate: '%{text}<extra></extra>',
                             marker: {
-                                size: pointSize,
+                                size: this.resolveUmapPointSize(pointSize),
                                 color: (colorMap && colorMap[val]) || defaultColors[i % defaultColors.length],
                                 opacity: opacity
                             }
                         };
                     });
 
-                    const layout = {
-                        title: { text: title, font: { size: 14 } },
-                        xaxis: { title: 'UMAP 1', showgrid: false, zeroline: false },
-                        yaxis: { title: 'UMAP 2', showgrid: false, zeroline: false },
-                        hovermode: 'closest',
-                        margin: { l: 50, r: 20, t: 40, b: 50 },
-                        legend: {
-                            orientation: 'v',
-                            x: 1.02,
-                            y: 1,
-                            font: { size: 10 },
-                            itemsizing: 'constant'
-                        },
-                        showlegend: uniqueValues.length <= 50
-                    };
-
-                    Plotly.react(plotDiv, traces, layout, this.getPlotlyConfig());
+                    Plotly.react(plotDiv, traces, this.umapLayout(divId), this.getPlotlyConfig());
                 },
 
                 // Legacy method for backward compatibility (used in init)
@@ -3518,7 +3865,8 @@
                             const categoryIndex = new Map(categories.map((value, index) => [value, index]));
                             const codes = new Uint32Array(values.length);
                             values.forEach((value, index) => { codes[index] = categoryIndex.get(value); });
-                            const umapColorMap = this.umapData?.color_maps?.[anno];
+                            const umapColorMap = this.getAnnotationColorMap(anno) ||
+                                this.umapData?.color_maps?.[anno];
                             const defaults = this.getUmapColorScale(categories.length);
                             annotation = {
                                 categories,
@@ -3526,15 +3874,25 @@
                                 colors: categories.map((value, index) => umapColorMap?.[value] || defaults[index % defaults.length])
                             };
                         }
-                        const hoverText = this.buildSpatial2dAnnotationHoverText(data);
+                        const points = this.filterCategoricalPlotPoints(
+                            x,
+                            y,
+                            null,
+                            annotation,
+                            anno
+                        );
+                        const fullHoverText = this.buildSpatial2dAnnotationHoverText(data);
+                        const hoverText = points.indices && fullHoverText
+                            ? points.indices.map(index => fullHoverText[index])
+                            : fullHoverText;
                         traces.push({
-                            x, y, mode: 'markers', type: 'scattergl',
+                            x: points.x, y: points.y, mode: 'markers', type: 'scattergl',
                             text: hoverText,
                             hovertemplate: '%{text}<br><b>X:</b> %{x:.2f}' +
                                 '<br><b>Y:</b> %{y:.2f}<extra></extra>',
                             marker: {
                                 size: pointSize,
-                                color: annotation.codes,
+                                color: points.codes,
                                 colorscale: this.discreteColorScale(annotation.colors),
                                 cmin: -0.5,
                                 cmax: Math.max(0.5, annotation.categories.length - 0.5),
