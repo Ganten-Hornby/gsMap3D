@@ -3,7 +3,8 @@
 #SBATCH --chdir=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 #SBATCH --output=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.out
 #SBATCH --error=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.err
-# 11950209/11950210 reached the 160G ceiling; this doubles the 16-worker trial.
+# Controlled 4-read/28-compute trial; old compute-cap=1 jobs averaged 4.60/4.42 CPUs.
+# 11950209/11950210 peaked at 159.970/159.968 GiB; 2x workers * 1.20 -> 400G.
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=400G
 
