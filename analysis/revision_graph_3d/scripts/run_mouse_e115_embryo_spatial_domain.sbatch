@@ -3,6 +3,7 @@
 #SBATCH --chdir=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 #SBATCH --output=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.out
 #SBATCH --error=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.err
+# 11950209/11950210: 8-CPU runs used ~4.5 cores and reached the 160G memory ceiling.
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=192G
 
@@ -10,6 +11,7 @@ set -Eeuo pipefail
 
 readonly ARM="${1:?usage: run_mouse_e115_embryo_spatial_domain.sbatch 2d|3d}"
 readonly PROJECT_ROOT=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
+readonly LDSC_WORKER_HELPER="${PROJECT_ROOT}/analysis/revision_graph_3d/scripts/ldsc_worker_split.sh"
 readonly INPUT_H5AD="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/Mouse_E11.5_embryo_graph_ready.h5ad"
 readonly WORKDIR="${PROJECT_ROOT}/analysis/revision_graph_3d/runs"
 readonly PYTHON="${PROJECT_ROOT}/.venv/bin/python"
@@ -21,13 +23,8 @@ readonly W_LD_DIR=/storage/yangjianLab/lilounan/resources/gsMap_resource/LDSC_re
 readonly LOCAL_TMP_ROOT="/tmp/gsmap-${USER}"
 readonly LOCAL_TMP_DIR="${LOCAL_TMP_ROOT}/${SLURM_JOB_ID}"
 
-if ((SLURM_CPUS_PER_TASK < 8 || SLURM_CPUS_PER_TASK % 8 != 0)); then
-    printf 'SLURM_CPUS_PER_TASK must be a positive multiple of 8, found %s\n' \
-        "${SLURM_CPUS_PER_TASK}" >&2
-    exit 2
-fi
-readonly LDSC_READ_WORKERS=$((SLURM_CPUS_PER_TASK / 8))
-readonly LDSC_COMPUTE_WORKERS=$((SLURM_CPUS_PER_TASK - LDSC_READ_WORKERS))
+source "${LDSC_WORKER_HELPER}"
+configure_ldsc_worker_split "${SLURM_CPUS_PER_TASK}"
 
 case "${ARM}" in
     2d)
@@ -89,7 +86,6 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
 export OPENBLAS_NUM_THREADS=1
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
-export GSMAP_LDSC_FORCE_COMPUTE_WORKERS="${LDSC_COMPUTE_WORKERS}"
 export PYTHONUNBUFFERED=1
 
 printf 'started_at=%s\n' "$(date --iso-8601=seconds)"
