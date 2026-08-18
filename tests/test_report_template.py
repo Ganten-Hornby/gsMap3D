@@ -160,7 +160,7 @@ def test_spatial_views_can_toggle_retained_hotspot_emphasis(report_template: str
 
 
 def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:
-    assert report_template.count("<b>Retained top signal</b>") == 2
+    assert "hoverPrefix: 'Retained top signal'" in report_template
     assert "−log10(P): %{marker.color:.2f}" in report_template
     assert "annotationHoverLabels" in report_template
     assert "base.n_points <= 200000" in report_template
@@ -186,10 +186,21 @@ def test_umap_uses_readable_geometry_hover_and_canonical_annotation_colors(
     ]
     assert "<b>Spot:</b>" not in hover_builder
     assert "<b>Sample:</b>" not in hover_builder
-    assert "bindUmapHoverTooltip" in report_template
+    assert "bindPointHoverTooltip" in report_template
     assert "pointer.clientX + gap" in report_template
     assert "customdata: rendering.hoverColors" in report_template
     assert "customdata: indices.map(() => color)" in report_template
+
+
+def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
+    report_template: str,
+) -> None:
+    assert "data.axis_titles" in report_template
+    assert "meta: { hoverKind: 'trait', axisTitles }" in report_template
+    assert "meta: { hoverKind: 'annotation', axisTitles }" in report_template
+    assert "spatial2dTraitHoverColors" in report_template
+    assert "this.bindPointHoverTooltip(plotDiv)" in report_template
+    assert "tooltip.style.background = background" in report_template
 
 
 def test_shared_annotation_selection_filters_all_point_maps(report_template: str) -> None:
@@ -210,8 +221,9 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
     assert "getAnnotationColor(row.annotation, row.annotation_name)" in report_template
     assert "annotationColorTrace" in report_template
     assert "Same color as spatial and UMAP views" in report_template
-    assert "toggleCauchyAnnotationFocus(row.annotation)" in report_template
-    assert "clearCauchyAnnotationFocus()" in report_template
+    assert "isolateAnnotationFromEnrichment(row.annotation, row.annotation_name)" in report_template
+    assert "showAllAnnotationCategories()" in report_template
+    assert "Point maps:" in report_template
 
     table_filter = report_template[
         report_template.index("get filteredCauchyTable()") : report_template.index(
@@ -224,6 +236,7 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
         )
     ]
     assert "isAnnotationCategoryVisible" not in table_filter
+    assert "cauchyFocusedAnnotation" not in table_filter
     assert "isAnnotationCategoryVisible" not in heatmap
 
 

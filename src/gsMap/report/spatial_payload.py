@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SPATIAL_PAYLOAD_VERSION = 5
+SPATIAL_PAYLOAD_VERSION = 6
 P_VALUE_COLORS = [
     "#313695",
     "#4575b4",
@@ -618,6 +618,7 @@ def export_sample_spatial_payloads(
     js_data_dir: Path,
     max_points: int,
     extreme_points_per_trait: int = 500,
+    coordinate_info: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """Write compact per-sample bases and independently loadable trait arrays.
 
@@ -652,6 +653,7 @@ def export_sample_spatial_payloads(
         if annotation in metadata
     }
     annotation_codes = _categorical_code_arrays(metadata, annotation_schemas)
+    section_planes = (coordinate_info or {}).get("section_planes", {})
 
     for sample_name in samples:
         all_positions = np.flatnonzero(sample_values == str(sample_name))
@@ -692,6 +694,7 @@ def export_sample_spatial_payloads(
                 "colors": colors,
             }
         include_spot_labels = len(positions) <= 50_000
+        section_plane = section_planes.get(str(sample_name), {})
         base_payload = {
             "version": SPATIAL_PAYLOAD_VERSION,
             "n_points": int(len(positions)),
@@ -701,6 +704,8 @@ def export_sample_spatial_payloads(
                 _finite_range(sx_all[all_positions]) if sx_all is not None else 0.0,
                 _finite_range(sy_all[all_positions]) if sy_all is not None else 0.0,
             ],
+            "axis_titles": section_plane.get("axis_titles", ["X", "Y"]),
+            "cut_axis_title": section_plane.get("cut_axis_title"),
             "sx": encode_typed_array(sx) if sx is not None else None,
             "sy": encode_typed_array(sy) if sy is not None else None,
             "spot": metadata["spot"].iloc[positions].astype(str).tolist()

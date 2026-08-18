@@ -326,11 +326,23 @@ class ReportDataManager:
                 )
             else:
                 logger.info("Spot metadata already exists. Skipping.")
+            _apply_section_plane_coordinates(
+                self.metadata,
+                self.spatial_3d_coordinate_info,
+            )
+            _write_spatial_coordinate_info(
+                coordinate_info_file,
+                self.spatial_3d_coordinate_info,
+            )
             if self.common_spots is None:
                 self.common_spots = self.metadata["spot"].values
             return
 
         self.metadata = _save_metadata(self.ldsc_results, self.coords, self.report_data_dir)
+        _apply_section_plane_coordinates(
+            self.metadata,
+            self.spatial_3d_coordinate_info,
+        )
         _write_spatial_coordinate_info(coordinate_info_file, self.spatial_3d_coordinate_info)
         if self.common_spots is None:
             self.common_spots = self.metadata["spot"].values
@@ -1025,6 +1037,86 @@ def _load_ldsc_results(
     return ldsc_results, traits, sample_names
 
 
+def _derive_section_plane_coordinates(
+    coordinates: np.ndarray,
+    sample_names: pd.Series,
+    axis_titles: list[str],
+    *,
+    maximum_cut_span_ratio: float = 0.35,
+) -> tuple[np.ndarray, np.ndarray, dict[str, dict]]:
+    """Project each physical section onto its detected in-plane coordinate axes.
+
+    Serial sections need not be cut normal to the third coordinate axis.  A true
+    section is much thinner along its cut-normal axis than along either in-plane
+    axis, so the 1st--99th percentile span provides a robust orientation signal.
+    When no axis is clearly thinner, retain the first two coordinates rather
+    than inventing a section orientation for volumetric data.
+    """
+
+    coordinates = np.asarray(coordinates, dtype=np.float64)
+    if coordinates.ndim != 2 or coordinates.shape[1] != 3:
+        raise ValueError("Section-plane detection requires an n-by-3 coordinate array")
+    if len(sample_names) != len(coordinates):
+        raise ValueError("Section-plane sample labels must match the coordinate rows")
+    if len(axis_titles) != 3:
+        raise ValueError("Section-plane detection requires exactly three axis titles")
+
+    sample_values = sample_names.astype(str).to_numpy()
+    sample_codes, unique_samples = pd.factorize(sample_values, sort=False)
+    order = np.argsort(sample_codes, kind="stable")
+    counts = np.bincount(sample_codes[sample_codes >= 0], minlength=len(unique_samples))
+    offsets = np.concatenate(([0], np.cumsum(counts)))
+
+    section_x = np.empty(len(coordinates), dtype=np.float64)
+    section_y = np.empty(len(coordinates), dtype=np.float64)
+    section_planes: dict[str, dict] = {}
+    for code, sample_name in enumerate(unique_samples):
+        positions = order[offsets[code] : offsets[code + 1]]
+        sample_coordinates = coordinates[positions]
+        with np.errstate(all="ignore"):
+            quantiles = np.nanpercentile(sample_coordinates, [1.0, 99.0], axis=0)
+        robust_spans = quantiles[1] - quantiles[0]
+        finite_order = np.argsort(np.where(np.isfinite(robust_spans), robust_spans, np.inf))
+        smallest_axis = int(finite_order[0])
+        second_span = float(robust_spans[finite_order[1]])
+        smallest_span = float(robust_spans[smallest_axis])
+        cut_span_ratio = (
+            smallest_span / second_span
+            if np.isfinite(smallest_span) and np.isfinite(second_span) and second_span > 0
+            else np.inf
+        )
+        detected = cut_span_ratio <= maximum_cut_span_ratio
+        cut_axis = smallest_axis if detected else 2
+        in_plane_axes = [axis for axis in range(3) if axis != cut_axis]
+
+        section_x[positions] = sample_coordinates[:, in_plane_axes[0]]
+        section_y[positions] = sample_coordinates[:, in_plane_axes[1]]
+        section_planes[str(sample_name)] = {
+            "x_axis": in_plane_axes[0],
+            "y_axis": in_plane_axes[1],
+            "cut_axis": cut_axis,
+            "axis_titles": [axis_titles[in_plane_axes[0]], axis_titles[in_plane_axes[1]]],
+            "cut_axis_title": axis_titles[cut_axis],
+            "cut_axis_detected": detected,
+            "cut_to_in_plane_span_ratio": (
+                round(cut_span_ratio, 6) if np.isfinite(cut_span_ratio) else None
+            ),
+        }
+
+    detected_counts = pd.Series(
+        [plane["cut_axis_title"] for plane in section_planes.values() if plane["cut_axis_detected"]]
+    ).value_counts()
+    logger.info(
+        "Detected section cut-normal axes from physical coordinates: "
+        + (
+            ", ".join(f"{axis}={count}" for axis, count in detected_counts.items())
+            if len(detected_counts)
+            else "no strongly planar samples; retained the first two axes"
+        )
+    )
+    return section_x, section_y, section_planes
+
+
 def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, bool, int | None]:
     """
     Load spatial coordinates from concatenated adata.
@@ -1087,20 +1179,32 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
             columns=["3d_x", "3d_y", "3d_z"],
             index=adata_concat.obs_names,
         )
+        axis_titles = ["X", "Y", "Z"]
+        section_x, section_y, section_planes = _derive_section_plane_coordinates(
+            report_coordinates,
+            sample_info["sample_name"],
+            axis_titles,
+        )
         coordinate_info = {
-            "schema_version": 2,
+            "schema_version": 3,
             "z_source": "registered_coordinate",
             "z_axis_input": z_axis,
             "z_scale": z_scale,
             "z_is_physical": True,
             "default_aspect_mode": "physical",
-            "axis_titles": ["X", "Y", "Z"],
-            "note": (f"Z uses input coordinate axis {z_axis} with configured scale {z_scale:g}."),
+            "axis_titles": axis_titles,
+            "section_plane_method": "per_sample_1st_to_99th_percentile_span",
+            "section_plane_maximum_cut_span_ratio": 0.35,
+            "section_planes": section_planes,
+            "note": (
+                f"Z uses input coordinate axis {z_axis} with configured scale {z_scale:g}. "
+                "Each 2D section drops its strongly least-varying physical axis; samples without "
+                "a clear cut-normal axis retain X/Y."
+            ),
         }
 
-        # Also keep 2D coords for compatibility (use x and y from reordered)
-        coords["sx"] = coords["3d_x"]
-        coords["sy"] = coords["3d_y"]
+        coords["sx"] = section_x
+        coords["sy"] = section_y
 
     elif is_3d_type and not has_3d_coords:
         # 3D dataset type but only 2D coordinates - create pseudo Z axis
@@ -1132,7 +1236,7 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
         coords["3d_z"] = pseudo_z
         z_axis = 2  # Pseudo Z is always the last dimension
         coordinate_info = {
-            "schema_version": 2,
+            "schema_version": 3,
             "z_source": "ordinal_section_order",
             "z_axis_input": None,
             "z_scale": None,
@@ -1140,6 +1244,19 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
             "default_aspect_mode": "expanded",
             "axis_titles": ["X", "Y", "Section order"],
             "sample_z_positions": z_values_per_sample,
+            "section_plane_method": "input_2d_coordinates",
+            "section_planes": {
+                str(sample): {
+                    "x_axis": 0,
+                    "y_axis": 1,
+                    "cut_axis": 2,
+                    "axis_titles": ["X", "Y"],
+                    "cut_axis_title": "Section order",
+                    "cut_axis_detected": True,
+                    "cut_to_in_plane_span_ratio": 0.0,
+                }
+                for sample in ordered_samples
+            },
             "note": (
                 "No measured Z coordinate was provided; Z encodes input section order only. "
                 "Section thickness, missing sections, and unequal spacing are not represented."
@@ -1519,7 +1636,12 @@ def _save_metadata(
 
 
 def _spatial_coordinate_info_is_current(path: Path, coordinate_info: dict | None) -> bool:
-    """Return whether cached Spatial3D coordinates use the current provenance/scaling."""
+    """Return whether persisted coordinate values use the current provenance/scaling.
+
+    Section-plane projection is a report presentation detail computed in memory.
+    Changing that projection must not rewrite a multi-gigabyte association table
+    whose persisted 3D coordinates are already current.
+    """
 
     if coordinate_info is None:
         return True
@@ -1529,7 +1651,70 @@ def _spatial_coordinate_info_is_current(path: Path, coordinate_info: dict | None
         cached = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return cached == coordinate_info
+    storage_keys = (
+        "z_source",
+        "z_axis_input",
+        "z_scale",
+        "z_is_physical",
+        "sample_z_positions",
+    )
+    cached_storage = {key: cached.get(key) for key in storage_keys}
+    current_storage = {key: coordinate_info.get(key) for key in storage_keys}
+    return cached_storage == current_storage
+
+
+def _apply_section_plane_coordinates(
+    metadata: pd.DataFrame,
+    coordinate_info: dict | None,
+) -> None:
+    """Apply sample-specific 3D-to-2D projections without changing the CSV cache."""
+
+    section_planes = (coordinate_info or {}).get("section_planes") or {}
+    required_columns = {"sample_name", "sx", "sy", "3d_x", "3d_y", "3d_z"}
+    if not section_planes or not required_columns.issubset(metadata.columns):
+        return
+
+    coordinate_arrays = [
+        pd.to_numeric(metadata[column], errors="coerce").to_numpy(dtype=np.float64)
+        for column in ("3d_x", "3d_y", "3d_z")
+    ]
+    section_x = pd.to_numeric(metadata["sx"], errors="coerce").to_numpy(
+        dtype=np.float64,
+        copy=True,
+    )
+    section_y = pd.to_numeric(metadata["sy"], errors="coerce").to_numpy(
+        dtype=np.float64,
+        copy=True,
+    )
+    sample_codes, unique_samples = pd.factorize(
+        metadata["sample_name"].astype(str).to_numpy(),
+        sort=False,
+    )
+    order = np.argsort(sample_codes, kind="stable")
+    counts = np.bincount(sample_codes[sample_codes >= 0], minlength=len(unique_samples))
+    offsets = np.concatenate(([0], np.cumsum(counts)))
+
+    applied = 0
+    for code, sample_name in enumerate(unique_samples):
+        plane = section_planes.get(str(sample_name))
+        if not plane:
+            continue
+        x_axis = int(plane.get("x_axis", 0))
+        y_axis = int(plane.get("y_axis", 1))
+        if x_axis == y_axis or not (0 <= x_axis < 3 and 0 <= y_axis < 3):
+            logger.warning(f"Ignoring invalid section-plane axes for sample {sample_name}: {plane}")
+            continue
+        positions = order[offsets[code] : offsets[code + 1]]
+        section_x[positions] = coordinate_arrays[x_axis][positions]
+        section_y[positions] = coordinate_arrays[y_axis][positions]
+        applied += 1
+
+    metadata["sx"] = section_x
+    metadata["sy"] = section_y
+    logger.info(
+        f"Applied sample-specific in-memory 2D section planes to {applied}/{len(unique_samples)} "
+        "samples for report rendering"
+    )
 
 
 def _write_spatial_coordinate_info(path: Path, coordinate_info: dict | None) -> None:
@@ -2174,6 +2359,9 @@ def _sample_spatial_export_signature(data_dir: Path, meta: dict) -> dict:
         key: meta.get(key)
         for key in ("samples", "traits", "annotations", "downsampling_n_spots_2d")
     }
+    relevant_meta["spatial_3d_coordinate_info"] = (
+        (meta.get("spatial_3d") or {}).get("coordinate_info")
+    )
     meta_digest = hashlib.sha256(
         json.dumps(relevant_meta, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
@@ -2298,6 +2486,7 @@ def _export_per_sample_spatial_js(
         annotations=annotations,
         js_data_dir=js_data_dir,
         max_points=int(meta.get("downsampling_n_spots_2d", 250000)),
+        coordinate_info=(meta.get("spatial_3d") or {}).get("coordinate_info"),
     )
 
     # Export lightweight sample index (loaded upfront)

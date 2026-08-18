@@ -1213,11 +1213,13 @@
                                 <option value="sample">Per Sample</option>
                             </select>
                         </div>
-                        <div x-show="cauchyFocusedAnnotation"
+                        <div x-show="isolatedAnnotationCategory"
                             class="inline-flex items-center gap-2 rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs text-primary-800">
-                            <span>Table: <strong x-text="cauchyFocusedAnnotation"></strong></span>
-                            <button type="button" @click="clearCauchyAnnotationFocus()"
-                                class="font-bold text-primary-600 hover:text-primary-900" aria-label="Show all annotations in the enrichment table">
+                            <span>Point maps: <strong x-text="isolatedAnnotationCategory"></strong></span>
+                            <button type="button" @click="showAllAnnotationCategories()"
+                                class="inline-flex h-5 w-5 items-center justify-center rounded-full font-bold text-primary-600 hover:bg-primary-100 hover:text-primary-900"
+                                title="Show all annotations in point maps"
+                                aria-label="Cancel annotation isolation in the 3D, 2D, and UMAP views">
                                 ×
                             </button>
                         </div>
@@ -1250,11 +1252,11 @@
                                     <tr class="table-row-hover">
                                         <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
                                         <td class="px-4 py-2 text-sm">
-                                            <button type="button" @click="toggleCauchyAnnotationFocus(row.annotation)"
-                                                :aria-pressed="(cauchyFocusedAnnotation === row.annotation).toString()"
-                                                :title="cauchyFocusedAnnotation === row.annotation ? 'Show all annotations' : 'Show only this annotation in the table'"
+                                            <button type="button" @click="isolateAnnotationFromEnrichment(row.annotation, row.annotation_name)"
+                                                :aria-pressed="(isolatedAnnotationCategory === row.annotation).toString()"
+                                                title="Isolate this annotation in the 3D, 2D, and UMAP views"
                                                 class="inline-flex max-w-xs items-center gap-2 rounded-full border px-2 py-0.5 text-xs"
-                                                :class="cauchyFocusedAnnotation === row.annotation ? 'border-primary-400 bg-primary-50 text-primary-800 ring-1 ring-primary-200' : 'border-slate-200 bg-white text-slate-700 hover:border-primary-300'">
+                                                :class="isolatedAnnotationCategory === row.annotation ? 'border-primary-400 bg-primary-50 text-primary-800 ring-1 ring-primary-200' : 'border-slate-200 bg-white text-slate-700 hover:border-primary-300'">
                                                 <span class="h-3 w-3 flex-none rounded-sm border border-black/10 shadow-sm"
                                                     :style="`background-color:${getAnnotationColor(row.annotation, row.annotation_name)}`"></span>
                                                 <span class="truncate" x-text="row.annotation"></span>
@@ -1279,7 +1281,7 @@
                         <!-- Empty state message -->
                         <div x-show="filteredCauchyTable.length === 0" class="text-center py-8 text-gray-500">
                             <p class="text-sm">No enrichment results found for the selected trait and annotation.</p>
-                            <p class="text-xs mt-1 text-gray-400">Try another selection or clear the table annotation filter.</p>
+                            <p class="text-xs mt-1 text-gray-400">Try another trait, annotation, or view.</p>
                         </div>
                     </div>
 
@@ -1581,6 +1583,13 @@
                     return this.currentAnnotationLegend.filter(entry => entry.visible).length;
                 },
 
+                get isolatedAnnotationCategory() {
+                    const legend = this.currentAnnotationLegend;
+                    if (legend.length < 2) return '';
+                    const visible = legend.filter(entry => entry.visible);
+                    return visible.length === 1 ? String(visible[0].category) : '';
+                },
+
                 get filteredTraits() {
                     const query = this.traitSearchQuery.trim();
                     if (!query) return this.traits;
@@ -1642,7 +1651,6 @@
                 loadingCauchyData: false,
                 cauchySortKey: 'mlog10_p_median',
                 cauchySortAsc: false,
-                cauchyFocusedAnnotation: '',
                 cauchyHeatmapMetric: 'mlog10_p_cauchy',
                 cauchyHeatmapCluster: true,
                 cauchyHeatmapNormalize: false,
@@ -1699,7 +1707,7 @@
 
                 // Memoized: filtered cauchy table
                 get filteredCauchyTable() {
-                    const key = `${this.selectedTrait}|${this.selectedAnnotationCategory}|${this.cauchyViewMode}|${this.cauchySortKey}|${this.cauchySortAsc}|${this.cauchyFocusedAnnotation}`;
+                    const key = `${this.selectedTrait}|${this.selectedAnnotationCategory}|${this.cauchyViewMode}|${this.cauchySortKey}|${this.cauchySortAsc}`;
                     if (this._cauchyFilterKey === key && this._cauchyFilterCache) {
                         return this._cauchyFilterCache;
                     }
@@ -1708,8 +1716,7 @@
                     data = data.filter(r =>
                         (this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample') &&
                         r.trait === this.selectedTrait &&
-                        r.annotation_name === this.selectedAnnotationCategory &&
-                        (!this.cauchyFocusedAnnotation || r.annotation === this.cauchyFocusedAnnotation)
+                        r.annotation_name === this.selectedAnnotationCategory
                     );
                     const sortKey = this.cauchySortKey, asc = this.cauchySortAsc;
                     const result = [...data].sort((a, b) => {
@@ -2362,6 +2369,21 @@
                     this.renderAnnotationCategoryViews();
                 },
 
+                isolateAnnotationFromEnrichment(category, annotationName) {
+                    if (annotationName !== this.selectedAnnotationCategory) return;
+                    const categoryKey = this.annotationCategoryKey(category, annotationName);
+                    const hidden = {};
+                    for (const entry of this.currentAnnotationLegend) {
+                        const entryKey = this.annotationCategoryKey(entry.category, annotationName);
+                        if (entryKey !== categoryKey) hidden[entryKey] = true;
+                    }
+                    this.annotationHiddenCategories = {
+                        ...this.annotationHiddenCategories,
+                        [annotationName]: hidden
+                    };
+                    this.renderAnnotationCategoryViews();
+                },
+
                 showAllAnnotationCategories() {
                     const annotationName = this.selectedAnnotationCategory;
                     this.annotationHiddenCategories = {
@@ -2829,7 +2851,6 @@
 
                 async onAnnotationChange() {
                     this._cauchyFilterCache = null;
-                    this.cauchyFocusedAnnotation = '';
 
                     // Invalidate annotation-specific caches
                     this._umapAnnoColorCache = null;
@@ -3090,19 +3111,6 @@
                         this.cauchySortKey = key;
                         this.cauchySortAsc = ['trait', 'annotation', 'sample_name'].includes(key);
                     }
-                },
-
-                toggleCauchyAnnotationFocus(annotation) {
-                    this.cauchyFocusedAnnotation = this.cauchyFocusedAnnotation === annotation
-                        ? '' : annotation;
-                    this._cauchyFilterCache = null;
-                    this._cauchyFilterKey = '';
-                },
-
-                clearCauchyAnnotationFocus() {
-                    this.cauchyFocusedAnnotation = '';
-                    this._cauchyFilterCache = null;
-                    this._cauchyFilterKey = '';
                 },
 
                 // Manhattan Plot
@@ -3697,11 +3705,11 @@
                     return luminance > 0.6 ? '#0f172a' : '#ffffff';
                 },
 
-                getUmapHoverTooltip() {
-                    let tooltip = document.getElementById('gsmapUmapHoverTooltip');
+                getPointHoverTooltip() {
+                    let tooltip = document.getElementById('gsmapPointHoverTooltip');
                     if (!tooltip) {
                         tooltip = document.createElement('div');
-                        tooltip.id = 'gsmapUmapHoverTooltip';
+                        tooltip.id = 'gsmapPointHoverTooltip';
                         tooltip.className = 'gsmap-hover-tooltip';
                         tooltip.setAttribute('role', 'tooltip');
                         document.body.appendChild(tooltip);
@@ -3709,13 +3717,41 @@
                     return tooltip;
                 },
 
-                showUmapHoverTooltip(event) {
+                pointMarkerColorValue(point) {
+                    const colors = point?.data?.marker?.color;
+                    if (Array.isArray(colors) || ArrayBuffer.isView(colors)) {
+                        return colors[point.pointNumber];
+                    }
+                    return colors;
+                },
+
+                showPointHoverTooltip(event) {
                     const point = event?.points?.[0];
                     const pointer = event?.event;
                     if (!point || !pointer) return;
-                    const tooltip = this.getUmapHoverTooltip();
+                    const tooltip = this.getPointHoverTooltip();
                     const background = point.customdata || '#334155';
-                    tooltip.innerHTML = point.text || '';
+                    const metadata = point.data?.meta || {};
+                    const lines = [];
+                    if (metadata.hoverPrefix) {
+                        lines.push(`<b>${this.escapeSpatial2dHoverValue(metadata.hoverPrefix)}</b>`);
+                    }
+                    if (point.text) lines.push(point.text);
+                    if (metadata.hoverKind === 'trait') {
+                        const value = Number(this.pointMarkerColorValue(point));
+                        if (Number.isFinite(value)) lines.push(`<b>−log10(P):</b> ${value.toFixed(1)}`);
+                    }
+                    if (metadata.axisTitles?.length >= 2) {
+                        lines.push(
+                            `<b>${this.escapeSpatial2dHoverValue(metadata.axisTitles[0])}:</b> ` +
+                            `${Number(point.x).toFixed(2)}`
+                        );
+                        lines.push(
+                            `<b>${this.escapeSpatial2dHoverValue(metadata.axisTitles[1])}:</b> ` +
+                            `${Number(point.y).toFixed(2)}`
+                        );
+                    }
+                    tooltip.innerHTML = lines.join('<br>');
                     tooltip.style.background = background;
                     tooltip.style.color = this.hoverTextColor(background);
                     tooltip.style.display = 'block';
@@ -3735,16 +3771,16 @@
                     tooltip.style.top = `${Math.max(padding, top)}px`;
                 },
 
-                hideUmapHoverTooltip() {
-                    const tooltip = document.getElementById('gsmapUmapHoverTooltip');
+                hidePointHoverTooltip() {
+                    const tooltip = document.getElementById('gsmapPointHoverTooltip');
                     if (tooltip) tooltip.style.display = 'none';
                 },
 
-                bindUmapHoverTooltip(plotDiv) {
+                bindPointHoverTooltip(plotDiv) {
                     if (!plotDiv?.on || plotDiv.__gsMapHoverTooltipBound) return;
                     plotDiv.__gsMapHoverTooltipBound = true;
-                    plotDiv.on('plotly_hover', event => this.showUmapHoverTooltip(event));
-                    plotDiv.on('plotly_unhover', () => this.hideUmapHoverTooltip());
+                    plotDiv.on('plotly_hover', event => this.showPointHoverTooltip(event));
+                    plotDiv.on('plotly_unhover', () => this.hidePointHoverTooltip());
                 },
 
                 // Render continuous UMAP with low signals first so hotspots remain visible.
@@ -3817,7 +3853,7 @@
 
                     Promise.resolve(
                         Plotly.react(plotDiv, [trace], this.umapLayout(divId, 64), this.getPlotlyConfig())
-                    ).then(() => this.bindUmapHoverTooltip(plotDiv));
+                    ).then(() => this.bindPointHoverTooltip(plotDiv));
                 },
 
                 // Optimized: render discrete (annotation) UMAP with cached trace indices
@@ -3859,7 +3895,7 @@
 
                     Promise.resolve(
                         Plotly.react(plotDiv, traces, this.umapLayout(divId), this.getPlotlyConfig())
-                    ).then(() => this.bindUmapHoverTooltip(plotDiv));
+                    ).then(() => this.bindPointHoverTooltip(plotDiv));
                 },
 
                 // Legacy method for backward compatibility (used in init)
@@ -3958,6 +3994,32 @@
                     return frozen;
                 },
 
+                resolveContinuousColorMaximum(values, requestedMaximum) {
+                    const requested = Number(requestedMaximum);
+                    if (Number.isFinite(requested) && requested > 0) return requested;
+                    let maximum = 0;
+                    for (const value of values || []) {
+                        const numeric = Number(value);
+                        if (Number.isFinite(numeric) && numeric > maximum) maximum = numeric;
+                    }
+                    return maximum > 0 ? maximum : 1;
+                },
+
+                spatial2dTraitHoverColors(values, colorMap, cmin, cmax, data, trait) {
+                    const cache = this._spatial2dTraitColorCache;
+                    if (cache?.data === data && cache.trait === trait && cache.values === values &&
+                        cache.cmin === cmin && cache.cmax === cmax) {
+                        return cache.colors;
+                    }
+                    const colors = Array.from(values, value =>
+                        this.interpolateContinuousColor(value, colorMap, cmin, cmax)
+                    );
+                    this._spatial2dTraitColorCache = {
+                        data, trait, values, cmin, cmax, colors
+                    };
+                    return colors;
+                },
+
                 // Render one compact 2D payload. Large categorical data remain a single WebGL trace.
                 renderSpatial2DPlotSingle(divId, plotType) {
                     const plotDiv = document.getElementById(divId);
@@ -3970,6 +4032,8 @@
                     // Data is already filtered per sample, no need to filter
                     const x = data.sx;
                     const y = data.sy;
+                    const axisTitles = Array.isArray(data.axis_titles) && data.axis_titles.length >= 2
+                        ? data.axis_titles : ['X', 'Y'];
 
                     if (!x || x.length === 0) {
                         console.warn(`No coordinates found for sample: ${sample}`);
@@ -3992,10 +4056,12 @@
                         const colorValues = compactTraitPayload?.values || rawTraitPayload || data[trait]
                             || new Float32Array(x.length);
                         const colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
-                        const cmax = Number(compactTraitPayload?.cmax);
-                        const colorLimits = Number.isFinite(cmax) && cmax > 0
-                            ? { cmin: Number(compactTraitPayload?.cmin || 0), cmax }
-                            : {};
+                        const cmin = Number(compactTraitPayload?.cmin || 0);
+                        const cmax = this.resolveContinuousColorMaximum(
+                            colorValues,
+                            compactTraitPayload?.cmax
+                        );
+                        const colorLimits = { cmin, cmax };
                         const annotationName = this.selectedAnnotationCategory;
                         const annotation = data.annotations?.[annotationName];
                         const points = annotation
@@ -4005,11 +4071,15 @@
                             : { x, y, indices: null };
                         const fullHoverText = this.buildSpatial2dAnnotationHoverText(data);
                         const hoverText = this.selectPointValues(fullHoverText, points.indices);
+                        const fullHoverColors = this.spatial2dTraitHoverColors(
+                            colorValues, colorMap, cmin, cmax, data, trait
+                        );
                         traces.push({
                             x: points.x, y: points.y, mode: 'markers', type: 'scattergl',
                             text: hoverText,
-                            hovertemplate: '%{text}<br><b>−log10(P):</b> %{marker.color:.1f}' +
-                                '<br><b>X:</b> %{x:.2f}<br><b>Y:</b> %{y:.2f}<extra></extra>',
+                            customdata: this.selectPointValues(fullHoverColors, points.indices),
+                            hoverinfo: 'none',
+                            meta: { hoverKind: 'trait', axisTitles },
                             marker: {
                                 size: pointSize,
                                 color: this.selectPointValues(colorValues, points.indices),
@@ -4057,9 +4127,21 @@
                                     fullExtraHoverText,
                                     extraPoints.indices
                                 ),
-                                hovertemplate: '<b>Retained top signal</b><br>%{text}' +
-                                    '<br><b>−log10(P):</b> %{marker.color:.1f}' +
-                                    '<br><b>X:</b> %{x:.2f}<br><b>Y:</b> %{y:.2f}<extra></extra>',
+                                customdata: Array.from(
+                                    this.selectPointValues(
+                                        compactTraitPayload.extra.values,
+                                        extraPoints.indices
+                                    ),
+                                    value => this.interpolateContinuousColor(
+                                        value, colorMap, cmin, cmax
+                                    )
+                                ),
+                                hoverinfo: 'none',
+                                meta: {
+                                    hoverKind: 'trait',
+                                    hoverPrefix: 'Retained top signal',
+                                    axisTitles
+                                },
                                 name: 'Retained high-signal spots',
                                 marker: {
                                     size: Math.max(2.5, pointSize * 1.5),
@@ -4106,8 +4188,11 @@
                         traces.push({
                             x: points.x, y: points.y, mode: 'markers', type: 'scattergl',
                             text: hoverText,
-                            hovertemplate: '%{text}<br><b>X:</b> %{x:.2f}' +
-                                '<br><b>Y:</b> %{y:.2f}<extra></extra>',
+                            customdata: Array.from(points.codes, code =>
+                                annotation.colors[Number(code)] || '#94a3b8'
+                            ),
+                            hoverinfo: 'none',
+                            meta: { hoverKind: 'annotation', axisTitles },
                             marker: {
                                 size: pointSize,
                                 color: points.codes,
@@ -4146,6 +4231,7 @@
 
                     try {
                         Promise.resolve(Plotly.react(plotDiv, traces, layout, config)).then(() => {
+                            this.bindPointHoverTooltip(plotDiv);
                             if (this.spatial2dViewMode === 'compare') {
                                 const targetId = plotType === 'trait'
                                     ? 'spatial2dPlotAnnotation' : 'spatial2dPlotTrait';
