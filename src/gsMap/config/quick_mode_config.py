@@ -2,6 +2,7 @@
 Configuration for Quick Mode pipeline.
 """
 
+import json
 import logging
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -136,7 +137,38 @@ def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
         if len(missing_files) > 10:
             logger.info(f"  ... and {len(missing_files) - 10} more")
 
-    return len(missing_files) == 0
+    return len(missing_files) == 0 and _report_visualization_config_matches(config, verbose)
+
+
+def _report_visualization_config_matches(
+    config: QuickModeConfig, verbose: bool = False
+) -> bool:
+    """Return whether cached report payloads use the requested display limits."""
+    report_meta_path = config.web_report_dir / "report_meta.json"
+    if not report_meta_path.is_file():
+        return False
+
+    try:
+        with report_meta_path.open() as handle:
+            report_meta = json.load(handle)
+    except (OSError, ValueError) as error:
+        if verbose:
+            logger.info(f"Report metadata could not be read: {error}")
+        return False
+
+    expected = {
+        "downsampling_n_spots_umap": config.downsampling_n_spots_umap,
+        "downsampling_n_spots_2d": config.downsampling_n_spots_2d,
+        "downsampling_n_spots_3d": config.downsampling_n_spots_3d,
+    }
+    mismatches = {
+        key: (report_meta.get(key), value)
+        for key, value in expected.items()
+        if report_meta.get(key) != value
+    }
+    if mismatches and verbose:
+        logger.info(f"Report visualization settings changed: {mismatches}")
+    return not mismatches
 
 
 def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[Path]]:

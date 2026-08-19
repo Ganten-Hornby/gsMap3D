@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+from gsMap.config.quick_mode_config import _report_visualization_config_matches
 from gsMap.config.report_config import ReportConfig
 from gsMap.latent2gene.marker_layout import SequentialMarkerRowWriter
 from gsMap.report.diagnosis import load_gwas_data
@@ -42,6 +43,29 @@ def test_report_umap_and_2d_defaults_prioritize_visual_density():
 
     assert umap_field.default == 50_000
     assert spatial_2d_field.default == 100_000
+
+
+def test_report_completion_detects_changed_visualization_limits(tmp_path):
+    config = SimpleNamespace(
+        web_report_dir=tmp_path,
+        downsampling_n_spots_umap=50_000,
+        downsampling_n_spots_2d=100_000,
+        downsampling_n_spots_3d=100_000,
+    )
+    (tmp_path / "report_meta.json").write_text(
+        json.dumps(
+            {
+                "downsampling_n_spots_umap": 50_000,
+                "downsampling_n_spots_2d": 100_000,
+                "downsampling_n_spots_3d": 100_000,
+            }
+        )
+    )
+
+    assert _report_visualization_config_matches(config)
+
+    config.downsampling_n_spots_2d = 50_000
+    assert not _report_visualization_config_matches(config)
 
 
 def test_annotation_schema_export_is_small_canonical_palette(tmp_path):
