@@ -87,6 +87,8 @@ uv run --extra cuda128 --locked --no-sync gsmap quick-mode \
     --data-layer X \
     --spatial-key z_correction \
     --annotation spatial_domain \
+    --latent-representation-cell emb_cell \
+    --latent-representation-niche emb_niche \
     --homolog-file "${HOMOLOG_FILE}" \
     --no-high-quality-cell-qc \
     --graph-mode "${GRAPH_MODE}" \
