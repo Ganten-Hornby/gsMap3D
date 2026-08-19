@@ -36,6 +36,14 @@ def test_report_3d_display_default_balances_density_and_interaction():
     assert field.default == 100_000
 
 
+def test_report_umap_and_2d_defaults_prioritize_visual_density():
+    umap_field = ReportConfig.__dataclass_fields__["downsampling_n_spots_umap"]
+    spatial_2d_field = ReportConfig.__dataclass_fields__["downsampling_n_spots_2d"]
+
+    assert umap_field.default == 50_000
+    assert spatial_2d_field.default == 100_000
+
+
 def test_annotation_schema_export_is_small_canonical_palette(tmp_path):
     metadata = pd.DataFrame(
         {

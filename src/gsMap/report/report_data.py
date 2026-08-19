@@ -603,6 +603,7 @@ class ReportDataManager:
         """Prepare UMAP data from embeddings."""
         umap_file = self.report_data_dir / "umap_data.csv"
         umap_js = self.js_data_dir / "umap_data.js"
+        requested_limit = self.report_config.downsampling_n_spots_umap
         if self._is_step_complete([umap_file, umap_js]):
             report_meta_path = self.web_report_dir / "report_meta.json"
             if report_meta_path.is_file():
@@ -611,12 +612,23 @@ class ReportDataManager:
                         self.umap_info = json.load(handle).get("umap_info")
                 except (OSError, ValueError) as error:
                     logger.warning(f"Could not restore cached UMAP metadata: {error}")
-            if self.umap_info:
+            cached_limit = (
+                self.umap_info.get("downsampling_n_spots_umap")
+                if self.umap_info
+                else None
+            )
+            if self.umap_info and cached_limit == requested_limit:
                 logger.info("UMAP data already exists. Skipping.")
                 return
-            logger.warning(
-                "Cached UMAP data are missing their metadata; regenerating the UMAP export."
-            )
+            if self.umap_info:
+                logger.info(
+                    "Cached UMAP limit differs from the requested limit "
+                    f"({cached_limit} != {requested_limit}); regenerating the UMAP export."
+                )
+            else:
+                logger.warning(
+                    "Cached UMAP data are missing their metadata; regenerating the UMAP export."
+                )
 
         self.umap_info = _prepare_umap_data(
             self.report_config, self.metadata, self.report_data_dir
@@ -920,7 +932,7 @@ def _prepare_umap_data(
     has_niche = niche_emb_key is not None and niche_emb_key in adata.obsm
 
     # Stratified subsampling
-    n_subsample = getattr(report_config, "downsampling_n_spots", 20000)
+    n_subsample = report_config.downsampling_n_spots_umap
     spot_names = adata.obs_names.values
     sample_names = adata.obs["sample_name"]
 
@@ -995,6 +1007,7 @@ def _prepare_umap_data(
         "cell_emb_key": cell_emb_key,
         "niche_emb_key": niche_emb_key,
         "n_points": len(umap_metadata),
+        "downsampling_n_spots_umap": n_subsample,
         "point_size_cell": float(point_size_cell),
         "point_size_niche": float(point_size_niche) if point_size_niche is not None else None,
         "default_opacity": 0.7,
@@ -2272,7 +2285,7 @@ def _save_report_metadata(
     report_meta["plot_origin"] = report_config.plot_origin
     report_meta["legend_marker_size"] = report_config.legend_marker_size
     report_meta["downsampling_n_spots_2d"] = getattr(
-        report_config, "downsampling_n_spots_2d", 250000
+        report_config, "downsampling_n_spots_2d", 100000
     )
 
     # Add chromosome tick positions for Manhattan plot
@@ -2509,7 +2522,7 @@ def _export_per_sample_spatial_js(
         traits=traits,
         annotations=annotations,
         js_data_dir=js_data_dir,
-        max_points=int(meta.get("downsampling_n_spots_2d", 250000)),
+        max_points=int(meta.get("downsampling_n_spots_2d", 100000)),
         coordinate_info=(meta.get("spatial_3d") or {}).get("coordinate_info"),
     )
 

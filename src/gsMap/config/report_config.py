@@ -28,6 +28,18 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
         ),
     ] = 20000
 
+    downsampling_n_spots_umap: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Maximum representative spots used to calculate and display each report UMAP. "
+                "Valid precomputed UMAP coordinates are sampled to the same limit."
+            ),
+            min=1000,
+            max=500000,
+        ),
+    ] = 50000
+
     downsampling_n_spots_3d: Annotated[
         int,
         typer.Option(
@@ -50,7 +62,7 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
             min=10000,
             max=500000,
         ),
-    ] = 250000
+    ] = 100000
 
     top_corr_genes: Annotated[
         int, typer.Option(help="Number of top correlated genes to display", min=1, max=500)
