@@ -41,8 +41,8 @@ from gsMap.report.visualize import (
     estimate_plotly_point_size,
 )
 from gsMap.spatial_ldsc.io import (
+    acquire_marker_scores_memmap,
     load_marker_scores_memmap_format,
-    resolve_marker_scores_memmap_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -613,9 +613,7 @@ class ReportDataManager:
                 except (OSError, ValueError) as error:
                     logger.warning(f"Could not restore cached UMAP metadata: {error}")
             cached_limit = (
-                self.umap_info.get("downsampling_n_spots_umap")
-                if self.umap_info
-                else None
+                self.umap_info.get("downsampling_n_spots_umap") if self.umap_info else None
             )
             if self.umap_info and cached_limit == requested_limit:
                 logger.info("UMAP data already exists. Skipping.")
@@ -1141,7 +1139,11 @@ def _derive_section_plane_coordinates(
         }
 
     detected_counts = pd.Series(
-        [plane["cut_axis_title"] for plane in section_planes.values() if plane["cut_axis_detected"]]
+        [
+            plane["cut_axis_title"]
+            for plane in section_planes.values()
+            if plane["cut_axis_detected"]
+        ]
     ).value_counts()
     logger.info(
         "Detected section cut-normal axes from physical coordinates: "
@@ -1329,7 +1331,10 @@ def _load_gss_for_report_plots(
     """Load the full marker wrapper only when diagnostic plots require it."""
 
     logger.info("Loading the full GSS wrapper for diagnostic plots...")
-    gss_adata = load_marker_scores_memmap_format(report_config)
+    gss_adata = load_marker_scores_memmap_format(
+        report_config,
+        populate_cache=False,
+    )
     common_spots = np.intersect1d(gss_adata.obs_names, ldsc_results.index)
     if len(common_spots) == 0:
         raise ValueError("No common spots found between GSS and LDSC results.")
@@ -1512,25 +1517,26 @@ def _load_gss_pcc_sample(
         if source_adata.isbacked:
             source_adata.file.close()
 
-    effective_marker_path = resolve_marker_scores_memmap_path(
+    marker_lease = acquire_marker_scores_memmap(
         report_config,
         marker_metadata,
         populate_cache=False,
     )
-    data_path = effective_marker_path.with_suffix(".dat")
-    n_workers = _report_worker_count(report_config, ceiling=32)
-    logger.info(
-        f"Reading the report marker sample with {n_workers} I/O workers from {data_path}; "
-        "the complete marker matrix will not be staged solely for PCC."
-    )
-    marker_scores = _read_marker_score_rows(
-        data_path=data_path,
-        shape=shape,
-        dtype=np.dtype(marker_metadata["dtype"]),
-        marker_rows=marker_rows,
-        gene_positions=gene_positions,
-        n_workers=n_workers,
-    )
+    with marker_lease:
+        data_path = marker_lease.path.with_suffix(".dat")
+        n_workers = _report_worker_count(report_config, ceiling=32)
+        logger.info(
+            f"Reading the report marker sample with {n_workers} I/O workers from {data_path}; "
+            "the complete marker matrix will not be staged solely for PCC."
+        )
+        marker_scores = _read_marker_score_rows(
+            data_path=data_path,
+            shape=shape,
+            dtype=np.dtype(marker_metadata["dtype"]),
+            marker_rows=marker_rows,
+            gene_positions=gene_positions,
+            n_workers=n_workers,
+        )
     logger.info(f"Prepared the PCC marker sample in {time.perf_counter() - started:.2f}s")
     return _GssPccSample(
         common_spots=common_spots,
@@ -1739,7 +1745,9 @@ def _apply_section_plane_coordinates(
         x_axis = int(plane.get("x_axis", 0))
         y_axis = int(plane.get("y_axis", 1))
         if x_axis == y_axis or not (0 <= x_axis < 3 and 0 <= y_axis < 3):
-            logger.warning(f"Ignoring invalid section-plane axes for sample {sample_name}: {plane}")
+            logger.warning(
+                f"Ignoring invalid section-plane axes for sample {sample_name}: {plane}"
+            )
             continue
         positions = order[offsets[code] : offsets[code + 1]]
         section_x[positions] = coordinate_arrays[x_axis][positions]
@@ -2396,8 +2404,8 @@ def _sample_spatial_export_signature(data_dir: Path, meta: dict) -> dict:
         key: meta.get(key)
         for key in ("samples", "traits", "annotations", "downsampling_n_spots_2d")
     }
-    relevant_meta["spatial_3d_coordinate_info"] = (
-        (meta.get("spatial_3d") or {}).get("coordinate_info")
+    relevant_meta["spatial_3d_coordinate_info"] = (meta.get("spatial_3d") or {}).get(
+        "coordinate_info"
     )
     meta_digest = hashlib.sha256(
         json.dumps(relevant_meta, separators=(",", ":"), sort_keys=True).encode()
