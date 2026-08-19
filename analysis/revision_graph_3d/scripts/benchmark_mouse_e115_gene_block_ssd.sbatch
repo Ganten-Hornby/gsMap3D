@@ -4,7 +4,7 @@
 #SBATCH --output=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.out
 #SBATCH --error=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.err
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
+#SBATCH --mem=96G
 
 set -Eeuo pipefail
 

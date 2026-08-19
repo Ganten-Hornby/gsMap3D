@@ -10,7 +10,7 @@ configure_ldsc_worker_split() {
         return 2
     fi
 
-    declare -gr LDSC_READ_WORKERS=$((total_workers / worker_ratio_parts))
-    declare -gr LDSC_COMPUTE_WORKERS=$((total_workers - LDSC_READ_WORKERS))
+    declare -gr LDSC_COMPUTE_WORKERS=$((total_workers / worker_ratio_parts))
+    declare -gr LDSC_READ_WORKERS=$((total_workers - LDSC_COMPUTE_WORKERS))
     export GSMAP_LDSC_FORCE_COMPUTE_WORKERS="${LDSC_COMPUTE_WORKERS}"
 }
