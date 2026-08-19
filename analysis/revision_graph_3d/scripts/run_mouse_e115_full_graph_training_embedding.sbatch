@@ -13,6 +13,7 @@ readonly PROJECT_ROOT=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 readonly INPUT_H5AD="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/Mouse_E11.5_embryo_graph_ready.h5ad"
 readonly WORKDIR="${PROJECT_ROOT}/analysis/revision_graph_3d/runs/corrected_training_staging"
 readonly HOMOLOG_FILE=/storage/yangjianLab/lilounan/resources/mouse_human_homologs.txt
+readonly TRAIT_MANIFEST="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/mouse_e115_embryo_gwas_traits.yaml"
 TRAINING_CONTEXT_CONFIRMED=0
 
 case "${ARM}" in
@@ -76,6 +77,7 @@ print(f"cuda_device={torch.cuda.get_device_name(0)}")
 PY
 
 [[ -s "${INPUT_H5AD}" ]]
+[[ -s "${TRAIT_MANIFEST}" ]]
 
 uv run --extra cuda128 --locked --no-sync gsmap quick-mode \
     --workdir "${WORKDIR}" \
@@ -93,6 +95,7 @@ uv run --extra cuda128 --locked --no-sync gsmap quick-mode \
     --inference-chunk-size 100000 \
     --two-stage \
     --n-cell-training 100000 \
+    --sumstats-config-file "${TRAIT_MANIFEST}" \
     --use-gpu \
     --start-step find_latent \
     --stop-step find_latent
