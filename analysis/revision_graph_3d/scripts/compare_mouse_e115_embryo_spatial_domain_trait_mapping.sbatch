@@ -88,8 +88,8 @@ with open(os.environ["AUDIT_PATH"], encoding="utf-8") as handle:
     audit = json.load(handle)
 if audit.get("annotation") != "spatial_domain":
     raise RuntimeError(f"Unexpected comparison annotation: {audit.get('annotation')}")
-if audit.get("n_traits") != 4:
-    raise RuntimeError(f"Expected four traits, found {audit.get('n_traits')}")
+if audit.get("n_traits") != 5:
+    raise RuntimeError(f"Expected five traits, found {audit.get('n_traits')}")
 sampling = audit.get("sampling_audit", {})
 if sampling.get("metrics_subsampling") or sampling.get("visualization_subsampling"):
     raise RuntimeError(f"Comparison unexpectedly downsampled data: {sampling}")

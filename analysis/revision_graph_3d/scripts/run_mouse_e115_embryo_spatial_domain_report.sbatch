@@ -151,6 +151,7 @@ expected_assets = {
     "spatial_3d_anno_spatial_domain.html",
     "spatial_3d_trait_Height.html",
     "spatial_3d_trait_IQ.html",
+    "spatial_3d_trait_MCHC.html",
     "spatial_3d_trait_CBX.html",
     "spatial_3d_trait_CTX.html",
 }
@@ -168,8 +169,8 @@ with open(os.environ["UMAP_AUDIT"], encoding="utf-8") as handle:
     umap_audit = json.load(handle)
 if umap_audit.get("observations") != expected:
     raise RuntimeError(f"UMAP visualization was downsampled: {umap_audit}")
-if len(umap_audit.get("images", {})) != 10:
-    raise RuntimeError(f"Expected 10 Scanpy UMAP panels: {umap_audit.get('images')}")
+if len(umap_audit.get("images", {})) != 12:
+    raise RuntimeError(f"Expected 12 Scanpy UMAP panels: {umap_audit.get('images')}")
 for asset, image in umap_audit["images"].items():
     if image.get("observations") != expected:
         raise RuntimeError(f"{asset} contains {image.get('observations')}, expected {expected}")
@@ -177,6 +178,6 @@ for asset, image in umap_audit["images"].items():
         raise RuntimeError(f"{asset} is below 320-DPI export tolerance: {image}")
 PY
 
-for trait in Height IQ CBX CTX; do
+for trait in Height IQ MCHC CBX CTX; do
     [[ -s "${WEB_REPORT}/spatial_3d/spatial_3d_trait_${trait}.html" ]]
 done
