@@ -3,6 +3,7 @@ Configuration for finding latent representations.
 """
 
 import logging
+import math
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,11 +276,15 @@ class FindLatentRepresentationsConfig(
                 f"{sorted(allowed_graph_modes)}"
             )
         if self.graph_mode in {"radius", "weighted_radius"} and (
-            self.graph_radius is None or self.graph_radius <= 0
+            self.graph_radius is None
+            or not math.isfinite(self.graph_radius)
+            or self.graph_radius <= 0
         ):
             raise ValueError(f"A positive graph_radius is required for {self.graph_mode}")
         if self.graph_mode == "weighted_radius" and (
-            self.graph_sigma is None or self.graph_sigma <= 0
+            self.graph_sigma is None
+            or not math.isfinite(self.graph_sigma)
+            or self.graph_sigma <= 0
         ):
             raise ValueError("A positive graph_sigma is required for weighted_radius")
         section_modes = {"sectionwise_2d", "section_aware_3d"}

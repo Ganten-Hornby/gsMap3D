@@ -32,7 +32,22 @@ def configure_jax_platform(use_accelerator: bool = True):
         from jax import config as jax_config
 
         if not use_accelerator:
-            jax_config.update("jax_platform_name", "cpu")
+            # Recent CUDA-enabled JAX wheels discover every installed PJRT plugin,
+            # even when CPU is explicitly selected. On a CPU-only node that CUDA
+            # version probe logs a full cuInit traceback before falling back. Force
+            # discovery while the irrelevant CUDA constraint check is disabled,
+            # then restore the caller's environment immediately.
+            skip_check = "JAX_SKIP_CUDA_CONSTRAINTS_CHECK"
+            previous_skip_check = os.environ.get(skip_check)
+            os.environ[skip_check] = "1"
+            try:
+                jax_config.update("jax_platform_name", "cpu")
+                jax.devices("cpu")
+            finally:
+                if previous_skip_check is None:
+                    os.environ.pop(skip_check, None)
+                else:
+                    os.environ[skip_check] = previous_skip_check
             logger.info("JAX configured to use CPU for computations (accelerators disabled)")
             return
 
@@ -220,7 +235,7 @@ def process_h5ad_inputs(config, input_options):
 
     # Ensure at most one option is provided
     if len(options_provided) > 1:
-        raise AssertionError(
+        raise ValueError(
             f"At most one input option can be provided. Got {len(options_provided)}: {', '.join(options_provided)}. "
             f"Please provide only one of: {', '.join(input_options.keys())}"
         )
@@ -237,6 +252,8 @@ def process_h5ad_inputs(config, input_options):
             yaml_parent_dir = yaml_file_path.parent
             with open(field_value) as f:
                 h5ad_data = yaml.safe_load(f)
+                if not isinstance(h5ad_data, dict) or not h5ad_data:
+                    raise ValueError(f"H5AD YAML must contain a non-empty mapping: {field_value}")
                 for sample_name, h5ad_path in h5ad_data.items():
                     h5ad_path = Path(h5ad_path)
                     # Resolve relative paths relative to yaml file location

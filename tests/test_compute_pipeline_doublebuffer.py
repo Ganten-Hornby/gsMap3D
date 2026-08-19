@@ -1,6 +1,6 @@
 """Unit tests for the GPU double-buffering compute worker.
 
-`ParallelLDScoreComputer._compute_worker_pipelined` dispatches up to
+`LDScoreComputePool._compute_worker_pipelined` dispatches up to
 ``pipeline_depth`` chunks ahead and blocks lazily. The correctness properties we
 guard here (without real JAX):
 
@@ -14,12 +14,12 @@ import queue
 import threading
 import time
 
-from gsMap.spatial_ldsc.pipeline import ParallelLDScoreComputer
+from gsMap.spatial_ldsc.pipeline import LDScoreComputePool
 
 
 def _make_worker(depth):
-    """Build a ParallelLDScoreComputer shell without running __init__/JAX setup."""
-    c = object.__new__(ParallelLDScoreComputer)
+    """Build an LDScoreComputePool shell without running __init__/JAX setup."""
+    c = object.__new__(LDScoreComputePool)
     c.pipeline_depth = depth
     c.compute_queue = queue.Queue()
     c.stop_workers = threading.Event()

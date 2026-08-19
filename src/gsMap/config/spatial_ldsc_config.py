@@ -33,8 +33,9 @@ class SpatialLDSCComputeConfig:
     memmap_tmp_dir: Annotated[
         Path | None,
         typer.Option(
-            help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-            "If provided, memory maps will be copied to this directory for faster random access during computation.",
+            help="Optional fast scratch directory. Concurrent spatial-LDSC processes stage and "
+            "reuse one content-addressed, read-only marker cache per directory/node. If it does "
+            "not fit, gsMap streams directly from project storage.",
             exists=True,
             file_okay=False,
             dir_okay=True,
@@ -42,7 +43,14 @@ class SpatialLDSCComputeConfig:
         ),
     ] = None
 
-    ldsc_read_workers: Annotated[int, typer.Option(help="Number of read workers", min=1)] = 10
+    ldsc_read_workers: Annotated[
+        int,
+        typer.Option(
+            help="Number of parallel marker-to-LD-score transform workers. Marker memmap I/O "
+            "uses one bounded sequential source stream.",
+            min=1,
+        ),
+    ] = 10
 
     ldsc_compute_workers: Annotated[
         int, typer.Option(help="Number of compute workers for LDSC regression", min=1)
@@ -105,7 +113,10 @@ class GWASSumstatsConfig:
         if self.sumstats_config_dict:
             self.sumstats_config_dict = {k: Path(v) for k, v in self.sumstats_config_dict.items()}
             for sumstats_file in self.sumstats_config_dict.values():
-                assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
+                if not Path(sumstats_file).is_file():
+                    raise FileNotFoundError(
+                        f"Summary-statistics file does not exist: {sumstats_file}"
+                    )
             return
 
         sumstats_config_dict = {}
@@ -129,7 +140,12 @@ class GWASSumstatsConfig:
             # get the directory of the config file to resolve relative paths
             config_dir = Path(self.sumstats_config_file).parent
             with open(self.sumstats_config_file) as f:
-                config_loaded = yaml.load(f, Loader=yaml.FullLoader)
+                config_loaded = yaml.safe_load(f)
+            if not isinstance(config_loaded, dict) or not config_loaded:
+                raise ValueError(
+                    f"Summary-statistics config must be a non-empty mapping: "
+                    f"{self.sumstats_config_file}"
+                )
             for _trait_name, sumstats_file in config_loaded.items():
                 s_path = Path(sumstats_file)
                 if not s_path.is_absolute():
@@ -140,7 +156,8 @@ class GWASSumstatsConfig:
             sumstats_config_dict[self.trait_name] = Path(self.sumstats_file)
 
         for sumstats_file in sumstats_config_dict.values():
-            assert Path(sumstats_file).exists(), f"{sumstats_file} does not exist."
+            if not Path(sumstats_file).is_file():
+                raise FileNotFoundError(f"Summary-statistics file does not exist: {sumstats_file}")
 
         self.sumstats_config_dict = sumstats_config_dict
 
@@ -182,7 +199,7 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
         str | None, typer.Option(help="Filter processing to a specific sample")
     ] = None
 
-    n_blocks: Annotated[int, typer.Option(help="Number of jackknife blocks", min=1)] = 200
+    n_blocks: Annotated[int, typer.Option(help="Number of jackknife blocks", min=2)] = 200
 
     # spots_per_chunk_quick_mode is inherited from SpatialLDSCComputeConfig
 
@@ -247,6 +264,9 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
     def __post_init__(self):
         super().__post_init__()
 
+        if self.n_blocks < 2:
+            raise ValueError("n_blocks must be at least 2 for jackknife standard errors")
+
         # Import here to avoid circular imports
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape
 
@@ -281,15 +301,8 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
 
             start, end = self.cell_indices_range
 
-            # Check that indices are 0-based
             if start < 0:
                 raise ValueError(f"cell_indices_range start must be >= 0, got {start}")
-            if start == 1:
-                logger.warning(
-                    "cell_indices_range appears to be 1-based (start=1). "
-                    "Please ensure indices are 0-based. Adjusting start to 0."
-                )
-                start = 0
 
             # Check that start < end
             if start >= end:
@@ -301,7 +314,8 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
             # Direct ldscore mode takes priority: cells are var (columns) in the ldscore h5ad.
             if self.ldscore_h5ad_path is not None:
                 ldscore_path = Path(self.ldscore_h5ad_path)
-                assert ldscore_path.exists(), f"ldscore_h5ad_path not found at {ldscore_path}."
+                if not ldscore_path.is_file():
+                    raise FileNotFoundError(f"ldscore_h5ad_path not found at {ldscore_path}")
                 shape = get_anndata_shape(str(ldscore_path))
                 if shape is not None:
                     _, n_vars = shape  # n_vars = number of cells
@@ -313,12 +327,7 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
                         end = n_vars
             elif self.marker_score_format in {"memmap", "gene_block"}:
                 # For memmap format, check the concatenated latent adata
-                adata_path = (
-                    Path(self.workdir)
-                    / self.project_name
-                    / "latent2gene"
-                    / "concatenated_latent_adata.h5ad"
-                )
+                adata_path = self.concatenated_latent_adata_path
                 shape = get_anndata_shape(str(adata_path))
                 if shape is not None:
                     n_obs, _ = shape
@@ -331,7 +340,8 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
             elif self.marker_score_format == "h5ad":
                 # For h5ad format, check the provided h5ad path
                 adata_path = Path(self.marker_score_h5ad_path)
-                assert adata_path.exists(), f"Marker score h5ad not found at {adata_path}."
+                if not adata_path.is_file():
+                    raise FileNotFoundError(f"Marker score h5ad not found at {adata_path}")
                 shape = get_anndata_shape(str(adata_path))
                 if shape is not None:
                     n_obs, _ = shape
@@ -344,9 +354,10 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
             elif self.marker_score_format == "feather":
                 # For feather format, validate the path exists
                 feather_path = Path(self.marker_score_feather_path)
-                assert feather_path.exists(), (
-                    f"Marker score feather file not found at {feather_path}."
-                )
+                if not feather_path.is_file():
+                    raise FileNotFoundError(
+                        f"Marker score feather file not found at {feather_path}"
+                    )
 
                 # Use pyarrow to get the number of rows and validate end
                 try:

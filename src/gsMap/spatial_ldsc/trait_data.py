@@ -12,12 +12,19 @@ logger = logging.getLogger("gsMap.spatial_ldsc.trait_data")
 
 def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:
     """Prepare SNP-related data arrays for equal-sized jackknife blocks."""
+    if n_blocks < 2:
+        raise ValueError("n_blocks must be at least 2 for jackknife standard errors")
     if "chisq" in data:
         n_snps = len(data["chisq"])
     elif "N" in data:
         n_snps = len(data["N"])
     else:
         raise ValueError("Cannot determine number of SNPs from data")
+    if n_snps < n_blocks:
+        raise ValueError(
+            f"Spatial LDSC requires at least one SNP per jackknife block: "
+            f"n_snps={n_snps}, n_blocks={n_blocks}"
+        )
 
     block_size = n_snps // n_blocks
     n_snps_used = block_size * n_blocks

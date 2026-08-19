@@ -7,14 +7,14 @@
 gsMap3D employs multiple strategies to achieve high performance:
 
 - **GPU/TPU Acceleration**: JAX-based computation with JIT compilation
-- **Multi-threaded Pipeline**: Parallel reader, compute, and writer workers
-- **Memory Mapping**: Efficient disk-based storage with SSD optimization
+- **Bounded Rank Cache**: One compact cache or capacity-limited windows per cell type
+- **Storage-Aware Memory Mapping**: Sequential shared-storage I/O with optional SSD staging
 - **Vectorized Operations**: Batched matrix operations using einsum
 - **Sparse Matrix Support**: Memory-efficient handling of sparse data
 
 ## GPU/TPU Acceleration
 
-gsMap3D uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the Spatial LDSC computation stage. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
+gsMap3D uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the latent-to-gene and Spatial LDSC computation stages. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
 
 ### Enabling/Disabling GPU
 
@@ -71,94 +71,48 @@ The first run may be slower due to JIT compilation. Subsequent runs will be fast
 
 ## GSS calculation
 
-gsMap3D implements a three-stage parallel message queue pipeline for the Gene Specificity Score (GSS) calculation:
-![jax](./_static/jax.png)
+The latent-to-gene stage calculates the Gene Specificity Score (GSS) with one bounded rank-cache engine. Homogeneous cells are placed in a locality-preserving order before rank access:
 
-### Pipeline Stages
+- Spatial2D data are ordered separately within each section.
+- Spatial3D data use measured physical x/y/z coordinates when a varying z coordinate is available.
+- Spatial3D data without measured z use an explicit ordinal section coordinate.
+- Non-spatial data use homogeneous-neighbor overlap.
 
-1. **Stage 1 - Gene Rank Reading**: Reader workers load pre-computed gene rank data from memory-mapped files in parallel. Each reader fetches batch data containing neighbor indices for homogeneous spots.
+For a cell type whose distinct rank rows fit under the 2 GiB cache limit, gsMap3D reads each distinct row once and transfers one right-sized cache to the JAX device. Larger cell types are divided into maximal contiguous windows under the same limit. On GPU, the next host window is prefetched and rank rows shared by adjacent windows remain in stable device-cache slots. This design bounds peak cache memory without reverting to random rank reads for every marker-score batch.
 
-1. **Stage 2 - GSS Calculation**: Compute workers receive rank data via the **Rank→Compute Queue** and calculate marker scores using JAX-accelerated weighted geometric mean operations. The computation transforms gene ranks into Gene Specificity Scores (GSS).
+Marker-score rows are written sequentially in this locality-preserving compute order. A compact companion permutation records which row of `concatenated_latent_adata.h5ad` belongs to each marker row. The standard loader applies that permutation to observation annotations and the configured spatial-coordinate array, so downstream Spatial LDSC, reporting, and Cauchy analysis remain aligned by spot name. The source H5AD is never reordered because rank and homogeneous-neighbor indices refer to its original row order. Non-spatial embedding arrays stay in the source H5AD rather than being duplicated in the marker wrapper, which bounds loader memory for very large datasets.
 
-1. **Stage 3 - Write GSS**: Writer workers receive computed GSS results via the **Compute→Write Queue** and write them back to memory-mapped files for downstream Spatial LDSC analysis.
+### Execution controls
 
-### Worker Configuration
+| Parameter                  | Description                                                      | Default | Range  |
+| -------------------------- | ---------------------------------------------------------------- | ------- | ------ |
+| `rank_read_workers`        | Threads that materialize distinct rows for a rank-cache window    | 120     | 1-128  |
+| `mkscore_compute_workers`  | Concurrent fixed-shape JAX marker-score submissions               | 4       | 1-16   |
+| `mkscore_write_workers`    | Threads that write completed GSS batches                          | 2       | 1-50   |
+| `compute_input_queue_size` | Maximum pending batches per compute worker                        | 1       | 1-10   |
+| `writer_queue_size`        | Capacity of the bounded completed-batch writer queue              | 20      | 10-500 |
 
-The number of workers for each stage can be configured:
+`mkscore_batch_size=0` selects a deterministic workload- and device-aware batch size. An explicit positive value overrides that selection.
 
-| Parameter                 | Description                          | Default | Range |
-| ------------------------- | ------------------------------------ | ------- | ----- |
-| `rank_read_workers`       | Parallel reader threads for Stage 1  | 16      | 1-50  |
-| `mkscore_compute_workers` | Parallel compute threads for Stage 2 | 4       | 1-16  |
-| `mkscore_write_workers`   | Parallel writer threads for Stage 3  | 4       | 1-50  |
-
-### Queue Configuration
-
-The message queues between stages control data flow and backpressure:
-
-| Parameter                  | Description                                                                                                                                                       | Default | Range  |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------ |
-| `compute_input_queue_size` | Maximum size of **Rank→Compute Queue** (multiplier of `mkscore_compute_workers`). Controls how many batches can be buffered between reading and computing stages. | 5       | 1-10   |
-| `writer_queue_size`        | Maximum size of **Compute→Write Queue**. Controls how many computed batches can be buffered before being written to disk.                                         | 100     | 10-500 |
+After each cell type, the log reports end-to-end cells per second and separates time spent remapping rows, reading rank windows, and updating the device cache. The same record includes the numbers of distinct, newly read, and adjacent-window-retained rows.
 
 ```{tip}
-Queue sizes balance memory usage and throughput. Larger queues allow better buffering when stage speeds vary, but consume more memory. The default values work well for most systems.
-```
-
-### Performance Monitoring
-
-After processing each cell type, gsMap3D displays a pipeline summary table showing throughput metrics for each stage:
-
-```text
-╭─────────────────────────────────── Pipeline Summary ───────────────────────────────────╮
-│                   ✓ Completed Brain                                                    │
-│  Property                                       Value                                  │
-│  Total Batches                                     59                                  │
-│  Time Elapsed                                   2.66s                                  │
-│  Pipeline Throughput  22.15 batches/s (11076 cells/s)                                  │
-│           Component Performance (per worker)                                           │
-│ ┏━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓                                │
-│ ┃ Component ┃ Throughput ┃ Workers ┃ Total Throughput ┃                                │
-│ ┡━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩                                │
-│ │ Reader    │   8.99 b/s │      16 │        71942 c/s │                                │
-│ │ Computer  │   7.24 b/s │       4 │        14472 c/s │                                │
-│ │ Writer    │ 101.91 b/s │       4 │       203821 c/s │                                │
-│ └───────────┴────────────┴─────────┴──────────────────┘                                │
-╰────────────────────────────────────────────────────────────────────────────────────────╯
-```
-
-Use this table to identify pipeline bottlenecks:
-
-- **Throughput**: Per-worker processing speed in batches/second (b/s)
-- **Total Throughput**: Combined throughput across all workers in cells/second (c/s)
-- **Pipeline Throughput**: The effective end-to-end throughput, limited by the slowest stage
-
-```{tip}
-**Identifying Bottlenecks**: The stage with the lowest **Total Throughput** is the bottleneck limiting overall performance.
-
-- **Reader is the bottleneck** (Reader throughput < Computer throughput):
-  - Increase `rank_read_workers` to add more parallel readers
-  - Use [`--memmap-tmp-dir`](#memory-mapping) to copy memory-mapped files to a fast SSD
-
-- **Computer is the bottleneck** (Computer throughput < Reader/Writer throughput):
-  - Ensure GPU acceleration is enabled (`--use-gpu`)
-  - Increase available CPU cores or `mkscore_compute_workers` if using CPU-only mode
-- **Writer is the bottleneck** (Writer throughput < Computer throughput):
-  - Increase `mkscore_write_workers`
-  - Use a faster storage device for output
+If rank-window read time dominates, local NVMe can still improve an older, single-stripe rank file. New large files created directly on Lustre are automatically striped, and marker output is sequential, so local scratch is optional. If compute dominates, use GPU acceleration. Increasing pending batches cannot compensate for slow storage and raises transient memory use.
 ```
 
 ## Memory Mapping
 
-`gsMap3D` uses memory-mapped files to handle data that exceeds available RAM. The `--memmap-tmp-dir` option allows you to specify a fast SSD for temporary files, significantly improving I/O performance.
+`gsMap3D` uses memory-mapped files to handle data that exceeds both RAM and local SSD capacity. By default, ranks and marker scores remain in the project directory. Marker scores are streamed there sequentially, and large Lustre files receive an automatic stripe count based on their logical size. This path does not require `/data`, NVMe, or a second full-sized copy.
+
+The optional `--memmap-tmp-dir` setting is an optimization for a complete memmap that fits on faster local storage. Before staging each live file, gsMap3D checks that the scratch filesystem is distinct and has room for the full logical file plus safety headroom. If it does not, gsMap3D logs the decision and uses the project storage directly.
 
 ### Why Use memmap-tmp-dir?
 
-When your working directory is on a slow filesystem (e.g., network storage, HDD), random access to memory-mapped files can become a bottleneck. By specifying a fast local SSD as the temporary directory, gsMap3D:
+When the complete file fits on a fast local SSD, specifying a temporary directory lets gsMap3D:
 
-1. Copies memory-mapped files to the fast storage
-1. Performs all random access operations on the fast storage
-1. Syncs results back to the original location when complete
+1. Copy memory-mapped files to the fast storage
+1. Perform all random access operations on the fast storage
+1. Sync results sequentially back to an automatically striped final file
 
 ### Usage
 
@@ -193,49 +147,51 @@ gsmap quick-mode \
 
 ### Storage Requirements
 
-The temporary directory needs sufficient space for intermediate memory-mapped files. Storage is estimated as:
+Both rank and marker matrices use float16. If both are staged simultaneously, required scratch capacity is approximately:
 
 ```{math}
-\text{Temp Storage Space} = \text{spots} \times \text{genes} \times 4\ \text{bytes} \times 2\ \text{(rank + marker score)}
+\text{Temp Storage Space} = \text{spots} \times \text{genes} \times 2\ \text{bytes} \times 2\ \text{(rank + marker score)}
 ```
 
 Assuming ~20,000 genes:
 
 | Dataset Size | Calculation        | Approximate Temp Space |
 | ------------ | ------------------ | ---------------------- |
-| 100K spots   | 100K × 20K × 4 × 2 | ~16 GB                 |
-| 1M spots     | 1M × 20K × 4 × 2   | ~160 GB                |
-| 10M spots    | 10M × 20K × 4 × 2  | ~1.6 TB                |
+| 100K spots   | 100K × 20K × 2 × 2 | ~8 GB                  |
+| 1M spots     | 1M × 20K × 2 × 2   | ~80 GB                 |
+| 10M spots    | 10M × 20K × 2 × 2  | ~800 GB                |
 
 ```{important}
-Ensure your temporary directory has enough free space before running. gsMap3D will fail if the disk runs out of space during computation.
+Scratch is not required. If the configured directory cannot safely hold a file, gsMap3D automatically falls back to the project filesystem. The project filesystem must still have capacity for the final rank and marker files.
 ```
 
 ## Batch Processing
 
 gsMap3D processes data in batches to balance memory usage and computational efficiency:
 
-| Parameter                    | Description                          | Default |
-| ---------------------------- | ------------------------------------ | ------- |
-| `rank_batch_size`            | Spots per batch for rank calculation | 500     |
-| `mkscore_batch_size`         | Spots per batch for marker score     | 500     |
-| `spots_per_chunk_quick_mode` | Spots per chunk for Spatial LDSC     | 50      |
+| Parameter                    | Description                          | Default       |
+| ---------------------------- | ------------------------------------ | ------------- |
+| `rank_batch_size`            | Spots per batch for rank calculation | Automatic (0) |
+| `mkscore_batch_size`         | Spots per batch for marker score     | Automatic (0) |
+| `spots_per_chunk_quick_mode` | Spots per chunk for Spatial LDSC     | 50            |
 
-Larger batch sizes can improve throughput but require more memory. Adjust based on your available RAM and GPU memory.
+The automatic rank batch targets about 64 MiB of final float16 output and selects
+from bounded batch sizes. Explicitly larger batches can require substantially more
+memory without improving an I/O-bound run.
 
 ## Performance Recommendations
 
 ### For Very Large Datasets (>1M spots)
 
 1. **Use GPU acceleration**: GPU significantly speeds up both latent-to-gene and Spatial LDSC computation. Enabled by default with `--use-gpu`.
-1. **Use NVMe SSD**: Fast local storage is critical. Use `--memmap-tmp-dir` to specify a fast SSD for temporary files to avoid reading becoming a bottleneck. If SSD is not available, increase `rank_read_workers` to compensate.
-1. **Increase batch sizes**: If memory allows, larger batches improve throughput
+1. **Use storage appropriate to the file size**: Leave `memmap_tmp_dir` unset when the memmaps exceed local capacity. New Lustre files are striped automatically, and marker output remains sequential. Use local NVMe only when the full staged files fit.
+1. **Keep automatic batch sizing initially**: Override it only after profiling shows that the default batch is limiting throughput.
 
 ### For CPU-Only Systems
 
 1. **Disable GPU**: Use `--no-gpu` to avoid JAX GPU initialization overhead
 1. **Increase CPU cores and compute workers**: The Spatial LDSC step scales near-linearly with the number of available CPU cores. Increase `ldsc_compute_workers` to match available cores.
-1. **Use NVMe SSD**: Fast storage significantly speeds up latent-to-gene computation. Use `--memmap-tmp-dir` to specify a fast SSD.
+1. **Prefer sequential shared storage for oversized files**: Local SSD is optional. Use it only when the complete staged memmaps fit; otherwise the automatic direct-storage path avoids a capacity failure.
 
 ### For Cluster Users
 
@@ -356,13 +312,15 @@ print(f"Merged {len(results)} spots to {result_dir / f'{project}_{trait}.csv.gz'
 
 ### GPU Out of Memory (OOM) Errors
 
-If you encounter GPU out of memory errors in latent to gene step, try the following solutions in order:
+The rank and marker-score batch sizes are selected deterministically from the
+workload. Worker and queue counts use stable defaults and are never inferred
+from host or scheduler resources. If you encounter a GPU out-of-memory error,
+try the following solutions in order:
 
-**1. Reduce batch size** (recommended first step):
+**1. Override the automatic marker-score batch size**:
 
 ```bash
-# Reduce the marker score batch size (default: 500)
-gsmap quick-mode --mkscore-batch-size 50 ...
+gsmap quick-mode --mkscore-batch-size 25 ...
 ```
 
 **2. Limit JAX memory allocation**:

@@ -46,8 +46,39 @@ class ComponentThroughput:
         return 0.0
 
 
-class ParallelLDScoreReader:
-    """Multi-threaded reader for fetching LD-score chunks."""
+@dataclass
+class SequentialIOThroughput:
+    """Track the physical marker windows read from storage."""
+
+    total_windows: int = 0
+    total_cells: int = 0
+    total_bytes: int = 0
+    total_time: float = 0.0
+
+    def record_window(self, elapsed_time: float, n_cells: int, n_bytes: int):
+        self.total_windows += 1
+        self.total_cells += n_cells
+        self.total_bytes += n_bytes
+        self.total_time += elapsed_time
+
+    @property
+    def cells_per_second(self) -> float:
+        return self.total_cells / self.total_time if self.total_time > 0 else 0.0
+
+    @property
+    def mib_per_second(self) -> float:
+        return self.total_bytes / 1024**2 / self.total_time if self.total_time > 0 else 0.0
+
+
+class LDScoreStream:
+    """Bounded source pipeline for LD-score regression batches.
+
+    Marker memmaps are consumed as large sequential windows by one source
+    thread. Small regression batches are derived from the in-RAM window by a
+    transform pool. Other input formats use one serial source thread; the old
+    design in which many threads independently issued tiny storage reads is
+    intentionally not retained.
+    """
 
     def __init__(
         self,
@@ -57,47 +88,174 @@ class ParallelLDScoreReader:
     ):
         self.processor = processor
         self.num_workers = num_workers
-        self.read_queue = queue.Queue()
-        self.result_queue = output_queue if output_queue else queue.Queue(maxsize=num_workers * 8)
+        self.result_queue = (
+            output_queue
+            if output_queue is not None
+            else queue.Queue(maxsize=max(2, num_workers * 2))
+        )
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
+        self.sequential_io_throughput = SequentialIOThroughput()
         self.exception_queue = queue.Queue()
         self.has_error = threading.Event()
         self.workers = []
         self.stop_workers = threading.Event()
-        self._start_workers()
+        self.started = False
+        chunk_source = getattr(self.processor, "chunk_source", None)
+        self.total_chunks = int(
+            getattr(
+                self.processor,
+                "total_chunks",
+                len(getattr(chunk_source, "chunk_starts", ())),
+            )
+        )
+        if self.total_chunks < 1:
+            raise ValueError("LD-score stream requires at least one chunk")
+        self.uses_sequential_windows = bool(
+            chunk_source is not None and chunk_source.supports_sequential_marker_windows()
+        )
+        self.window_chunks = (
+            chunk_source.recommended_marker_window_chunks() if self.uses_sequential_windows else 1
+        )
+        self.batch_queue = (
+            queue.Queue(maxsize=max(self.window_chunks, self.num_workers * 2))
+            if self.uses_sequential_windows
+            else None
+        )
+        self.source_chunks_loaded = 0
+        self.source_progress_lock = threading.Lock()
+        self.publish_condition = threading.Condition()
+        self.pending_transforms: dict[int, dict] = {}
+        self.next_chunk_to_publish = 0
+        self.max_pending_transforms = max(2, self.num_workers * 2)
 
-    def _start_workers(self):
-        for i in range(self.num_workers):
-            worker = threading.Thread(target=self._worker, args=(i,), daemon=True)
-            worker.start()
-            self.workers.append(worker)
-        logger.info(f"Started {self.num_workers} reader threads")
+    def start(self):
+        """Start the bounded source only after the downstream consumer exists."""
+        if self.started:
+            raise RuntimeError("LD-score stream has already been started")
+        self.started = True
 
-    def _worker(self, worker_id: int):
-        logger.debug(f"Reader worker {worker_id} started")
+        if self.uses_sequential_windows:
+            direct_reads = self.processor.chunk_source.advise_sequential_marker_access()
+            for i in range(self.num_workers):
+                worker = threading.Thread(
+                    target=self._window_transform_worker,
+                    args=(i,),
+                    name=f"ldsc-window-transform-{i}",
+                    daemon=True,
+                )
+                worker.start()
+                self.workers.append(worker)
+            source_worker = threading.Thread(
+                target=self._window_reader,
+                name="ldsc-sequential-window-reader",
+                daemon=True,
+            )
+            source_worker.start()
+            self.workers.append(source_worker)
+            marker_matrix = self.processor.chunk_source.marker_score_adata.X
+            row_mib = marker_matrix.shape[1] * marker_matrix.dtype.itemsize / 1024**2
+            logger.info(
+                f"Started sequential marker reader with {self.window_chunks} chunks/window "
+                f"(~{self.window_chunks * self.processor.chunk_size * row_mib:.0f} MiB), "
+                f"{self.num_workers} parallel transform workers, "
+                f"direct positional reads={'enabled' if direct_reads else 'unavailable'}"
+            )
+            return
 
-        while not self.stop_workers.is_set():
-            try:
-                item = self.read_queue.get(timeout=1)
-                if item is None:
+        source_worker = threading.Thread(
+            target=self._serial_reader,
+            name="ldsc-serial-source-reader",
+            daemon=True,
+        )
+        source_worker.start()
+        self.workers.append(source_worker)
+        logger.info("Started one serial source reader for non-memmap LDSC input")
+
+    def _serial_reader(self):
+        """Read unsupported/non-memmap sources serially with bounded output."""
+        logger.debug("Serial LD-score source reader started")
+        chunk_idx = -1
+        try:
+            for chunk_idx in range(self.total_chunks):
+                if self.stop_workers.is_set():
                     break
-
-                chunk_idx = item
                 start_time = time.time()
-
                 fetched = self.processor._fetch_ldscore_chunk(chunk_idx)
-                marker_score_chunk = None
-                if len(fetched) == 4:
-                    ldscore, spot_names, abs_start, abs_end = fetched
-                else:
-                    ldscore, spot_names, abs_start, abs_end, marker_score_chunk = fetched
-
                 elapsed = time.time() - start_time
                 with self.throughput_lock:
                     self.throughput.record_batch(elapsed)
+                self._record_source_chunks(1)
+                if not self._publish_fetched(chunk_idx, fetched, worker_id="serial-source"):
+                    break
+        except Exception as e:  # noqa: BLE001
+            self._record_error("serial-source", chunk_idx, e)
+        logger.debug("Serial LD-score source reader stopped")
 
-                self.result_queue.put(
+    def _window_reader(self):
+        """Coalesce queued compute chunks into large sequential memmap reads."""
+        logger.debug("Sequential marker-window reader started")
+        batch = []
+        try:
+            for first_chunk in range(0, self.total_chunks, self.window_chunks):
+                if self.stop_workers.is_set():
+                    break
+                batch = list(
+                    range(first_chunk, min(first_chunk + self.window_chunks, self.total_chunks))
+                )
+                start_time = time.perf_counter()
+                window = self.processor.chunk_source.load_marker_window(batch)
+                elapsed = time.perf_counter() - start_time
+                with self.throughput_lock:
+                    self.sequential_io_throughput.record_window(
+                        elapsed,
+                        n_cells=window.values.shape[0],
+                        n_bytes=window.values.nbytes,
+                    )
+                self._record_source_chunks(len(batch))
+                for chunk_idx in batch:
+                    if not self._put_batch_until_stopped((window, chunk_idx)):
+                        break
+        except Exception as e:  # noqa: BLE001
+            chunk_idx = batch[0] if batch else -1
+            self._record_error("sequential-window", chunk_idx, e)
+        finally:
+            # The thread that owns positional reads also owns the descriptor.
+            # This avoids closing/reusing a file descriptor underneath a slow
+            # in-flight preadv during cancellation.
+            self.processor.chunk_source.close_sequential_marker_access()
+            logger.debug("Sequential marker-window reader stopped")
+
+    def _window_transform_worker(self, worker_id: int):
+        """Select genes and construct per-chunk LD scores from RAM windows."""
+        logger.debug(f"Marker-window transform worker {worker_id} started")
+        chunk_idx = -1
+
+        while not self.stop_workers.is_set():
+            item = None
+            try:
+                try:
+                    item = self.batch_queue.get(timeout=1)
+                except queue.Empty:
+                    continue
+                if item is None:
+                    break
+
+                window, chunk_idx = item
+                start_time = time.perf_counter()
+                fetched = self.processor.chunk_source.fetch_chunk_from_marker_window(
+                    window,
+                    chunk_idx,
+                    defer_ldscore_to_compute=self.processor.defer_ldscore_to_compute,
+                )
+                elapsed = time.perf_counter() - start_time
+                with self.throughput_lock:
+                    self.throughput.record_batch(elapsed)
+
+                ldscore, spot_names, abs_start, abs_end, marker_score_chunk = self._unpack_fetched(
+                    fetched
+                )
+                self._publish_transformed_in_order(
                     {
                         "chunk_idx": chunk_idx,
                         "ldscore": ldscore,
@@ -109,72 +267,168 @@ class ParallelLDScoreReader:
                         "success": True,
                     }
                 )
-                self.read_queue.task_done()
-
-            except queue.Empty:
-                continue
             except Exception as e:  # noqa: BLE001
-                error_trace = traceback.format_exc()
-                logger.error(
-                    f"Reader worker {worker_id} error on chunk {chunk_idx}: {e}\n"
-                    f"Traceback:\n{error_trace}"
-                )
-                self.exception_queue.put((worker_id, e, error_trace))
-                self.has_error.set()
-                self.result_queue.put(
-                    {
-                        "chunk_idx": chunk_idx if "chunk_idx" in locals() else -1,
-                        "worker_id": worker_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
+                self._record_error(worker_id, chunk_idx, e)
                 break
+            finally:
+                if item is not None:
+                    self.batch_queue.task_done()
 
-        logger.debug(f"Reader worker {worker_id} stopped")
+        logger.debug(f"Marker-window transform worker {worker_id} stopped")
 
-    def submit_chunk(self, chunk_idx: int):
-        self.read_queue.put(chunk_idx)
+    @staticmethod
+    def _unpack_fetched(fetched):
+        marker_score_chunk = None
+        if len(fetched) == 4:
+            ldscore, spot_names, abs_start, abs_end = fetched
+        else:
+            ldscore, spot_names, abs_start, abs_end, marker_score_chunk = fetched
+        return ldscore, spot_names, abs_start, abs_end, marker_score_chunk
+
+    def _put_batch_until_stopped(self, item) -> bool:
+        while not self.stop_workers.is_set():
+            try:
+                self.batch_queue.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _publish_transformed_in_order(self, result: dict) -> bool:
+        """Publish transform results in chunk order with bounded reordering.
+
+        Parallel sparse transforms can finish out of order. Unboundedly sending
+        later chunks downstream would let every subsequent regression finish
+        while one early chunk is stalled, defeating the bounded-memory design.
+        The earliest missing transform is always allowed into a full reorder
+        buffer, so it can drain the gap without deadlocking.
+        """
+        chunk_idx = int(result["chunk_idx"])
+        with self.publish_condition:
+            while (
+                len(self.pending_transforms) >= self.max_pending_transforms
+                and chunk_idx != self.next_chunk_to_publish
+                and not self.stop_workers.is_set()
+            ):
+                self.publish_condition.wait(timeout=0.1)
+
+            if self.stop_workers.is_set():
+                return False
+            if chunk_idx < self.next_chunk_to_publish or chunk_idx in self.pending_transforms:
+                raise RuntimeError(f"Duplicate transformed LDSC chunk {chunk_idx}")
+
+            self.pending_transforms[chunk_idx] = result
+            while self.next_chunk_to_publish in self.pending_transforms:
+                ordered = self.pending_transforms.pop(self.next_chunk_to_publish)
+                if not self._put_result_until_stopped(ordered):
+                    return False
+                self.next_chunk_to_publish += 1
+                self.publish_condition.notify_all()
+            return True
+
+    def _publish_fetched(self, chunk_idx: int, fetched, worker_id) -> bool:
+        ldscore, spot_names, abs_start, abs_end, marker_score_chunk = self._unpack_fetched(fetched)
+        return self._put_result_until_stopped(
+            {
+                "chunk_idx": chunk_idx,
+                "ldscore": ldscore,
+                "spot_names": spot_names,
+                "abs_start": abs_start,
+                "abs_end": abs_end,
+                "marker_score_chunk": marker_score_chunk,
+                "worker_id": worker_id,
+                "success": True,
+            }
+        )
+
+    def _record_source_chunks(self, n_chunks: int) -> None:
+        with self.source_progress_lock:
+            self.source_chunks_loaded += n_chunks
+
+    def _record_error(self, worker_id, chunk_idx: int, exception: Exception) -> None:
+        error_trace = traceback.format_exc()
+        logger.error(
+            f"LD-score source worker {worker_id} failed on chunk {chunk_idx}: {exception}\n"
+            f"Traceback:\n{error_trace}"
+        )
+        self.exception_queue.put((worker_id, exception, error_trace))
+        self.has_error.set()
+        self._put_result_until_stopped(
+            {
+                "chunk_idx": chunk_idx,
+                "worker_id": worker_id,
+                "success": False,
+                "error": str(exception),
+            }
+        )
+
+    def _put_result_until_stopped(self, result: dict) -> bool:
+        """Publish a result without trapping the source behind a failed consumer."""
+        while not self.stop_workers.is_set():
+            try:
+                self.result_queue.put(result, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
 
     def get_result(self):
         return self.result_queue.get()
 
     def get_queue_sizes(self):
-        return self.read_queue.qsize(), self.result_queue.qsize()
+        with self.source_progress_lock:
+            pending_reads = max(0, self.total_chunks - self.source_chunks_loaded)
+        if self.batch_queue is not None:
+            pending_reads += self.batch_queue.qsize()
+        with self.publish_condition:
+            pending_reads += len(self.pending_transforms)
+        return pending_reads, self.result_queue.qsize()
 
     def check_errors(self):
         if self.has_error.is_set():
             try:
                 worker_id, exception, error_trace = self.exception_queue.get_nowait()
                 raise RuntimeError(
-                    f"Reader worker {worker_id} failed: {exception}\n"
+                    f"Source worker {worker_id} failed: {exception}\n"
                     f"Original traceback:\n{error_trace}"
                 ) from exception
             except queue.Empty:
-                raise RuntimeError("Reader worker failed with unknown error") from None
+                raise RuntimeError("Source worker failed with unknown error") from None
 
     def close(self):
         self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.read_queue.put(None)
+        with self.publish_condition:
+            self.publish_condition.notify_all()
+        if self.batch_queue is not None:
+            while True:
+                try:
+                    self.batch_queue.get_nowait()
+                except queue.Empty:
+                    break
+                else:
+                    self.batch_queue.task_done()
+        deadline = time.monotonic() + 5
         for worker in self.workers:
-            worker.join(timeout=5)
-        logger.info("Reader pool closed")
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        live_workers = [worker.name for worker in self.workers if worker.is_alive()]
+        if live_workers:
+            logger.warning(f"Source workers did not stop within 5 seconds: {live_workers}")
+        logger.info("LD-score source stream closed")
 
 
-class ParallelLDScoreComputer:
-    """Multi-threaded computer for processing LD scores with JAX."""
+class LDScoreComputePool:
+    """Bounded worker pool for LD-score construction and JAX regression."""
 
     def __init__(
         self,
         processor,
-        process_chunk_jit_fn,
+        regression_fn,
         num_workers: int = 4,
         input_queue: queue.Queue = None,
         pipeline_depth: int = 0,
     ):
         self.processor = processor
-        self.process_chunk_jit_fn = process_chunk_jit_fn
+        self.regression_fn = regression_fn
         self.num_workers = num_workers
         # pipeline_depth > 0 => single-thread async double-buffering: dispatch up to
         # `depth` extra chunks ahead and block lazily, overlapping host<->device
@@ -182,7 +436,9 @@ class ParallelLDScoreComputer:
         # one stream saturates the device (extra threads only add cuSolver-handle
         # contention). 0 => the classic block-after-each path (used by CPU threads).
         self.pipeline_depth = pipeline_depth
-        self.compute_queue = input_queue if input_queue else queue.Queue(maxsize=num_workers * 2)
+        self.compute_queue = (
+            input_queue if input_queue is not None else queue.Queue(maxsize=num_workers * 2)
+        )
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
         self.total_cells_processed = 0
@@ -190,8 +446,6 @@ class ParallelLDScoreComputer:
         self.stats_lock = threading.Lock()
         self.exception_queue = queue.Queue()
         self.has_error = threading.Event()
-        self.results = []
-        self.results_lock = threading.Lock()
         self._prepare_jax_arrays()
         self._prepare_ldscore_backend()
         self.workers = []
@@ -305,7 +559,7 @@ class ParallelLDScoreComputer:
         else:
             spatial_ld_jax = jnp.asarray(item["ldscore"], dtype=jnp.float32)
 
-        betas, ses = self.process_chunk_jit_fn(
+        betas, ses = self.regression_fn(
             self.processor.config.n_blocks,
             spatial_ld_jax,
             self.baseline_ld_sum_jax,
@@ -327,19 +581,23 @@ class ParallelLDScoreComputer:
         betas_np = np.array(betas)
         ses_np = np.array(ses)
         elapsed = time.time() - start_time
-        n_cells_in_chunk = abs_end - abs_start
+        # A sample-filtered chunk may contain non-contiguous source rows, so
+        # the enclosing absolute range is not its cell count.
+        n_cells_in_chunk = len(spot_names)
 
         with self.throughput_lock:
             self.throughput.record_batch(elapsed)
 
+        self.processor._add_chunk_result(
+            chunk_idx, betas_np, ses_np, spot_names, abs_start, abs_end
+        )
+
+        # Progress advances only after the ordered output sink accepted the
+        # chunk. This prevents the monitor from declaring completion while a
+        # worker is still blocked behind an earlier result gap.
         with self.stats_lock:
             self.total_cells_processed += n_cells_in_chunk
             self.total_chunks_processed += 1
-
-        with self.results_lock:
-            self.processor._add_chunk_result(
-                chunk_idx, betas_np, ses_np, spot_names, abs_start, abs_end
-            )
 
         del spatial_ld_jax, betas, ses
 
@@ -433,8 +691,24 @@ class ParallelLDScoreComputer:
 
     def close(self):
         self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.compute_queue.put(None)
+        # A failed compute worker can leave the bounded source->compute queue
+        # full. Blocking while adding sentinels would deadlock error cleanup;
+        # discard pending work and let waiting workers observe stop_workers on
+        # their bounded get timeout.
+        while True:
+            try:
+                self.compute_queue.get_nowait()
+            except queue.Empty:
+                break
+        deadline = time.monotonic() + 5
         for worker in self.workers:
-            worker.join(timeout=5)
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        live_workers = [worker.name for worker in self.workers if worker.is_alive()]
+        if live_workers:
+            logger.warning(f"Compute workers did not stop within 5 seconds: {live_workers}")
+        else:
+            ldscore_backend = getattr(self, "ldscore_backend", None)
+            if ldscore_backend is not None:
+                ldscore_backend.close()
+            self.ldscore_backend = None
         logger.info("Compute pool closed")

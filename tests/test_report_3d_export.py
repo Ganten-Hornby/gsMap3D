@@ -27,12 +27,10 @@ def test_prepare_3d_visualization_propagates_export_failure(monkeypatch, tmp_pat
     report_data_dir.mkdir()
     web_report_dir.mkdir()
 
-    monkeypatch.setattr(report_data, "three_d_plot", lambda **kwargs: object())
-
     def fail_export(*args, **kwargs):
         raise ImportError("No module named 'nest_asyncio2'")
 
-    monkeypatch.setattr(report_data, "three_d_plot_save", fail_export)
+    monkeypatch.setattr(report_data, "export_spatial_3d_payloads", fail_export)
 
     with pytest.raises(ImportError, match="nest_asyncio2"):
         report_data._prepare_3d_visualization(

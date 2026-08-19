@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from gsMap.cli import app
+from gsMap.spatial_ldsc.chunk_source import SpatialLDChunkSource
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -116,6 +117,37 @@ def _direct_ldsc_args(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_direct_chunk_uses_np_take_and_preserves_snp_order(monkeypatch):
+    matrix = np.arange(30, dtype=np.float32).reshape(6, 5)
+    positions = np.array([4, 1, 3, 1], dtype=np.int64)
+    source = SpatialLDChunkSource(
+        mode="direct_ldscore",
+        chunk_starts=[0],
+        chunk_size=2,
+        cell_end=2,
+        spot_indices=np.arange(2),
+        spot_names_filtered=np.array(["cell_0", "cell_1"]),
+        ldscore_adata=type("AdataStub", (), {"X": matrix})(),
+        ldscore_snp_positions=positions,
+    )
+    original_take = np.take
+    calls = []
+
+    def tracked_take(array, indices, axis=None):
+        calls.append((array.shape, np.asarray(indices).copy(), axis))
+        return original_take(array, indices, axis=axis)
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.chunk_source.np.take", tracked_take)
+    observed = source._fetch_direct_ldscore_chunk(1, 3)
+
+    expected = matrix[:, 1:3][positions, :]
+    np.testing.assert_array_equal(observed, expected)
+    assert len(calls) == 1
+    assert calls[0][0] == (6, 2)
+    np.testing.assert_array_equal(calls[0][1], positions)
+    assert calls[0][2] == 0
 
 
 @pytest.mark.real_data

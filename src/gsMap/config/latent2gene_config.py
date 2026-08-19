@@ -3,6 +3,7 @@ Configuration for latent to gene mapping.
 """
 
 import logging
+import math
 from collections import OrderedDict
 from dataclasses import dataclass
 from enum import StrEnum
@@ -44,20 +45,13 @@ class HomogeneousSelectionMode(StrEnum):
     HARD_NICHE_FILTER = "hard_niche_filter"
 
 
-def _effective_min_cells_per_type(
-    min_cells_per_type: int | None,
-    homogeneous_neighbors: int,
-) -> int:
-    return (
-        homogeneous_neighbors
-        if min_cells_per_type is None
-        else min(min_cells_per_type, homogeneous_neighbors)
-    )
-
-
 @dataclass
 class LatentToGeneComputeConfig:
-    """Compute configuration for latent-to-gene step."""
+    """Compute configuration for latent-to-gene step.
+
+    Rank and marker-score batch sizes use zero for deterministic workload-based
+    sizing. Hardware concurrency uses stable defaults and explicit overrides.
+    """
 
     __display_in_quick_mode_cli__ = True
 
@@ -72,8 +66,9 @@ class LatentToGeneComputeConfig:
     memmap_tmp_dir: Annotated[
         Path | None,
         typer.Option(
-            help="Temporary directory for memory-mapped files to improve I/O performance on slow filesystems. "
-            "If provided, memory maps will be copied to this directory for faster random access during computation.",
+            help="Optional fast scratch directory for memory-mapped files. A file is staged only "
+            "when the full logical memmap plus safety headroom fits; otherwise gsMap uses the "
+            "project storage directly.",
             exists=True,
             file_okay=False,
             dir_okay=True,
@@ -81,59 +76,66 @@ class LatentToGeneComputeConfig:
         ),
     ] = None
 
-    # Batch sizes
-    rank_batch_size: int = 500
+    # Workload-dependent controls: zero selects deterministic data-based sizing.
+    rank_batch_size: int = 0
 
     mkscore_batch_size: Annotated[
         int,
         typer.Option(
-            help="Number of cells per batch for marker score calculation. Reduce this value (e.g., 50) if encountering GPU OOM errors.",
-            min=10,
+            help="Cells per marker-score batch; 0 selects automatically",
+            min=0,
             max=1000,
         ),
-    ] = 500
+    ] = 0
 
-    marker_score_gene_block_size: Annotated[
-        int,
-        typer.Option(
-            help="Number of genes per independently allocated marker-score block",
-            min=1,
-        ),
-    ] = 2048
-
+    # Hardware-dependent controls: stable defaults, never inferred from the host.
     find_homogeneous_batch_size: int = 100
-    rank_write_interval: int = 10
+    rank_write_interval: int = 0
 
-    # Worker configurations
     rank_read_workers: Annotated[
         int,
-        typer.Option(help="Number of parallel reader threads for rank memory map", min=1, max=50),
-    ] = 16
+        typer.Option(
+            help="Threads used to materialize distinct rank rows for each cache window",
+            min=1,
+            max=128,
+        ),
+    ] = 120
 
     mkscore_compute_workers: Annotated[
         int,
         typer.Option(
-            help="Number of parallel compute threads for marker score calculation", min=1, max=16
+            help="Marker-score compute workers",
+            min=1,
+            max=16,
         ),
     ] = 4
 
     mkscore_write_workers: Annotated[
         int,
-        typer.Option(help="Number of parallel writer threads for marker scores", min=1, max=50),
-    ] = 4
+        typer.Option(
+            help="Marker-score and rank write workers",
+            min=1,
+            max=50,
+        ),
+    ] = 2
 
     compute_input_queue_size: Annotated[
         int,
         typer.Option(
-            help="Maximum size of compute input queue (multiplier of mkscore_compute_workers)",
+            help="Maximum pending marker-score batches per compute worker",
             min=1,
             max=10,
         ),
-    ] = 5
+    ] = 1
 
     writer_queue_size: Annotated[
-        int, typer.Option(help="Maximum size of writer input queue", min=10, max=500)
-    ] = 100
+        int,
+        typer.Option(
+            help="Writer-input queue capacity",
+            min=10,
+            max=500,
+        ),
+    ] = 20
 
 
 @dataclass
@@ -328,8 +330,6 @@ class LatentToGeneCoreConfig:
     # Minimum number of cells per cell type in that dataset to be used for finding homogeneous neighbors
     min_cells_per_type: int | None = None
 
-    enable_profiling: bool = False
-
 
 @dataclass
 class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, ConfigWithAutoPaths):
@@ -342,6 +342,16 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
     def __post_init__(self):
         """Initialize and validate configuration"""
         super().__post_init__()
+
+        # Dataclass construction does not coerce programmatic string values to
+        # StrEnum members (Typer does). Normalize both API and CLI calls so all
+        # downstream comparisons, logging, and metadata use one representation.
+        self.dataset_type = DatasetType(self.dataset_type)
+        self.cross_slice_marker_score_strategy = MarkerScoreCrossSliceStrategy(
+            self.cross_slice_marker_score_strategy
+        )
+        self.cross_slice_selection_mode = CrossSliceSelectionMode(self.cross_slice_selection_mode)
+        self.homogeneous_selection_mode = HomogeneousSelectionMode(self.homogeneous_selection_mode)
 
         # Step 1: Configure JAX platform
         configure_jax_platform(self.use_gpu)
@@ -456,9 +466,10 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
 
     def _configure_dataset_parameters(self):
         """Configure parameters based on dataset type"""
-        self.min_cells_per_type = _effective_min_cells_per_type(
-            self.min_cells_per_type,
-            self.homogeneous_neighbors,
+        self.min_cells_per_type = (
+            self.homogeneous_neighbors
+            if self.min_cells_per_type is None
+            else min(self.min_cells_per_type, self.homogeneous_neighbors)
         )
 
         if self.dataset_type == DatasetType.SPATIAL_2D:
@@ -483,9 +494,11 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
                 "latent_representation_niche is not provided. Spatial domain similarity will not be used."
             )
 
-        assert self.homogeneous_neighbors <= self.spatial_neighbors, (
-            f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors}) for spatial2D datasets"
-        )
+        if self.homogeneous_neighbors > self.spatial_neighbors:
+            raise ValueError(
+                f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= "
+                f"spatial_neighbors ({self.spatial_neighbors}) for spatial2D datasets"
+            )
 
     def _configure_spatial_3d(self):
         """Configure parameters for spatial 3D datasets"""
@@ -501,30 +514,37 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
                 "latent_representation_niche is not provided. Spatial domain similarity will not be used."
             )
 
-        assert self.adjacent_slice_spatial_neighbors <= self.spatial_neighbors, (
-            f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors}) must be <= spatial_neighbors ({self.spatial_neighbors})"
-        )
-        assert self.homogeneous_neighbors <= self.adjacent_slice_spatial_neighbors, (
-            f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors})"
-        )
+        if self.adjacent_slice_spatial_neighbors > self.spatial_neighbors:
+            raise ValueError(
+                f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors}) must be "
+                f"<= spatial_neighbors ({self.spatial_neighbors})"
+            )
+        if self.homogeneous_neighbors > self.adjacent_slice_spatial_neighbors:
+            raise ValueError(
+                f"homogeneous_neighbors ({self.homogeneous_neighbors}) must be <= "
+                f"adjacent_slice_neighbors ({self.adjacent_slice_spatial_neighbors})"
+            )
+
+        if not math.isfinite(self.cross_slice_z_scale) or self.cross_slice_z_scale <= 0:
+            raise ValueError("cross_slice_z_scale must be positive for spatial3D datasets")
 
         if self.cross_slice_selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
-            if self.cross_slice_max_distance is None or self.cross_slice_max_distance <= 0:
+            if (
+                self.cross_slice_max_distance is None
+                or not math.isfinite(self.cross_slice_max_distance)
+                or self.cross_slice_max_distance <= 0
+            ):
                 raise ValueError(
                     "cross_slice_max_distance must be positive when "
                     "cross_slice_selection_mode='physical_window'"
                 )
-            if self.cross_slice_z_scale <= 0:
-                raise ValueError(
-                    "cross_slice_z_scale must be positive when "
-                    "cross_slice_selection_mode='physical_window'"
-                )
-
         n_slices = 1 + self.n_adjacent_slices  # only focal + above slices
-        assert n_slices <= len(self.sample_h5ad_dict), (
-            f"3D Cross slice search requires at least {n_slices} slices (1 focal + {self.n_adjacent_slices} above or {self.n_adjacent_slices} below). "
-            f"Only {len(self.sample_h5ad_dict)} samples provided. Please provide more slices or reduce adjacent_slices."
-        )
+        if n_slices > len(self.sample_h5ad_dict):
+            raise ValueError(
+                f"3D cross-slice search requires at least {n_slices} slices (1 focal + "
+                f"{self.n_adjacent_slices} above or below). Only "
+                f"{len(self.sample_h5ad_dict)} samples were provided."
+            )
 
         if self.cross_slice_selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
             logger.info(
@@ -571,16 +591,11 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         self.latent_representation_niche = None
 
 
-def check_latent2gene_done(
-    config: LatentToGeneConfig,
-    *,
-    require_marker_scores: bool = True,
-) -> bool:
+def check_latent2gene_done(config: LatentToGeneConfig) -> bool:
     """
     Check if latent2gene step is done by verifying validity of metadata and output files.
     """
     from gsMap.latent2gene.memmap_io import MemMapDense
-    from gsMap.latent2gene.rank_calculator import rank_outputs_match_inputs
 
     config._resolve_h5ad_inputs()
 
@@ -588,57 +603,29 @@ def check_latent2gene_done(
         "concatenated_latent_adata": Path(config.concatenated_latent_adata_path),
         "rank_memmap": Path(config.rank_memmap_path),
         "mean_frac": Path(config.mean_frac_path),
+        "marker_scores": Path(config.marker_scores_memmap_path),
         "metadata": Path(config.latent2gene_metadata_path),
     }
-    if require_marker_scores:
-        expected_outputs["marker_scores"] = Path(config.marker_scores_memmap_path)
-    else:
-        expected_outputs["marker_score_blocks_manifest"] = Path(
-            config.marker_score_blocks_manifest_path
-        )
 
     if not all(p.exists() for p in expected_outputs.values()):
         return False
 
     try:
-        if config.sample_h5ad_dict is None:
-            return False
-        if not rank_outputs_match_inputs(
-            sample_h5ad_dict=config.sample_h5ad_dict,
-            rank_memmap_path=expected_outputs["rank_memmap"],
-            mean_frac_path=expected_outputs["mean_frac"],
-            concatenated_adata_path=expected_outputs["concatenated_latent_adata"],
-            annotation_key=config.annotation,
-            data_layer=config.data_layer,
-            min_cells_per_type=_effective_min_cells_per_type(
-                config.min_cells_per_type,
-                config.homogeneous_neighbors,
-            ),
-        ):
+        # Check rank memmap completion
+        rank_memmap_complete, _ = MemMapDense.check_complete(expected_outputs["rank_memmap"])
+        if not rank_memmap_complete:
             return False
 
-        if require_marker_scores:
-            marker_scores_complete, _ = MemMapDense.check_complete(
-                expected_outputs["marker_scores"]
-            )
-            if not marker_scores_complete:
-                return False
-        else:
-            from gsMap.latent2gene.gene_blocks import gene_block_store_matches_inputs
-
-            if not gene_block_store_matches_inputs(
-                expected_outputs["marker_score_blocks_manifest"],
-                rank_memmap_path=expected_outputs["rank_memmap"],
-                mean_frac_path=expected_outputs["mean_frac"],
-                marker_metadata_path=expected_outputs["concatenated_latent_adata"],
-            ):
-                return False
+        # Check marker scores memmap completion
+        marker_scores_complete, _ = MemMapDense.check_complete(expected_outputs["marker_scores"])
+        if not marker_scores_complete:
+            return False
 
         # Check metadata
         with open(expected_outputs["metadata"]) as f:
-            metadata = yaml.unsafe_load(f)
+            metadata = yaml.safe_load(f)
 
-        if "outputs" not in metadata:
+        if not isinstance(metadata, dict) or "outputs" not in metadata:
             return False
 
         return True

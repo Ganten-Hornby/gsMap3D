@@ -10,11 +10,11 @@ import anndata as ad
 import jax
 
 from gsMap.config import SpatialLDSCConfig
-from gsMap.config.spatial_ldsc_config import check_spatial_ldsc_done
 from gsMap.latent2gene.gene_blocks import (
     GeneBlockMarkerStore,
     gene_block_store_matches_inputs,
 )
+from gsMap.logging_config import logged_stage, stage_logging
 
 from .io import (
     FeatherAnnData,
@@ -24,8 +24,7 @@ from .io import (
     load_marker_scores_memmap_format,
     log_existing_result_statistics,
 )
-from .ldscore_quick_mode import SpatialLDSCProcessor
-from .regression_kernel import wrapper_of_process_chunk_jit
+from .ldscore_quick_mode import SpatialLDSCEngine
 
 logger = logging.getLogger("gsMap.spatial_ldsc_jax")
 
@@ -45,18 +44,7 @@ jax.config.update("jax_enable_x64", False)  # Use float32 for speed and memory e
 # ============================================================================
 
 
-def _raise_for_trait_failures(failures: list[tuple[str, Exception]]) -> None:
-    """Make a multi-trait run fail after attempting every requested trait."""
-
-    if not failures:
-        return
-    failed_traits = ", ".join(trait for trait, _ in failures)
-    raise RuntimeError(
-        f"Spatial LDSC failed for {len(failures)} trait(s): {failed_traits}; "
-        "downstream Cauchy/report steps were not run"
-    ) from failures[0][1]
-
-
+@logged_stage("spatial_ldsc")
 def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     """
     Run spatial LDSC for all traits in config.sumstats_config_dict.
@@ -69,11 +57,9 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     output_dir = config.ldsc_save_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine number of loader threads based on platform
-    n_loader_threads = 10 if jax.default_backend() == "gpu" else 2
-
     marker_score_adata = None
     marker_score_store = None
+    trait_failures: list[tuple[str, Exception]] = []
 
     try:
         if config.ldscore_h5ad_path is not None:
@@ -84,14 +70,13 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             baseline_ld, w_ld, ldscore_adata = load_common_resources_direct_ldscore(config)
 
             logger.debug("Initializing processor (direct ldscore mode)...")
-            processor = SpatialLDSCProcessor(
+            processor = SpatialLDSCEngine(
                 config=config,
                 output_dir=output_dir,
                 marker_score_adata=None,
                 snp_gene_weight_adata=None,
                 baseline_ld=baseline_ld,
                 w_ld=w_ld,
-                n_loader_threads=n_loader_threads,
                 ldscore_adata=ldscore_adata,
             )
         else:
@@ -115,21 +100,16 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     mean_frac_path=config.mean_frac_path,
                     marker_metadata_path=config.concatenated_latent_adata_path,
                 ):
-                    raise RuntimeError(
-                        "Gene-block marker scores are stale or incomplete. "
-                        "Restart quick mode from latent2gene before spatial_ldsc."
-                    )
-                marker_score_store = GeneBlockMarkerStore(config.marker_score_blocks_manifest_path)
+                    raise RuntimeError("Gene-block marker scores are stale or incomplete")
+                marker_score_store = GeneBlockMarkerStore(
+                    config.marker_score_blocks_manifest_path
+                )
                 marker_score_adata = ad.read_h5ad(
                     config.concatenated_latent_adata_path,
                     backed="r",
                 )
 
             elif config.marker_score_format == "feather":
-                if config.marker_score_feather_path is None:
-                    raise ValueError(
-                        "marker_score_feather_path is required for Feather marker scores"
-                    )
                 feather_path = Path(config.marker_score_feather_path)
                 logger.info(f"Loading marker scores from Feather: {feather_path}")
                 marker_score_adata = FeatherAnnData(
@@ -154,63 +134,73 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
             # Initialize processor with common resources
             logger.debug("Initializing processor (weight-matrix mode)...")
-            processor = SpatialLDSCProcessor(
+            processor = SpatialLDSCEngine(
                 config=config,
                 output_dir=output_dir,
                 marker_score_adata=marker_score_adata,
                 snp_gene_weight_adata=snp_gene_weight_adata,
                 baseline_ld=baseline_ld,
                 w_ld=w_ld,
-                n_loader_threads=n_loader_threads,
                 marker_score_store=marker_score_store,
             )
 
         try:
-            trait_failures: list[tuple[str, Exception]] = []
             for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
                 try:
-                    logger.info("=" * 70)
-                    logger.info("Running Spatial LDSC (JAX Implementation)")
-                    logger.info(
-                        f"Project: {config.project_name}, Trait: {trait_name} ({idx + 1}/{len(traits_to_process)})"
+                    with stage_logging(config, "spatial_ldsc", trait=trait_name):
+                        logger.info("=" * 70)
+                        logger.info("Running Spatial LDSC (JAX Implementation)")
+                        logger.info(
+                            f"Project: {config.project_name}, Trait: {trait_name} "
+                            f"({idx + 1}/{len(traits_to_process)})"
+                        )
+                        if config.sample_filter:
+                            logger.info(f"Sample filter: {config.sample_filter}")
+                        if config.cell_indices_range:
+                            logger.info(f"Cell indices range: {config.cell_indices_range}")
+                        logger.info("=" * 70)
+
+                        # Check if output already exists
+                        expected_filename = generate_expected_output_filename(config, trait_name)
+                        if expected_filename is not None:
+                            expected_output_path = output_dir / expected_filename
+                            if expected_output_path.exists():
+                                logger.info(f"Output file already exists: {expected_output_path}")
+                                logger.info(
+                                    f"Skipping trait {trait_name} "
+                                    f"({idx + 1}/{len(traits_to_process)})"
+                                )
+
+                                # Log statistics from existing result
+                                log_existing_result_statistics(expected_output_path, trait_name)
+                                continue
+
+                        # Setup processor for current trait
+                        processor.setup_trait(trait_name, sumstats_file)
+
+                        # Process all chunks for current trait
+                        start_time = time.time()
+                        processor.process_all_chunks()
+
+                        elapsed_time = time.time() - start_time
+                        h, rem = divmod(elapsed_time, 3600)
+                        m, s = divmod(rem, 60)
+                        logger.info(
+                            f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s"
+                        )
+                except Exception as error:  # noqa: BLE001 isolate per-trait failures
+                    logger.error(
+                        f"Trait {trait_name} failed; continuing with the next trait: {error}"
                     )
-                    if config.sample_filter:
-                        logger.info(f"Sample filter: {config.sample_filter}")
-                    if config.cell_indices_range:
-                        logger.info(f"Cell indices range: {config.cell_indices_range}")
-                    logger.info("=" * 70)
+                    trait_failures.append((trait_name, error))
+                    continue  # Move on to the next trait even if this one fails
 
-                    # Check if output already exists
-                    expected_filename = generate_expected_output_filename(config, trait_name)
-                    if expected_filename is not None:
-                        expected_output_path = output_dir / expected_filename
-                        if check_spatial_ldsc_done(config, trait_name):
-                            logger.info(f"Output file already exists: {expected_output_path}")
-                            logger.info(
-                                f"Skipping trait {trait_name} ({idx + 1}/{len(traits_to_process)})"
-                            )
-
-                            # Log statistics from existing result
-                            log_existing_result_statistics(expected_output_path, trait_name)
-                            continue
-
-                    # Setup processor for current trait
-                    processor.setup_trait(trait_name, sumstats_file)
-
-                    # Process all chunks for current trait
-                    start_time = time.time()
-                    processor.process_all_chunks(wrapper_of_process_chunk_jit)
-
-                    elapsed_time = time.time() - start_time
-                    h, rem = divmod(elapsed_time, 3600)
-                    m, s = divmod(rem, 60)
-                    logger.info(f"Trait {trait_name} completed in {int(h)}h {int(m)}m {s:.2f}s")
-                except Exception as e:  # noqa: BLE001  isolate per-trait failures
-                    logger.exception(f"Error processing trait {trait_name}: {e}")
-                    trait_failures.append((trait_name, e))
-                    continue
-
-            _raise_for_trait_failures(trait_failures)
+            if trait_failures:
+                failed_traits = ", ".join(name for name, _ in trait_failures)
+                raise RuntimeError(
+                    f"Spatial LDSC failed for {len(trait_failures)}/"
+                    f"{len(traits_to_process)} traits: {failed_traits}"
+                ) from trait_failures[0][1]
 
         finally:
             # Cleanup once: close memmap/adata if needed
@@ -224,13 +214,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     marker_score_adata.uns["memmap_manager"].close()
                 # If it's backed AnnData, close the file
                 if (
-                    config.marker_score_format == "h5ad"
-                    and isinstance(marker_score_adata, ad.AnnData)
-                    and marker_score_adata.isbacked
-                ):
-                    marker_score_adata.file.close()
-                if (
-                    config.marker_score_format == "gene_block"
+                    config.marker_score_format in {"h5ad", "gene_block"}
                     and isinstance(marker_score_adata, ad.AnnData)
                     and marker_score_adata.isbacked
                 ):
@@ -238,6 +222,6 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             if marker_score_store is not None:
                 marker_score_store.close()
 
-    except Exception as e:
-        logger.error(f"An error occurred during execution: {e}")
+    except Exception as error:
+        logger.error(f"Spatial LDSC execution failed: {error}")
         raise

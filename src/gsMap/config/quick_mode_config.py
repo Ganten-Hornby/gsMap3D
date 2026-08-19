@@ -227,13 +227,24 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
 
     # Per-sample spatial JS files (Spatial only)
     if dataset_type in (DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D):
+        sample_payload_dir = js_data_dir / "spatial_2d"
+        sample_manifest = js_data_dir / "sample_spatial_manifest.json"
+        if not sample_manifest.exists():
+            missing_web_files.append(sample_manifest)
         sample_h5ad_dict = config.sample_h5ad_dict
         if sample_h5ad_dict:
             for sample_name in sample_h5ad_dict.keys():
                 safe_name = "".join(c if c.isalnum() else "_" for c in sample_name)
-                sample_js = js_data_dir / f"sample_{safe_name}_spatial.js"
-                if not sample_js.exists():
-                    missing_web_files.append(sample_js)
+                sample_base = sample_payload_dir / f"sample_{safe_name}_base.js"
+                if not sample_base.exists():
+                    missing_web_files.append(sample_base)
+                for trait in traits:
+                    safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+                    trait_payload = (
+                        sample_payload_dir / f"sample_{safe_name}_trait_{safe_trait}.js"
+                    )
+                    if not trait_payload.exists():
+                        missing_web_files.append(trait_payload)
 
         # Gene diagnostic plots directory (Spatial only)
         gene_plot_dir = web_report_dir / "gene_diagnostic_plots"
@@ -243,25 +254,33 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
     # 3D specific files (Spatial 3D only)
     if dataset_type == DatasetType.SPATIAL_3D:
         three_d_data_dir = report_data_dir / "spatial_3d"
-        three_d_web_dir = web_report_dir / "spatial_3d"
+        three_d_payload_dir = js_data_dir / "spatial_3d"
+        for data_file in (
+            report_data_dir / "spatial_3d_coordinate_info.json",
+            three_d_data_dir / "spatial_3d_manifest.json",
+            three_d_data_dir / "spatial_3d_display_spots.parquet",
+        ):
+            if not data_file.exists():
+                missing_data_files.append(data_file)
 
-        # 3D H5AD file
-        h5ad_3d = three_d_data_dir / "spatial_3d.h5ad"
-        if not h5ad_3d.exists():
-            missing_data_files.append(h5ad_3d)
+        for web_file in (
+            three_d_payload_dir / "spatial_3d_base.js",
+            three_d_payload_dir / "spatial_3d_index.js",
+        ):
+            if not web_file.exists():
+                missing_web_files.append(web_file)
 
-        # 3D HTML plot files (one per trait/annotation)
         for trait in traits:
             safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-            trait_3d_html = three_d_web_dir / f"spatial_3d_trait_{safe_trait}.html"
-            if not trait_3d_html.exists():
-                missing_web_files.append(trait_3d_html)
+            trait_payload = three_d_payload_dir / f"trait_{safe_trait}.js"
+            if not trait_payload.exists():
+                missing_web_files.append(trait_payload)
 
         for anno in annotation_list:
             safe_anno = "".join(c if c.isalnum() else "_" for c in anno)
-            anno_3d_html = three_d_web_dir / f"spatial_3d_anno_{safe_anno}.html"
-            if not anno_3d_html.exists():
-                missing_web_files.append(anno_3d_html)
+            anno_payload = three_d_payload_dir / f"annotation_{safe_anno}.js"
+            if not anno_payload.exists():
+                missing_web_files.append(anno_payload)
 
     # Multi-sample plots (Spatial only, and if enabled)
     if dataset_type != DatasetType.SCRNA_SEQ and config.generate_multi_sample_plots:

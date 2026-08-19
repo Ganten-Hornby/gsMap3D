@@ -6,9 +6,11 @@ Replaces Zarr-backed storage with NumPy memory maps for better performance
 import errno
 import json
 import logging
+import mmap
 import os
 import queue
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -19,6 +21,228 @@ from pathlib import Path
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+_LUSTRE_STRIPE_SIZE_BYTES = 4 * 1024**2
+_TMP_MINIMUM_HEADROOM_BYTES = 5 * 1024**3
+_COPY_BUFFER_BYTES = 16 * 1024**2
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Publish JSON metadata atomically in the destination directory."""
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _filesystem_type(path: Path) -> str | None:
+    """Resolve the Linux mount type without requiring an external command."""
+    target = path if path.exists() else path.parent
+    try:
+        target = target.resolve()
+        best_match = ""
+        best_type = None
+        with Path("/proc/self/mountinfo").open(encoding="utf-8") as handle:
+            for line in handle:
+                left, separator, right = line.rstrip().partition(" - ")
+                if not separator:
+                    continue
+                fields = left.split()
+                right_fields = right.split()
+                if len(fields) < 5 or not right_fields:
+                    continue
+                mountpoint = fields[4].replace("\\040", " ").replace("\\011", "\t")
+                target_text = str(target)
+                prefix = mountpoint.rstrip("/") + "/"
+                if target_text == mountpoint or target_text.startswith(prefix):
+                    if len(mountpoint) > len(best_match):
+                        best_match = mountpoint
+                        best_type = right_fields[0]
+        return best_type
+    except OSError:
+        return None
+
+
+def _automatic_lustre_stripe_count(file_bytes: int) -> int:
+    """Choose bounded parallelism for large files without a user-facing knob."""
+    if file_bytes < 8 * 1024**3:
+        return 1
+    if file_bytes < 128 * 1024**3:
+        return 4
+    if file_bytes < 1024**4:
+        return 8
+    return 16
+
+
+def _same_filesystem(first: Path, second: Path) -> bool:
+    """Return whether two paths reside on the same mounted filesystem."""
+
+    def existing_parent(path: Path) -> Path:
+        candidate = path
+        while not candidate.exists() and candidate != candidate.parent:
+            candidate = candidate.parent
+        return candidate
+
+    try:
+        return existing_parent(first).stat().st_dev == existing_parent(second).stat().st_dev
+    except OSError:
+        return False
+
+
+def _should_use_tmp_storage(
+    original_path: Path,
+    tmp_dir: Path,
+    file_bytes: int,
+) -> bool:
+    """Use optional scratch only when it is distinct and safely large enough."""
+    if _same_filesystem(original_path, tmp_dir):
+        logger.info(
+            f"Temporary directory {tmp_dir} shares the output filesystem; "
+            "using the original path directly"
+        )
+        return False
+
+    try:
+        free_bytes = shutil.disk_usage(tmp_dir).free
+    except OSError as error:
+        logger.warning(
+            f"Could not inspect temporary storage {tmp_dir}; using the original path: {error}"
+        )
+        return False
+
+    headroom = max(_TMP_MINIMUM_HEADROOM_BYTES, file_bytes // 10)
+    required_bytes = file_bytes + headroom
+    if free_bytes < required_bytes:
+        logger.warning(
+            f"Temporary storage {tmp_dir} has {free_bytes / 1024**3:.1f} GiB free, "
+            f"but this memmap requires {file_bytes / 1024**3:.1f} GiB plus "
+            f"{headroom / 1024**3:.1f} GiB headroom; using the original path directly"
+        )
+        return False
+    return True
+
+
+def _prepare_memmap_data_file(data_path: Path, file_bytes: int) -> dict[str, object]:
+    """Create and fully allocate a backing file, with Lustre striping when available."""
+    data_path.unlink(missing_ok=True)
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    filesystem_type = _filesystem_type(data_path)
+    storage_layout: dict[str, object] = {
+        "filesystem_type": filesystem_type or "unknown",
+        "automatic_striping": False,
+    }
+    if filesystem_type == "lustre":
+        lfs = shutil.which("lfs")
+        if lfs is None:
+            logger.warning(
+                "Lustre filesystem detected but lfs is unavailable; using default striping"
+            )
+        else:
+            stripe_count = _automatic_lustre_stripe_count(file_bytes)
+            command = [
+                lfs,
+                "setstripe",
+                "-c",
+                str(stripe_count),
+                "-S",
+                str(_LUSTRE_STRIPE_SIZE_BYTES),
+                str(data_path),
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                data_path.unlink(missing_ok=True)
+                detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+                logger.warning(f"Could not configure Lustre striping; using defaults: {detail}")
+            else:
+                storage_layout.update(
+                    {
+                        "automatic_striping": True,
+                        "stripe_count": stripe_count,
+                        "stripe_size_bytes": _LUSTRE_STRIPE_SIZE_BYTES,
+                    }
+                )
+
+    try:
+        mode = "r+b" if data_path.exists() else "w+b"
+        with data_path.open(mode) as handle:
+            try:
+                os.posix_fallocate(handle.fileno(), 0, file_bytes)
+            except AttributeError:
+                logger.warning(
+                    "os.posix_fallocate is unavailable; creating a sparse memmap backing file"
+                )
+                handle.truncate(file_bytes)
+            except OSError as error:
+                unsupported = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}
+                if error.errno not in unsupported:
+                    raise
+                logger.warning(
+                    "Filesystem does not support posix_fallocate; creating a sparse "
+                    "memmap backing file: %s",
+                    error,
+                )
+                handle.truncate(file_bytes)
+        if data_path.stat().st_size != file_bytes:
+            raise OSError(
+                f"Could not allocate {file_bytes} bytes for {data_path}; "
+                f"backing file size is {data_path.stat().st_size}"
+            )
+    except BaseException:
+        data_path.unlink(missing_ok=True)
+        raise
+
+    if storage_layout["automatic_striping"]:
+        logger.info(
+            f"Created Lustre memmap with {storage_layout['stripe_count']} stripes of "
+            f"{_LUSTRE_STRIPE_SIZE_BYTES // 1024**2} MiB: {data_path}"
+        )
+    return storage_layout
+
+
+def set_memmap_advice(rank_memmap: np.memmap, advice: str = "random") -> bool:
+    """Apply a portable best-effort access hint to a rank memory map.
+
+    Returns ``True`` when the operating system accepted the hint. Unsupported
+    platforms retain their default behavior and return ``False``.
+    """
+
+    advice_value = getattr(advice, "value", advice)
+    normalized = str(advice_value).lower()
+    constant_names = {
+        "normal": "MADV_NORMAL",
+        "random": "MADV_RANDOM",
+        "sequential": "MADV_SEQUENTIAL",
+    }
+    if normalized not in constant_names:
+        choices = ", ".join(constant_names)
+        raise ValueError(f"Invalid rank mmap advice {advice!r}; expected one of: {choices}")
+
+    underlying_mmap = getattr(rank_memmap, "_mmap", None)
+    madvise = getattr(underlying_mmap, "madvise", None)
+    advice_constant = getattr(mmap, constant_names[normalized], None)
+    if madvise is None or advice_constant is None:
+        logger.warning(
+            "Rank mmap advice '%s' is unsupported on this platform; using OS defaults",
+            normalized,
+        )
+        return False
+
+    try:
+        madvise(advice_constant)
+    except (OSError, ValueError) as error:
+        logger.warning(
+            "Could not apply rank mmap advice '%s'; using OS defaults: %s",
+            normalized,
+            error,
+        )
+        return False
+
+    logger.info("Applied rank mmap advice: %s", normalized)
+    return True
 
 
 class MemMapDense:
@@ -52,30 +276,72 @@ class MemMapDense:
         self.dtype = dtype
         self.mode = mode
         self.num_write_workers = num_write_workers
+        if self.num_write_workers < 0:
+            raise ValueError("num_write_workers cannot be negative")
         self.flush_interval = flush_interval
         self.tmp_dir = Path(tmp_dir) if tmp_dir else None
         self.using_tmp = False
         self.tmp_path = None
+        self._published = False
+        self._closed = False
+        self._writers_stopped = False
 
-        # Set up paths based on whether tmp_dir is provided
-        if self.tmp_dir:
-            self._setup_tmp_paths()
+        # A scratch directory must not bypass the normal protection against
+        # overwriting a completed final output.
+        if mode == "w":
+            original_meta_path = self.original_path.with_suffix(".meta.json")
+            if original_meta_path.is_file():
+                try:
+                    with original_meta_path.open(encoding="utf-8") as handle:
+                        original_meta = json.load(handle)
+                    if original_meta.get("complete", False):
+                        raise ValueError(
+                            f"MemMapDense at {self.original_path} already exists and is "
+                            "marked as complete. Please delete it manually before overwriting."
+                        )
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Invalid metadata at {original_meta_path}. Recreating the memmap."
+                    )
+
+        file_bytes = int(np.prod(self.shape, dtype=np.int64)) * np.dtype(self.dtype).itemsize
+
+        # Scratch is an optional optimization, never a capacity requirement.
+        # This check is repeated for each concurrently live memmap, so free
+        # space consumed by an already staged rank file is accounted for when
+        # deciding whether the marker output can also be staged.
+        if self.tmp_dir and _should_use_tmp_storage(
+            self.original_path,
+            self.tmp_dir,
+            file_bytes,
+        ):
+            try:
+                self._setup_tmp_paths()
+            except BaseException:
+                self._cleanup_tmp()
+                raise
         else:
+            self.tmp_dir = None
             self.path = self.original_path
 
         # File paths
         self.data_path = self.path.with_suffix(".dat")
         self.meta_path = self.path.with_suffix(".meta.json")
 
-        # Initialize memory map
-        if mode == "w":
-            self._create_memmap()
-        elif mode == "r":
-            self._open_memmap_readonly()
-        elif mode == "r+":
-            self._open_memmap_readwrite()
-        else:
-            raise ValueError(f"Invalid mode: {mode}. Must be 'w', 'r', or 'r+'")
+        # Initialize the mapping. Constructor failures occur before a caller can
+        # hold and close this object, so clean any staged scratch copy here.
+        try:
+            if mode == "w":
+                self._create_memmap()
+            elif mode == "r":
+                self._open_memmap_readonly()
+            elif mode == "r+":
+                self._open_memmap_readwrite()
+            else:
+                raise ValueError(f"Invalid mode: {mode}. Must be 'w', 'r', or 'r+'")
+        except BaseException:
+            self._cleanup_tmp()
+            raise
 
         # Async writing setup (only for write modes)
         self.write_queue = queue.Queue(maxsize=100)
@@ -117,7 +383,7 @@ class MemMapDense:
                 logger.info(f"Memmap files copied to {self.tmp_subdir}")
 
     def _sync_tmp_to_original(self):
-        """Sync temporary files back to original location"""
+        """Sequentially publish scratch data to its final storage layout."""
         if not self.using_tmp:
             return
 
@@ -126,12 +392,31 @@ class MemMapDense:
         original_data_path = self.original_path.with_suffix(".dat")
         original_meta_path = self.original_path.with_suffix(".meta.json")
 
-        if tmp_data_path.exists():
-            logger.info("Syncing memmap data from tmp to original location...")
-            shutil.move(str(tmp_data_path), str(original_data_path))
+        if not tmp_data_path.is_file() or not tmp_meta_path.is_file():
+            raise FileNotFoundError("Temporary memmap data or metadata disappeared before sync")
 
-        if tmp_meta_path.exists():
-            shutil.move(str(tmp_meta_path), str(original_meta_path))
+        self.original_path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp_meta_path.open(encoding="utf-8") as handle:
+            final_meta = json.load(handle)
+
+        # Publish incomplete metadata before replacing data. Readers therefore
+        # cannot accept a partial cross-filesystem copy as a completed memmap.
+        incomplete_meta = {**final_meta, "complete": False}
+        _atomic_write_json(original_meta_path, incomplete_meta)
+
+        file_bytes = tmp_data_path.stat().st_size
+        storage_layout = _prepare_memmap_data_file(original_data_path, file_bytes)
+        destination_mode = "r+b" if original_data_path.exists() else "wb"
+        logger.info("Syncing memmap data from temporary to original storage sequentially...")
+        with (
+            tmp_data_path.open("rb") as source,
+            original_data_path.open(destination_mode) as destination,
+        ):
+            shutil.copyfileobj(source, destination, length=_COPY_BUFFER_BYTES)
+            destination.truncate(file_bytes)
+
+        final_meta["storage_layout"] = storage_layout
+        _atomic_write_json(original_meta_path, final_meta)
 
         logger.info(f"Memmap files synced to {self.original_path}")
 
@@ -163,14 +448,14 @@ class MemMapDense:
             except (json.JSONDecodeError, KeyError):
                 logger.warning(f"Invalid metadata at {self.meta_path}. Recreating.")
 
-        # Reserve the complete backing store before mapping it.  Merely opening a
-        # large file with np.memmap(mode="w+") creates a sparse file; a later
-        # allocation failure then terminates the process with SIGBUS instead of a
-        # catchable Python exception.  Up-front allocation turns that failure
-        # into an OSError here, before worker threads start writing.
-        byte_size = int(np.prod(self.shape, dtype=np.int64)) * np.dtype(self.dtype).itemsize
-        self._preallocate_backing_file(byte_size)
-        self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="r+", shape=self.shape)
+        file_bytes = int(np.prod(self.shape, dtype=np.int64)) * np.dtype(self.dtype).itemsize
+        storage_layout = _prepare_memmap_data_file(self.data_path, file_bytes)
+        self.memmap = np.memmap(
+            self.data_path,
+            dtype=self.dtype,
+            mode="r+",
+            shape=self.shape,
+        )
 
         # # Initialize to zeros
         # self.memmap[:] = 0
@@ -182,45 +467,11 @@ class MemMapDense:
             "dtype": np.dtype(self.dtype).name,  # Use dtype.name for proper serialization
             "complete": False,
             "created_at": time.time(),
+            "storage_layout": storage_layout,
         }
-        with open(self.meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
+        _atomic_write_json(self.meta_path, meta)
 
         logger.info(f"Created MemMapDense at {self.data_path} with shape {self.shape}")
-
-    def _preallocate_backing_file(self, byte_size: int) -> None:
-        """Create a fully allocated backing file or fail before it is mmap'ed."""
-        self.data_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(self.data_path, "w+b") as backing_file:
-                try:
-                    os.posix_fallocate(backing_file.fileno(), 0, byte_size)
-                except AttributeError:
-                    logger.warning(
-                        "os.posix_fallocate is unavailable; creating a sparse memmap backing file"
-                    )
-                    backing_file.truncate(byte_size)
-                except OSError as error:
-                    unsupported_errors = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}
-                    if error.errno not in unsupported_errors:
-                        raise
-                    logger.warning(
-                        "Filesystem does not support posix_fallocate; creating a sparse "
-                        "memmap backing file: %s",
-                        error,
-                    )
-                    backing_file.truncate(byte_size)
-        except BaseException:
-            self.data_path.unlink(missing_ok=True)
-            raise
-
-        actual_size = self.data_path.stat().st_size
-        if actual_size != byte_size:
-            self.data_path.unlink(missing_ok=True)
-            raise OSError(
-                f"Could not allocate {byte_size} bytes for {self.data_path}; "
-                f"backing file size is {actual_size}"
-            )
 
     def _open_memmap_readonly(self):
         """Open an existing memory-mapped file in read-only mode"""
@@ -237,6 +488,12 @@ class MemMapDense:
         # Validate shape and dtype
         if tuple(meta["shape"]) != self.shape:
             raise ValueError(f"Shape mismatch: expected {self.shape}, got {tuple(meta['shape'])}")
+        metadata_dtype = np.dtype(meta["dtype"])
+        requested_dtype = np.dtype(self.dtype)
+        if metadata_dtype != requested_dtype:
+            raise ValueError(
+                f"Dtype mismatch: expected {requested_dtype.name}, got {metadata_dtype.name}"
+            )
 
         # Open memory map
         self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="r", shape=self.shape)
@@ -252,10 +509,17 @@ class MemMapDense:
         with open(self.meta_path) as f:
             meta = json.load(f)
 
+        if tuple(meta["shape"]) != self.shape:
+            raise ValueError(f"Shape mismatch: expected {self.shape}, got {tuple(meta['shape'])}")
+        metadata_dtype = np.dtype(meta["dtype"])
+        requested_dtype = np.dtype(self.dtype)
+        if metadata_dtype != requested_dtype:
+            raise ValueError(
+                f"Dtype mismatch: expected {requested_dtype.name}, got {metadata_dtype.name}"
+            )
+
         # Open memory map
-        self.memmap = np.memmap(
-            self.data_path, dtype=self.dtype, mode="r+", shape=tuple(meta["shape"])
-        )
+        self.memmap = np.memmap(self.data_path, dtype=self.dtype, mode="r+", shape=self.shape)
 
         logger.info(f"Opened MemMapDense at {self.data_path} in read-write mode")
 
@@ -330,6 +594,19 @@ class MemMapDense:
             logger.warning("Cannot write to read-only MemMapDense")
             return
 
+        # A zero-worker mapping is useful when a caller already serializes its
+        # output. Keep write_batch functional instead of enqueuing work that no
+        # thread can ever consume.
+        if not self.writer_threads:
+            if isinstance(row_indices, slice):
+                self.memmap[row_indices, col_slice] = data
+            elif isinstance(row_indices, int | np.integer):
+                start_row = int(row_indices)
+                self.memmap[start_row : start_row + data.shape[0], col_slice] = data
+            else:
+                self.memmap[row_indices, col_slice] = data
+            return
+
         self.write_queue.put((data, row_indices, col_slice))
 
     def read_batch(
@@ -359,12 +636,12 @@ class MemMapDense:
             raise ValueError("Cannot write to read-only MemMapDense")
         self.memmap[key] = value
 
-    def mark_complete(self):
+    def mark_complete(self, metadata_updates: dict | None = None):
         """Mark the memory map as complete"""
         if self.mode in ("w", "r+"):
             logger.info("Marking memmap as complete")
             # Ensure all writes are flushed
-            if self.writer_threads and not self.write_queue.empty():
+            if self.writer_threads:
                 logger.info("Waiting for remaining writes before marking complete...")
                 self.write_queue.join()
 
@@ -385,11 +662,12 @@ class MemMapDense:
                 meta = json.load(f)
             meta["complete"] = True
             meta["completed_at"] = time.time()
+            if metadata_updates:
+                meta.update(metadata_updates)
             # Ensure dtype is properly serialized
             if "dtype" in meta and not isinstance(meta["dtype"], str):
                 meta["dtype"] = np.dtype(self.dtype).name
-            with open(self.meta_path, "w") as f:
-                json.dump(meta, f, indent=2)
+            _atomic_write_json(self.meta_path, meta)
 
             logger.info(f"Marked MemMapDense at {self.path} as complete")
 
@@ -413,7 +691,7 @@ class MemMapDense:
             # Derive metadata path from memmap path
             if memmap_path.suffix == ".dat":
                 meta_path = memmap_path.with_suffix(".meta.json")
-            elif memmap_path.suffix == ".meta.json":
+            elif memmap_path.name.endswith(".meta.json"):
                 meta_path = memmap_path
             else:
                 # Assume no extension, add .meta.json
@@ -427,42 +705,122 @@ class MemMapDense:
         try:
             with open(meta_path) as f:
                 meta = json.load(f)
-            return meta.get("complete", False), meta
-        except (OSError, json.JSONDecodeError) as e:
+            if not meta.get("complete", False):
+                return False, meta
+
+            if memmap_path.name.endswith(".meta.json"):
+                data_path = memmap_path.with_name(
+                    f"{memmap_path.name.removesuffix('.meta.json')}.dat"
+                )
+            else:
+                data_path = (
+                    memmap_path
+                    if memmap_path.suffix == ".dat"
+                    else memmap_path.with_suffix(".dat")
+                )
+            expected_bytes = (
+                int(np.prod(meta["shape"], dtype=np.int64)) * np.dtype(meta["dtype"]).itemsize
+            )
+            if not data_path.is_file() or data_path.stat().st_size != expected_bytes:
+                logger.warning(f"Memmap data file is missing or has the wrong size: {data_path}")
+                return False, meta
+
+            if "row_layout" in meta:
+                from .marker_layout import open_marker_obs_indices
+
+                mapping = open_marker_obs_indices(
+                    data_path,
+                    meta,
+                    expected_obs=int(meta["shape"][0]),
+                )
+                if mapping is not None:
+                    mapping._mmap.close()
+            return True, meta
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
             logger.warning(f"Could not read metadata from {meta_path}: {e}")
             return False, None
 
-    def close(self):
-        """Clean up resources"""
-        logger.info("MemMapDense.close() called")
+    def _stop_writer_threads(self) -> None:
+        """Drain queued writes and stop the asynchronous writers exactly once."""
+        if self._writers_stopped:
+            return
         if self.writer_threads:
-            logger.info("Closing MemMapDense: waiting for queued writes...")
+            logger.info("Waiting for queued memmap writes...")
             self.write_queue.join()
             logger.info("All queued writes have been processed")
-            self.stop_writer.set()
-            logger.info("Stop signal set for writer threads")
 
-            # Send stop signal to all threads
             for _ in self.writer_threads:
                 self.write_queue.put(None)
-            logger.info("Stop sentinels queued for writer threads")
 
-            # Wait for all threads to finish
             for thread in self.writer_threads:
                 thread.join(timeout=5.0)
+                if thread.is_alive():
+                    raise RuntimeError("Memmap writer thread did not stop within 5 seconds")
+            self.stop_writer.set()
+            logger.info("Memmap writer threads stopped")
+        self._writers_stopped = True
 
-        # Final flush
+    def publish(self, metadata_updates: dict | None = None) -> None:
+        """Finalize output and publish one sequential copy while retaining scratch.
+
+        A newly generated rank matrix uses this method before marker scoring so
+        its project-side checkpoint is durable while the existing scratch
+        mapping remains available for immediate reuse.
+        """
+        if self._closed:
+            raise RuntimeError("Cannot publish a closed MemMapDense")
+        if self.mode not in ("w", "r+"):
+            return
+        if self._published:
+            if metadata_updates:
+                raise RuntimeError("Cannot update metadata after a memmap was published")
+            return
+
+        self._stop_writer_threads()
+        self.mark_complete(metadata_updates=metadata_updates)
+        if self.using_tmp:
+            self._sync_tmp_to_original()
+        self._published = True
+
+    def _close_memmap_handle(self) -> None:
+        underlying_mmap = getattr(getattr(self, "memmap", None), "_mmap", None)
+        if underlying_mmap is not None and not getattr(underlying_mmap, "closed", False):
+            underlying_mmap.close()
+
+    def close(self, metadata_updates: dict | None = None):
+        """Publish pending output, close the mapping, and clean temporary storage."""
+        if self._closed:
+            return
+        logger.info("MemMapDense.close() called")
+
         if self.mode in ("w", "r+"):
-            self.mark_complete()
+            self.publish(metadata_updates=metadata_updates)
 
-            # Sync tmp files back to original location if using tmp
-            if self.using_tmp:
-                self._sync_tmp_to_original()
-
+        self._close_memmap_handle()
         self._cleanup_tmp()
+        self._closed = True
+
+    def abort(self) -> None:
+        """Close an unpublished mapping without marking or syncing it complete."""
+        if self._closed:
+            return
+        logger.info("Aborting incomplete MemMapDense output")
+        if self.mode in ("w", "r+"):
+            self._stop_writer_threads()
+        self._close_memmap_handle()
+        self._cleanup_tmp()
+        self._closed = True
 
     def __enter__(self):
         return self
+
+    def __exit__(self, exc_type, exc_value, traceback_obj):
+        del exc_value, traceback_obj
+        if exc_type is None:
+            self.close()
+        else:
+            self.abort()
+        return False
 
     @property
     def attrs(self):
@@ -506,177 +864,15 @@ class ComponentThroughput:
         return 0.0
 
 
-class ParallelRankReader:
-    """Multi-threaded reader for log-rank data from memory-mapped storage"""
-
-    def __init__(
-        self,
-        rank_memmap: MemMapDense | str,
-        num_workers: int = 4,
-        output_queue: queue.Queue = None,
-        cache_size_mb: int = 1000,
-    ):
-        # Store shared memmap object if provided
-        if isinstance(rank_memmap, MemMapDense):
-            self.shared_memmap = rank_memmap.memmap
-            self.memmap_path = rank_memmap.path
-            self.shape = rank_memmap.shape
-            self.dtype = rank_memmap.dtype
-        else:
-            # Fallback for string path: open a shared read-only memmap here
-            self.memmap_path = Path(rank_memmap)
-            meta_path = self.memmap_path.with_suffix(".meta.json")
-            data_path = self.memmap_path.with_suffix(".dat")
-            with open(meta_path) as f:
-                meta = json.load(f)
-            self.shape = tuple(meta["shape"])
-            self.dtype = np.dtype(meta["dtype"])
-
-            # Open the single shared memmap
-            self.shared_memmap = np.memmap(data_path, dtype=self.dtype, mode="r", shape=self.shape)
-            logger.info(f"Opened shared memmap for reading at {data_path}")
-
-        self.num_workers = num_workers
-
-        # Queues for communication
-        self.read_queue = queue.Queue()
-        # Use provided output queue or create own
-        self.result_queue = (
-            output_queue if output_queue else queue.Queue(maxsize=self.num_workers * 4)
-        )
-
-        # Throughput tracking
-        self.throughput = ComponentThroughput()
-        self.throughput_lock = threading.Lock()
-
-        # Exception handling
-        self.exception_queue = queue.Queue()
-        self.has_error = threading.Event()
-
-        # Start worker threads
-        self.workers = []
-        self.stop_workers = threading.Event()
-        self._start_workers()
-
-    def _start_workers(self):
-        """Start worker threads"""
-        for i in range(self.num_workers):
-            worker = threading.Thread(target=self._worker, args=(i,), daemon=True)
-            worker.start()
-            self.workers.append(worker)
-
-    def _worker(self, worker_id: int):
-        """Worker thread for reading batches from shared memory map"""
-        logger.debug(f"Reader worker {worker_id} started using shared memmap")
-
-        # No need to open a new memmap; use self.shared_memmap directly.
-        # Numpy releases the GIL during memmap array access, enabling parallelism.
-
-        while not self.stop_workers.is_set():
-            try:
-                # Get batch request
-                item = self.read_queue.get()
-                if item is None:
-                    break
-
-                batch_id, neighbor_indices, batch_metadata = item
-
-                # Track timing
-                start_time = time.time()
-
-                # Flatten and deduplicate indices for efficient reading
-                flat_indices = np.unique(neighbor_indices.flatten())
-
-                # Validate indices are within bounds
-                max_idx = self.shape[0] - 1
-                assert flat_indices.max() <= max_idx, (
-                    f"Worker {worker_id}: Indices exceed bounds (max: {flat_indices.max()}, limit: {max_idx})"
-                )
-
-                # Read from shared memory map (thread-safe, GIL released)
-                rank_data = self.shared_memmap[flat_indices]
-
-                # Ensure we have a numpy array
-                if not isinstance(rank_data, np.ndarray):
-                    rank_data = np.array(rank_data)
-
-                # Create mapping for reconstruction
-                idx_map = {idx: i for i, idx in enumerate(flat_indices)}
-
-                # Map neighbor indices to rank_data indices
-                flat_neighbors = neighbor_indices.flatten()
-                rank_indices = np.array([idx_map[neighbor_idx] for neighbor_idx in flat_neighbors])
-
-                # Track throughput
-                elapsed = time.time() - start_time
-                with self.throughput_lock:
-                    self.throughput.record_batch(elapsed)
-
-                # Put result with metadata for computer
-                self.result_queue.put(
-                    (batch_id, rank_data, rank_indices, neighbor_indices.shape, batch_metadata)
-                )
-                self.read_queue.task_done()
-
-            except queue.Empty:
-                continue
-            except Exception as e:  # noqa: BLE001
-                error_trace = traceback.format_exc()
-                logger.error(f"Reader worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
-                self.exception_queue.put((worker_id, e, error_trace))
-                self.has_error.set()
-                self.stop_workers.set()  # Signal all workers to stop
-                break
-
-    def submit_batch(
-        self, batch_id: int, neighbor_indices: np.ndarray, batch_metadata: dict = None
-    ):
-        """Submit batch for reading with metadata"""
-        self.read_queue.put((batch_id, neighbor_indices, batch_metadata or {}))
-
-    def get_result(self):
-        """Get next completed batch"""
-        return self.result_queue.get()
-
-    def get_queue_sizes(self):
-        """Get current queue sizes for monitoring"""
-        return self.read_queue.qsize(), self.result_queue.qsize()
-
-    def check_errors(self):
-        """Check if any worker encountered an error"""
-        if self.has_error.is_set():
-            try:
-                worker_id, exception, error_trace = self.exception_queue.get_nowait()
-                raise RuntimeError(
-                    f"Reader worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
-                ) from exception
-            except queue.Empty:
-                raise RuntimeError("Reader worker failed with unknown error") from None
-
-    def reset_for_cell_type(self, cell_type: str):
-        """Reset throughput tracking for new cell type"""
-        with self.throughput_lock:
-            self.throughput = ComponentThroughput()
-        logger.debug(f"Reset reader throughput for {cell_type}")
-
-    def close(self):
-        """Clean up resources"""
-        self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.read_queue.put(None)
-        for worker in self.workers:
-            worker.join(timeout=5)
-
-        # Do not close shared_memmap here if it was passed in (owned by caller)
-        # If we opened it ourselves (str path), we could close it, but memmap doesn't strictly require close()
-        pass
-
-
 class ParallelMarkerScoreWriter:
     """Multi-threaded writer pool for marker scores using shared memmap"""
 
     def __init__(
-        self, output_memmap: MemMapDense, num_workers: int = 4, input_queue: queue.Queue = None
+        self,
+        output_memmap: MemMapDense,
+        num_workers: int = 4,
+        input_queue: queue.Queue | None = None,
+        queue_size: int = 100,
     ):
         """
         Initialize writer pool
@@ -685,6 +881,7 @@ class ParallelMarkerScoreWriter:
             output_memmap: Output memory map wrapper object
             num_workers: Number of writer threads
             input_queue: Optional input queue (from computer)
+            queue_size: Queue capacity when no input queue is supplied
         """
         # Store shared memmap object
         self.shared_memmap = output_memmap.memmap
@@ -692,9 +889,15 @@ class ParallelMarkerScoreWriter:
         self.shape = output_memmap.shape
         self.dtype = output_memmap.dtype
         self.num_workers = num_workers
+        if self.num_workers < 1:
+            raise ValueError("Marker-score writer requires at least one worker")
 
         # Queue for write requests
-        self.write_queue = input_queue if input_queue else queue.Queue(maxsize=100)
+        if queue_size < 1:
+            raise ValueError("Writer queue size must be positive")
+        self.write_queue = (
+            input_queue if input_queue is not None else queue.Queue(maxsize=queue_size)
+        )
         self.completed_count = 0
         self.completed_lock = threading.Lock()
         self.active_cell_type = None  # Track current cell type being processed
@@ -706,6 +909,9 @@ class ParallelMarkerScoreWriter:
         # Exception handling
         self.exception_queue = queue.Queue()
         self.has_error = threading.Event()
+        self.error_lock = threading.Lock()
+        self.writer_error: tuple[int, BaseException, str] | None = None
+        self._closed = False
 
         # Start worker threads
         self.workers = []
@@ -725,16 +931,23 @@ class ParallelMarkerScoreWriter:
         logger.debug(f"Writer worker {worker_id} started")
 
         while not self.stop_workers.is_set():
+            item = None
             try:
                 # Get write request
                 item = self.write_queue.get(timeout=1)
                 if item is None:
                     break
 
+                # Once one write fails, drain subsequent requests without
+                # touching the output. Every dequeued request still receives a
+                # task_done() call so callers can never wedge on Queue.join().
+                if self.has_error.is_set():
+                    continue
+
                 batch_idx, marker_scores, cell_indices = item
 
                 # Track timing
-                start_time = time.time()
+                start_time = time.perf_counter()
 
                 # Write directly to shared memory map
                 # Thread-safe because workers process disjoint batches (indices)
@@ -742,7 +955,7 @@ class ParallelMarkerScoreWriter:
                 self.shared_memmap[cell_indices] = marker_scores
 
                 # Track throughput
-                elapsed = time.time() - start_time
+                elapsed = time.perf_counter() - start_time
                 with self.throughput_lock:
                     self.throughput.record_batch(elapsed)
 
@@ -750,17 +963,19 @@ class ParallelMarkerScoreWriter:
                 with self.completed_lock:
                     self.completed_count += 1
 
-                self.write_queue.task_done()
-
             except queue.Empty:
                 continue
             except Exception as e:  # noqa: BLE001
                 error_trace = traceback.format_exc()
                 logger.error(f"Writer worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
-                self.exception_queue.put((worker_id, e, error_trace))
+                with self.error_lock:
+                    if self.writer_error is None:
+                        self.writer_error = (worker_id, e, error_trace)
+                        self.exception_queue.put(self.writer_error)
                 self.has_error.set()
-                self.stop_workers.set()  # Signal all workers to stop
-                break
+            finally:
+                if item is not None:
+                    self.write_queue.task_done()
 
         # We do not close or delete the shared memmap here.
         # Flushing is handled by the main thread or MemMapDense wrapper.
@@ -787,30 +1002,46 @@ class ParallelMarkerScoreWriter:
     def check_errors(self):
         """Check if any worker encountered an error"""
         if self.has_error.is_set():
-            try:
-                worker_id, exception, error_trace = self.exception_queue.get_nowait()
-                raise RuntimeError(
-                    f"Writer worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
-                ) from exception
-            except queue.Empty:
+            with self.error_lock:
+                error = self.writer_error
+            if error is None:
                 raise RuntimeError("Writer worker failed with unknown error") from None
+            worker_id, exception, error_trace = error
+            raise RuntimeError(
+                f"Writer worker {worker_id} failed: {exception}\nOriginal traceback:\n{error_trace}"
+            ) from exception
 
-    def close(self):
-        """Close writer pool"""
+    def close(self, *, wait: bool = True, raise_errors: bool = True):
+        """Close the writer pool, optionally discarding pending writes."""
+        if self._closed:
+            if raise_errors:
+                self.check_errors()
+            return
         logger.info("Closing writer pool...")
 
-        # Wait for queue to empty
-        if not self.write_queue.empty():
+        if wait:
             logger.info("Waiting for remaining writes...")
             self.write_queue.join()
+        else:
+            while True:
+                try:
+                    self.write_queue.get_nowait()
+                except queue.Empty:
+                    break
+                else:
+                    self.write_queue.task_done()
 
-        # Stop workers
         self.stop_workers.set()
-        for _ in range(self.num_workers):
-            self.write_queue.put(None)
-
-        # Wait for workers to finish
         for worker in self.workers:
             worker.join(timeout=5)
+            if worker.is_alive():
+                raise RuntimeError("Marker-score writer thread did not stop within 5 seconds")
 
+        self._closed = True
         logger.info("Writer pool closed")
+        if raise_errors:
+            self.check_errors()
+
+    def abort(self) -> None:
+        """Stop workers and discard queued output after a failed calculation."""
+        self.close(wait=False, raise_errors=False)

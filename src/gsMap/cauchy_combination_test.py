@@ -8,6 +8,7 @@ import scipy as sp
 from rich.progress import Progress
 
 from gsMap.config.cauchy_config import CauchyCombinationConfig
+from gsMap.logging_config import logged_stage
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,7 @@ def run_cauchy_on_dataframe(df, annotation_col, trait_cols=None, extra_group_col
     return combined_results
 
 
+@logged_stage("cauchy_combination")
 def run_Cauchy_combination(config: CauchyCombinationConfig):
     # 1. Discover traits and load combined LDSC results
     traits_dict = config.ldsc_traits_result_path_dict

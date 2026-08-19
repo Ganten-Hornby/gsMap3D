@@ -1,13 +1,10 @@
-"""
-Unified spatial LDSC processor combining chunk production, parallel loading, and result accumulation.
-"""
+"""Bounded streaming engine for spatial LDSC."""
 
 import logging
 import os
 import time
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
 
 import anndata as ad
 import numpy as np
@@ -27,53 +24,42 @@ from rich.progress import (
 from gsMap.config import SpatialLDSCConfig
 
 from .chunk_source import SpatialLDChunkSource
-from .io import FeatherAnnData, prepare_trait_data
-from .pipeline import ParallelLDScoreComputer, ParallelLDScoreReader
+from .io import prepare_trait_data
+from .pipeline import LDScoreComputePool, LDScoreStream
+from .regression_kernel import process_spatial_ldsc_batch
 from .result_writer import ResultWriter
 from .trait_data import prepare_snp_data_for_blocks
 
-logger = logging.getLogger("gsMap.spatial_ldsc_processor")
-
-if TYPE_CHECKING:
-    from typing import Any
+logger = logging.getLogger("gsMap.spatial_ldsc.engine")
 
 
 def _align_gene_axes(
     marker_genes: np.ndarray,
     weight_genes: pd.Index,
 ) -> tuple[np.ndarray, list[int]]:
-    """Return aligned marker-score and SNP-weight indices for common genes."""
-    common_genes_mask = pd.Series(marker_genes).isin(weight_genes).to_numpy()
-    common_genes = marker_genes[common_genes_mask]
-    return (
-        np.flatnonzero(common_genes_mask),
-        [weight_genes.get_loc(gene) for gene in common_genes],
-    )
+    """Return aligned marker and weight positions in marker-gene order."""
+    common_mask = pd.Series(marker_genes).isin(weight_genes).to_numpy()
+    common_genes = marker_genes[common_mask]
+    if not len(common_genes):
+        raise ValueError("Marker scores and SNP-gene weights have no genes in common")
+    return np.flatnonzero(common_mask), [weight_genes.get_loc(gene) for gene in common_genes]
 
 
-class SpatialLDSCProcessor:
-    """
-    Unified processor for spatial LDSC that combines:
-    - ChunkProducer: Loading spatial LD chunks
-    - ParallelChunkLoader: Managing parallel chunk loading with adjacent fetching
-    - QuickModeLDScore: Handling memory-mapped marker scores
-    - ResultAccumulator: Validating, merging and saving results
-    """
+class SpatialLDSCEngine:
+    """Bounded spatial-LDSC source, compute, and output engine."""
 
     def __init__(
         self,
         config: SpatialLDSCConfig,
         output_dir: Path,
-        marker_score_adata: ad.AnnData | FeatherAnnData | None,
+        marker_score_adata: ad.AnnData | None,
         snp_gene_weight_adata: ad.AnnData | None,
         baseline_ld: pd.DataFrame,
         w_ld: pd.DataFrame,
-        n_loader_threads: int = 10,
         ldscore_adata: ad.AnnData | None = None,
         marker_score_store=None,
     ):
-        """
-        Initialize the unified processor.
+        """Initialize the spatial-LDSC engine.
 
         Args:
             config: Configuration object
@@ -84,7 +70,6 @@ class SpatialLDSCProcessor:
                                     Pass None when using ldscore_adata.
             baseline_ld: Baseline LD scores common to all traits
             w_ld: Weights common to all traits
-            n_loader_threads: Number of parallel loader threads
             ldscore_adata: Pre-computed SNP × Cell LD score AnnData (obs=SNPs, var=cells).
                            When provided, activates direct ldscore mode and marker_score_adata /
                            snp_gene_weight_adata are ignored.
@@ -93,8 +78,6 @@ class SpatialLDSCProcessor:
         self.output_dir = output_dir
         self.baseline_ld = baseline_ld
         self.w_ld = w_ld
-        self.n_loader_threads = n_loader_threads
-
         # Trait specific state
         self.trait_name = None
         self.data_truncated = None
@@ -120,30 +103,30 @@ class SpatialLDSCProcessor:
                 f"{ldscore_adata.n_obs} SNPs in ldscore h5ad"
             )
         elif marker_score_store is not None:
+            # Gene-block mode retains only observation/gene metadata in AnnData;
+            # dense scores are read one persisted gene block at a time.
             self.mode = "gene_block"
             self.ldscore_adata = None
             self.marker_score_adata = marker_score_adata
             self.snp_gene_weight_adata = snp_gene_weight_adata
-            self.n_spots = marker_score_store.shape[0]
             if marker_score_adata is None:
-                raise ValueError("marker_score_adata metadata is required in gene-block mode")
-            if marker_score_adata.n_obs != self.n_spots:
+                raise ValueError("Marker-score metadata is required in gene-block mode")
+            if marker_score_store.shape != (
+                marker_score_adata.n_obs,
+                marker_score_adata.n_vars,
+            ):
                 raise ValueError(
-                    "Gene-block marker scores and marker metadata have different spot counts"
+                    "Gene-block marker-score shape does not match marker metadata"
                 )
-            if marker_score_adata.n_vars != marker_score_store.shape[1]:
-                raise ValueError(
-                    "Gene-block marker scores and marker metadata have different gene counts"
-                )
-            self.spot_names_all = np.array(marker_score_adata.obs_names)
-            gene_names_from_adata = np.array(marker_score_adata.var_names)
+            self.n_spots = marker_score_store.shape[0]
+            self.spot_names_all = np.asarray(marker_score_adata.obs_names)
+            gene_names_from_adata = np.asarray(marker_score_adata.var_names)
             marker_score_store.validate_gene_names(gene_names_from_adata)
-
-            if self.snp_gene_weight_adata is None:
+            if snp_gene_weight_adata is None:
                 raise ValueError("snp_gene_weight_adata is required in gene-block mode")
             self.marker_score_gene_indices, self.weight_gene_indices = _align_gene_axes(
                 gene_names_from_adata,
-                self.snp_gene_weight_adata.var.index,
+                snp_gene_weight_adata.var.index,
             )
             logger.info(
                 "Gene-block marker scores: %s spots, %s common genes",
@@ -151,9 +134,7 @@ class SpatialLDSCProcessor:
                 len(self.marker_score_gene_indices),
             )
         else:
-            # ── Weight-matrix mode (original behavior) ───────────────────────
-            if marker_score_adata is None:
-                raise ValueError("marker_score_adata is required in weight-matrix mode")
+            # ── Weight-matrix mode ──────────────────────────────────────────
             self.mode = "weight_matrix"
             self.ldscore_adata = None
             self.marker_score_adata = marker_score_adata
@@ -175,6 +156,7 @@ class SpatialLDSCProcessor:
                 gene_names_from_adata,
                 self.snp_gene_weight_adata.var.index,
             )
+
             logger.info(f"Found {len(self.marker_score_gene_indices)} common genes")
 
         # Filter by sample if specified
@@ -186,8 +168,6 @@ class SpatialLDSCProcessor:
 
         if self.config.sample_filter:
             logger.info(f"Filtering spots by sample: {self.config.sample_filter}")
-            if self.marker_score_adata is None:
-                raise RuntimeError("Marker-score metadata is unavailable for sample filtering")
             sample_info = self.marker_score_adata.obs.get(
                 "sample", self.marker_score_adata.obs.get("sample_name", None)
             )
@@ -197,13 +177,8 @@ class SpatialLDSCProcessor:
 
             sample_info = sample_info.to_numpy()
             self.spot_indices = np.where(sample_info == self.config.sample_filter)[0]
-
-            # Verify spots are contiguous for efficient slicing
-            expected_range = list(range(self.spot_indices[0], self.spot_indices[-1] + 1))
-            if self.spot_indices.tolist() != expected_range:
-                raise ValueError("Spot indices for sample must be contiguous")
-
-            self.sample_start_offset = self.spot_indices[0]
+            if self.spot_indices.size == 0:
+                raise ValueError(f"No spots found for sample '{self.config.sample_filter}'")
             self.spot_names_filtered = self.spot_names_all[self.spot_indices]
             logger.info(
                 f"Found {len(self.spot_indices)} spots for sample '{self.config.sample_filter}'"
@@ -211,7 +186,6 @@ class SpatialLDSCProcessor:
         else:
             self.spot_indices = np.arange(self.n_spots)
             self.spot_names_filtered = self.spot_names_all
-            self.sample_start_offset = 0
 
         self.n_spots_filtered = len(self.spot_indices)
 
@@ -224,11 +198,18 @@ class SpatialLDSCProcessor:
             # Adjust for filtered spots
             start_cell = max(0, start_cell)
             end_cell = min(end_cell, self.n_spots_filtered)
+            if start_cell >= end_cell:
+                raise ValueError(
+                    f"cell_indices_range [{start_cell}, {end_cell}) is empty after "
+                    f"clamping to {self.n_spots_filtered} available cells"
+                )
             self.chunk_starts = list(range(start_cell, end_cell, self.chunk_size))
             self._cell_end = end_cell  # cap for the last (possibly partial) chunk
             logger.info(f"Processing cell range [{start_cell}, {end_cell})")
             self.total_cells_to_process = end_cell - start_cell
         else:
+            if self.n_spots_filtered == 0:
+                raise ValueError("No cells are available for spatial LDSC")
             self.chunk_starts = list(range(0, self.n_spots_filtered, self.chunk_size))
             self._cell_end = self.n_spots_filtered
             self.total_cells_to_process = self.n_spots_filtered
@@ -236,7 +217,7 @@ class SpatialLDSCProcessor:
         self.total_chunks = len(self.chunk_starts)
         logger.info(f"Total chunks to process: {self.total_chunks}")
 
-    def setup_trait(self, trait_name: str, sumstats_file: str | Path):
+    def setup_trait(self, trait_name: str, sumstats_file: str):
         """
         Setup processor for a new trait.
         Loads sumstats, prepares data, and initializes trait-specific components.
@@ -248,12 +229,10 @@ class SpatialLDSCProcessor:
         snp_ref = (
             self.ldscore_adata if self.mode == "direct_ldscore" else self.snp_gene_weight_adata
         )
-        if snp_ref is None:
-            raise RuntimeError("SNP reference data is not initialized")
         data, common_snps = prepare_trait_data(
             self.config,
             trait_name,
-            str(sumstats_file),
+            sumstats_file,
             self.baseline_ld,
             self.w_ld,
             snp_ref,
@@ -275,10 +254,7 @@ class SpatialLDSCProcessor:
             )
         else:
             # Extract SNP-gene weight matrix for this trait's SNPs
-            if self.snp_gene_weight_adata is None or self.weight_gene_indices is None:
-                raise RuntimeError("SNP-gene weights are not initialized")
-            weight_matrix = cast("Any", self.snp_gene_weight_adata.X)
-            self.snp_gene_weight_sparse = weight_matrix[snp_positions, :][
+            self.snp_gene_weight_sparse = self.snp_gene_weight_adata.X[snp_positions, :][
                 :, self.weight_gene_indices
             ]
 
@@ -293,13 +269,14 @@ class SpatialLDSCProcessor:
             trait_name=self.trait_name,
             output_dir=self.output_dir,
             n_spots=self.n_spots,
+            total_chunks=self.total_chunks,
+            expected_cells=self.total_cells_to_process,
         )
         self.chunk_source = SpatialLDChunkSource(
             mode=self.mode,
             chunk_starts=self.chunk_starts,
             chunk_size=self.chunk_size,
             cell_end=self._cell_end,
-            sample_start_offset=self.sample_start_offset,
             spot_indices=self.spot_indices,
             spot_names_filtered=self.spot_names_filtered,
             ldscore_adata=self.ldscore_adata,
@@ -347,7 +324,7 @@ class SpatialLDSCProcessor:
           core while blocked. If the worker count approaches/exceeds the available
           cores, XLA's bounded intra-op pool is starved and the pipeline deadlocks
           (observed on 2-core CI). So cap at ``cpu_count // 2`` (>=1), which leaves
-          headroom for the intra-op pool and reader threads, and naturally collapses
+          headroom for the intra-op pool and source/transform threads, and naturally collapses
           to 1 on a 2-core box.
 
         ``GSMAP_LDSC_FORCE_COMPUTE_WORKERS`` overrides the heuristic for power users
@@ -383,20 +360,18 @@ class SpatialLDSCProcessor:
             )
         return effective
 
-    def process_all_chunks(self, process_chunk_jit_fn) -> pd.DataFrame:
-        """
-        Process all chunks using parallel reader-computer pipeline.
-
-        Args:
-            process_chunk_jit_fn: JIT-compiled function for processing chunks
+    def process_all_chunks(self) -> Path:
+        """Process all chunks through the production streaming pipeline.
 
         Returns:
-            Merged DataFrame with all results
+            Atomically published compressed result path
         """
         import jax as _jax
 
-        # Create the reader-computer pipeline
-        reader = ParallelLDScoreReader(
+        # Create a bounded source-compute pipeline. The source is started only
+        # after the consumer exists, so neither bounded queue can deadlock
+        # during initialization.
+        source_stream = LDScoreStream(
             processor=self,
             num_workers=self.config.ldsc_read_workers,
         )
@@ -415,18 +390,17 @@ class SpatialLDSCProcessor:
         if backend == "gpu":
             pipeline_depth = max(0, int(os.environ.get("GSMAP_LDSC_GPU_PIPELINE_DEPTH", "2")))
 
-        computer = ParallelLDScoreComputer(
+        computer = LDScoreComputePool(
             processor=self,
-            process_chunk_jit_fn=process_chunk_jit_fn,
+            regression_fn=process_spatial_ldsc_batch,
             num_workers=effective_compute_workers,
-            input_queue=reader.result_queue,  # Connect reader output to computer input
+            input_queue=source_stream.result_queue,
             pipeline_depth=pipeline_depth,
         )
 
+        start_time = time.time()
         try:
-            # Submit all chunks to reader
-            for chunk_idx in range(self.total_chunks):
-                reader.submit_chunk(chunk_idx)
+            source_stream.start()
 
             # Build description with sample name and range info
             desc_parts = [
@@ -441,15 +415,6 @@ class SpatialLDSCProcessor:
                 desc_parts.append(f"Range: [{start_cell:,}-{end_cell:,})")
 
             description = " | ".join(desc_parts)
-
-            # # Start JAX profiling if needed
-            # # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # print('starting jax profiler...')
-            # jax.profiler.start_trace("/tmp/jax-trace-ldsc")
 
             # Rich Console auto-detects terminal/Jupyter environments
             console = Console(soft_wrap=True)
@@ -466,17 +431,21 @@ class SpatialLDSCProcessor:
                 MofNCompleteColumn(),
                 TaskProgressColumn(),
                 TextColumn("[bold green]{task.fields[speed]} cells/s"),
-                TextColumn("[dim]R→C: {task.fields[r_to_c_queue]}"),
+                TextColumn("[dim]I/O: {task.fields[io_speed]} MiB/s"),
+                TextColumn("[dim]S→C: {task.fields[r_to_c_queue]}"),
                 TimeElapsedColumn(),
                 TimeRemainingColumn(),
                 console=console,
                 refresh_per_second=2,
             ) as progress:
                 task = progress.add_task(
-                    description, total=self.total_cells_to_process, speed="0", r_to_c_queue="0"
+                    description,
+                    total=self.total_cells_to_process,
+                    speed="0",
+                    io_speed="-",
+                    r_to_c_queue="0",
                 )
 
-                start_time = time.time()
                 last_update_time = start_time
                 last_chunks_processed = 0
 
@@ -485,7 +454,7 @@ class SpatialLDSCProcessor:
 
                 while last_chunks_processed < self.total_chunks:
                     # Check for errors
-                    reader.check_errors()
+                    source_stream.check_errors()
                     computer.check_errors()
 
                     # Get current stats from computer
@@ -495,7 +464,12 @@ class SpatialLDSCProcessor:
                     current_time = time.time()
                     if current_time - last_update_time > 0.5:  # Update every 0.5 seconds
                         # Get queue sizes
-                        r_pending, r_to_c = reader.get_queue_sizes()
+                        r_pending, r_to_c = source_stream.get_queue_sizes()
+                        io_speed = (
+                            f"{source_stream.sequential_io_throughput.mib_per_second:,.1f}"
+                            if source_stream.uses_sequential_windows
+                            else "-"
+                        )
 
                         # Calculate speed in cells/s (10s moving average)
                         speed_window.append((current_time, n_cells_processed))
@@ -520,6 +494,7 @@ class SpatialLDSCProcessor:
                             task,
                             completed=n_cells_processed,
                             speed=f"{speed_10s:,.0f}",
+                            io_speed=io_speed,
                             r_to_c_queue=f"{r_to_c}",
                         )
 
@@ -541,7 +516,10 @@ class SpatialLDSCProcessor:
                                 console.log(
                                     f"Progress: {n_cells_processed:,}/{self.total_cells_to_process:,} cells "
                                     f"({current_pct:.1f}%) | {n_chunks_processed}/{self.total_chunks} chunks | "
-                                    f"Speed: {speed_10s:,.0f} cells/s | Elapsed: {elapsed:.1f}s"
+                                    f"Speed: {speed_10s:,.0f} cells/s | "
+                                    f"Source I/O: {io_speed} MiB/s | "
+                                    f"Source pending: {r_pending:,} | Ready queue: {r_to_c:,} | "
+                                    f"Elapsed: {elapsed:.1f}s"
                                 )
                                 last_log_pct = (current_pct // log_interval_pct) * log_interval_pct
                                 last_log_time = current_time
@@ -559,16 +537,13 @@ class SpatialLDSCProcessor:
                     # Small sleep to prevent busy waiting
                     time.sleep(0.5)
 
-            # # if hasattr(self.config, 'enable_jax_profiling') and self.config.enable_jax_profiling:
-            # jax.profiler.stop_trace()
-            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
-            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
-            # print(f'stopped jax profiler, trace saved to /tmp/jax-trace-ldsc')
-            #     # logger.info("JAX profiling trace saved to /tmp/jax-trace-ldsc")
-
+        except BaseException:
+            if self.result_writer is not None:
+                self.result_writer.abort()
+            raise
         finally:
             # Clean up resources
-            reader.close()
+            source_stream.close()
             computer.close()
 
             # Log overall speed
@@ -576,14 +551,27 @@ class SpatialLDSCProcessor:
             n_cells_total, _ = computer.get_stats()
             overall_speed = n_cells_total / total_elapsed if total_elapsed > 0 else 0
             logger.info(f"Processing complete. Overall speed: {overall_speed:,.0f} cells/s")
-            reader_label = (
-                f"Marker-score read throughput ({computer.gpu_ldscore_backend} GPU LD-score)"
+            if source_stream.uses_sequential_windows:
+                io_stats = source_stream.sequential_io_throughput
+                logger.info(
+                    "Sequential marker-score I/O: "
+                    f"{io_stats.total_windows:,} windows, "
+                    f"{io_stats.total_cells:,} cells, "
+                    f"{io_stats.mib_per_second:,.0f} MiB/s "
+                    f"({io_stats.cells_per_second:,.0f} cells/s while reading)"
+                )
+            source_label = (
+                f"Marker-score transform throughput ({computer.gpu_ldscore_backend} GPU LD-score)"
                 if getattr(computer, "use_gpu_ldscore", False)
-                else "LD-score read/construct throughput"
+                else (
+                    "LD-score construction throughput"
+                    if source_stream.uses_sequential_windows
+                    else "LD-score read/construct throughput"
+                )
             )
             logger.info(
-                f"{reader_label}: {reader.throughput.total_batches} chunks, "
-                f"avg {reader.throughput.average_time:.3f}s/chunk"
+                f"{source_label}: {source_stream.throughput.total_batches} chunks, "
+                f"avg {source_stream.throughput.average_time:.3f}s/chunk"
             )
             logger.info(
                 "LDSC regression throughput: "
@@ -591,10 +579,7 @@ class SpatialLDSCProcessor:
                 f"avg {computer.throughput.average_time:.3f}s/chunk"
             )
 
-            # Note: mkscore_memmap is NOT closed here to allow reuse across multiple traits.
-            # It will be closed by the caller after all traits are processed.
-
-        # Validate and merge results
+        # Validate completeness and atomically publish the streamed result.
         return self._validate_merge_and_save()
 
     def _add_chunk_result(
@@ -606,7 +591,7 @@ class SpatialLDSCProcessor:
         abs_start: int,
         abs_end: int,
     ):
-        """Add processed chunk result to accumulator."""
+        """Add a processed chunk to the bounded ordered output stream."""
         if self.result_writer is None:
             raise RuntimeError("Result writer is not initialized; call setup_trait first")
         self.result_writer.add_chunk_result(
@@ -618,8 +603,8 @@ class SpatialLDSCProcessor:
             abs_end=abs_end,
         )
 
-    def _validate_merge_and_save(self) -> pd.DataFrame:
-        """Validate completeness, merge results, and save with appropriate filename."""
+    def _validate_merge_and_save(self) -> Path:
+        """Validate completeness and publish the streamed result."""
         if self.result_writer is None:
             raise RuntimeError("Result writer is not initialized; call setup_trait first")
-        return self.result_writer.validate_merge_and_save(total_chunks=self.total_chunks)
+        return self.result_writer.finalize()

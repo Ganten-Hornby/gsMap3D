@@ -3,6 +3,8 @@ Main entry point for the latent2gene subpackage
 """
 
 import logging
+import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -10,27 +12,55 @@ import yaml
 from rich.console import Console
 from rich.panel import Panel
 
-from gsMap.config import DatasetType, LatentToGeneConfig, MarkerScoreCrossSliceStrategy
+from gsMap.config import LatentToGeneConfig
+from gsMap.logging_config import is_interactive_output, logged_stage
 
-from .gene_blocks import calculate_gene_block_marker_scores, gene_block_store_matches_inputs
 from .marker_scores import MarkerScoreCalculator
 from .memmap_io import MemMapDense
-from .rank_calculator import (
-    RankCalculator,
-    rank_outputs_match_inputs,
-    rank_provenance_path,
-    write_rank_provenance,
-)
+from .rank_calculator import RankCalculator
 
 logger = logging.getLogger(__name__)
 console = Console()
 
 
-def run_latent_to_gene(
+def _latent2gene_metadata(
     config: LatentToGeneConfig,
     *,
-    materialize_marker_scores: bool = True,
+    concatenated_latent_adata: str | Path,
+    rank_memmap: str | Path,
+    mean_frac: str | Path,
+    marker_scores: str | Path,
+    shape: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
+    """Build the final metadata object from completed output paths."""
+    metadata: dict[str, Any] = {
+        "config": config.to_dict_with_paths_as_strings(),
+        "outputs": {
+            "concatenated_latent_adata": str(concatenated_latent_adata),
+            "rank_memmap": str(rank_memmap),
+            "mean_frac": str(mean_frac),
+            "marker_scores": str(marker_scores),
+        },
+        "n_sections": len(config.sample_h5ad_dict),
+    }
+    if shape is not None:
+        metadata["n_cells"], metadata["n_genes"] = shape
+    return metadata
+
+
+def _write_metadata_atomic(path: Path, metadata: dict[str, Any]) -> None:
+    """Publish YAML metadata atomically so an interrupted write is recoverable."""
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(metadata, handle, default_flow_style=False, sort_keys=False)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@logged_stage("latent_to_gene")
+def run_latent_to_gene(config: LatentToGeneConfig) -> dict[str, Any]:
     """
     Main entry point for latent to gene conversion
 
@@ -47,209 +77,173 @@ def run_latent_to_gene(
             - rank_memmap: Path to rank memory map file
             - mean_frac: Path to mean expression fraction
             - marker_scores: Path to marker scores memory map
-            - metadata: Path to metadata YAML file
     """
 
     # Setup output directory using config paths
     output_dir = Path(config.latent2gene_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    sample_h5ad_dict = config.sample_h5ad_dict
-    if sample_h5ad_dict is None:
-        raise ValueError("Latent-to-gene inputs have not been resolved")
 
     # Check if all outputs already exist using config paths
     expected_outputs = {
         "concatenated_latent_adata": Path(config.concatenated_latent_adata_path),
         "rank_memmap": Path(config.rank_memmap_path),
         "mean_frac": Path(config.mean_frac_path),
+        "marker_scores": Path(config.marker_scores_memmap_path),
         "metadata": Path(config.latent2gene_metadata_path),
         "rank_meta": Path(config.rank_memmap_path).with_suffix(".meta.json"),
-        "rank_provenance": rank_provenance_path(config.rank_memmap_path),
+        "marker_scores_meta": Path(config.marker_scores_memmap_path).with_suffix(".meta.json"),
     }
-    if materialize_marker_scores:
-        expected_outputs.update(
-            {
-                "marker_scores": Path(config.marker_scores_memmap_path),
-                "marker_scores_meta": Path(config.marker_scores_memmap_path).with_suffix(
-                    ".meta.json"
-                ),
-            }
+
+    rank_memmap_complete, rank_meta = MemMapDense.check_complete(expected_outputs["rank_memmap"])
+    marker_scores_complete, marker_meta = MemMapDense.check_complete(
+        expected_outputs["marker_scores"]
+    )
+    sidecars_complete = (
+        expected_outputs["concatenated_latent_adata"].is_file()
+        and expected_outputs["mean_frac"].is_file()
+    )
+    if rank_memmap_complete and marker_scores_complete and sidecars_complete:
+        if rank_meta is None or marker_meta is None:
+            raise RuntimeError("Completed latent-to-gene memmaps are missing metadata")
+        rank_shape = tuple(rank_meta["shape"])
+        marker_shape = tuple(marker_meta["shape"])
+        if rank_shape != marker_shape:
+            raise ValueError(
+                f"Completed rank and marker-score shapes disagree: {rank_shape} != {marker_shape}"
+            )
+
+        metadata = _latent2gene_metadata(
+            config,
+            concatenated_latent_adata=expected_outputs["concatenated_latent_adata"],
+            rank_memmap=expected_outputs["rank_memmap"],
+            mean_frac=expected_outputs["mean_frac"],
+            marker_scores=expected_outputs["marker_scores"],
+            shape=rank_shape,
         )
+        metadata_needs_repair = not expected_outputs["metadata"].is_file()
+        if not metadata_needs_repair:
+            try:
+                with expected_outputs["metadata"].open(encoding="utf-8") as handle:
+                    existing_metadata = yaml.safe_load(handle)
+                metadata_needs_repair = not isinstance(existing_metadata, dict) or not isinstance(
+                    existing_metadata.get("outputs"), dict
+                )
+            except (OSError, yaml.YAMLError):
+                metadata_needs_repair = True
+        if metadata_needs_repair:
+            logger.warning(
+                "Completed latent-to-gene arrays were found without valid final metadata; "
+                "reconstructing metadata without recomputing arrays"
+            )
+            _write_metadata_atomic(expected_outputs["metadata"], metadata)
+
+        logger.info(
+            f"Found existing complete results for {rank_shape[0]} cells and {rank_shape[1]} genes"
+        )
+        return metadata["outputs"]
+
+    if any(path.exists() for path in expected_outputs.values()):
+        logger.warning("Latent-to-gene outputs are partial or incomplete; resuming the pipeline")
+
+    if marker_scores_complete:
+        raise RuntimeError(
+            "A completed marker-score matrix exists without a complete rank checkpoint and "
+            "both rank sidecars. Refusing to combine outputs from inconsistent runs."
+        )
+    if rank_memmap_complete and not sidecars_complete:
+        raise RuntimeError(
+            "The rank checkpoint is complete but concatenated_latent_adata.h5ad or "
+            "mean_frac.parquet is missing. Refusing to overwrite the completed checkpoint."
+        )
+
+    rank_outputs_ready = rank_memmap_complete and sidecars_complete
+    if rank_outputs_ready:
+        logger.info(
+            "Reusing the completed rank checkpoint and sidecars; only marker scores will be "
+            "recalculated"
+        )
+        rank_outputs = {
+            "concatenated_latent_adata": str(expected_outputs["concatenated_latent_adata"]),
+            "rank_memmap": str(expected_outputs["rank_memmap"]),
+            "mean_frac": str(expected_outputs["mean_frac"]),
+        }
     else:
-        expected_outputs.update(
-            {
-                "marker_score_blocks": Path(config.marker_score_blocks_dir),
-                "marker_score_blocks_manifest": Path(config.marker_score_blocks_manifest_path),
-                "rank_row_min": Path(config.rank_row_min_path),
-            }
-        )
+        # Step 1: Calculate ranks and concatenate
+        if is_interactive_output():
+            console.print(
+                Panel(
+                    "[bold cyan]Step 1: Rank calculation and concatenation[/bold cyan]",
+                    border_style="cyan",
+                )
+            )
+        else:
+            logger.info("Step 1/2: rank calculation and concatenation")
 
-    if all(Path(p).exists() for p in expected_outputs.values()):
-        logger.info("All outputs already exist. Checking completion status...")
+        rank_calculator = RankCalculator(config)
 
-        rank_outputs_current = rank_outputs_match_inputs(
-            sample_h5ad_dict=sample_h5ad_dict,
-            rank_memmap_path=expected_outputs["rank_memmap"],
-            mean_frac_path=expected_outputs["mean_frac"],
-            concatenated_adata_path=expected_outputs["concatenated_latent_adata"],
+        # Use sample_h5ad_dict from config (already validated in config.__post_init__)
+        logger.info(f"Found {len(config.sample_h5ad_dict)} samples to process")
+
+        rank_outputs = rank_calculator.calculate_ranks_and_concatenate(
+            sample_h5ad_dict=config.sample_h5ad_dict,
             annotation_key=config.annotation,
             data_layer=config.data_layer,
-            min_cells_per_type=config.min_cells_per_type,
         )
-        if not rank_outputs_current:
-            logger.warning("Rank outputs do not match the current latent H5AD inputs")
-
-        if materialize_marker_scores:
-            marker_scores_complete, marker_meta = MemMapDense.check_complete(
-                expected_outputs["marker_scores"]
-            )
-            if not marker_scores_complete:
-                if marker_meta:
-                    logger.warning("Marker scores memmap exists but is not marked as complete")
-                else:
-                    logger.warning("Could not read marker scores memmap metadata")
-        else:
-            marker_scores_complete = gene_block_store_matches_inputs(
-                expected_outputs["marker_score_blocks_manifest"],
-                rank_memmap_path=expected_outputs["rank_memmap"],
-                mean_frac_path=expected_outputs["mean_frac"],
-                marker_metadata_path=expected_outputs["concatenated_latent_adata"],
-            )
-
-        if rank_outputs_current and marker_scores_complete:
-            logger.info("All memory maps are properly completed. Loading metadata...")
-            with open(expected_outputs["metadata"]) as f:
-                existing_metadata = yaml.unsafe_load(f)
-            logger.info(
-                f"Found existing complete results for {existing_metadata.get('n_cells', 'unknown')} cells "
-                f"and {existing_metadata.get('n_genes', 'unknown')} genes"
-            )
-            return {k: str(v) for k, v in expected_outputs.items()}
-        else:
-            logger.warning(
-                "Memory maps exist but are not properly completed. Re-running pipeline..."
-            )
-
-    # Step 1: Calculate ranks and concatenate
-    console.print(
-        Panel(
-            "[bold cyan]Step 1: Rank calculation and concatenation[/bold cyan]",
-            border_style="cyan",
-        )
-    )
-
-    rank_calculator = RankCalculator(config)
-
-    # Use sample_h5ad_dict from config (already validated in config.__post_init__)
-    logger.info(f"Found {len(sample_h5ad_dict)} samples to process")
-
-    rank_outputs = rank_calculator.calculate_ranks_and_concatenate(
-        sample_h5ad_dict=sample_h5ad_dict,
-        annotation_key=config.annotation,
-        data_layer=config.data_layer,
-    )
 
     # Step 2: Calculate marker scores
-    console.print(
-        Panel("[bold cyan]Step 2: Marker score calculation[/bold cyan]", border_style="cyan")
-    )
+    if is_interactive_output():
+        console.print(
+            Panel(
+                "[bold cyan]Step 2: Marker score calculation[/bold cyan]",
+                border_style="cyan",
+            )
+        )
+    else:
+        logger.info("Step 2/2: marker score calculation")
 
     marker_calculator = MarkerScoreCalculator(config)
 
-    if materialize_marker_scores:
+    rank_memmap_handle = rank_outputs.get("rank_memmap_handle")
+    rank_runtime_source = (
+        rank_memmap_handle if rank_memmap_handle is not None else rank_outputs["rank_memmap"]
+    )
+    try:
         marker_scores_path = marker_calculator.calculate_marker_scores(
             adata_path=rank_outputs["concatenated_latent_adata"],
-            rank_memmap_path=rank_outputs["rank_memmap"],
+            rank_memmap_path=rank_runtime_source,
             mean_frac_path=rank_outputs["mean_frac"],
             output_path=expected_outputs["marker_scores"],
         )
-        marker_outputs = {"marker_scores": str(marker_scores_path)}
-    else:
-        if config.memmap_tmp_dir is None:
-            raise ValueError(
-                "memmap_tmp_dir is required for gene-block marker scores; "
-                "use node-local storage such as /data"
-            )
-        marker_calculator.prepare_homogeneous_neighbors(
-            adata_path=rank_outputs["concatenated_latent_adata"],
-            rank_memmap_path=rank_outputs["rank_memmap"],
-        )
-        # Neighbor preparation intentionally rewrites the concatenated AnnData.
-        # Persist that valid enriched signature before the first gene block so
-        # an interrupted block run resumes instead of rebuilding all ranks.
-        write_rank_provenance(
-            sample_h5ad_dict=sample_h5ad_dict,
-            rank_memmap_path=rank_outputs["rank_memmap"],
-            mean_frac_path=rank_outputs["mean_frac"],
-            concatenated_adata_path=rank_outputs["concatenated_latent_adata"],
-            annotation_key=config.annotation,
-            data_layer=config.data_layer,
-            min_cells_per_type=config.min_cells_per_type,
-        )
-        pooled_by_slice = (
-            config.dataset_type == DatasetType.SPATIAL_3D
-            and config.cross_slice_marker_score_strategy
-            in {
-                MarkerScoreCrossSliceStrategy.PER_SLICE_POOL,
-                MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL,
-            }
-        )
-        n_slices = 1 + 2 * config.n_adjacent_slices if pooled_by_slice else 1
-        manifest_path = calculate_gene_block_marker_scores(
-            rank_memmap_path=rank_outputs["rank_memmap"],
-            rank_row_min_path=config.rank_row_min_path,
-            mean_frac_path=rank_outputs["mean_frac"],
-            neighbor_adata_path=rank_outputs["concatenated_latent_adata"],
-            output_dir=config.marker_score_blocks_dir,
-            manifest_path=config.marker_score_blocks_manifest_path,
-            gene_block_size=config.marker_score_gene_block_size,
-            spot_batch_size=config.mkscore_batch_size,
-            n_slices=n_slices,
-            homogeneous_neighbors=config.homogeneous_neighbors,
-            hierarchical_pool=(
-                config.cross_slice_marker_score_strategy
-                == MarkerScoreCrossSliceStrategy.HIERARCHICAL_POOL
-            ),
-            no_expression_fraction=config.no_expression_fraction,
-            tmp_dir=config.memmap_tmp_dir,
-        )
-        marker_outputs = {
-            "marker_score_blocks": str(config.marker_score_blocks_dir),
-            "marker_score_blocks_manifest": str(manifest_path),
-            "rank_row_min": str(config.rank_row_min_path),
-        }
+    finally:
+        if rank_memmap_handle is not None:
+            rank_memmap_handle.close()
 
-    # Homogeneous-neighbor preparation intentionally enriches the concatenated
-    # AnnData in place. Refresh the rank-output signature only after that write
-    # and after marker-score calculation completes successfully.
-    write_rank_provenance(
-        sample_h5ad_dict=sample_h5ad_dict,
-        rank_memmap_path=rank_outputs["rank_memmap"],
-        mean_frac_path=rank_outputs["mean_frac"],
-        concatenated_adata_path=rank_outputs["concatenated_latent_adata"],
-        annotation_key=config.annotation,
-        data_layer=config.data_layer,
-        min_cells_per_type=config.min_cells_per_type,
+    final_rank_complete, final_rank_meta = MemMapDense.check_complete(
+        expected_outputs["rank_memmap"]
     )
-
-    # Convert config to dict with all Path objects as strings
-    config_dict = config.to_dict_with_paths_as_strings()
-
-    # Create overall metadata
-    metadata = {
-        "config": config_dict,
-        "outputs": {
-            "concatenated_latent_adata": str(rank_outputs["concatenated_latent_adata"]),
-            "rank_memmap": str(rank_outputs["rank_memmap"]),
-            "mean_frac": str(rank_outputs["mean_frac"]),
-            **marker_outputs,
-        },
-        "n_sections": len(sample_h5ad_dict),
-    }
-
-    # Save overall metadata in YAML format
-    with open(expected_outputs["metadata"], "w") as f:
-        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+    if not final_rank_complete or final_rank_meta is None:
+        raise RuntimeError("Rank output became incomplete before final metadata publication")
+    final_marker_complete, final_marker_meta = MemMapDense.check_complete(marker_scores_path)
+    if not final_marker_complete or final_marker_meta is None:
+        raise RuntimeError(
+            "Marker-score output is incomplete; final metadata will not be published"
+        )
+    final_rank_shape = tuple(final_rank_meta["shape"])
+    final_marker_shape = tuple(final_marker_meta["shape"])
+    if final_rank_shape != final_marker_shape:
+        raise ValueError(
+            "Rank and marker-score shapes disagree after marker calculation: "
+            f"{final_rank_shape} != {final_marker_shape}"
+        )
+    metadata = _latent2gene_metadata(
+        config,
+        concatenated_latent_adata=rank_outputs["concatenated_latent_adata"],
+        rank_memmap=rank_outputs["rank_memmap"],
+        mean_frac=rank_outputs["mean_frac"],
+        marker_scores=marker_scores_path,
+        shape=final_rank_shape,
+    )
+    _write_metadata_atomic(expected_outputs["metadata"], metadata)
 
     logger.info(f"All outputs saved to: {output_dir}")
 

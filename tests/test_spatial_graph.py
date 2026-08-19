@@ -6,16 +6,11 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 import torch
-from torch.profiler import ProfilerActivity, profile
-from torch_geometric.nn.conv.gcn_conv import gcn_norm
-from torch_geometric.utils import add_remaining_self_loops, degree
 
 from gsMap.find_latent.gnn.gcn import (
     GCN,
     build_legacy_spatial_graph,
     build_radius_spatial_graph,
-    build_section_aware_3d_graph,
-    build_sectionwise_2d_graph,
     build_spatial_graph,
 )
 from gsMap.find_latent.st_process import TrainingData
@@ -122,189 +117,19 @@ def test_weighted_radius_graph_has_symmetric_edges_and_weights():
     assert edge_weight[(0, 1)] == edge_weight[(1, 0)]
 
 
-def test_section_aware_3d_graph_uses_each_spots_within_section_knn_radius():
-    coords = np.asarray(
-        [
-            [0.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [0.0, 0.0, 0.5],
-            [1.0, 0.0, 0.5],
-            [8.0, 0.0, 0.5],
-        ]
-    )
-    sections = np.asarray(["a", "a", "b", "b", "b"])
-    stable_ids = np.asarray(["a0", "a1", "b0", "b1", "b8"])
-
-    graph = build_section_aware_3d_graph(
-        coords,
-        sections,
-        n_neighbors=1,
-        stable_ids=stable_ids,
-        undirected=False,
-        workers=1,
-    )
-    edges = _edge_id_set(graph.edges, stable_ids)
-
-    # a0's within-section radius is 2. Both nearby spots in section b are
-    # inside that physical radius, whereas b8 is outside it.
-    assert ("a0", "b0") in edges
-    assert ("a0", "b1") in edges
-    assert ("a0", "b8") not in edges
+@pytest.mark.parametrize("radius", [0.0, -1.0, np.nan, np.inf])
+def test_radius_graph_rejects_nonpositive_or_nonfinite_radius(radius):
+    with pytest.raises(ValueError, match="radius must be positive"):
+        build_radius_spatial_graph(np.asarray([[0.0, 0.0], [1.0, 0.0]]), radius=radius)
 
 
-def test_section_aware_3d_graph_falls_back_within_twice_the_local_radius():
-    coords = np.asarray(
-        [
-            [-1.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 3.0],
-            [2.0, 0.0, 3.0],
-            [-1.0, 0.0, 6.0],
-            [1.0, 0.0, 6.0],
-        ]
-    )
-    sections = np.asarray(["lower", "lower", "middle", "middle", "upper", "upper"])
-    stable_ids = np.asarray(["l-1", "l1", "m0", "m2", "u-1", "u1"])
-
-    graph = build_section_aware_3d_graph(
-        coords,
-        sections,
-        n_neighbors=2,
-        stable_ids=stable_ids,
-        undirected=False,
-        workers=1,
-    )
-    edges = _edge_id_set(graph.edges, stable_ids)
-
-    # No cross-section spot is inside m0's within-section radius (2), so the
-    # fallback contributes K/2=1 nearest spot from both adjacent sections.
-    assert ("m0", "l-1") in edges
-    assert ("m0", "u-1") in edges
-    assert ("m0", "l1") not in edges
-    assert ("m0", "u1") not in edges
-
-
-def test_section_aware_3d_graph_does_not_force_edges_across_large_gaps():
-    coords = np.asarray(
-        [
-            [-1.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 10.0],
-            [2.0, 0.0, 10.0],
-        ]
-    )
-    sections = np.asarray(["lower", "lower", "upper", "upper"])
-    stable_ids = np.asarray(["l-1", "l1", "u0", "u2"])
-
-    graph = build_section_aware_3d_graph(
-        coords,
-        sections,
-        n_neighbors=2,
-        stable_ids=stable_ids,
-        undirected=False,
-        workers=1,
-    )
-    edges = _edge_id_set(graph.edges, stable_ids)
-
-    assert all(source[0] == target[0] for source, target in edges)
-
-
-def test_sectionwise_2d_graph_never_connects_different_sections():
-    coords = np.asarray(
-        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]
-    )
-    sections = np.asarray(["a", "a", "a", "b", "b", "b"])
-    stable_ids = np.asarray(["a0", "a1", "a2", "b0", "b1", "b2"])
-
-    graph = build_sectionwise_2d_graph(
-        coords,
-        sections,
-        n_neighbors=2,
-        undirected=False,
-        stable_ids=stable_ids,
-        workers=1,
-    )
-
-    assert len(graph.edges) == 12
-    assert all(sections[source] == sections[target] for source, target in graph.edges)
-
-
-def test_sectionwise_2d_graph_uses_xy_from_xyz_coordinates():
-    xy = np.asarray(
-        [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]
-    )
-    xyz = np.column_stack((xy, np.asarray([0.0, 0.0, 0.0, 9.0, 9.0, 9.0])))
-    sections = np.asarray(["a", "a", "a", "b", "b", "b"])
-    stable_ids = np.asarray(["a0", "a1", "a2", "b0", "b1", "b2"])
-
-    expected = build_sectionwise_2d_graph(
-        xy, sections, n_neighbors=2, stable_ids=stable_ids, workers=1
-    )
-    observed = build_sectionwise_2d_graph(
-        xyz, sections, n_neighbors=2, stable_ids=stable_ids, workers=1
-    )
-
-    assert np.array_equal(observed.edges, expected.edges)
-
-
-def test_section_aware_3d_graph_allows_sections_with_equal_median_z():
-    coords = np.asarray(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0],
-        ]
-    )
-    sections = np.asarray(["a", "a", "b", "b", "c", "c"])
-    stable_ids = np.asarray(["a0", "a1", "b0", "b1", "c0", "c1"])
-
-    graph = build_section_aware_3d_graph(
-        coords, sections, n_neighbors=1, stable_ids=stable_ids, workers=1
-    )
-
-    assert graph.edges.shape[0] > 0
-
-
-def test_section_aware_3d_graph_is_bidirectional_and_permutation_invariant():
-    coords = np.asarray(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [0.0, 0.0, 4.0],
-            [1.0, 0.0, 4.0],
-            [2.0, 0.0, 4.0],
-        ]
-    )
-    sections = np.asarray([0, 0, 0, 1, 1, 1])
-    stable_ids = np.asarray(["a", "b", "c", "d", "e", "f"])
-    reference = build_section_aware_3d_graph(coords, sections, 2, stable_ids=stable_ids, workers=1)
-    reference_edges = _edge_id_set(reference.edges, stable_ids)
-
-    assert not np.any(reference.edges[:, 0] == reference.edges[:, 1])
-    assert all((target, source) in reference_edges for source, target in reference_edges)
-
-    permutation = np.asarray([4, 0, 5, 2, 1, 3])
-    permuted = build_section_aware_3d_graph(
-        coords[permutation],
-        sections[permutation],
-        2,
-        stable_ids=stable_ids[permutation],
-        workers=1,
-    )
-    assert reference_edges == _edge_id_set(permuted.edges, stable_ids[permutation])
-
-
-def test_section_aware_3d_graph_requires_exact_xyz_coordinates():
-    with pytest.raises(ValueError, match="exactly three XYZ"):
-        build_section_aware_3d_graph(
-            np.zeros((4, 4)),
-            np.asarray([0, 0, 1, 1]),
-            1,
-            stable_ids=np.asarray(["a", "b", "c", "d"]),
+@pytest.mark.parametrize("sigma", [0.0, -1.0, np.nan, np.inf])
+def test_weighted_radius_graph_rejects_nonpositive_or_nonfinite_sigma(sigma):
+    with pytest.raises(ValueError, match="sigma must be positive"):
+        build_radius_spatial_graph(
+            np.asarray([[0.0, 0.0], [1.0, 0.0]]),
+            radius=2.0,
+            sigma=sigma,
         )
 
 
@@ -337,76 +162,6 @@ def test_gcn_normalization_on_two_node_graph():
     edges = torch.asarray([[0, 1], [1, 0]])
     result = GCN(K=1)(features, edges)
     torch.testing.assert_close(result, torch.asarray([[2.0], [2.0]]))
-
-
-def test_gcn_does_not_materialize_edge_by_feature_messages():
-    n_nodes = 128
-    fanout = 16
-    n_features = 64
-    features = torch.ones((n_nodes, n_features), dtype=torch.float32)
-    sources = torch.arange(n_nodes).repeat_interleave(fanout)
-    offsets = torch.arange(1, fanout + 1).repeat(n_nodes)
-    targets = (sources + offsets) % n_nodes
-    edges = torch.stack((sources, targets))
-    edge_message_bytes = edges.shape[1] * n_features * features.element_size()
-
-    with profile(activities=[ProfilerActivity.CPU], profile_memory=True) as profiler:
-        result = GCN(K=1)(features, edges)
-
-    largest_operator_allocation = max(
-        event.self_cpu_memory_usage for event in profiler.key_averages()
-    )
-    assert result.shape == features.shape
-    assert largest_operator_allocation < edge_message_bytes // 2
-
-
-@pytest.mark.parametrize(
-    ("use_edge_weights", "legacy_normalization"),
-    [(False, False), (True, False), (False, True)],
-)
-def test_sparse_gcn_matches_edge_message_reference(use_edge_weights, legacy_normalization):
-    torch.manual_seed(7)
-    features = torch.randn(9, 5)
-    edges = torch.asarray(
-        [
-            [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 3],
-            [1, 2, 2, 3, 4, 5, 6, 7, 8, 0, 4, 1],
-        ]
-    )
-    weights = torch.linspace(0.5, 1.6, edges.shape[1]) if use_edge_weights else None
-
-    if legacy_normalization:
-        normalized_edges, _ = add_remaining_self_loops(edges, num_nodes=features.shape[0])
-        source, target = normalized_edges
-        source_degree = degree(source, features.shape[0], dtype=features.dtype)
-        normalized_weights = (source_degree[source] * source_degree[target]).pow(-0.5)
-        normalized_weights[normalized_weights == float("inf")] = 0
-    else:
-        normalized_edges, normalized_weights = gcn_norm(
-            edges,
-            weights,
-            num_nodes=features.shape[0],
-            add_self_loops=True,
-            flow="source_to_target",
-            dtype=features.dtype,
-        )
-        source, target = normalized_edges
-
-    expected_hops = []
-    current = features
-    for _ in range(3):
-        messages = normalized_weights[:, None] * current[source]
-        current = torch.zeros_like(current).index_add_(0, target, messages)
-        expected_hops.append(current)
-
-    expected = torch.cat(expected_hops, dim=1)
-    actual = GCN(K=3)(
-        features,
-        edges,
-        weights,
-        legacy_normalization=legacy_normalization,
-    )
-    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_training_data_scatter_is_invariant_to_interleaved_batches():

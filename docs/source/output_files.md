@@ -15,12 +15,52 @@ After running `gsMap3D`, the output is organized under `{workdir}/{project_name}
 ├── spatial_ldsc/                   # Step 3: Spatial LDSC results
 ├── cauchy_combination/             # Step 4: Region-level statistics
 ├── report_data/                    # Processed data for analysis
-└── gsmap_web_report/               # Interactive web report
+├── gsmap_web_report/               # Interactive web report
+└── logs/                           # Per-run diagnostic logs and manifests
 ```
 
 ```{note}
 For `spatial3D` datasets, additional 3D-specific files are generated in `report_data/spatial_3d/` and `gsmap_web_report/spatial_3d/`.
 ```
+
+## Execution Logs
+
+Every CLI command and public pipeline entry point automatically creates a unique run directory under `{project_name}/logs/`. No logging option is required.
+
+```text
+logs/
+├── latest.json
+├── latest/
+│   ├── run_manifest.json
+│   ├── 01_find_latent.log
+│   ├── 01_find_latent.manifest.json
+│   ├── 02_latent_to_gene.log
+│   ├── 03_spatial_ldsc.log
+│   ├── 03_spatial_ldsc/
+│   │   ├── SCZ.log
+│   │   ├── SCZ.manifest.json
+│   │   └── {trait}.log
+│   ├── 04_cauchy_combination.log
+│   └── 05_report.log
+└── {UTC_timestamp}__{stage}__[trait]__[slurm_job]__{host}__{pid}__{unique_id}/
+    ├── run_manifest.json
+    ├── quick_mode.log
+    ├── 01_find_latent.log
+    ├── 02_latent_to_gene.log
+    ├── 03_spatial_ldsc.log
+    ├── 03_spatial_ldsc/
+    │   └── {trait}.log
+    ├── 04_cauchy_combination.log
+    └── 05_report.log
+```
+
+Only files for stages entered by a run are created. `quick_mode.log` records the complete pipeline, while numbered files isolate each stage. Spatial LDSC additionally writes one file per trait so that a failed trait can be diagnosed without searching a combined log.
+
+Directories outside `latest/` are immutable provenance records. Their names include the entry stage and, when available, the single trait, so they are still recognizable in directory listings. Files under `latest/` are atomic symbolic links to the newest matching immutable artifact. For example, `logs/latest/03_spatial_ldsc/SCZ.log` is the direct inspection path for the most recent SCZ run; the adjacent `SCZ.manifest.json` link identifies its configuration, SLURM allocation, status, and timings.
+
+The terminal remains concise: `INFO` and progress output go to standard output, and warnings or errors go to standard error. Log files retain `DEBUG` messages, full exception tracebacks, source locations, process and thread identifiers, and periodic resource snapshots (RSS, cgroup memory, CPU, and I/O). Plain-text rotating files are used, so ANSI terminal formatting is not stored. The per-line prefix contains only timestamp, level, process/thread, and source location. Run, stage, and trait context is written once in the stage-start record and retained in the manifest rather than repeated on every line.
+
+`run_manifest.json` records the resolved configuration (with credential-like fields redacted), command line, source commit, SLURM context, stage and trait status, timing, and log paths. A run can finish with `complete`, `partial_failure`, or `failed` status. `latest.json` points to the most recently updated run directory; use the manifest inside an immutable run directory as the authoritative record for that run. The `rebuild_log_index(project_dir)` helper in `gsMap.logging_config` can recreate all `latest/` links from existing manifests, including logs produced before the index was introduced.
 
 ______________________________________________________________________
 
@@ -90,6 +130,7 @@ This directory contains the gene specificity scores (GSS) computed for each spot
 | `ranks.meta.json`                | Metadata for ranks array (shape, dtype)                          |
 | `marker_scores.dat`              | Memory-mapped marker scores (n_spots × n_genes, float16)         |
 | `marker_scores.meta.json`        | Metadata for marker scores array                                 |
+| `marker_scores.obs_indices.dat`  | Marker-row to source-H5AD observation mapping (int64)            |
 | `mean_frac.parquet`              | Mean expression fraction per gene                                |
 | `metadata.yaml`                  | Configuration and output paths                                   |
 
@@ -117,7 +158,9 @@ print(gss_adata.obs.head())
 print(gss_adata.var_names[:10])
 ```
 
-Alternatively, you can manually load the raw memory-mapped arrays:
+The loader transparently handles both layouts: current sequential marker files with a companion observation mapping, and legacy files whose marker rows use source-H5AD order. In the returned object, `gss_adata.X[i]`, `gss_adata.obs.iloc[i]`, `gss_adata.obsm[config.spatial_key][i]` (when configured), and `gss_adata.obs_names[i]` always refer to the same spot. Other latent arrays remain in `concatenated_latent_adata.h5ad` instead of being copied into this wrapper.
+
+The raw memory map is stored in compute order for efficient sequential I/O. If you load it manually, apply the row mapping before combining it with metadata from `concatenated_latent_adata.h5ad`:
 
 ```python
 import numpy as np
@@ -131,7 +174,20 @@ with open("marker_scores.meta.json") as f:
 marker_scores = np.memmap(
     "marker_scores.dat", dtype=meta["dtype"], mode="r", shape=tuple(meta["shape"])
 )
+
+# Current files: raw marker row -> original concatenated-H5AD row.
+# Legacy metadata has no "row_layout" and therefore uses identity order.
+if "row_layout" in meta:
+    layout = meta["row_layout"]
+    marker_to_source_row = np.memmap(
+        layout["mapping_file"],
+        dtype=layout["dtype"],
+        mode="r",
+        shape=tuple(layout["shape"]),
+    )
 ```
+
+Prefer `load_marker_scores_memmap_format` unless raw storage-order access is specifically required. Do not assume raw marker row `i` is source-H5AD row `i` for current files.
 
 ### Check Homogeneous Spots
 

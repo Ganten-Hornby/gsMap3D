@@ -85,3 +85,29 @@ def test_physical_window_requires_a_z_coordinate() -> None:
             cross_slice_selection_mode=CrossSliceSelectionMode.PHYSICAL_WINDOW,
             cross_slice_max_distance=20.0,
         )
+
+
+@pytest.mark.parametrize("z_column", [3, -4])
+def test_physical_window_rejects_out_of_range_z_column(z_column: int) -> None:
+    coords, slice_ids = irregular_fixture()
+    with pytest.raises(IndexError, match="outside"):
+        find_neighbors(
+            coords,
+            slice_ids,
+            cross_slice_selection_mode=CrossSliceSelectionMode.PHYSICAL_WINDOW,
+            cross_slice_max_distance=20.0,
+            cross_slice_z_coordinate=z_column,
+        )
+
+
+@pytest.mark.parametrize("z_column", [0, 1, -3, -2])
+def test_physical_window_rejects_xy_as_z(z_column: int) -> None:
+    coords, slice_ids = irregular_fixture()
+    with pytest.raises(ValueError, match="first two x/y"):
+        find_neighbors(
+            coords,
+            slice_ids,
+            cross_slice_selection_mode=CrossSliceSelectionMode.PHYSICAL_WINDOW,
+            cross_slice_max_distance=20.0,
+            cross_slice_z_coordinate=z_column,
+        )

@@ -18,6 +18,8 @@ from typing import Annotated, Any, get_args, get_origin
 import psutil
 import pyfiglet
 
+from gsMap.logging_config import resolve_project_dir_from_kwargs, stage_logging
+
 logger = logging.getLogger("gsMap")
 
 
@@ -163,26 +165,29 @@ def dataclass_typer(func):
     config_class = config_param.annotation
 
     @wraps(func)
-    @track_resource_usage  # Add resource tracking
     def wrapper(**kwargs):
-        # Show banner
-        try:
-            from gsMap import __version__
+        project_dir = resolve_project_dir_from_kwargs(kwargs)
+        with stage_logging(project_dir, func.__name__) as logging_session:
+            # Show banner
+            try:
+                from gsMap import __version__
 
-            version = __version__
-        except ImportError:
-            version = "development"
-        show_banner(func.__name__, version)
+                version = __version__
+            except ImportError:
+                version = "development"
+            show_banner(func.__name__, version)
 
-        # Create the config instance
-        config = config_class(**kwargs)
-        result = func(config)
+            # Create the config only after the project DEBUG log is active so
+            # validation and auto-resolution messages are retained.
+            config = config_class(**kwargs)
+            logging_session.record_config(config, stage=func.__name__)
+            result = track_resource_usage(func)(config)
 
-        # Record end time
-        end_time = time.strftime("%Y-%m-%d %H:%M:%S")
-        logger.info(f"Finished at: {end_time}")
+            # Record end time
+            end_time = time.strftime("%Y-%m-%d %H:%M:%S")
+            logger.info(f"Finished at: {end_time}")
 
-        return result
+            return result
 
     # Build new parameters from dataclass fields
     from dataclasses import MISSING

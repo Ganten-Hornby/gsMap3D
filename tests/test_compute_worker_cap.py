@@ -1,6 +1,6 @@
 """Unit tests for the core-aware LDSC compute-worker resolver.
 
-The resolver (`SpatialLDSCProcessor._resolve_compute_workers`) decides how many
+The resolver (`SpatialLDSCEngine._resolve_compute_workers`) decides how many
 regression worker threads to launch. It must:
   * pin to 1 on GPU (cuSolver/device-memory contention),
   * cap to ``cpu_count // 2`` on CPU so a low-core host (e.g. 2-core CI) cannot
@@ -12,7 +12,7 @@ import types
 
 import pytest
 
-from gsMap.spatial_ldsc.ldscore_quick_mode import SpatialLDSCProcessor
+from gsMap.spatial_ldsc.ldscore_quick_mode import SpatialLDSCEngine
 
 
 def _stub(configured):
@@ -23,7 +23,7 @@ def _stub(configured):
 
 
 def _resolve(stub, backend):
-    return SpatialLDSCProcessor._resolve_compute_workers(stub, backend)
+    return SpatialLDSCEngine._resolve_compute_workers(stub, backend)
 
 
 def test_gpu_pins_to_single_worker(monkeypatch):
