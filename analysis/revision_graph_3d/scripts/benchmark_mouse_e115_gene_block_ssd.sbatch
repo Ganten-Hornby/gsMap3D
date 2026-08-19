@@ -138,7 +138,12 @@ for worker_split in "${WORKER_SPLITS[@]}"; do
             || true
     )
     cells_per_second=${cells_per_second:-0}
-    gpu_oom=$(rg -c 'CUDA_ERROR_OUT_OF_MEMORY' "${run_log}" || true)
+    if rg -q 'CUDA_ERROR_OUT_OF_MEMORY|GPU LD-score construction failed because GPU memory' \
+        "${run_log}"; then
+        gpu_oom=1
+    else
+        gpu_oom=0
+    fi
     read -r mean_gpu max_gpu max_gpu_mem < <(
         awk -F',' '
             {
