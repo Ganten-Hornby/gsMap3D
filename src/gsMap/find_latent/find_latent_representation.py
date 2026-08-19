@@ -145,7 +145,11 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
 
     # Prepare the trainning data
     get_trainning_data = TrainingData(config)
-    get_trainning_data.prepare(training_adata, hvg)
+    get_trainning_data.prepare(
+        training_adata,
+        hvg,
+        source_h5ad_dict=config.sample_h5ad_dict,
+    )
 
     # Configure the distribution
     if config.data_layer in ["count", "counts"]:
@@ -349,6 +353,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "n_epochs": int(config.itermax),
             "patience": int(config.patience),
             "two_stage": config.two_stage,
+            "graph_context_mode": get_trainning_data.graph_context_mode,
         },
         "outputs": {
             "latent_files": output_h5ad_path_dict_str,

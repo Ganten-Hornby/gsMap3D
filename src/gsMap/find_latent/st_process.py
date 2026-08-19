@@ -1,6 +1,6 @@
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,10 @@ from .gnn.gcn import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SOURCE_OBS_INDEX_KEY = "_gsmap_source_obs_index"
+_FULL_SOURCE_GRAPH_SAMPLED_FOCAL = "full_source_graph_sampled_focal"
+_TRAINING_ROWS_GRAPH_CONTEXT = "training_rows"
 
 
 def _dense_float32(matrix: Any) -> np.ndarray:
@@ -369,6 +373,7 @@ def create_subsampled_adata(
 
         # Load the data
         adata = sc.read_h5ad(st_file)
+        adata.obs[_SOURCE_OBS_INDEX_KEY] = np.arange(adata.n_obs, dtype=np.int64)
 
         # Filter out mitochondrial and hemoglobin genes
         gene_keep = ~adata.var_names.str.match(re.compile(r"^(HB.-|MT-)", re.IGNORECASE))
@@ -806,8 +811,100 @@ class TrainingData:
         self.batch_merge = None
         self.batch_size = None
         self.label_name = None
+        self.graph_context_mode = _TRAINING_ROWS_GRAPH_CONTEXT
 
-    def prepare(self, concatenated_adata, hvg):
+    def _propagate_sampled_rows_on_full_section_graph(
+        self,
+        *,
+        batch_adata: AnnData,
+        hvg: list[str],
+        source_path: str | Path,
+    ) -> torch.Tensor:
+        """Propagate sampled focal rows using their full-density source graph."""
+
+        if _SOURCE_OBS_INDEX_KEY not in batch_adata.obs:
+            raise RuntimeError(
+                "Training data is missing source-row provenance required for "
+                "full-density graph propagation"
+            )
+
+        source_adata = sc.read_h5ad(source_path)
+        source_adata.var_names_make_unique()
+        setup_data_layer(source_adata, self.params.data_layer)
+
+        source_rows = batch_adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(dtype=np.int64)
+        if np.unique(source_rows).size != source_rows.size:
+            raise RuntimeError("Sampled training rows contain duplicate source indices")
+        if source_rows.size and (source_rows.min() < 0 or source_rows.max() >= source_adata.n_obs):
+            raise RuntimeError("Sampled training rows fall outside the source AnnData")
+
+        coords = np.asarray(source_adata.obsm[self.params.spatial_key])
+        stable_ids = source_adata.obs_names.to_numpy()
+        section_labels = _section_labels_for_graph(source_adata, self.params)
+        if section_labels is None:
+            raise RuntimeError("Section labels are required for full-density training propagation")
+
+        propagated_focal = torch.empty(
+            (source_rows.size, len(hvg) * self.params.K),
+            dtype=torch.float32,
+        )
+        source_to_focal = np.full(source_adata.n_obs, -1, dtype=np.int32)
+        source_to_focal[source_rows] = np.arange(source_rows.size, dtype=np.int32)
+        completed = np.zeros(source_rows.size, dtype=bool)
+
+        chunks = iter_section_inference_chunks(
+            coords,
+            section_labels,
+            graph_mode=self.params.graph_mode,
+            target_focal_spots=self.params.inference_chunk_size,
+            propagation_depth=self.params.K,
+        )
+        for chunk_number, chunk in enumerate(chunks, start=1):
+            focal_positions = source_to_focal[chunk.focal_global_indices]
+            selected_mask = focal_positions >= 0
+            if not np.any(selected_mask):
+                continue
+
+            selected_source_rows = chunk.focal_global_indices[selected_mask]
+            selected_positions = focal_positions[selected_mask].astype(np.int64, copy=False)
+            context = chunk.context_global_indices
+            expression = torch.from_numpy(_dense_float32(source_adata[context, hvg].X))
+            propagated, graph = propagate_spatial_features(
+                expression=expression,
+                coords=coords[context],
+                stable_ids=stable_ids[context],
+                params=self.params,
+                gcov=self.gcov,
+                section_labels=section_labels[context],
+            )
+            selected_local_rows = np.searchsorted(context, selected_source_rows)
+            if not np.array_equal(context[selected_local_rows], selected_source_rows):
+                raise RuntimeError("Sampled focal rows are missing from their graph context")
+            propagated_focal[selected_positions] = propagated[selected_local_rows]
+            completed[selected_positions] = True
+            logger.info(
+                "Training graph chunk %d: %d sampled focal spots, %d full-density "
+                "context spots, %d directed edges",
+                chunk_number,
+                selected_positions.size,
+                context.size,
+                graph.edges.shape[0],
+            )
+            del expression, propagated, graph
+
+        if not np.all(completed):
+            missing = int((~completed).sum())
+            raise RuntimeError(
+                f"Full-density graph propagation missed {missing} sampled focal rows"
+            )
+        return propagated_focal
+
+    def prepare(
+        self,
+        concatenated_adata,
+        hvg,
+        source_h5ad_dict: Mapping[str, str | Path] | None = None,
+    ):
         logger.info("Processing concatenated subsampled data...")
 
         # Get labels from obs
@@ -831,7 +928,18 @@ class TrainingData:
             dtype=expression_array.dtype,
         )
 
-        for batch_id in concatenated_adata.obs["batch_id"].unique():
+        sample_items = list(source_h5ad_dict.items()) if source_h5ad_dict is not None else []
+        section_modes = {"sectionwise_2d", "section_aware_3d"}
+        use_full_section_graph = self.params.graph_mode.lower() in section_modes
+        if use_full_section_graph:
+            self.graph_context_mode = _FULL_SOURCE_GRAPH_SAMPLED_FOCAL
+        n_batches = len(pd.unique(batch_labels))
+        if use_full_section_graph and len(sample_items) != n_batches:
+            raise RuntimeError(
+                "Full-density section graph training requires one source H5AD per training batch"
+            )
+
+        for batch_ordinal, batch_id in enumerate(concatenated_adata.obs["batch_id"].unique()):
             batch_mask = concatenated_adata.obs["batch_id"] == batch_id
             batch_adata = concatenated_adata[batch_mask]
             batch_indices = np.flatnonzero(batch_mask.to_numpy())
@@ -839,19 +947,36 @@ class TrainingData:
 
             logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
 
-            batch_expression_gcn, graph = propagate_spatial_features(
-                expression=batch_expression,
-                coords=np.asarray(batch_adata.obsm[self.params.spatial_key]),
-                stable_ids=batch_adata.obs_names.to_numpy(),
-                params=self.params,
-                gcov=self.gcov,
-                section_labels=_section_labels_for_graph(batch_adata, self.params),
-            )
+            if use_full_section_graph:
+                sample_name, source_path = sample_items[batch_ordinal]
+                observed_sample_names = batch_adata.obs["sample_name"].astype(str).unique()
+                if observed_sample_names.tolist() != [sample_name]:
+                    raise RuntimeError(
+                        f"Training batch {batch_id!r} does not match source sample {sample_name!r}"
+                    )
+                batch_expression_gcn = self._propagate_sampled_rows_on_full_section_graph(
+                    batch_adata=batch_adata,
+                    hvg=hvg,
+                    source_path=source_path,
+                )
+                graph_description = "full-density section graph chunks"
+            else:
+                batch_expression_gcn, graph = propagate_spatial_features(
+                    expression=batch_expression,
+                    coords=np.asarray(batch_adata.obsm[self.params.spatial_key]),
+                    stable_ids=batch_adata.obs_names.to_numpy(),
+                    params=self.params,
+                    gcov=self.gcov,
+                    section_labels=_section_labels_for_graph(batch_adata, self.params),
+                )
+                graph_description = f"{graph.edges.shape[0]} directed edges"
             expression_array_gcn[batch_indices] = batch_expression_gcn
 
             logger.info(
-                f"Graph for {batch_id} has {graph.edges.shape[0]} directed edges, "
-                f"{batch_adata.n_obs} cells."
+                "Graph features for %s used %s for %d sampled focal cells.",
+                batch_id,
+                graph_description,
+                batch_adata.n_obs,
             )
 
         # Convert batch labels to numeric codes
