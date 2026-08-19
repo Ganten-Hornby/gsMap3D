@@ -181,7 +181,7 @@ SPATIAL_3D_MANIFEST="${REPORT_DATA}/spatial_3d/spatial_3d_manifest.json" \
 SPATIAL_3D_DISPLAY="${REPORT_DATA}/spatial_3d/spatial_3d_display_spots.parquet" \
 SAMPLE_SPATIAL_MANIFEST="${WEB_REPORT}/js_data/sample_spatial_manifest.json" \
 SAMPLE_INDEX="${WEB_REPORT}/js_data/sample_index.js" \
-WEB_REPORT="${WEB_REPORT}" \
+AUDIT_WEB_REPORT="${WEB_REPORT}" \
 UMAP_AUDIT="${WEB_REPORT}/umap_scanpy/umap_audit.json" \
     "${PYTHON}" - <<'PY'
 import json
@@ -191,7 +191,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 expected = int(os.environ["AUDIT_EXPECTED_REPORT_SPOTS"])
-web_report = Path(os.environ["WEB_REPORT"])
+web_report = Path(os.environ["AUDIT_WEB_REPORT"])
 
 with open(os.environ["SPATIAL_3D_MANIFEST"], encoding="utf-8") as handle:
     spatial_manifest = json.load(handle)
