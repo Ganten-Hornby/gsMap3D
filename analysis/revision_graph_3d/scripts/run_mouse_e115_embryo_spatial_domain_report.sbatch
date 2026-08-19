@@ -23,12 +23,10 @@ case "${ARM}" in
     2d)
         readonly PROJECT_NAME=mouse_e115_embryo_sectionwise_2d_k10_spatial_domain
         readonly GRAPH_MODE=sectionwise_2d
-        readonly MARKER_SCORE_GENE_BLOCK_SIZE=2048
         ;;
     3d)
         readonly PROJECT_NAME=mouse_e115_embryo_section_aware_3d_k10_spatial_domain
         readonly GRAPH_MODE=section_aware_3d
-        readonly MARKER_SCORE_GENE_BLOCK_SIZE=2400
         ;;
     *)
         printf 'Unknown arm: %s (expected 2d or 3d)\n' "${ARM}" >&2
@@ -109,7 +107,6 @@ printf 'visualization_spots=%s (no downsampling)\n' "${N_SPOTS}"
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
     --marker-score-format gene_block \
-    --marker-score-gene-block-size "${MARKER_SCORE_GENE_BLOCK_SIZE}" \
     --memmap-tmp-dir "${REPORT_TMP_DIR}" \
     --downsampling-n-spots-pcc 100000 \
     --downsampling-n-spots-2d "${N_SPOTS}" \
