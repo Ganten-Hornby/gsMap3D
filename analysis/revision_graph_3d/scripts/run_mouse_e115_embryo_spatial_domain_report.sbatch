@@ -176,7 +176,7 @@ readonly WEB_REPORT="${RUN_DIR}/gsmap_web_report"
 [[ "$(wc -l <"${REPORT_DATA}/spot_metadata.csv")" -eq $((EXPECTED_REPORT_SPOTS + 1)) ]]
 [[ "$(wc -l <"${REPORT_DATA}/umap_data.csv")" -eq $((EXPECTED_REPORT_SPOTS + 1)) ]]
 
-EXPECTED_REPORT_SPOTS="${EXPECTED_REPORT_SPOTS}" \
+AUDIT_EXPECTED_REPORT_SPOTS="${EXPECTED_REPORT_SPOTS}" \
 SPATIAL_3D_MANIFEST="${REPORT_DATA}/spatial_3d/spatial_3d_manifest.json" \
 SPATIAL_3D_DISPLAY="${REPORT_DATA}/spatial_3d/spatial_3d_display_spots.parquet" \
 SAMPLE_SPATIAL_MANIFEST="${WEB_REPORT}/js_data/sample_spatial_manifest.json" \
@@ -190,7 +190,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-expected = int(os.environ["EXPECTED_REPORT_SPOTS"])
+expected = int(os.environ["AUDIT_EXPECTED_REPORT_SPOTS"])
 web_report = Path(os.environ["WEB_REPORT"])
 
 with open(os.environ["SPATIAL_3D_MANIFEST"], encoding="utf-8") as handle:
