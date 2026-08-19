@@ -856,14 +856,38 @@ def _calculate_umap_from_embeddings(
     umap_key: str = "X_umap",
 ) -> np.ndarray:
     if umap_key in adata.obsm:
-        logger.info(f"Using pre-computed '{umap_key}' from adata.obsm, skipping neighbors + UMAP.")
-        return adata.obsm[umap_key]
+        coordinates = np.asarray(adata.obsm[umap_key])
+        finite_rows = np.isfinite(coordinates).all(axis=1)
+        if finite_rows.all():
+            logger.info(
+                f"Using pre-computed '{umap_key}' from adata.obsm, skipping neighbors + UMAP."
+            )
+            return coordinates.copy()
+
+        logger.warning(
+            f"Pre-computed '{umap_key}' contains "
+            f"{np.count_nonzero(~finite_rows):,}/{len(finite_rows):,} non-finite rows; "
+            f"recomputing a coherent UMAP from '{embedding_key}'."
+        )
+
+    embedding = np.asarray(adata.obsm[embedding_key])
+    if not np.isfinite(embedding).all():
+        nonfinite_values = int(np.count_nonzero(~np.isfinite(embedding)))
+        raise ValueError(
+            f"Embedding '{embedding_key}' contains {nonfinite_values:,} non-finite values; "
+            "cannot calculate UMAP."
+        )
 
     logger.info(f"Calculating UMAP for {embedding_key} with {adata.n_obs} spots using scanpy...")
     sc.pp.neighbors(adata, use_rep=embedding_key)
     sc.tl.umap(adata)
 
-    return adata.obsm["X_umap"]
+    coordinates = np.asarray(adata.obsm["X_umap"]).copy()
+    if not np.isfinite(coordinates).all():
+        raise ValueError(f"Calculated UMAP for '{embedding_key}' contains non-finite values.")
+    if umap_key != "X_umap":
+        adata.obsm[umap_key] = coordinates
+    return coordinates
 
 
 def _prepare_umap_data(

@@ -13,6 +13,7 @@ from gsMap.report.diagnosis import load_gwas_data
 from gsMap.report.report_data import (
     _available_cpu_count,
     _calculate_pcc_for_traits_fast,
+    _calculate_umap_from_embeddings,
     _export_annotation_schemas_js,
     _load_chrom_tick_positions,
     _load_gss_pcc_sample,
@@ -68,6 +69,53 @@ def test_report_worker_count_uses_existing_cpu_configuration(monkeypatch):
 
     assert _report_worker_count(config, ceiling=20) == 15
     assert _report_worker_count(config, ceiling=4) == 4
+
+
+def test_nonfinite_precomputed_umap_is_recomputed_from_embedding(monkeypatch):
+    adata = ad.AnnData(X=np.zeros((4, 1), dtype=np.float32))
+    adata.obsm["emb_cell"] = np.arange(12, dtype=np.float32).reshape(4, 3)
+    adata.obsm["X_umap"] = np.array(
+        [[0.0, 1.0], [np.nan, np.nan], [2.0, 3.0], [4.0, 5.0]],
+        dtype=np.float32,
+    )
+    calls = []
+
+    def fake_neighbors(target, *, use_rep):
+        calls.append(("neighbors", use_rep))
+
+    expected = np.array(
+        [[10.0, 11.0], [12.0, 13.0], [14.0, 15.0], [16.0, 17.0]],
+        dtype=np.float32,
+    )
+
+    def fake_umap(target):
+        calls.append(("umap", None))
+        target.obsm["X_umap"] = expected.copy()
+
+    monkeypatch.setattr("gsMap.report.report_data.sc.pp.neighbors", fake_neighbors)
+    monkeypatch.setattr("gsMap.report.report_data.sc.tl.umap", fake_umap)
+
+    result = _calculate_umap_from_embeddings(adata, "emb_cell")
+
+    assert calls == [("neighbors", "emb_cell"), ("umap", None)]
+    np.testing.assert_array_equal(result, expected)
+
+
+def test_finite_precomputed_umap_is_reused(monkeypatch):
+    adata = ad.AnnData(X=np.zeros((3, 1), dtype=np.float32))
+    adata.obsm["emb_cell"] = np.ones((3, 2), dtype=np.float32)
+    expected = np.arange(6, dtype=np.float32).reshape(3, 2)
+    adata.obsm["X_umap"] = expected.copy()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("finite precomputed UMAP should be reused")
+
+    monkeypatch.setattr("gsMap.report.report_data.sc.pp.neighbors", fail_if_called)
+    monkeypatch.setattr("gsMap.report.report_data.sc.tl.umap", fail_if_called)
+
+    result = _calculate_umap_from_embeddings(adata, "emb_cell")
+
+    np.testing.assert_array_equal(result, expected)
 
 
 def test_report_marker_reader_preserves_requested_row_and_gene_order(tmp_path):
