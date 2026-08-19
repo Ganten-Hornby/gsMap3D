@@ -21,6 +21,7 @@ from .marker_scores import (
     compute_marker_scores_3d_hierarchical_pool_jax,
     compute_marker_scores_jax,
 )
+from .memmap_io import MemMapDense
 from .provenance import (
     artifact_signature,
     atomic_json_dump,
@@ -566,6 +567,68 @@ class GeneBlockMarkerStore:
 
     def close(self) -> None:
         """Compatibility no-op: each block mapping is released after it is copied."""
+
+
+def ensure_consolidated_marker_memmap(
+    manifest_path: str | Path,
+    output_path: str | Path,
+    *,
+    spot_batch_size: int = 4096,
+) -> Path:
+    """Consolidate a complete gene-block store into the standard row-major memmap."""
+    store = GeneBlockMarkerStore(manifest_path)
+    output_path = Path(output_path)
+    try:
+        complete, metadata = MemMapDense.check_complete(output_path)
+        if complete:
+            if metadata is None or tuple(metadata["shape"]) != store.shape:
+                raise ValueError(
+                    f"Consolidated marker-score shape does not match {manifest_path}"
+                )
+            if np.dtype(metadata["dtype"]) != store.dtype:
+                raise ValueError(
+                    f"Consolidated marker-score dtype does not match {manifest_path}"
+                )
+            logger.info("Using existing consolidated marker-score memmap: %s", output_path)
+            return output_path
+
+        logger.info(
+            "Consolidating %s gene-block marker-score files into %s",
+            len(store.blocks),
+            output_path,
+        )
+        output = MemMapDense(
+            output_path,
+            shape=store.shape,
+            dtype=store.dtype,
+            mode="w",
+            num_write_workers=0,
+            tmp_dir=None,
+        )
+        block_maps: list[np.memmap] = []
+        try:
+            block_maps = [store._open_block(block) for block in store.blocks]
+            for spot_start in range(0, store.shape[0], spot_batch_size):
+                spot_end = min(spot_start + spot_batch_size, store.shape[0])
+                for block, block_map in zip(store.blocks, block_maps, strict=True):
+                    output.memmap[
+                        spot_start:spot_end,
+                        block["start"] : block["end"],
+                    ] = block_map[spot_start:spot_end]
+            output.close(
+                metadata_updates={
+                    "consolidated_from_gene_blocks": artifact_signature(manifest_path),
+                }
+            )
+        except BaseException:
+            output.abort()
+            raise
+        finally:
+            for block_map in block_maps:
+                block_map._mmap.close()
+        return output_path
+    finally:
+        store.close()
 
 
 def calculate_gene_block_marker_scores(

@@ -25,6 +25,11 @@ readonly W_LD_DIR=/storage/yangjianLab/lilounan/resources/gsMap_resource/LDSC_re
 readonly LOCAL_TMP_ROOT="/tmp/gsmap-${USER}"
 readonly LOCAL_TMP_DIR="${LOCAL_TMP_ROOT}/${SLURM_JOB_ID}"
 
+MEMMAP_TMP_ARGS=(--memmap-tmp-dir "${LOCAL_TMP_DIR}")
+if [[ "${START_STEP}" == "spatial_ldsc" ]]; then
+    MEMMAP_TMP_ARGS=()
+fi
+
 source "${LDSC_WORKER_HELPER}"
 configure_ldsc_worker_split "${SLURM_CPUS_PER_TASK}"
 
@@ -96,7 +101,11 @@ printf 'annotation=spatial_domain\n'
 printf 'ldsc_workers=read:%s compute:%s\n' \
     "${LDSC_READ_WORKERS}" "${LDSC_COMPUTE_WORKERS}"
 printf 'commit=%s\n' "$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
-printf 'memmap_tmp_dir=%s\n' "${LOCAL_TMP_DIR}"
+if (( ${#MEMMAP_TMP_ARGS[@]} )); then
+    printf 'memmap_tmp_dir=%s\n' "${LOCAL_TMP_DIR}"
+else
+    printf 'memmap_tmp_dir=disabled (shared-storage benchmark)\n'
+fi
 findmnt -T "${LOCAL_TMP_DIR}"
 df -h "${LOCAL_TMP_DIR}"
 nvidia-smi --query-gpu=name,uuid,memory.total,driver_version --format=csv
@@ -141,7 +150,7 @@ PY
     --marker-score-format gene_block \
     --ldsc-read-workers "${LDSC_READ_WORKERS}" \
     --ldsc-compute-workers "${LDSC_COMPUTE_WORKERS}" \
-    --memmap-tmp-dir "${LOCAL_TMP_DIR}" \
+    "${MEMMAP_TMP_ARGS[@]}" \
     --use-gpu \
     --start-step "${START_STEP}" \
     --stop-step cauchy
