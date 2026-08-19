@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=gsmap-e115-spatial-domain-embed
+#SBATCH --job-name=gsmap-e115-spatial-domain-continue
 #SBATCH --chdir=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 #SBATCH --output=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.out
 #SBATCH --error=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/logs/%x-%j.err
-# Controlled 4-read/28-compute trial; old compute-cap=1 jobs averaged 4.60/4.42 CPUs.
-# 11950209/11950210 peaked at 159.970/159.968 GiB; 2x workers * 1.20 -> 400G.
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=400G
+#SBATCH --mem=160G
 
 set -Eeuo pipefail
 
-readonly ARM="${1:?usage: run_mouse_e115_embryo_spatial_domain.sbatch 2d|3d [start-step]}"
+readonly ARM="${1:?usage: run_mouse_e115_embryo_spatial_domain.sbatch 2d|3d [start-step] [workdir] [marker-score-format]}"
 readonly START_STEP="${2:-find_latent}"
 readonly PROJECT_ROOT=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 readonly LDSC_WORKER_HELPER="${PROJECT_ROOT}/analysis/revision_graph_3d/scripts/ldsc_worker_split.sh"
 readonly INPUT_H5AD="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/Mouse_E11.5_embryo_graph_ready.h5ad"
-readonly WORKDIR="${PROJECT_ROOT}/analysis/revision_graph_3d/runs"
+readonly WORKDIR="${3:-${PROJECT_ROOT}/analysis/revision_graph_3d/runs}"
+readonly MARKER_SCORE_FORMAT="${4:-memmap}"
 readonly PYTHON="${PROJECT_ROOT}/.venv/bin/python"
 readonly GSMAP="${PROJECT_ROOT}/.venv/bin/gsmap"
 readonly HOMOLOG_FILE=/storage/yangjianLab/lilounan/resources/mouse_human_homologs.txt
@@ -24,6 +23,29 @@ readonly SNP_GENE_WEIGHTS=/storage/yangjianLab/lilounan/resources/1000GP3_GRCh37
 readonly W_LD_DIR=/storage/yangjianLab/lilounan/resources/gsMap_resource/LDSC_resource/weights_hm3_no_hla
 readonly LOCAL_TMP_ROOT="/tmp/gsmap-${USER}"
 readonly LOCAL_TMP_DIR="${LOCAL_TMP_ROOT}/${SLURM_JOB_ID}"
+
+case "${WORKDIR}" in
+    "${PROJECT_ROOT}/analysis/revision_graph_3d/runs" | \
+        "${PROJECT_ROOT}/analysis/revision_graph_3d/runs/corrected_training_staging")
+        ;;
+    *)
+        printf 'Unsupported workdir: %s\n' "${WORKDIR}" >&2
+        exit 2
+        ;;
+esac
+
+case "${MARKER_SCORE_FORMAT}" in
+    memmap | gene_block)
+        ;;
+    *)
+        printf 'Unsupported marker-score format: %s\n' "${MARKER_SCORE_FORMAT}" >&2
+        exit 2
+        ;;
+esac
+if [[ "${START_STEP}" == "latent2gene" && "${MARKER_SCORE_FORMAT}" == "gene_block" ]]; then
+    printf 'Current latent2gene writes memmap marker scores; gene_block is read compatibility only.\n' >&2
+    exit 2
+fi
 
 MEMMAP_TMP_ARGS=(--memmap-tmp-dir "${LOCAL_TMP_DIR}")
 if [[ "${START_STEP}" == "spatial_ldsc" ]]; then
@@ -98,6 +120,7 @@ printf 'host=%s\n' "$(hostname)"
 printf 'job_id=%s\n' "${SLURM_JOB_ID}"
 printf 'arm=%s\n' "${ARM}"
 printf 'annotation=spatial_domain\n'
+printf 'marker_score_format=%s\n' "${MARKER_SCORE_FORMAT}"
 printf 'ldsc_workers=read:%s compute:%s\n' \
     "${LDSC_READ_WORKERS}" "${LDSC_COMPUTE_WORKERS}"
 printf 'commit=%s\n' "$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
@@ -131,6 +154,8 @@ PY
     --data-layer X \
     --spatial-key z_correction \
     --annotation spatial_domain \
+    --latent-representation-cell emb_cell \
+    --latent-representation-niche emb_niche \
     --homolog-file "${HOMOLOG_FILE}" \
     --no-high-quality-cell-qc \
     --graph-mode "${GRAPH_MODE}" \
@@ -147,7 +172,10 @@ PY
     --sumstats-config-file "${TRAIT_MANIFEST}" \
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
-    --marker-score-format gene_block \
+    --marker-score-format "${MARKER_SCORE_FORMAT}" \
+    --rank-read-workers 16 \
+    --mkscore-compute-workers 4 \
+    --mkscore-write-workers 2 \
     --ldsc-read-workers "${LDSC_READ_WORKERS}" \
     --ldsc-compute-workers "${LDSC_COMPUTE_WORKERS}" \
     "${MEMMAP_TMP_ARGS[@]}" \

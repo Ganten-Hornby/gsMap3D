@@ -6,10 +6,11 @@
 
 set -Eeuo pipefail
 
-readonly ARM="${1:?usage: run_mouse_e115_embryo_spatial_domain_report.sbatch 2d|3d}"
+readonly ARM="${1:?usage: run_mouse_e115_embryo_spatial_domain_report.sbatch 2d|3d [workdir] [marker-score-format]}"
 readonly PROJECT_ROOT=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 readonly INPUT_H5AD="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/Mouse_E11.5_embryo_graph_ready.h5ad"
-readonly WORKDIR="${PROJECT_ROOT}/analysis/revision_graph_3d/runs"
+readonly WORKDIR="${2:-${PROJECT_ROOT}/analysis/revision_graph_3d/runs}"
+readonly MARKER_SCORE_FORMAT="${3:-memmap}"
 readonly GSMAP="${PROJECT_ROOT}/.venv/bin/gsmap"
 readonly PYTHON="${PROJECT_ROOT}/.venv/bin/python"
 readonly HOMOLOG_FILE=/storage/yangjianLab/lilounan/resources/mouse_human_homologs.txt
@@ -18,6 +19,25 @@ readonly SNP_GENE_WEIGHTS=/storage/yangjianLab/lilounan/resources/1000GP3_GRCh37
 readonly W_LD_DIR=/storage/yangjianLab/lilounan/resources/gsMap_resource/LDSC_resource/weights_hm3_no_hla
 readonly N_SPOTS=6993667
 readonly REPORT_TMP_DIR="/tmp/gsmap-${USER}/${SLURM_JOB_ID}"
+
+case "${WORKDIR}" in
+    "${PROJECT_ROOT}/analysis/revision_graph_3d/runs" | \
+        "${PROJECT_ROOT}/analysis/revision_graph_3d/runs/corrected_training_staging")
+        ;;
+    *)
+        printf 'Unsupported workdir: %s\n' "${WORKDIR}" >&2
+        exit 2
+        ;;
+esac
+
+case "${MARKER_SCORE_FORMAT}" in
+    memmap | gene_block)
+        ;;
+    *)
+        printf 'Unsupported marker-score format: %s\n' "${MARKER_SCORE_FORMAT}" >&2
+        exit 2
+        ;;
+esac
 
 case "${ARM}" in
     2d)
@@ -77,7 +97,12 @@ printf 'commit=%s\n' "$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
 printf 'project=%s\n' "${PROJECT_NAME}"
 printf 'visualization_spots=%s (no downsampling)\n' "${N_SPOTS}"
 
-[[ -s "${RUN_DIR}/latent_to_gene/marker_score_blocks/manifest.json" ]]
+if [[ "${MARKER_SCORE_FORMAT}" == "gene_block" ]]; then
+    [[ -s "${RUN_DIR}/latent_to_gene/marker_score_blocks/manifest.json" ]]
+else
+    [[ -s "${RUN_DIR}/latent_to_gene/marker_scores.dat" ]]
+    [[ -s "${RUN_DIR}/latent_to_gene/marker_scores.meta.json" ]]
+fi
 [[ -s "${RUN_DIR}/cauchy_combination/${PROJECT_NAME}_combined_ldsc.parquet" ]]
 
 "${GSMAP}" quick-mode \
@@ -90,6 +115,8 @@ printf 'visualization_spots=%s (no downsampling)\n' "${N_SPOTS}"
     --data-layer X \
     --spatial-key z_correction \
     --annotation spatial_domain \
+    --latent-representation-cell emb_cell \
+    --latent-representation-niche emb_niche \
     --homolog-file "${HOMOLOG_FILE}" \
     --no-high-quality-cell-qc \
     --graph-mode "${GRAPH_MODE}" \
@@ -106,7 +133,7 @@ printf 'visualization_spots=%s (no downsampling)\n' "${N_SPOTS}"
     --sumstats-config-file "${TRAIT_MANIFEST}" \
     --w-ld-dir "${W_LD_DIR}" \
     --snp-gene-weight-adata-path "${SNP_GENE_WEIGHTS}" \
-    --marker-score-format gene_block \
+    --marker-score-format "${MARKER_SCORE_FORMAT}" \
     --memmap-tmp-dir "${REPORT_TMP_DIR}" \
     --downsampling-n-spots-pcc 100000 \
     --downsampling-n-spots-2d "${N_SPOTS}" \
