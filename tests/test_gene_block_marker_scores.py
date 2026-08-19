@@ -9,6 +9,8 @@ from gsMap.latent2gene.gene_blocks import (
     GENE_BLOCK_FORMAT_VERSION,
     GeneBlockMarkerStore,
     accumulate_annotated_ldscore_blocks,
+    gene_block_store_is_read_compatible,
+    gene_block_store_matches_inputs,
     gene_names_sha256,
 )
 from gsMap.report.report_data import _GeneBlockReportSource, _load_gss_pcc_sample
@@ -130,3 +132,65 @@ def test_report_reads_existing_gene_blocks(tmp_path):
     sample = _load_gss_pcc_sample(config, ldsc_results, tmp_path)
     np.testing.assert_array_equal(sample.marker_scores, marker_scores.astype(np.float32))
     assert sample.gene_names == gene_names.tolist()
+
+
+def test_legacy_gene_block_store_remains_readable_after_metadata_rewrite(tmp_path):
+    gene_names = pd.Index(["gene-a", "gene-b", "gene-c"])
+    marker_scores = np.arange(12, dtype=np.float16).reshape(4, 3)
+    manifest_path = _write_store(tmp_path, marker_scores, gene_names)
+
+    metadata_path = tmp_path / "metadata.h5ad"
+    ad.AnnData(
+        X=np.zeros(marker_scores.shape, dtype=np.float32),
+        obs=pd.DataFrame(index=["spot-a", "spot-b", "spot-c", "spot-d"]),
+        var=pd.DataFrame(index=gene_names),
+    ).write_h5ad(metadata_path)
+    rank_path = tmp_path / "ranks.dat"
+    np.zeros(marker_scores.shape, dtype=np.float16).tofile(rank_path)
+    (tmp_path / "ranks.meta.json").write_text(
+        json.dumps({"shape": list(marker_scores.shape), "dtype": "float16"})
+    )
+    mean_frac_path = tmp_path / "mean_frac.parquet"
+    pd.DataFrame({"frac": np.ones(len(gene_names))}, index=gene_names).to_parquet(
+        mean_frac_path
+    )
+
+    assert not gene_block_store_matches_inputs(
+        manifest_path,
+        rank_memmap_path=rank_path,
+        mean_frac_path=mean_frac_path,
+        marker_metadata_path=metadata_path,
+    )
+    assert gene_block_store_is_read_compatible(
+        manifest_path,
+        rank_memmap_path=rank_path,
+        mean_frac_path=mean_frac_path,
+        marker_metadata_path=metadata_path,
+    )
+
+
+def test_legacy_gene_block_store_rejects_spot_axis_change(tmp_path):
+    gene_names = pd.Index(["gene-a", "gene-b", "gene-c"])
+    manifest_path = _write_store(tmp_path, np.zeros((4, 3), dtype=np.float16), gene_names)
+    metadata_path = tmp_path / "metadata.h5ad"
+    ad.AnnData(
+        X=np.zeros((3, 3), dtype=np.float32),
+        obs=pd.DataFrame(index=["spot-a", "spot-b", "spot-c"]),
+        var=pd.DataFrame(index=gene_names),
+    ).write_h5ad(metadata_path)
+    rank_path = tmp_path / "ranks.dat"
+    np.zeros((3, 3), dtype=np.float16).tofile(rank_path)
+    (tmp_path / "ranks.meta.json").write_text(
+        json.dumps({"shape": [3, 3], "dtype": "float16"})
+    )
+    mean_frac_path = tmp_path / "mean_frac.parquet"
+    pd.DataFrame({"frac": np.ones(len(gene_names))}, index=gene_names).to_parquet(
+        mean_frac_path
+    )
+
+    assert not gene_block_store_is_read_compatible(
+        manifest_path,
+        rank_memmap_path=rank_path,
+        mean_frac_path=mean_frac_path,
+        marker_metadata_path=metadata_path,
+    )

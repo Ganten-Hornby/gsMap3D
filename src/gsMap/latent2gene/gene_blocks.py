@@ -59,6 +59,51 @@ def _read_marker_gene_names(marker_metadata_path: str | Path) -> list[str]:
         metadata_adata.file.close()
 
 
+def gene_block_store_is_read_compatible(
+    manifest_path: str | Path,
+    *,
+    rank_memmap_path: str | Path,
+    mean_frac_path: str | Path,
+    marker_metadata_path: str | Path,
+) -> bool:
+    """Accept complete legacy stores when their spot and gene axes still match.
+
+    Older gene-block manifests fingerprinted the entire metadata H5AD. Rewriting
+    homogeneous-neighbor diagnostics changes that file signature even though
+    spatial LDSC only needs the unchanged observation count and gene order to
+    read the already-computed marker-score blocks.
+    """
+
+    try:
+        metadata_adata = ad.read_h5ad(marker_metadata_path, backed="r")
+        try:
+            n_obs = metadata_adata.n_obs
+            gene_names = metadata_adata.var_names.astype(str).tolist()
+        finally:
+            metadata_adata.file.close()
+
+        store = GeneBlockMarkerStore(manifest_path)
+        try:
+            if store.shape[0] != n_obs:
+                return False
+            store.validate_gene_names(gene_names)
+            current_fingerprint = gene_block_input_fingerprint(
+                rank_memmap_path,
+                mean_frac_path,
+                marker_metadata_path,
+            )
+            if store.source_fingerprint != current_fingerprint:
+                logger.warning(
+                    "Gene-block input fingerprint changed, but the complete store has "
+                    "the same spot count and gene order; reading it as a legacy artifact"
+                )
+            return True
+        finally:
+            store.close()
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
 def gene_block_store_matches_inputs(
     manifest_path: str | Path,
     *,

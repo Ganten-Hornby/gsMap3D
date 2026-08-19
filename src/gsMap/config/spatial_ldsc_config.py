@@ -426,14 +426,14 @@ def check_spatial_ldsc_done(config: SpatialLDSCConfig, trait_name: str) -> bool:
         manifest_path = Path(config.marker_score_blocks_manifest_path)
         if not manifest_path.exists():
             return False
-        from gsMap.latent2gene.gene_blocks import gene_block_store_matches_inputs
+        from gsMap.latent2gene.gene_blocks import gene_block_store_is_read_compatible
         from gsMap.latent2gene.provenance import artifact_signature
         from gsMap.spatial_ldsc.result_writer import (
             RESULT_METADATA_FORMAT_VERSION,
             result_metadata_path,
         )
 
-        if not gene_block_store_matches_inputs(
+        if not gene_block_store_is_read_compatible(
             manifest_path,
             rank_memmap_path=config.rank_memmap_path,
             mean_frac_path=config.mean_frac_path,

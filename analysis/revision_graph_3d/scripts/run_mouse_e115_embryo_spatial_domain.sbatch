@@ -10,7 +10,8 @@
 
 set -Eeuo pipefail
 
-readonly ARM="${1:?usage: run_mouse_e115_embryo_spatial_domain.sbatch 2d|3d}"
+readonly ARM="${1:?usage: run_mouse_e115_embryo_spatial_domain.sbatch 2d|3d [start-step]}"
+readonly START_STEP="${2:-find_latent}"
 readonly PROJECT_ROOT=/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning
 readonly LDSC_WORKER_HELPER="${PROJECT_ROOT}/analysis/revision_graph_3d/scripts/ldsc_worker_split.sh"
 readonly INPUT_H5AD="${PROJECT_ROOT}/analysis/revision_graph_3d/inputs/Mouse_E11.5_embryo_graph_ready.h5ad"
@@ -142,5 +143,5 @@ PY
     --ldsc-compute-workers "${LDSC_COMPUTE_WORKERS}" \
     --memmap-tmp-dir "${LOCAL_TMP_DIR}" \
     --use-gpu \
-    --start-step find_latent \
+    --start-step "${START_STEP}" \
     --stop-step cauchy

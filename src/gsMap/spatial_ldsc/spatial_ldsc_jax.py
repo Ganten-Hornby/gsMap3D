@@ -12,7 +12,7 @@ import jax
 from gsMap.config import SpatialLDSCConfig
 from gsMap.latent2gene.gene_blocks import (
     GeneBlockMarkerStore,
-    gene_block_store_matches_inputs,
+    gene_block_store_is_read_compatible,
 )
 from gsMap.logging_config import logged_stage, stage_logging
 
@@ -94,7 +94,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                 marker_score_adata = load_marker_scores_memmap_format(config)
 
             elif config.marker_score_format == "gene_block":
-                if not gene_block_store_matches_inputs(
+                if not gene_block_store_is_read_compatible(
                     config.marker_score_blocks_manifest_path,
                     rank_memmap_path=config.rank_memmap_path,
                     mean_frac_path=config.mean_frac_path,
