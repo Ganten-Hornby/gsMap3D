@@ -11,7 +11,7 @@ import jax
 
 from gsMap.config import SpatialLDSCConfig
 from gsMap.latent2gene.gene_blocks import (
-    ensure_consolidated_marker_memmap,
+    GeneBlockMarkerStore,
     gene_block_store_is_read_compatible,
 )
 from gsMap.logging_config import logged_stage, stage_logging
@@ -101,12 +101,15 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     marker_metadata_path=config.concatenated_latent_adata_path,
                 ):
                     raise RuntimeError("Gene-block marker scores are stale or incomplete")
-                ensure_consolidated_marker_memmap(
-                    config.marker_score_blocks_manifest_path,
-                    config.marker_scores_memmap_path,
+                marker_score_store = GeneBlockMarkerStore(
+                    config.marker_score_blocks_manifest_path
                 )
-                config.marker_score_format = "memmap"
-                marker_score_adata = load_marker_scores_memmap_format(config)
+                if config.memmap_tmp_dir is not None:
+                    marker_score_store.stage_blocks(config.memmap_tmp_dir)
+                marker_score_adata = ad.read_h5ad(
+                    config.concatenated_latent_adata_path,
+                    backed="r",
+                )
 
             elif config.marker_score_format == "feather":
                 feather_path = Path(config.marker_score_feather_path)

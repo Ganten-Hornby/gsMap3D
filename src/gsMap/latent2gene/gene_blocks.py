@@ -350,6 +350,9 @@ class GeneBlockMarkerStore:
         self.source_fingerprint = self.manifest.get("source_fingerprint")
         self.gene_names_checksum = self.manifest.get("gene_names_sha256")
         self._subset_staging_lock = threading.Lock()
+        self._staging_path: Path | None = None
+        self._staged_block_paths: dict[str, Path] = {}
+        self._sequential_block_maps: list[np.memmap] = []
         self._validate_manifest_and_files()
 
     def _validate_manifest_and_files(self) -> None:
@@ -411,13 +414,102 @@ class GeneBlockMarkerStore:
             return False
 
     def _open_block(self, block: dict) -> np.memmap:
-        block_path = self.manifest_path.parent / block["path"]
+        block_path = self._staged_block_paths.get(
+            block["path"],
+            self.manifest_path.parent / block["path"],
+        )
         return np.memmap(
             block_path,
             mode="r",
             dtype=self.dtype,
             shape=(self.shape[0], block["end"] - block["start"]),
         )
+
+    def stage_blocks(self, staging_dir: str | Path) -> Path:
+        """Copy the complete block store to job-local storage for sequential reads."""
+        if self._staging_path is not None:
+            return self._staging_path
+
+        staging_dir = Path(staging_dir)
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        required_bytes = sum(
+            (self.manifest_path.parent / block["path"]).stat().st_size
+            for block in self.blocks
+        )
+        reserve_bytes = max(5 * 1024**3, required_bytes // 10)
+        free_bytes = shutil.disk_usage(staging_dir).free
+        if free_bytes < required_bytes + reserve_bytes:
+            raise OSError(
+                f"Insufficient local staging space in {staging_dir}: need "
+                f"{(required_bytes + reserve_bytes) / 1024**3:.1f} GiB including "
+                f"reserve, found {free_bytes / 1024**3:.1f} GiB"
+            )
+
+        staging_path = Path(tempfile.mkdtemp(prefix="gsmap-gene-block-", dir=staging_dir))
+        try:
+            logger.info(
+                "Staging %s gene-block files (%.1f GiB) in %s",
+                len(self.blocks),
+                required_bytes / 1024**3,
+                staging_path,
+            )
+            for block in self.blocks:
+                source = self.manifest_path.parent / block["path"]
+                destination = staging_path / source.name
+                partial = destination.with_suffix(f"{destination.suffix}.partial")
+                shutil.copyfile(source, partial)
+                os.replace(partial, destination)
+                self._staged_block_paths[block["path"]] = destination
+            self._staging_path = staging_path
+            logger.info("Finished staging gene-block marker scores in %s", staging_path)
+            return staging_path
+        except BaseException:
+            shutil.rmtree(staging_path, ignore_errors=True)
+            self._staged_block_paths.clear()
+            raise
+
+    def open_sequential_access(self) -> bool:
+        """Keep all read-only block mappings open across spot windows."""
+        if not self._sequential_block_maps:
+            self._sequential_block_maps = [self._open_block(block) for block in self.blocks]
+            advice = getattr(os, "POSIX_FADV_SEQUENTIAL", None)
+            posix_fadvise = getattr(os, "posix_fadvise", None)
+            if advice is not None and posix_fadvise is not None:
+                for block_map in self._sequential_block_maps:
+                    try:
+                        with open(block_map.filename, "rb") as handle:
+                            posix_fadvise(handle.fileno(), 0, 0, advice)
+                    except OSError:
+                        pass
+        return True
+
+    def close_sequential_access(self) -> None:
+        """Close block mappings retained by the sequential window reader."""
+        for block_map in self._sequential_block_maps:
+            block_map._mmap.close()
+        self._sequential_block_maps.clear()
+
+    def read_spot_window(self, spot_start: int, spot_end: int) -> np.ndarray:
+        """Read one contiguous spot window across every persisted gene block."""
+        if not 0 <= spot_start <= spot_end <= self.shape[0]:
+            raise IndexError("Requested spot window is outside the marker store")
+        temporary_maps = not self._sequential_block_maps
+        block_maps = (
+            [self._open_block(block) for block in self.blocks]
+            if temporary_maps
+            else self._sequential_block_maps
+        )
+        try:
+            values = np.empty((spot_end - spot_start, self.shape[1]), dtype=self.dtype)
+            for block, block_map in zip(self.blocks, block_maps, strict=True):
+                values[:, block["start"] : block["end"]] = block_map[
+                    spot_start:spot_end
+                ]
+            return values
+        finally:
+            if temporary_maps:
+                for block_map in block_maps:
+                    block_map._mmap.close()
 
     def validate_gene_names(self, gene_names: Iterable[object]) -> None:
         """Fail before multiplication when the current gene axis was reordered."""
@@ -566,7 +658,13 @@ class GeneBlockMarkerStore:
         return result
 
     def close(self) -> None:
-        """Compatibility no-op: each block mapping is released after it is copied."""
+        """Close retained mappings and remove this store's job-local staged copy."""
+        self.close_sequential_access()
+        if self._staging_path is not None:
+            shutil.rmtree(self._staging_path, ignore_errors=True)
+            logger.info("Removed staged gene-block marker scores %s", self._staging_path)
+            self._staging_path = None
+            self._staged_block_paths.clear()
 
 
 def ensure_consolidated_marker_memmap(

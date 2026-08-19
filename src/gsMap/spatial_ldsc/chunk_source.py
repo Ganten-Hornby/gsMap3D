@@ -111,34 +111,50 @@ class SpatialLDChunkSource:
     def supports_sequential_marker_windows(self) -> bool:
         """Return whether marker rows can be read as large contiguous windows.
 
-        The optimized path is intentionally limited to the row-major NumPy
-        memmap format. Backed H5AD and Feather objects retain their existing
-        readers, and a non-contiguous sample filter retains exact fancy-index
+        Standard row-major memmaps and complete gene-block stores support the
+        optimized path. Backed H5AD and Feather objects retain their existing
+        readers, while a non-contiguous sample filter retains exact fancy-index
         semantics.
         """
-        if self.mode != "weight_matrix" or self.marker_score_adata is None:
+        if self.spot_indices.size == 0:
             return False
-
-        marker_matrix = self.marker_score_adata.X
-        if (
-            not isinstance(marker_matrix, np.memmap)
-            or not marker_matrix.flags.c_contiguous
-            or self.spot_indices.size == 0
-        ):
+        if self.mode == "gene_block":
+            if self.marker_score_store is None:
+                return False
+        elif self.mode == "weight_matrix" and self.marker_score_adata is not None:
+            marker_matrix = self.marker_score_adata.X
+            if (
+                not isinstance(marker_matrix, np.memmap)
+                or not marker_matrix.flags.c_contiguous
+            ):
+                return False
+        else:
             return False
 
         # spot_indices originates from arange/where and is therefore sorted and
         # unique. Equal span and size is sufficient to prove contiguity without
         # allocating another array for datasets containing millions of cells.
-        return int(self.spot_indices[-1]) - int(self.spot_indices[0]) + 1 == self.spot_indices.size
+        return (
+            int(self.spot_indices[-1]) - int(self.spot_indices[0]) + 1
+            == self.spot_indices.size
+        )
+
+    def marker_row_bytes(self) -> int:
+        """Return persisted bytes per complete marker-score row."""
+        if self.mode == "gene_block":
+            return (
+                int(self.marker_score_store.shape[1])
+                * self.marker_score_store.dtype.itemsize
+            )
+        marker_matrix = self.marker_score_adata.X
+        return int(marker_matrix.shape[1]) * marker_matrix.dtype.itemsize
 
     def recommended_marker_window_chunks(self, target_bytes: int = 32 * 1024**2) -> int:
         """Choose a bounded I/O window near ``target_bytes`` automatically."""
         if not self.supports_sequential_marker_windows():
             return 1
 
-        marker_matrix = self.marker_score_adata.X
-        row_bytes = int(marker_matrix.shape[1]) * marker_matrix.dtype.itemsize
+        row_bytes = self.marker_row_bytes()
         rows_per_window = max(self.chunk_size, target_bytes // max(1, row_bytes))
         # The upper bound keeps queue bookkeeping bounded for unusually narrow
         # matrices while the byte target controls memory for normal datasets.
@@ -148,6 +164,9 @@ class SpatialLDChunkSource:
         """Open the descriptor used for large positional marker reads."""
         if not self.supports_sequential_marker_windows():
             return False
+
+        if self.mode == "gene_block":
+            return self.marker_score_store.open_sequential_access()
 
         marker_matrix = self.marker_score_adata.X
         try:
@@ -169,9 +188,14 @@ class SpatialLDChunkSource:
         if self._marker_read_fd is not None:
             os.close(self._marker_read_fd)
             self._marker_read_fd = None
+        if self.mode == "gene_block" and self.marker_score_store is not None:
+            self.marker_score_store.close_sequential_access()
 
     def _read_contiguous_marker_rows(self, source_start: int, source_end: int) -> np.ndarray:
         """Read rows directly into RAM, bypassing synchronous mmap page faults."""
+        if self.mode == "gene_block":
+            return self.marker_score_store.read_spot_window(source_start, source_end)
+
         marker_matrix = self.marker_score_adata.X
         values = np.empty(
             (source_end - source_start, marker_matrix.shape[1]),
