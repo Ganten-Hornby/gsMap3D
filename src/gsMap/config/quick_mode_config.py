@@ -140,9 +140,7 @@ def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
     return len(missing_files) == 0 and _report_visualization_config_matches(config, verbose)
 
 
-def _report_visualization_config_matches(
-    config: QuickModeConfig, verbose: bool = False
-) -> bool:
+def _report_visualization_config_matches(config: QuickModeConfig, verbose: bool = False) -> bool:
     """Return whether cached report payloads use the requested display limits."""
     report_meta_path = config.web_report_dir / "report_meta.json"
     if not report_meta_path.is_file():
@@ -193,7 +191,8 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         web_report_dir / "report_meta.json",
         js_data_dir / "sample_index.js",
         js_data_dir / "report_meta.js",
-        js_data_dir / "cauchy_results.js",
+        js_data_dir / "cauchy_index.js",
+        js_data_dir / "cauchy_manifest.json",
     ]
 
     for f in core_web_files:

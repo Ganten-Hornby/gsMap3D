@@ -7,7 +7,11 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from gsMap.config.quick_mode_config import _report_visualization_config_matches
+from gsMap.config.latent2gene_config import DatasetType
+from gsMap.config.quick_mode_config import (
+    _report_visualization_config_matches,
+    get_report_missing_files,
+)
 from gsMap.config.report_config import ReportConfig
 from gsMap.latent2gene.marker_layout import SequentialMarkerRowWriter
 from gsMap.report.diagnosis import load_gwas_data
@@ -68,6 +72,45 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
 
     config.downsampling_n_spots_2d = 50_000
     assert not _report_visualization_config_matches(config)
+
+
+def test_report_completion_requires_lazy_cauchy_index_and_manifest(tmp_path):
+    web_report_dir = tmp_path / "web"
+    js_data_dir = web_report_dir / "js_data"
+    report_data_dir = tmp_path / "data"
+    js_data_dir.mkdir(parents=True)
+    report_data_dir.mkdir()
+    for path in (
+        web_report_dir / "index.html",
+        web_report_dir / "report_meta.json",
+        js_data_dir / "sample_index.js",
+        js_data_dir / "report_meta.js",
+        js_data_dir / "cauchy_results.js",
+        report_data_dir / "spot_metadata.csv",
+        report_data_dir / "gene_list.csv",
+        report_data_dir / "cauchy_results.csv",
+    ):
+        path.touch()
+
+    config = SimpleNamespace(
+        dataset_type=DatasetType.SCRNA_SEQ,
+        web_report_dir=web_report_dir,
+        report_data_dir=report_data_dir,
+        trait_name_list=[],
+        annotation_list=[],
+        generate_multi_sample_plots=False,
+        concatenated_latent_adata_path=None,
+    )
+    _, missing_web = get_report_missing_files(config)
+    assert js_data_dir / "cauchy_index.js" in missing_web
+    assert js_data_dir / "cauchy_manifest.json" in missing_web
+    assert js_data_dir / "cauchy_results.js" not in missing_web
+
+    (js_data_dir / "cauchy_index.js").touch()
+    (js_data_dir / "cauchy_manifest.json").touch()
+    missing_data, missing_web = get_report_missing_files(config)
+    assert missing_data == []
+    assert missing_web == []
 
 
 def test_cauchy_export_is_file_scheme_compatible_and_sharded(tmp_path):
