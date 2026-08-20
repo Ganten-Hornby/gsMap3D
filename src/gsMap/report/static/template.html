@@ -775,15 +775,6 @@
                                     class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600"
                                     aria-label="Association opacity gradient strength">
                             </label>
-                            <button type="button"
-                                x-show="spatial3dViewMode !== 'annotation'"
-                                @click="spatial3dHighlightHotspots = !spatial3dHighlightHotspots; renderSpatial3dViews()"
-                                :aria-pressed="spatial3dHighlightHotspots.toString()"
-                                :class="spatial3dHighlightHotspots ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-slate-300 bg-white text-slate-600'"
-                                class="rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm hover:border-primary-400"
-                                title="Show or hide the complete top-500 signal overlay">
-                                <span x-text="spatial3dHighlightHotspots ? 'Hide top 500' : 'Show top 500'"></span>
-                            </button>
                             <button type="button" @click="resetSpatial3dCamera()"
                                 class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50">
                                 Reset camera
@@ -795,8 +786,7 @@
                                 of <strong class="text-slate-700" x-text="spatial3dIndex?.n_points_original?.toLocaleString()"></strong> spots
                             </span>
                             <span x-show="spatial3dIndex?.downsampled">
-                                Representative sampling is stratified. The optional overlay adds the complete trait top 500,
-                                including spots already present in the sample.
+                                Representative sampling is stratified across annotations.
                             </span>
                             <span x-show="spatial3dCoordinateInfo?.note" class="basis-full text-slate-600" x-text="spatial3dCoordinateInfo?.note"></span>
                             <span x-show="spatial3dTraitData?.q95 && spatial3dViewMode !== 'annotation'">
@@ -923,15 +913,6 @@
                                     @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
                                     aria-label="2D association opacity gradient strength">
                             </label>
-                            <button type="button"
-                                x-show="spatial2dViewMode !== 'annotation'"
-                                @click="spatial2dHighlightHotspots = !spatial2dHighlightHotspots; renderSpatial2DPlot()"
-                                :aria-pressed="spatial2dHighlightHotspots.toString()"
-                                :class="spatial2dHighlightHotspots ? 'border-primary-300 bg-primary-50 text-primary-800' : 'border-slate-300 bg-white text-slate-600'"
-                                class="rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm hover:border-primary-400"
-                                title="Show or hide the complete top-500 signal overlay">
-                                <span x-text="spatial2dHighlightHotspots ? 'Hide top 500' : 'Show top 500'"></span>
-                            </button>
                             <button type="button" @click="resetSpatial2dView()"
                                 class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm hover:border-slate-400 hover:text-slate-900">
                                 Reset view
@@ -944,11 +925,6 @@
                             </span>
                             <span x-show="(currentSampleData?.n_points_original || 0) > (currentSampleData?.n_points || 0)">
                                 Representative sampling is annotation-aware.
-                            </span>
-                            <span x-show="currentSpatial2dTraitPayload?.n_top">
-                                The optional overlay contains the sample's top
-                                <strong class="text-slate-700" x-text="currentSpatial2dTraitPayload?.n_top?.toLocaleString()"></strong>
-                                spots, including sampled spots.
                             </span>
                             <span x-show="currentSpatial2dTraitPayload?.cmax">
                                 Color scale is shared across samples: 0–<strong class="text-slate-700" x-text="Number(currentSpatial2dTraitPayload?.cmax || 0).toFixed(2)"></strong>.
@@ -1024,7 +1000,7 @@
                     <div x-show="reportMeta.generate_multi_sample_plots"
                         class="space-y-3 border-t border-slate-200 bg-slate-50/60 p-4 sm:p-5">
                         <details class="rounded-xl border border-slate-200 bg-white shadow-sm"
-                            @toggle="allSampleTraitOverviewOpen = $event.target.open">
+                            @toggle="setTraitOverviewOpen($event.target.open)">
                             <summary class="cursor-pointer px-4 py-3">
                                 <span class="font-semibold text-slate-800">One trait across all samples</span>
                                 <span class="ml-2 text-xs text-slate-500" x-text="selectedTrait"></span>
@@ -1037,21 +1013,27 @@
                                     <a :href="multiSampleTraitPlotUrl" target="_blank" rel="noopener"
                                         class="text-xs font-semibold text-primary-700 hover:text-primary-900">Open full image</a>
                                 </div>
-                                <img x-show="allSampleTraitOverviewOpen && !multiSamplePlotUnavailable"
-                                    :key="'trait-' + selectedTrait"
-                                    :src="allSampleTraitOverviewOpen ? multiSampleTraitPlotUrl : ''"
-                                    :alt="selectedTrait + ' across all tissue samples'" loading="lazy" decoding="async"
-                                    class="mx-auto h-auto max-h-[80vh] w-full object-contain"
-                                    @load="multiSamplePlotUnavailable = false"
-                                    @error="multiSamplePlotUnavailable = true">
-                                <p x-show="multiSamplePlotUnavailable" class="px-4 py-10 text-center text-sm text-slate-500">
+                                <template x-if="allSampleTraitOverviewOpen && multiSamplePlotStatus !== 'error'">
+                                    <img :key="'trait-' + selectedTrait"
+                                        :src="multiSampleTraitPlotUrl"
+                                        :alt="selectedTrait + ' across all tissue samples'" decoding="async"
+                                        class="mx-auto h-auto max-h-[80vh] w-full object-contain"
+                                        @load="multiSamplePlotStatus = 'loaded'"
+                                        @error="multiSamplePlotStatus = 'error'">
+                                </template>
+                                <p x-show="allSampleTraitOverviewOpen && multiSamplePlotStatus === 'loading'"
+                                    class="px-4 py-10 text-center text-sm text-slate-500">
+                                    Loading the all-sample image…
+                                </p>
+                                <p x-show="allSampleTraitOverviewOpen && multiSamplePlotStatus === 'error'"
+                                    class="px-4 py-10 text-center text-sm text-slate-500">
                                     The all-sample image is unavailable for this trait.
                                 </p>
                             </div>
                         </details>
 
                         <details class="rounded-xl border border-slate-200 bg-white shadow-sm"
-                            @toggle="singleSampleTraitOverviewOpen = $event.target.open">
+                            @toggle="setSampleOverviewOpen($event.target.open)">
                             <summary class="cursor-pointer px-4 py-3">
                                 <span class="font-semibold text-slate-800">One sample across all traits</span>
                                 <span class="ml-2 text-xs text-slate-500" x-text="selectedSample"></span>
@@ -1064,14 +1046,20 @@
                                     <a :href="singleSampleMultiTraitPlotUrl" target="_blank" rel="noopener"
                                         class="text-xs font-semibold text-primary-700 hover:text-primary-900">Open full image</a>
                                 </div>
-                                <img x-show="singleSampleTraitOverviewOpen && !singleSamplePlotUnavailable"
-                                    :key="'sample-' + selectedSample"
-                                    :src="singleSampleTraitOverviewOpen ? singleSampleMultiTraitPlotUrl : ''"
-                                    :alt="'All traits in ' + selectedSample" loading="lazy" decoding="async"
-                                    class="mx-auto h-auto max-h-[80vh] w-full object-contain"
-                                    @load="singleSamplePlotUnavailable = false"
-                                    @error="singleSamplePlotUnavailable = true">
-                                <p x-show="singleSamplePlotUnavailable" class="px-4 py-10 text-center text-sm text-slate-500">
+                                <template x-if="singleSampleTraitOverviewOpen && singleSamplePlotStatus !== 'error'">
+                                    <img :key="'sample-' + selectedSample"
+                                        :src="singleSampleMultiTraitPlotUrl"
+                                        :alt="'All traits in ' + selectedSample" decoding="async"
+                                        class="mx-auto h-auto max-h-[80vh] w-full object-contain"
+                                        @load="singleSamplePlotStatus = 'loaded'"
+                                        @error="singleSamplePlotStatus = 'error'">
+                                </template>
+                                <p x-show="singleSampleTraitOverviewOpen && singleSamplePlotStatus === 'loading'"
+                                    class="px-4 py-10 text-center text-sm text-slate-500">
+                                    Loading the all-trait image…
+                                </p>
+                                <p x-show="singleSampleTraitOverviewOpen && singleSamplePlotStatus === 'error'"
+                                    class="px-4 py-10 text-center text-sm text-slate-500">
                                     The all-trait image is unavailable for this sample.
                                 </p>
                             </div>
@@ -1715,7 +1703,6 @@
                 spatial3dAspectMode: 'physical',
                 spatial3dPointSize: 1.2,
                 spatial3dOpacity: 0.72,
-                spatial3dHighlightHotspots: false,
                 spatial3dAssociationMinLogP: 0,
                 spatial3dAssociationOpacityStrength: 0.65,
                 spatial3dError: '',
@@ -1730,13 +1717,12 @@
                 spatial2dViewMode: 'trait',
                 spatial2dPointScale: 1.0,
                 spatial2dError: '',
-                spatial2dHighlightHotspots: false,
                 spatial2dAssociationMinLogP: 0,
                 spatial2dAssociationOpacityStrength: 0.65,
                 allSampleTraitOverviewOpen: false,
                 singleSampleTraitOverviewOpen: false,
-                multiSamplePlotUnavailable: false,
-                singleSamplePlotUnavailable: false,
+                multiSamplePlotStatus: 'idle',
+                singleSamplePlotStatus: 'idle',
                 _spatial2dObserver: null,
                 _spatial2dSyncing: false,
 
@@ -1916,6 +1902,16 @@
                     const configured = this.reportMeta?.single_sample_multi_trait_plots?.[this.selectedSample];
                     const filename = configured || `by_sample/sample_${this.selectedSample}.png`;
                     return `spatial_plots/${filename.split('/').map(encodeURIComponent).join('/')}`;
+                },
+
+                setTraitOverviewOpen(open) {
+                    this.allSampleTraitOverviewOpen = Boolean(open);
+                    this.multiSamplePlotStatus = open ? 'loading' : 'idle';
+                },
+
+                setSampleOverviewOpen(open) {
+                    this.singleSampleTraitOverviewOpen = Boolean(open);
+                    this.singleSamplePlotStatus = open ? 'loading' : 'idle';
                 },
 
                 get runDetailCards() {
@@ -2676,18 +2672,7 @@
                                 if (!encoded) throw new Error(`3D values were not defined for ${trait}`);
                                 decoded = {
                                     ...encoded,
-                                    values: this.decodeTypedArray(encoded.values),
-                                    top: {
-                                        x: this.decodeTypedArray(encoded.top?.x),
-                                        y: this.decodeTypedArray(encoded.top?.y),
-                                        z: this.decodeTypedArray(encoded.top?.z),
-                                        values: this.decodeTypedArray(encoded.top?.values),
-                                        annotation_codes: Object.fromEntries(
-                                            Object.entries(encoded.top?.annotation_codes || {}).map(
-                                                ([name, codes]) => [name, this.decodeTypedArray(codes)]
-                                            )
-                                        )
-                                    }
+                                    values: this.decodeTypedArray(encoded.values)
                                 };
                                 this.setBoundedCache(
                                     this.spatial3dTraitCache,
@@ -3263,49 +3248,6 @@
                         threshold,
                         emphasis
                     );
-                    if (this.spatial3dHighlightHotspots && feature.n_top > 0 && feature.top?.x?.length) {
-                        const visibilityActive = Boolean(this.annotationVisibilityKey(annotationName));
-                        const topSchema = this.schemaForAnnotationCodes(
-                            feature.top.annotation_codes?.[annotationName],
-                            annotationName
-                        );
-                        const topPoints = topSchema
-                            ? this.filterCategoricalPlotPoints(
-                                feature.top.x,
-                                feature.top.y,
-                                feature.top.z,
-                                topSchema,
-                                annotationName
-                            )
-                            : (visibilityActive ? null : {
-                                x: feature.top.x,
-                                y: feature.top.y,
-                                z: feature.top.z,
-                                indices: null
-                            });
-                        const topValues = topPoints?.x?.length
-                            ? this.selectPointValues(feature.top.values, topPoints.indices)
-                            : null;
-                        const topAssociationPoints = topValues
-                            ? this.filterAssociationPlotPoints(topPoints, topValues, threshold)
-                            : null;
-                        if (topAssociationPoints?.x?.length) traces.push({
-                            type: 'scatter3d', mode: 'markers',
-                            x: topAssociationPoints.x,
-                            y: topAssociationPoints.y,
-                            z: topAssociationPoints.z,
-                            marker: {
-                                ...marker,
-                                size: Number(this.spatial3dPointSize) * 1.3,
-                                color: topAssociationPoints.values,
-                                opacity: Math.max(0.85, Number(this.spatial3dOpacity)),
-                                showscale: false
-                            },
-                            hovertemplate: '<b>Top-500 signal</b><br>−log10(P): %{marker.color:.2f}' +
-                                '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
-                            name: 'Top-500 signal spots'
-                        });
-                    }
                     const rendered = Plotly.react(
                         plot,
                         traces,
@@ -3378,55 +3320,6 @@
                                 '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
                         name: this.selectedAnnotationCategory
                     }];
-                    if (
-                        this.spatial3dViewMode === 'compare' &&
-                        this.spatial3dHighlightHotspots &&
-                        traitFeature?.n_top > 0 && traitFeature.top?.x?.length
-                    ) {
-                        const topCodes = traitFeature.top.annotation_codes?.[
-                            this.selectedAnnotationCategory
-                        ];
-                        const topSchema = this.schemaForAnnotationCodes(
-                            topCodes, this.selectedAnnotationCategory
-                        );
-                        if (topSchema) {
-                            let topPoints = this.filterCategoricalPlotPoints(
-                                traitFeature.top.x,
-                                traitFeature.top.y,
-                                traitFeature.top.z,
-                                topSchema,
-                                this.selectedAnnotationCategory
-                            );
-                            const topValues = this.selectPointValues(
-                                traitFeature.top.values, topPoints.indices
-                            );
-                            topPoints = this.filterAssociationPlotPoints(
-                                topPoints, topValues, this.spatial3dAssociationMinLogP
-                            );
-                            if (topPoints.x.length) traces.push({
-                                type: 'scatter3d', mode: 'markers',
-                                x: topPoints.x, y: topPoints.y, z: topPoints.z,
-                                text: Array.from(
-                                    topPoints.codes,
-                                    code => feature.categories[code] ?? 'Unknown'
-                                ),
-                                marker: {
-                                    size: Number(this.spatial3dPointSize) * 1.3,
-                                    color: topPoints.codes,
-                                    colorscale: this.discreteColorScale(feature.colors),
-                                    cmin: -0.5,
-                                    cmax: Math.max(0.5, feature.categories.length - 0.5),
-                                    opacity: Math.max(0.85, Number(this.spatial3dOpacity)),
-                                    showscale: false
-                                },
-                                hovertemplate: `<b>${this.selectedAnnotationCategory}</b>: %{text}` +
-                                    '<br>Top-500 signal spot<br>X: %{x:.2f}<br>Y: %{y:.2f}' +
-                                    '<br>Z: %{z:.2f}<extra></extra>',
-                                name: 'Top-500 signal spots',
-                                showlegend: false
-                            });
-                        }
-                    }
                     const rendered = Plotly.react(
                         plot,
                         traces,
@@ -3548,7 +3441,8 @@
                     this.$refs.sampleSearchInput?.blur();
                     if (sample === this.selectedSample) return;
                     this.selectedSample = sample;
-                    this.singleSamplePlotUnavailable = false;
+                    this.singleSamplePlotStatus = this.singleSampleTraitOverviewOpen
+                        ? 'loading' : 'idle';
                     this.onSampleChange();
                 },
 
@@ -3605,7 +3499,8 @@
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
                     this.traitSearchQuery = newTrait;
-                    this.multiSamplePlotUnavailable = false;
+                    this.multiSamplePlotStatus = this.allSampleTraitOverviewOpen
+                        ? 'loading' : 'idle';
 
                     // Show loading overlay for 2D trait plot
                     this.loadingSpatial2dTraitData = true;
@@ -3800,17 +3695,7 @@
                             if (!encoded) throw new Error(`2D values were not defined for ${trait} in ${sampleName}`);
                             decoded = {
                                 ...encoded,
-                                values: this.decodeTypedArray(encoded.values),
-                                top: encoded.top ? {
-                                    x: this.decodeTypedArray(encoded.top.x),
-                                    y: this.decodeTypedArray(encoded.top.y),
-                                    values: this.decodeTypedArray(encoded.top.values),
-                                    annotation_codes: Object.fromEntries(
-                                        Object.entries(encoded.top.annotation_codes || {}).map(
-                                            ([name, codes]) => [name, this.decodeTypedArray(codes)]
-                                        )
-                                    )
-                                } : null
+                                values: this.decodeTypedArray(encoded.values)
                             };
                             this.cacheSampleTrait(compoundKey, decoded);
                             delete window.GSMAP_SAMPLE_TRAITS[compoundKey];
@@ -5016,74 +4901,6 @@
                                 }
                             }
                         });
-                        if (
-                            this.spatial2dHighlightHotspots &&
-                            compactTraitPayload?.n_top > 0 &&
-                            compactTraitPayload.top?.x?.length
-                        ) {
-                            const visibilityActive = Boolean(
-                                this.annotationVisibilityKey(annotationName)
-                            );
-                            const topSchema = this.schemaForAnnotationCodes(
-                                compactTraitPayload.top.annotation_codes?.[annotationName],
-                                annotationName
-                            );
-                            const topPoints = topSchema
-                                ? this.filterCategoricalPlotPoints(
-                                    compactTraitPayload.top.x,
-                                    compactTraitPayload.top.y,
-                                    null,
-                                    topSchema,
-                                    annotationName
-                                )
-                                : (visibilityActive ? null : {
-                                    x: compactTraitPayload.top.x,
-                                    y: compactTraitPayload.top.y,
-                                    indices: null
-                                });
-                            const topValues = topPoints?.x?.length
-                                ? this.selectPointValues(
-                                    compactTraitPayload.top.values,
-                                    topPoints.indices
-                                )
-                                : null;
-                            const topAssociationPoints = topValues
-                                ? this.filterAssociationPlotPoints(topPoints, topValues, threshold)
-                                : null;
-                            if (topAssociationPoints?.x?.length) {
-                                const topHoverContextKey = this.setPointHoverContext(
-                                    `spatial2d\u001f${divId}\u001ftop\u001f${sample}\u001f${trait}\u001f${annotationName}`,
-                                    {
-                                        hoverKind: 'trait',
-                                        hoverPrefix: 'Top-500 signal',
-                                        indices: topAssociationPoints.indices,
-                                        compactAnnotations: compactTraitPayload.top.annotation_codes,
-                                        annotationSchemas: data.annotations || {},
-                                        colorMap,
-                                        cmin,
-                                        cmax,
-                                        axisTitles
-                                    }
-                                );
-                                traces.push({
-                                    x: topAssociationPoints.x,
-                                    y: topAssociationPoints.y,
-                                    mode: 'markers',
-                                    type: 'scattergl',
-                                    hoverinfo: 'none',
-                                    meta: { hoverContextKey: topHoverContextKey },
-                                    name: 'Top-500 signal spots',
-                                    marker: {
-                                        size: pointSize * 1.3,
-                                        color: topAssociationPoints.values,
-                                        colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
-                                        ...colorLimits,
-                                        opacity: 1,
-                                        showscale: false
-                                    }
-                                });
-                            }
-                        }
                     } else {
                         const anno = this.selectedAnnotationCategory;
                         let annotation = data.annotations?.[anno];
@@ -5150,60 +4967,6 @@
                                 showscale: false,
                             }
                         });
-                        if (
-                            this.spatial2dViewMode === 'compare' &&
-                            this.spatial2dHighlightHotspots &&
-                            comparisonTrait?.n_top > 0 && comparisonTrait.top?.x?.length
-                        ) {
-                            const topCodes = comparisonTrait.top.annotation_codes?.[anno];
-                            const topSchema = this.schemaForAnnotationCodes(topCodes, anno);
-                            if (topSchema) {
-                                let topPoints = this.filterCategoricalPlotPoints(
-                                    comparisonTrait.top.x,
-                                    comparisonTrait.top.y,
-                                    null,
-                                    topSchema,
-                                    anno
-                                );
-                                const topValues = this.selectPointValues(
-                                    comparisonTrait.top.values, topPoints.indices
-                                );
-                                topPoints = this.filterAssociationPlotPoints(
-                                    topPoints, topValues, this.spatial2dAssociationMinLogP
-                                );
-                                if (topPoints.x.length) {
-                                    const topHoverContextKey = this.setPointHoverContext(
-                                        `spatial2d\u001f${divId}\u001ftop-annotation\u001f${sample}\u001f${anno}`,
-                                        {
-                                            hoverKind: 'annotation',
-                                            indices: topPoints.indices,
-                                            compactAnnotations: comparisonTrait.top.annotation_codes,
-                                            annotationSchemas: data.annotations || {},
-                                            annotation: topSchema,
-                                            axisTitles
-                                        }
-                                    );
-                                    traces.push({
-                                        x: topPoints.x,
-                                        y: topPoints.y,
-                                        mode: 'markers',
-                                        type: 'scattergl',
-                                        hoverinfo: 'none',
-                                        meta: { hoverContextKey: topHoverContextKey },
-                                        name: 'Top-500 signal spots',
-                                        marker: {
-                                            size: pointSize * 1.3,
-                                            color: topPoints.codes,
-                                            colorscale: this.discreteColorScale(annotation.colors),
-                                            cmin: -0.5,
-                                            cmax: Math.max(0.5, annotation.categories.length - 0.5),
-                                            opacity: 1,
-                                            showscale: false
-                                        }
-                                    });
-                                }
-                            }
-                        }
                     }
 
                     const layout = {

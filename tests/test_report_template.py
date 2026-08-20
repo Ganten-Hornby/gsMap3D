@@ -159,29 +159,25 @@ def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     assert 'aria-label="2D point opacity"' not in report_template
     assert "spatial2dOpacity" not in report_template
     assert "bindSpatial2dViewportSync" in report_template
-    assert "Top-500 signal spots" in report_template
     assert "Color scale is shared across samples" in report_template
 
 
-def test_spatial_views_can_toggle_retained_hotspot_emphasis(report_template: str) -> None:
-    assert "spatial3dHighlightHotspots: false" in report_template
-    assert "spatial2dHighlightHotspots: false" in report_template
-    assert report_template.count("Show top 500") == 2
-    assert report_template.count("Hide top 500") == 2
-    assert "feature.n_top > 0 && feature.top?.x?.length" in report_template
-    assert "compactTraitPayload?.n_top > 0" in report_template
-    assert report_template.count("size: pointSize * 1.3") == 2
+def test_spatial_views_do_not_include_top_signal_overlays(report_template: str) -> None:
+    assert "spatial3dHighlightHotspots" not in report_template
+    assert "spatial2dHighlightHotspots" not in report_template
+    assert "Show top 500" not in report_template
+    assert "Hide top 500" not in report_template
+    assert "Top-500 signal" not in report_template
+    assert "n_top" not in report_template
 
 
 def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:
-    assert "hoverPrefix: 'Top-500 signal'" in report_template
     assert "−log10(P): %{marker.color:.2f}" in report_template
     assert "annotationHoverLabels" in report_template
     assert "base.n_points <= 200000" in report_template
     assert "appendPointAnnotationLines(lines, context, sourceIndex)" in report_template
     assert "setPointHoverContext(key, context)" in report_template
     assert "buildSpatial2dAnnotationHoverText" not in report_template
-    assert "compactTraitPayload.top.annotation_codes" in report_template
     assert "Object.entries(data.annotations || {})" in report_template
     assert "<b>${anno}</b> code: %{marker.color:.0f}" not in report_template
 
@@ -224,8 +220,6 @@ def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
 def test_shared_annotation_selection_filters_all_point_maps(report_template: str) -> None:
     assert "visibleUmapPointIndices()" in report_template
     assert "const annotation = this.spatial3dAnnotationCache?.[annotationName]" in report_template
-    assert "feature.top.annotation_codes?.[annotationName]" in report_template
-    assert "compactTraitPayload.top.annotation_codes?.[annotationName]" in report_template
     assert "this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait')" in report_template
     assert (
         "if (this.spatial3dViewMode !== 'annotation') this.renderSpatial3dTrait()"
@@ -301,9 +295,20 @@ def test_report_exposes_lazy_all_sample_trait_overview(report_template: str) -> 
     assert "One sample across all traits" in report_template
     assert "multiSampleTraitPlotUrl" in report_template
     assert "singleSampleMultiTraitPlotUrl" in report_template
-    assert "allSampleTraitOverviewOpen ? multiSampleTraitPlotUrl : ''" in report_template
-    assert "singleSampleTraitOverviewOpen ? singleSampleMultiTraitPlotUrl : ''" in report_template
-    assert 'loading="lazy"' in report_template
+    assert (
+        '<template x-if="allSampleTraitOverviewOpen && '
+        "multiSamplePlotStatus !== 'error'\">"
+    ) in report_template
+    assert (
+        '<template x-if="singleSampleTraitOverviewOpen && '
+        "singleSamplePlotStatus !== 'error'\">"
+    ) in report_template
+    assert ':src="multiSampleTraitPlotUrl"' in report_template
+    assert ':src="singleSampleMultiTraitPlotUrl"' in report_template
+    assert "allSampleTraitOverviewOpen ? multiSampleTraitPlotUrl : ''" not in report_template
+    assert "singleSampleTraitOverviewOpen ? singleSampleMultiTraitPlotUrl : ''" not in report_template
+    assert "multiSamplePlotStatus === 'error'" in report_template
+    assert "singleSamplePlotStatus === 'error'" in report_template
     assert 'decoding="async"' in report_template
 
 

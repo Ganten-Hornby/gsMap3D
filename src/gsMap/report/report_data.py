@@ -2444,8 +2444,6 @@ def _save_report_metadata(
             ),
             "signal_opacity_upper_anchor": "shared_per_trait_q95",
             "signal_color_upper_anchor": "shared_per_trait_q99.9",
-            "top_signal_overlay_spots": 500,
-            "top_signal_overlay_default": False,
         },
     }
     if coordinate_summary:
