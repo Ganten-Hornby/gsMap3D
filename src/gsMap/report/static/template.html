@@ -508,14 +508,49 @@
                 </div>
 
                 <!-- Sample Selector (spatial datasets only) -->
-                <div x-show="currentSections.show2dDistribution">
+                <div x-show="currentSections.show2dDistribution" class="relative"
+                    @click.outside="closeSampleSearch()">
                     <label for="sample-selector" class="control-label">Tissue sample</label>
-                    <select id="sample-selector" x-model="selectedSample" @change="onSampleChange()"
-                        class="control-select">
-                        <template x-for="s in samples" :key="s">
-                            <option :value="s" x-text="s"></option>
+                    <div class="relative">
+                        <input id="sample-selector" x-ref="sampleSearchInput" type="search"
+                            x-model="sampleSearchQuery" @focus="openSampleSearch()"
+                            @input="sampleComboboxOpen = true; sampleActiveIndex = 0"
+                            @keydown.down.prevent="moveSampleSearch(1)"
+                            @keydown.up.prevent="moveSampleSearch(-1)"
+                            @keydown.enter.prevent="selectActiveSample()"
+                            @keydown.escape.prevent="closeSampleSearch()"
+                            @keydown.tab="closeSampleSearch()" class="control-select pr-9"
+                            autocomplete="off" role="combobox" aria-autocomplete="list"
+                            aria-haspopup="listbox" aria-controls="sample-listbox"
+                            :aria-expanded="sampleComboboxOpen.toString()"
+                            :aria-activedescendant="sampleComboboxOpen && filteredSamples.length ? 'sample-option-' + sampleActiveIndex : null"
+                            placeholder="Search samples…">
+                        <svg class="pointer-events-none absolute right-3 top-3 h-4 w-4 text-slate-400"
+                            fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="11" cy="11" r="7" stroke-width="2" />
+                            <path stroke-linecap="round" stroke-width="2" d="m16 16 4 4" />
+                        </svg>
+                    </div>
+                    <div id="sample-listbox" x-show="sampleComboboxOpen" x-transition.opacity
+                        role="listbox"
+                        class="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl custom-scrollbar">
+                        <div class="sticky top-0 z-10 bg-white px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400"
+                            x-text="filteredSamples.length.toLocaleString() + ' matching samples'"></div>
+                        <template x-for="(sample, index) in filteredSamples" :key="sample">
+                            <button type="button" role="option" :id="'sample-option-' + index"
+                                :aria-selected="(sample === selectedSample).toString()"
+                                @mouseenter="sampleActiveIndex = index" @mousedown.prevent
+                                @click="selectSampleFromSearch(sample)"
+                                class="block w-full rounded-lg px-2.5 py-2 text-left text-sm"
+                                :class="index === sampleActiveIndex ? 'bg-primary-50 text-primary-800' : (sample === selectedSample ? 'font-semibold text-slate-900' : 'text-slate-600 hover:bg-slate-50')">
+                                <span class="block truncate" x-text="sample" :title="sample"></span>
+                            </button>
                         </template>
-                    </select>
+                        <p x-show="filteredSamples.length === 0"
+                            class="px-3 py-5 text-center text-sm text-slate-500">
+                            No matching sample. Try a shorter name.
+                        </p>
+                    </div>
                 </div>
 
                 <!-- Annotation Category Selector -->
@@ -700,14 +735,6 @@
                                     </template>
                                 </div>
                             </fieldset>
-                            <label class="min-w-[10rem]">
-                                <span class="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">Geometry</span>
-                                <select x-model="spatial3dAspectMode" @change="renderSpatial3dViews()"
-                                    class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-100">
-                                    <option value="physical" x-text="spatial3dCoordinateInfo?.z_is_physical ? 'Physical coordinate scale' : 'Raw coordinate scale'"></option>
-                                    <option value="expanded">Expanded Z (visual aid)</option>
-                                </select>
-                            </label>
                             <label class="min-w-[9rem] flex-1 sm:max-w-[12rem]">
                                 <span class="mb-1 flex justify-between text-[11px] font-bold uppercase tracking-wide text-slate-500">
                                     <span>Point size</span><span x-text="Number(spatial3dPointSize).toFixed(1)"></span>
@@ -723,6 +750,30 @@
                                 <input type="range" min="0.15" max="1" step="0.05" x-model.number="spatial3dOpacity"
                                     @input.debounce.80ms="renderSpatial3dViews()"
                                     class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600">
+                            </label>
+                            <label x-show="spatial3dViewMode !== 'annotation'"
+                                class="min-w-[10rem] flex-1 sm:max-w-[14rem]">
+                                <span class="mb-1 flex justify-between text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                                    <span>Signal cutoff</span>
+                                    <span x-text="Number(associationMinLogP).toFixed(1)"></span>
+                                </span>
+                                <input type="range" min="0" :max="associationThresholdMaximum" step="0.1"
+                                    x-model.number="associationMinLogP"
+                                    @input.debounce.80ms="renderAssociationViews()"
+                                    class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600"
+                                    aria-label="Minimum association minus log10 P">
+                            </label>
+                            <label x-show="spatial3dViewMode !== 'annotation'"
+                                class="min-w-[10rem] flex-1 sm:max-w-[14rem]">
+                                <span class="mb-1 flex justify-between text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                                    <span>Signal emphasis</span>
+                                    <span x-text="associationOpacityLabel"></span>
+                                </span>
+                                <input type="range" min="0" max="4" step="0.25"
+                                    x-model.number="associationOpacityStrength"
+                                    @input.debounce.80ms="renderAssociationViews()"
+                                    class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600"
+                                    aria-label="Association opacity gradient strength">
                             </label>
                             <button type="button"
                                 @click="spatial3dHighlightHotspots = !spatial3dHighlightHotspots; renderSpatial3dTrait()"
@@ -748,7 +799,13 @@
                                 size.
                             </span>
                             <span x-show="spatial3dCoordinateInfo?.note" class="basis-full text-slate-600" x-text="spatial3dCoordinateInfo?.note"></span>
-                            <span x-show="spatial3dAspectMode === 'expanded'" class="font-semibold text-amber-700">Z is visually expanded and is not shown at physical scale.</span>
+                            <span class="rounded-full border px-2 py-0.5 font-semibold"
+                                :class="spatial3dAspectMode === 'physical' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'"
+                                x-text="spatial3dGeometryLabel"></span>
+                            <span x-show="Number(associationMinLogP) > 0 && spatial3dViewMode !== 'annotation'"
+                                class="font-semibold text-primary-700">
+                                Hiding spots below −log10(P) <span x-text="Number(associationMinLogP).toFixed(1)"></span>.
+                            </span>
                         </div>
                     </div>
 
@@ -813,7 +870,7 @@
                 <div id="content-gsmap" class="section-content" :class="sections.gsmap ? 'expanded' : 'collapsed'">
                     <!-- Spatial 2D Controls -->
                     <div class="border-b border-slate-200 bg-slate-50 p-4">
-                        <div class="grid gap-4 xl:grid-cols-[auto_minmax(14rem,1fr)_auto] xl:items-end">
+                        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-[auto_minmax(12rem,1fr)_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
                             <div>
                                 <span class="control-label">View</span>
                                 <div class="inline-flex rounded-lg border border-slate-300 bg-white p-1 shadow-sm"
@@ -841,6 +898,26 @@
                                     @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
                                     aria-label="2D point-size multiplier">
                             </label>
+                            <label x-show="spatial2dViewMode !== 'annotation'">
+                                <span class="control-label flex justify-between gap-3">
+                                    <span>Signal cutoff</span>
+                                    <span x-text="Number(associationMinLogP).toFixed(1)"></span>
+                                </span>
+                                <input type="range" min="0" :max="associationThresholdMaximum" step="0.1"
+                                    x-model.number="associationMinLogP"
+                                    @input.debounce.80ms="renderAssociationViews()" class="w-full accent-blue-600"
+                                    aria-label="Minimum 2D association minus log10 P">
+                            </label>
+                            <label x-show="spatial2dViewMode !== 'annotation'">
+                                <span class="control-label flex justify-between gap-3">
+                                    <span>Signal emphasis</span>
+                                    <span x-text="associationOpacityLabel"></span>
+                                </span>
+                                <input type="range" min="0" max="4" step="0.25"
+                                    x-model.number="associationOpacityStrength"
+                                    @input.debounce.80ms="renderAssociationViews()" class="w-full accent-blue-600"
+                                    aria-label="2D association opacity gradient strength">
+                            </label>
                             <button type="button" @click="resetSpatial2dView()"
                                 class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm hover:border-slate-400 hover:text-slate-900">
                                 Reset view
@@ -860,6 +937,9 @@
                             </span>
                             <span x-show="currentSpatial2dTraitPayload?.cmax">
                                 Color scale is shared across samples: 0–<strong class="text-slate-700" x-text="Number(currentSpatial2dTraitPayload?.cmax || 0).toFixed(2)"></strong>.
+                            </span>
+                            <span x-show="Number(associationMinLogP) > 0 && spatial2dViewMode !== 'annotation'">
+                                Spots below −log10(P) <strong class="text-slate-700" x-text="Number(associationMinLogP).toFixed(1)"></strong> are hidden.
                             </span>
                         </div>
                     </div>
@@ -917,6 +997,35 @@
                                 </h3>
                                 <div id="spatial2dPlotAnnotation" class="spatial-2d-plot"></div>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Static single-trait overview across every tissue sample -->
+                    <div x-show="reportMeta.generate_multi_sample_plots"
+                        class="border-t border-slate-200 bg-slate-50/60 p-4 sm:p-5">
+                        <div class="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
+                            <div>
+                                <h3 class="font-semibold text-slate-800">All-sample trait overview</h3>
+                                <p class="mt-0.5 text-xs text-slate-500">
+                                    A compact, shared-scale raster overview of <span x-text="selectedTrait"></span>
+                                    across every tissue sample; when spots share a display pixel, the strongest signal is shown.
+                                </p>
+                            </div>
+                            <a :href="multiSampleTraitPlotUrl" target="_blank" rel="noopener"
+                                class="text-xs font-semibold text-primary-700 hover:text-primary-900">
+                                Open full image
+                            </a>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+                            <img :key="selectedTrait" :src="multiSampleTraitPlotUrl"
+                                :alt="selectedTrait + ' across all tissue samples'" loading="lazy"
+                                decoding="async" class="mx-auto h-auto max-h-[80vh] w-full object-contain"
+                                @load="multiSamplePlotUnavailable = false; $el.style.display = ''"
+                                @error="multiSamplePlotUnavailable = true; $el.style.display = 'none'">
+                            <p x-show="multiSamplePlotUnavailable"
+                                class="px-4 py-10 text-center text-sm text-slate-500">
+                                The all-sample image is unavailable for this trait.
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -1388,11 +1497,60 @@
                     </svg>
                 </button>
                 <div id="content-info" class="section-content" :class="sections.info ? 'expanded' : 'collapsed'">
-                    <!-- Config JSON -->
-                    <div class="p-4 bg-gray-50">
-                        <h3 class="font-medium text-gray-700 mb-2">Configuration</h3>
-                        <pre class="text-xs text-gray-600 whitespace-pre-wrap font-mono bg-white p-3 rounded border max-h-64 overflow-auto"
-                            x-text="JSON.stringify(reportMeta, null, 2)"></pre>
+                    <div class="space-y-4 bg-slate-50/70 p-4 sm:p-5">
+                        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            <template x-for="item in runDetailCards" :key="item.label">
+                                <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                                    <p class="text-[10px] font-bold uppercase tracking-[0.13em] text-slate-400"
+                                        x-text="item.label"></p>
+                                    <p class="mt-1 break-words text-sm font-semibold text-slate-800"
+                                        x-text="item.value"></p>
+                                    <p class="mt-1 text-[11px] leading-4 text-slate-500"
+                                        x-text="item.note"></p>
+                                </div>
+                            </template>
+                        </div>
+                        <div class="grid gap-4 lg:grid-cols-2">
+                            <div class="rounded-xl border border-slate-200 bg-white p-4">
+                                <h3 class="text-sm font-semibold text-slate-800">Graph and neighborhood</h3>
+                                <dl class="mt-3 grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-xs">
+                                    <dt class="text-slate-500">Graph mode</dt>
+                                    <dd class="font-medium text-slate-800" x-text="reportMeta.graph_mode || 'Not recorded'"></dd>
+                                    <dt class="text-slate-500">External graph neighbors</dt>
+                                    <dd class="font-medium text-slate-800" x-text="formatRunValue(reportMeta.n_neighbors)"></dd>
+                                    <dt class="text-slate-500">Spatial neighbors</dt>
+                                    <dd class="font-medium text-slate-800" x-text="formatRunValue(reportMeta.spatial_neighbors)"></dd>
+                                    <dt class="text-slate-500">Homogeneous neighbors</dt>
+                                    <dd class="font-medium text-slate-800" x-text="formatRunValue(reportMeta.homogeneous_neighbors)"></dd>
+                                    <dt class="text-slate-500">Cross-section selection</dt>
+                                    <dd class="font-medium text-slate-800" x-text="reportMeta.cross_slice_selection_mode || 'Not applicable'"></dd>
+                                </dl>
+                            </div>
+                            <div class="rounded-xl border border-slate-200 bg-white p-4">
+                                <h3 class="text-sm font-semibold text-slate-800">Browser visualization</h3>
+                                <dl class="mt-3 grid grid-cols-[minmax(8rem,auto)_1fr] gap-x-4 gap-y-2 text-xs">
+                                    <dt class="text-slate-500">2D display cap</dt>
+                                    <dd class="font-medium text-slate-800" x-text="formatSpotLimit(reportMeta.downsampling_n_spots_2d)"></dd>
+                                    <dt class="text-slate-500">3D display cap</dt>
+                                    <dd class="font-medium text-slate-800" x-text="has3dWidget ? formatSpotLimit(reportMeta.downsampling_n_spots_3d) : 'Not applicable'"></dd>
+                                    <dt class="text-slate-500">UMAP display cap</dt>
+                                    <dd class="font-medium text-slate-800" x-text="formatSpotLimit(reportMeta.downsampling_n_spots_umap)"></dd>
+                                    <dt class="text-slate-500">3D geometry</dt>
+                                    <dd class="font-medium text-slate-800" x-text="has3dWidget ? spatial3dGeometryLabel : 'Not applicable'"></dd>
+                                    <dt class="text-slate-500">All-sample overview</dt>
+                                    <dd class="font-medium text-slate-800" x-text="reportMeta.generate_multi_sample_plots ? 'Generated' : 'Disabled'"></dd>
+                                </dl>
+                            </div>
+                        </div>
+                        <details class="rounded-xl border border-slate-200 bg-white">
+                            <summary class="cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700 hover:text-primary-800">
+                                Complete machine-readable configuration
+                            </summary>
+                            <div class="border-t border-slate-200 p-3">
+                                <pre class="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-3 font-mono text-[11px] leading-5 text-slate-200"
+                                    x-text="JSON.stringify(reportMeta, null, 2)"></pre>
+                            </div>
+                        </details>
                     </div>
                 </div>
             </div>
@@ -1434,6 +1592,9 @@
                 traitSearchQuery: '',
                 traitComboboxOpen: false,
                 traitActiveIndex: 0,
+                sampleSearchQuery: '',
+                sampleComboboxOpen: false,
+                sampleActiveIndex: 0,
                 selectedAnnotationCategory: '',
                 selectedGene: '',
                 isLoading: false,
@@ -1507,7 +1668,6 @@
                 spatial3dPointSize: 1.2,
                 spatial3dOpacity: 0.72,
                 spatial3dHighlightHotspots: true,
-                spatial3dInteractionPointLimit: 25000,
                 spatial3dError: '',
                 _scriptPromises: {},
                 _spatial3dSyncing: false,
@@ -1520,6 +1680,9 @@
                 spatial2dViewMode: 'trait',
                 spatial2dPointScale: 1.0,
                 spatial2dError: '',
+                associationMinLogP: 0,
+                associationOpacityStrength: 1.5,
+                multiSamplePlotUnavailable: false,
                 _spatial2dObserver: null,
                 _spatial2dSyncing: false,
 
@@ -1644,6 +1807,77 @@
                         .filter(match => match.score !== null)
                         .sort((left, right) => left.score - right.score || left.trait.localeCompare(right.trait))
                         .map(match => match.trait);
+                },
+
+                get filteredSamples() {
+                    const query = this.sampleSearchQuery.trim();
+                    if (!query) return this.samples;
+                    return this.samples
+                        .map(sample => ({ sample, score: this.scoreTraitMatch(sample, query) }))
+                        .filter(match => match.score !== null)
+                        .sort((left, right) => left.score - right.score || left.sample.localeCompare(right.sample))
+                        .map(match => match.sample);
+                },
+
+                get associationThresholdMaximum() {
+                    const maxima = [
+                        Number(this.spatial3dTraitData?.cmax),
+                        Number(this.currentSpatial2dTraitPayload?.cmax)
+                    ].filter(Number.isFinite);
+                    const maximum = maxima.length ? Math.max(...maxima) : 10;
+                    return Math.max(1, Math.ceil(maximum * 10) / 10);
+                },
+
+                get associationOpacityLabel() {
+                    const strength = Number(this.associationOpacityStrength) || 0;
+                    let label = 'Maximum';
+                    if (strength <= 0) label = 'Uniform';
+                    else if (strength <= 1) label = 'Gentle';
+                    else if (strength <= 2.25) label = 'Balanced';
+                    else if (strength <= 3.25) label = 'Strong';
+                    return `${label} · ${strength.toFixed(2)}`;
+                },
+
+                get spatial3dGeometryLabel() {
+                    return this.spatial3dAspectMode === 'physical'
+                        ? 'Physical 3D geometry'
+                        : 'Expanded section-order Z';
+                },
+
+                get multiSampleTraitPlotUrl() {
+                    const configured = this.reportMeta?.multi_sample_trait_plots?.[this.selectedTrait];
+                    const filename = configured || `ldsc_${this.selectedTrait}.png`;
+                    return `spatial_plots/${filename.split('/').map(encodeURIComponent).join('/')}`;
+                },
+
+                get runDetailCards() {
+                    const geometry = this.has3dWidget ? this.spatial3dGeometryLabel : '2D coordinates';
+                    return [
+                        {
+                            label: 'Dataset',
+                            value: this.reportMeta.dataset_type_label || this.reportMeta.dataset_type || 'Unknown',
+                            note: `${this.samples.length.toLocaleString()} samples; ${this.traits.length.toLocaleString()} traits`
+                        },
+                        {
+                            label: 'Species',
+                            value: this.reportMeta.species || 'Not recorded',
+                            note: `${this.annotations.length.toLocaleString()} annotation fields`
+                        },
+                        {
+                            label: 'Spatial geometry',
+                            value: geometry,
+                            note: this.spatial3dCoordinateInfo?.z_is_physical
+                                ? 'Measured coordinates retain physical axis ratios.'
+                                : (this.has3dWidget ? 'Z encodes ordered sections and is expanded for visibility.' : 'Section coordinates are rendered in their native 2D plane.')
+                        },
+                        {
+                            label: 'Latent representation',
+                            value: this.reportMeta.latent_representation_niche || this.reportMeta.latent_representation_cell || 'Not recorded',
+                            note: this.reportMeta.latent_representation_cell
+                                ? `Cell embedding: ${this.reportMeta.latent_representation_cell}`
+                                : 'Embedding key was not recorded.'
+                        }
+                    ];
                 },
 
                 // Helper method to get section title with number
@@ -1877,6 +2111,7 @@
                         }
                         if (this.samples.length > 0) {
                             this.selectedSample = this.samples[0];
+                            this.sampleSearchQuery = this.selectedSample;
                         }
 
                         // Update gene list (async - loads per-trait data)
@@ -2321,7 +2556,9 @@
                         this.spatial3dIndex = window.GSMAP_SPATIAL_3D_INDEX;
                         if (!this.spatial3dIndex) throw new Error('3D index payload is missing');
                         this.spatial3dCoordinateInfo = this.spatial3dIndex.coordinate_info || viewer.coordinate_info || null;
-                        this.spatial3dAspectMode = this.spatial3dCoordinateInfo?.default_aspect_mode || 'physical';
+                        this.spatial3dAspectMode = this.resolveSpatial3dAspectMode(
+                            this.spatial3dCoordinateInfo
+                        );
 
                         await this.loadScript(this.spatial3dIndex.base_file);
                         const encoded = window.GSMAP_SPATIAL_3D_BASE;
@@ -2689,6 +2926,115 @@
                     return indices.map(index => source[index]);
                 },
 
+                filterAssociationPlotPoints(points, values) {
+                    const threshold = Math.max(0, Number(this.associationMinLogP) || 0);
+                    if (threshold <= 0) return { ...points, values };
+
+                    const localIndices = [];
+                    const sourceIndices = [];
+                    for (let index = 0; index < values.length; index++) {
+                        const value = Number(values[index]);
+                        if (!Number.isFinite(value) || value < threshold) continue;
+                        localIndices.push(index);
+                        sourceIndices.push(points.indices ? points.indices[index] : index);
+                    }
+                    return {
+                        x: this.selectPointValues(points.x, localIndices),
+                        y: this.selectPointValues(points.y, localIndices),
+                        z: this.selectPointValues(points.z, localIndices),
+                        codes: this.selectPointValues(points.codes, localIndices),
+                        values: this.selectPointValues(values, localIndices),
+                        indices: sourceIndices
+                    };
+                },
+
+                associationOpacityForValue(value, cmin, cmax, maximumOpacity) {
+                    const strength = Math.max(0, Math.min(4, Number(this.associationOpacityStrength) || 0));
+                    const maximum = Math.max(0.05, Math.min(1, Number(maximumOpacity) || 1));
+                    if (strength <= 0) return maximum;
+                    if (!Number.isFinite(Number(value))) return Math.min(maximum, 0.04);
+                    const lower = Math.max(Number(cmin) || 0, Number(this.associationMinLogP) || 0);
+                    const rawSpan = Number(cmax) - lower;
+                    const normalized = rawSpan <= Number.EPSILON
+                        ? (Number(value) >= Number(cmax) ? 1 : 0)
+                        : Math.max(0, Math.min(1, (Number(value) - lower) / rawSpan));
+                    const floor = Math.max(0.035, 0.44 - strength * 0.1);
+                    const gamma = 0.75 + strength * 0.65;
+                    return maximum * (floor + (1 - floor) * Math.pow(normalized, gamma));
+                },
+
+                associationOpacityArray(values, cmin, cmax, maximumOpacity) {
+                    const strength = Number(this.associationOpacityStrength) || 0;
+                    if (strength <= 0) return Number(maximumOpacity);
+                    const opacity = new Float32Array(values.length);
+                    for (let index = 0; index < values.length; index++) {
+                        opacity[index] = this.associationOpacityForValue(
+                            values[index], cmin, cmax, maximumOpacity
+                        );
+                    }
+                    return opacity;
+                },
+
+                buildSpatial3dAssociationTraces(points, values, marker, hovertemplate, name) {
+                    const strength = Number(this.associationOpacityStrength) || 0;
+                    const maximumOpacity = Number(marker.opacity) || 1;
+                    if (strength <= 0 || values.length === 0) {
+                        return values.length ? [{
+                            type: 'scatter3d', mode: 'markers',
+                            x: points.x, y: points.y, z: points.z,
+                            marker: { ...marker, color: values },
+                            hovertemplate,
+                            name
+                        }] : [];
+                    }
+
+                    const cmin = Number(marker.cmin) || 0;
+                    const cmax = Number(marker.cmax) || 1;
+                    const lower = Math.max(cmin, Number(this.associationMinLogP) || 0);
+                    const rawSpan = cmax - lower;
+                    const span = Math.max(Number.EPSILON, rawSpan);
+                    const binCount = 6;
+                    const bins = Array.from({ length: binCount }, () => []);
+                    for (let index = 0; index < values.length; index++) {
+                        const numeric = Number(values[index]);
+                        const normalized = Number.isFinite(numeric)
+                            ? (rawSpan <= Number.EPSILON
+                                ? (numeric >= cmax ? 1 : 0)
+                                : Math.max(0, Math.min(1, (numeric - lower) / span)))
+                            : 0;
+                        const bin = Math.min(binCount - 1, Math.floor(normalized * binCount));
+                        bins[bin].push(index);
+                    }
+
+                    let colorbarAvailable = Boolean(marker.showscale);
+                    const traces = [];
+                    for (let bin = 0; bin < bins.length; bin++) {
+                        const indices = bins[bin];
+                        if (!indices.length) continue;
+                        const midpoint = lower + ((bin + 0.5) / binCount) * span;
+                        const showscale = colorbarAvailable;
+                        colorbarAvailable = false;
+                        traces.push({
+                            type: 'scatter3d', mode: 'markers',
+                            x: this.selectPointValues(points.x, indices),
+                            y: this.selectPointValues(points.y, indices),
+                            z: this.selectPointValues(points.z, indices),
+                            marker: {
+                                ...marker,
+                                color: this.selectPointValues(values, indices),
+                                opacity: this.associationOpacityForValue(
+                                    midpoint, cmin, cmax, maximumOpacity
+                                ),
+                                showscale
+                            },
+                            hovertemplate,
+                            name,
+                            showlegend: false
+                        });
+                    }
+                    return traces;
+                },
+
                 filterCategoricalPlotPoints(x, y, z, schema, annotationName) {
                     const visibilityKey = this.annotationVisibilityKey(annotationName);
                     if (!visibilityKey) {
@@ -2815,10 +3161,10 @@
                         )
                         : { x: base.x, y: base.y, z: base.z, indices: null };
                     const traitValues = this.selectPointValues(feature.values, points.indices);
+                    const associationPoints = this.filterAssociationPlotPoints(points, traitValues);
                     const colors = this.spatial3dIndex?.colorscale || ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
                     const marker = {
                         size: Number(this.spatial3dPointSize),
-                        color: traitValues,
                         colorscale: colors.map((color, index) => [index / (colors.length - 1), color]),
                         cmin: feature.cmin,
                         cmax: feature.cmax,
@@ -2826,14 +3172,14 @@
                         showscale: true,
                         colorbar: { title: { text: '−log10(P)', side: 'top' }, thickness: 14, len: 0.62 }
                     };
-                    const traces = [{
-                        type: 'scatter3d', mode: 'markers',
-                        x: points.x, y: points.y, z: points.z,
+                    const traces = this.buildSpatial3dAssociationTraces(
+                        associationPoints,
+                        associationPoints.values,
                         marker,
-                        hovertemplate: '<b>Association</b><br>−log10(P): %{marker.color:.2f}' +
+                        '<b>Association</b><br>−log10(P): %{marker.color:.2f}' +
                             '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
-                        name: this.selectedTrait
-                    }];
+                        this.selectedTrait
+                    );
                     if (feature.n_extra > 0 && feature.extra?.x?.length) {
                         const visibilityActive = Boolean(this.annotationVisibilityKey(annotationName));
                         const extraSchema = this.schemaForAnnotationCodes(
@@ -2855,18 +3201,23 @@
                                 indices: null
                             });
                         const highlight = this.spatial3dHighlightHotspots;
-                        if (extraPoints?.x?.length) traces.push({
+                        const extraValues = extraPoints?.x?.length
+                            ? this.selectPointValues(feature.extra.values, extraPoints.indices)
+                            : null;
+                        const extraAssociationPoints = extraValues
+                            ? this.filterAssociationPlotPoints(extraPoints, extraValues)
+                            : null;
+                        if (extraAssociationPoints?.x?.length) traces.push({
                             type: 'scatter3d', mode: 'markers',
-                            x: extraPoints.x, y: extraPoints.y, z: extraPoints.z,
+                            x: extraAssociationPoints.x,
+                            y: extraAssociationPoints.y,
+                            z: extraAssociationPoints.z,
                             marker: {
                                 ...marker,
                                 size: highlight
                                     ? Math.max(2, Number(this.spatial3dPointSize) * 1.7)
                                     : Number(this.spatial3dPointSize),
-                                color: this.selectPointValues(
-                                    feature.extra.values,
-                                    extraPoints.indices
-                                ),
+                                color: extraAssociationPoints.values,
                                 opacity: highlight
                                     ? Math.max(0.8, Number(this.spatial3dOpacity))
                                     : Number(this.spatial3dOpacity),
@@ -2884,14 +3235,7 @@
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
-                        this.configureSpatial3dInteractionLod(plot, {
-                            x: points.x,
-                            y: points.y,
-                            z: points.z,
-                            color: traitValues
-                        });
                         this.bindSpatial3dCameraSync('spatial3dPlotTrait', 'spatial3dPlotAnnotation');
-                        this.bindSpatial3dInteractionLod(plot);
                     });
                     return rendered;
                 },
@@ -2956,15 +3300,7 @@
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
-                        this.configureSpatial3dInteractionLod(plot, {
-                            x: points.x,
-                            y: points.y,
-                            z: points.z,
-                            color: points.codes,
-                            text: annotationHoverLabels
-                        });
                         this.bindSpatial3dCameraSync('spatial3dPlotAnnotation', 'spatial3dPlotTrait');
-                        this.bindSpatial3dInteractionLod(plot);
                     });
                     return rendered;
                 },
@@ -2975,83 +3311,6 @@
                     if (this.spatial3dViewMode !== 'annotation') renders.push(this.renderSpatial3dTrait());
                     if (this.spatial3dViewMode !== 'trait') renders.push(this.renderSpatial3dAnnotation());
                     await Promise.all(renders.filter(Boolean).map(render => Promise.resolve(render)));
-                },
-
-                configureSpatial3dInteractionLod(plot, full) {
-                    const nPoints = Number(full?.x?.length || 0);
-                    const limit = Math.max(1000, Number(this.spatial3dInteractionPointLimit) || 25000);
-                    const previous = plot?.__gsMapInteractionLod;
-                    if (previous?.restoreTimer) clearTimeout(previous.restoreTimer);
-                    if (!plot || nPoints <= limit) {
-                        if (plot) plot.__gsMapInteractionLod = null;
-                        return;
-                    }
-                    const indices = new Uint32Array(limit);
-                    const scale = nPoints / limit;
-                    for (let index = 0; index < limit; index++) {
-                        indices[index] = Math.min(nPoints - 1, Math.floor(index * scale));
-                    }
-                    plot.__gsMapInteractionLod = {
-                        traceIndex: 0,
-                        active: false,
-                        requested: false,
-                        pending: false,
-                        restoreTimer: null,
-                        full,
-                        reduced: {
-                            x: this.selectPointValues(full.x, indices),
-                            y: this.selectPointValues(full.y, indices),
-                            z: this.selectPointValues(full.z, indices),
-                            color: this.selectPointValues(full.color, indices),
-                            text: full.text ? this.selectPointValues(full.text, indices) : null
-                        }
-                    };
-                },
-
-                applySpatial3dInteractionLod(plot, active) {
-                    const state = plot?.__gsMapInteractionLod;
-                    if (!state) return;
-                    state.requested = active;
-                    if (state.active === active || state.pending) return;
-                    state.pending = true;
-                    const source = active ? state.reduced : state.full;
-                    const update = {
-                        x: [source.x],
-                        y: [source.y],
-                        z: [source.z],
-                        'marker.color': [source.color]
-                    };
-                    if (source.text) update.text = [source.text];
-                    Promise.resolve(Plotly.restyle(plot, update, [state.traceIndex])).then(() => {
-                        state.active = active;
-                    }).catch(error => {
-                        console.warn('3D interaction LOD update failed:', error);
-                        state.requested = state.active;
-                    }).finally(() => {
-                        state.pending = false;
-                        if (state.requested !== state.active) {
-                            this.applySpatial3dInteractionLod(plot, state.requested);
-                        }
-                    });
-                },
-
-                bindSpatial3dInteractionLod(plot) {
-                    if (!plot?.on || plot.__gsMapInteractionLodBound) return;
-                    plot.__gsMapInteractionLodBound = true;
-                    plot.on('plotly_relayouting', () => {
-                        const state = plot.__gsMapInteractionLod;
-                        if (!state) return;
-                        if (state.restoreTimer) clearTimeout(state.restoreTimer);
-                        this.applySpatial3dInteractionLod(plot, true);
-                    });
-                    plot.on('plotly_relayout', () => {
-                        const state = plot.__gsMapInteractionLod;
-                        if (!state) return;
-                        if (state.restoreTimer) clearTimeout(state.restoreTimer);
-                        state.restoreTimer = setTimeout(() => {
-                            this.applySpatial3dInteractionLod(plot, false);
-                        }, 220);
-                    });
                 },
 
                 bindSpatial3dCameraSync(sourceId, targetId) {
@@ -3080,6 +3339,33 @@
                     }
                 },
 
+                resolveSpatial3dAspectMode(coordinateInfo) {
+                    const configured = coordinateInfo?.default_aspect_mode;
+                    if (configured === 'physical' || configured === 'expanded') return configured;
+                    return coordinateInfo?.z_is_physical ? 'physical' : 'expanded';
+                },
+
+                formatRunValue(value) {
+                    if (value === null || value === undefined || value === '') return 'Not recorded';
+                    return typeof value === 'number' ? value.toLocaleString() : String(value);
+                },
+
+                formatSpotLimit(value) {
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? `${numeric.toLocaleString()} spots` : 'Not recorded';
+                },
+
+                renderAssociationViews() {
+                    requestAnimationFrame(() => {
+                        if (this.has3dWidget && this.spatial3dViewMode !== 'annotation') {
+                            this.renderSpatial3dTrait();
+                        }
+                        if (this.currentSampleData && this.spatial2dViewMode !== 'annotation') {
+                            this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
+                        }
+                    });
+                },
+
                 scoreTraitMatch(label, query) {
                     const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
                     const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -3103,6 +3389,43 @@
                         score += 20 + gaps * 2 + firstIndex * 0.05;
                     }
                     return score + normalizedLabel.length * 0.001;
+                },
+
+                openSampleSearch() {
+                    this.sampleSearchQuery = '';
+                    this.sampleActiveIndex = 0;
+                    this.sampleComboboxOpen = true;
+                },
+
+                closeSampleSearch() {
+                    this.sampleComboboxOpen = false;
+                    this.sampleSearchQuery = this.selectedSample;
+                    this.sampleActiveIndex = 0;
+                },
+
+                moveSampleSearch(delta) {
+                    this.sampleComboboxOpen = true;
+                    const count = this.filteredSamples.length;
+                    if (!count) return;
+                    this.sampleActiveIndex = (this.sampleActiveIndex + delta + count) % count;
+                    this.$nextTick(() => {
+                        document.getElementById(`sample-option-${this.sampleActiveIndex}`)
+                            ?.scrollIntoView({ block: 'nearest' });
+                    });
+                },
+
+                selectActiveSample() {
+                    const sample = this.filteredSamples[this.sampleActiveIndex];
+                    if (sample) this.selectSampleFromSearch(sample);
+                },
+
+                selectSampleFromSearch(sample) {
+                    this.sampleSearchQuery = sample;
+                    this.sampleComboboxOpen = false;
+                    this.$refs.sampleSearchInput?.blur();
+                    if (sample === this.selectedSample) return;
+                    this.selectedSample = sample;
+                    this.onSampleChange();
                 },
 
                 openTraitSearch() {
@@ -3158,6 +3481,7 @@
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
                     this.traitSearchQuery = newTrait;
+                    this.multiSamplePlotUnavailable = false;
 
                     // Show loading overlay for 2D trait plot
                     this.loadingSpatial2dTraitData = true;
@@ -4516,6 +4840,10 @@
                                 x, y, null, annotation, annotationName
                             )
                             : { x, y, indices: null };
+                        const pointValues = this.selectPointValues(colorValues, points.indices);
+                        const associationPoints = this.filterAssociationPlotPoints(
+                            points, pointValues
+                        );
                         const baseAnnotationCodes = Object.fromEntries(
                             Object.entries(data.annotations || {}).map(
                                 ([name, payload]) => [name, payload.codes]
@@ -4525,7 +4853,7 @@
                             `spatial2d\u001f${divId}\u001ftrait\u001f${sample}\u001f${trait}\u001f${annotationName}`,
                             {
                                 hoverKind: 'trait',
-                                indices: points.indices,
+                                indices: associationPoints.indices,
                                 compactAnnotations: baseAnnotationCodes,
                                 annotationSchemas: data.annotations || {},
                                 spots: data.spot,
@@ -4537,15 +4865,19 @@
                             }
                         );
                         traces.push({
-                            x: points.x, y: points.y, mode: 'markers', type: 'scattergl',
+                            x: associationPoints.x,
+                            y: associationPoints.y,
+                            mode: 'markers', type: 'scattergl',
                             hoverinfo: 'none',
                             meta: { hoverContextKey },
                             marker: {
                                 size: pointSize,
-                                color: this.selectPointValues(colorValues, points.indices),
+                                color: associationPoints.values,
                                 colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
                                 ...colorLimits,
-                                opacity,
+                                opacity: this.associationOpacityArray(
+                                    associationPoints.values, cmin, cmax, opacity
+                                ),
                                 showscale: true,
                                 colorbar: {
                                     title: { text: '−log10(P)', side: 'top', font: { size: 12 } },
@@ -4574,13 +4906,22 @@
                                     y: compactTraitPayload.extra.y,
                                     indices: null
                                 });
-                            if (extraPoints?.x?.length) {
+                            const extraValues = extraPoints?.x?.length
+                                ? this.selectPointValues(
+                                    compactTraitPayload.extra.values,
+                                    extraPoints.indices
+                                )
+                                : null;
+                            const extraAssociationPoints = extraValues
+                                ? this.filterAssociationPlotPoints(extraPoints, extraValues)
+                                : null;
+                            if (extraAssociationPoints?.x?.length) {
                                 const extraHoverContextKey = this.setPointHoverContext(
                                     `spatial2d\u001f${divId}\u001fextra\u001f${sample}\u001f${trait}\u001f${annotationName}`,
                                     {
                                         hoverKind: 'trait',
                                         hoverPrefix: 'Retained top signal',
-                                        indices: extraPoints.indices,
+                                        indices: extraAssociationPoints.indices,
                                         compactAnnotations: compactTraitPayload.extra.annotation_codes,
                                         annotationSchemas: data.annotations || {},
                                         colorMap,
@@ -4590,8 +4931,8 @@
                                     }
                                 );
                                 traces.push({
-                                    x: extraPoints.x,
-                                    y: extraPoints.y,
+                                    x: extraAssociationPoints.x,
+                                    y: extraAssociationPoints.y,
                                     mode: 'markers',
                                     type: 'scattergl',
                                     hoverinfo: 'none',
@@ -4599,10 +4940,7 @@
                                     name: 'Retained high-signal spots',
                                     marker: {
                                         size: Math.max(2.5, pointSize * 1.5),
-                                        color: this.selectPointValues(
-                                            compactTraitPayload.extra.values,
-                                            extraPoints.indices
-                                        ),
+                                        color: extraAssociationPoints.values,
                                         colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
                                         ...colorLimits,
                                         opacity: 1,

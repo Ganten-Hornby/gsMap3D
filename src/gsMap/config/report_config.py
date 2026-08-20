@@ -81,7 +81,7 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     single_trait_multi_sample_dpi: int = 300
     share_coords: bool = False
 
-    # Weather to generate single-feature multi-sample plots (LDSC, annotation, and gene diagnostic plots)
+    # Whether to generate compact single-trait overviews across all spatial samples.
     generate_multi_sample_plots: bool = False
 
     # Plot origin for spatial plots ('upper' or 'lower')

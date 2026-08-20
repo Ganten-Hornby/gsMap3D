@@ -102,7 +102,9 @@ def test_spatial3d_is_lazy_direct_plotly_and_labels_nonphysical_geometry(
     assert "GSMAP_SPATIAL_3D_INDEX" in report_template
     assert 'id="spatial3dPlotTrait"' in report_template
     assert 'id="spatial3dPlotAnnotation"' in report_template
-    assert "Expanded Z (visual aid)" in report_template
+    assert "resolveSpatial3dAspectMode" in report_template
+    assert "Expanded section-order Z" in report_template
+    assert 'x-model="spatial3dAspectMode"' not in report_template
     assert "spatial3dCoordinateInfo?.note" in report_template
     assert "xRange / largestXyRange" in report_template
     assert "yRange / largestXyRange" in report_template
@@ -136,6 +138,14 @@ def test_trait_selector_supports_fuzzy_keyboard_search(report_template: str) -> 
     assert "scoreTraitMatch(label, query)" in report_template
     assert "moveTraitSearch(1)" in report_template
     assert "selectActiveTrait()" in report_template
+
+
+def test_sample_selector_supports_fuzzy_keyboard_search(report_template: str) -> None:
+    assert 'id="sample-listbox"' in report_template
+    assert "get filteredSamples()" in report_template
+    assert "moveSampleSearch(1)" in report_template
+    assert "selectActiveSample()" in report_template
+    assert "selectSampleFromSearch(sample)" in report_template
 
 
 def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
@@ -259,13 +269,43 @@ def test_enrichment_is_sharded_paginated_and_uses_bounded_browser_caches(
     assert "fetch(" not in report_template
 
 
-def test_spatial3d_reduces_only_during_camera_interaction(report_template: str) -> None:
-    assert "spatial3dInteractionPointLimit: 25000" in report_template
-    assert "configureSpatial3dInteractionLod(plot" in report_template
-    assert "plotly_relayouting" in report_template
-    assert "applySpatial3dInteractionLod(plot, true)" in report_template
-    assert "applySpatial3dInteractionLod(plot, false)" in report_template
-    assert "state.requested !== state.active" in report_template
+def test_spatial3d_keeps_full_display_payload_during_camera_interaction(
+    report_template: str,
+) -> None:
+    assert "spatial3dInteractionPointLimit" not in report_template
+    assert "configureSpatial3dInteractionLod" not in report_template
+    assert "applySpatial3dInteractionLod" not in report_template
+    assert "plotly_relayouting" not in report_template
+
+
+def test_spatial_association_views_share_cutoff_and_opacity_curve(
+    report_template: str,
+) -> None:
+    assert "associationMinLogP: 0" in report_template
+    assert "associationOpacityStrength: 1.5" in report_template
+    assert report_template.count('aria-label="Association opacity gradient strength"') == 1
+    assert report_template.count('aria-label="2D association opacity gradient strength"') == 1
+    assert "filterAssociationPlotPoints(points, values)" in report_template
+    assert "associationOpacityArray(values, cmin, cmax, maximumOpacity)" in report_template
+    assert "buildSpatial3dAssociationTraces(points, values, marker" in report_template
+    assert "const binCount = 6" in report_template
+
+
+def test_report_exposes_lazy_all_sample_trait_overview(report_template: str) -> None:
+    assert "All-sample trait overview" in report_template
+    assert "multiSampleTraitPlotUrl" in report_template
+    assert 'loading="lazy"' in report_template
+    assert 'decoding="async"' in report_template
+
+
+def test_run_details_are_collapsed_and_summarized_before_raw_config(
+    report_template: str,
+) -> None:
+    assert "info: false" in report_template
+    assert "get runDetailCards()" in report_template
+    assert "Graph and neighborhood" in report_template
+    assert "Browser visualization" in report_template
+    assert "Complete machine-readable configuration" in report_template
 
 
 def test_enrichment_annotation_badges_support_point_map_multi_selection(

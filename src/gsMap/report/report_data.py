@@ -10,6 +10,7 @@ import gc
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import threading
@@ -36,6 +37,7 @@ from gsMap.report.spatial_payload import (
     _categorical_schema,
     export_sample_spatial_payloads,
     export_spatial_3d_payloads,
+    safe_name,
 )
 from gsMap.report.visualize import (
     estimate_plotly_point_size,
@@ -499,57 +501,38 @@ class ReportDataManager:
             logger.info("Skipping static plot rendering for non-spatial dataset type")
             return
 
-        from .visualize import VisualizeRunner
+        from .visualize import MultiSampleSpatialRasterCache, VisualizeRunner
 
         visualizer = VisualizeRunner(self.report_config)
 
         n_samples = len(self.sample_names)
-        n_cols = min(4, n_samples)
+        n_cols = min(8, max(1, math.ceil(math.sqrt(n_samples))))
         n_rows = (n_samples + n_cols - 1) // n_cols
 
-        obs_data = self.metadata.copy()
-        if "sample" not in obs_data.columns:
-            obs_data["sample"] = obs_data["sample_name"]
-
         if self.report_config.generate_multi_sample_plots:
+            # Keep one shared view of the full metadata. Copying this table can
+            # add tens of gigabytes of peak RSS for large spatial atlases.
+            obs_data = self.metadata
+            overview_cache = MultiSampleSpatialRasterCache(
+                obs_data,
+                self.sample_names,
+            )
             # Render LDSC plots
             spatial_plot_dir = self.web_report_dir / "spatial_plots"
             spatial_plot_dir.mkdir(exist_ok=True)
             for trait in self.traits:
-                trait_plot_path = spatial_plot_dir / f"ldsc_{trait}.png"
+                trait_plot_path = spatial_plot_dir / f"ldsc_{safe_name(trait)}.png"
                 if not self._is_step_complete([trait_plot_path]):
                     logger.info(f"Rendering LDSC plot for {trait}...")
-                    visualizer._create_single_trait_multi_sample_matplotlib_plot(
+                    visualizer._create_single_trait_multi_sample_raster_plot(
                         obs_ldsc_merged=obs_data,
                         trait_abbreviation=trait,
                         sample_name_list=self.sample_names,
                         output_png_path=trait_plot_path,
                         n_rows=n_rows,
                         n_cols=n_cols,
-                        subplot_width_inches=5.0,
+                        raster_cache=overview_cache,
                     )
-
-            # Render annotation plots
-            anno_dir = self.web_report_dir / "annotation_plots"
-            anno_dir.mkdir(exist_ok=True)
-            for anno in self.report_config.annotation_list:
-                anno_plot_path = anno_dir / f"anno_{anno}.png"
-                if not self._is_step_complete([anno_plot_path]):
-                    logger.info(f"Rendering plot for annotation: {anno}...")
-                    fig = visualizer._create_multi_sample_annotation_plot(
-                        obs_ldsc_merged=obs_data,
-                        annotation=anno,
-                        sample_names_list=self.sample_names,
-                        output_dir=None,
-                        n_rows=n_rows,
-                        n_cols=n_cols,
-                        fig_width=5 * n_cols,
-                        fig_height=5 * n_rows,
-                    )
-                    import matplotlib.pyplot as plt
-
-                    fig.savefig(anno_plot_path, dpi=300, bbox_inches="tight")
-                    plt.close(fig)
 
         # Gene diagnostic plots
         # Ensure base metadata exists (needed for common_spots and ldsc_results)
@@ -2313,6 +2296,11 @@ def _save_report_metadata(
     report_meta["legend_marker_size"] = report_config.legend_marker_size
     report_meta["downsampling_n_spots_2d"] = getattr(
         report_config, "downsampling_n_spots_2d", 100000
+    )
+    report_meta["multi_sample_trait_plots"] = (
+        {trait: f"ldsc_{safe_name(trait)}.png" for trait in traits}
+        if report_config.generate_multi_sample_plots
+        else {}
     )
 
     # Add chromosome tick positions for Manhattan plot

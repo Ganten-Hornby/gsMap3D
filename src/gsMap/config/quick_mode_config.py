@@ -293,15 +293,10 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
     # Multi-sample plots (Spatial only, and if enabled)
     if dataset_type != DatasetType.SCRNA_SEQ and config.generate_multi_sample_plots:
         spatial_plot_dir = web_report_dir / "spatial_plots"
-        annotation_plot_dir = web_report_dir / "annotation_plots"
 
         for trait in traits:
-            plot_path = spatial_plot_dir / f"ldsc_{trait}.png"
-            if not plot_path.exists():
-                missing_web_files.append(plot_path)
-
-        for anno in annotation_list:
-            plot_path = annotation_plot_dir / f"anno_{anno}.png"
+            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+            plot_path = spatial_plot_dir / f"ldsc_{safe_trait}.png"
             if not plot_path.exists():
                 missing_web_files.append(plot_path)
 

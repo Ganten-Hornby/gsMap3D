@@ -35,6 +35,7 @@ from gsMap.report.report_data import (
     _write_text_if_changed,
 )
 from gsMap.report.spatial_payload import SPATIAL_PAYLOAD_VERSION
+from gsMap.report.visualize import MultiSampleSpatialRasterCache, VisualizeRunner
 
 
 def test_report_3d_display_default_balances_density_and_interaction():
@@ -49,6 +50,54 @@ def test_report_umap_and_2d_defaults_prioritize_visual_density():
 
     assert umap_field.default == 50_000
     assert spatial_2d_field.default == 100_000
+
+
+def test_multi_sample_raster_cache_reuses_geometry_and_keeps_strongest_pixel():
+    frame = pd.DataFrame(
+        {
+            "sample_name": ["a", "a", "a", "b"],
+            "sx": [0.0, 0.0, 1.0, 4.0],
+            "sy": [0.0, 0.0, 1.0, 5.0],
+            "trait": [1.0, 4.0, 2.0, 3.0],
+        }
+    )
+    cache = MultiSampleSpatialRasterCache(frame, ["a", "b"], resolution=32)
+
+    raster = cache.rasterize("a", frame["trait"].to_numpy())
+
+    assert np.nanmax(raster) == 4.0
+    assert sorted(raster[np.isfinite(raster)].tolist()) == [2.0, 4.0]
+    assert cache.samples["a"]["positions"].tolist() == [0, 1, 2]
+
+
+def test_multi_sample_raster_renderer_writes_compact_png(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "sample_name": ["a", "a", "b", "b"],
+            "sx": [0.0, 1.0, 0.0, 1.0],
+            "sy": [0.0, 1.0, 1.0, 0.0],
+            "trait": [0.0, 1.0, 2.0, 3.0],
+        }
+    )
+    output = tmp_path / "overview.png"
+    cache = MultiSampleSpatialRasterCache(frame, ["a", "b"], resolution=32)
+    runner = VisualizeRunner(SimpleNamespace(plot_origin="upper"))
+
+    runner._create_single_trait_multi_sample_raster_plot(
+        obs_ldsc_merged=frame,
+        trait_abbreviation="trait",
+        sample_name_list=["a", "b"],
+        output_png_path=output,
+        n_rows=1,
+        n_cols=2,
+        raster_cache=cache,
+        subplot_width_inches=0.8,
+        dpi=60,
+    )
+
+    assert output.is_file()
+    assert output.stat().st_size > 100
+    assert not (tmp_path / ".overview.png.partial").exists()
 
 
 def test_report_completion_detects_changed_visualization_limits(tmp_path):
