@@ -196,3 +196,49 @@ def test_training_data_scatter_is_invariant_to_interleaved_batches():
     mapped_back[permutation] = shuffled.expression_gcn_merge.numpy()
 
     np.testing.assert_allclose(original.expression_gcn_merge.numpy(), mapped_back)
+
+
+def test_training_batch_codes_follow_input_order_after_s10():
+    batch_order = [
+        "S10",
+        "S2",
+        "S0",
+        "S11",
+        "S1",
+        "S9",
+        "S3",
+        "S8",
+        "S4",
+        "S7",
+        "S5",
+        "S6",
+    ]
+    n_batches = len(batch_order)
+    adata = anndata.AnnData(
+        X=sp.csr_matrix(np.ones((n_batches, 1), dtype=np.float32)),
+        obs=pd.DataFrame(
+            {"batch_id": batch_order},
+            index=[f"spot-{batch_id}" for batch_id in batch_order],
+        ),
+        var=pd.DataFrame(index=["g0"]),
+    )
+    adata.obsm["spatial"] = np.arange(n_batches * 2, dtype=float).reshape(n_batches, 2)
+    params = SimpleNamespace(
+        K=1,
+        annotation=None,
+        spatial_key="spatial",
+        graph_mode="no_graph",
+        n_neighbors=1,
+        graph_radius=None,
+        graph_sigma=None,
+        sample_h5ad_dict={f"sample-{i}": None for i in range(n_batches)},
+    )
+
+    training_data = TrainingData(params)
+    training_data.prepare(adata, ["g0"])
+
+    expected_codes = np.asarray(
+        [int(batch_id[1:]) for batch_id in batch_order], dtype=np.float32
+    )
+    np.testing.assert_array_equal(training_data.batch_merge.numpy(), expected_codes)
+    assert training_data.batch_size == n_batches
