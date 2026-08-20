@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from .encoder_decoder import Decoder, Encoder
+from .encoder_decoder import Decoder, Encoder, EncoderInputTransform
 
 
 class StEmbeding(nn.Module):
@@ -48,6 +48,15 @@ class StEmbeding(nn.Module):
         self.distribution = distribution
         self.batch_representation = batch_representation
         self.num_batches = batch_size
+        self.encoder_input_transform = (
+            EncoderInputTransform.LOG1P
+            if self.distribution in ["nb", "zinb"]
+            else EncoderInputTransform.IDENTITY
+        )
+        self.register_buffer(
+            "_encoder_input_transform_version",
+            torch.tensor(self.encoder_input_transform.checkpoint_version, dtype=torch.int8),
+        )
 
         self.logtheta = nn.Parameter(torch.randn(batch_size, out_put_size))
 
@@ -74,6 +83,7 @@ class StEmbeding(nn.Module):
                     n_enc_layer,
                     use_tf,
                     variational,
+                    input_transform=self.encoder_input_transform,
                 )
             )
 
@@ -95,6 +105,24 @@ class StEmbeding(nn.Module):
             return self.batch_embedding(batch)
         else:
             return F.one_hot(batch, num_classes=self.num_batches).float()
+
+    def has_compatible_encoder_input_transform(self, state_dict) -> bool:
+        observed = state_dict.get("_encoder_input_transform_version")
+        if observed is None:
+            return self.encoder_input_transform is EncoderInputTransform.IDENTITY
+        expected = self._encoder_input_transform_version
+        return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
+
+    def load_compatible_state_dict(self, state_dict) -> bool:
+        if not self.has_compatible_encoder_input_transform(state_dict):
+            return False
+        if "_encoder_input_transform_version" not in state_dict:
+            state_dict = state_dict.copy()
+            state_dict["_encoder_input_transform_version"] = (
+                self._encoder_input_transform_version.detach().clone()
+            )
+        self.load_state_dict(state_dict)
+        return True
 
     def forward(self, x_list, batch):
         batch = self._process_batch(batch)

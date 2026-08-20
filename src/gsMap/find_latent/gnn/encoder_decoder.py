@@ -1,9 +1,23 @@
+from enum import Enum
+
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
 from torch.distributions import kl_divergence as kl
 
 from .gene_former import GeneModuleFormer
+
+
+class EncoderInputTransform(str, Enum):
+    IDENTITY = "identity"
+    LOG1P = "log1p"
+
+    @property
+    def checkpoint_version(self) -> int:
+        return 1 if self is EncoderInputTransform.LOG1P else 0
+
+    def apply(self, x):
+        return torch.log1p(x) if self is EncoderInputTransform.LOG1P else x
 
 
 def full_block(in_dim, out_dim, p_drop=0.1):
@@ -78,9 +92,11 @@ class Encoder(nn.Module):
         n_enc_layer,
         use_tf,
         variational=True,
+        input_transform=EncoderInputTransform.IDENTITY,
     ):
         super().__init__()
         self.variational = variational
+        self.input_transform = input_transform
 
         self.tf = transform(
             input_size,
@@ -102,7 +118,8 @@ class Encoder(nn.Module):
         self.fc_var = nn.Linear(hidden_size, emb_size)
 
     def forward(self, x, batch):
-        xtf = self.tf(x, batch)
+        encoder_input = self.input_transform.apply(x)
+        xtf = self.tf(encoder_input, batch)
         h = self.mlp(xtf)
         if not self.variational:
             mu = self.fc_mean(h)

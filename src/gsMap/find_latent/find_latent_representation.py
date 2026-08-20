@@ -35,6 +35,11 @@ from .st_process import (
 logger = logging.getLogger(__name__)
 
 
+def _load_compatible_model_state(model: StEmbeding, model_path: str | Path) -> bool:
+    state_dict = torch.load(model_path)
+    return model.load_compatible_state_dict(state_dict)
+
+
 def set_seed(seed_value):
     """
     Set seed for reproducibility in PyTorch and other libraries.
@@ -228,20 +233,33 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     gsMap_embedding_finder.set_loaders(train_loader, val_loader)
     print(gsMap_embedding_finder.model)
 
-    if not os.path.exists(config.model_path):
+    model_is_compatible = os.path.exists(config.model_path) and _load_compatible_model_state(
+        gsMap_embedding_finder.model,
+        config.model_path,
+    )
+    if not model_is_compatible:
+        if os.path.exists(config.model_path):
+            logger.info(
+                "Existing model uses an incompatible encoder input transform; retraining."
+            )
         # reconstruction
         gsMap_embedding_finder.train(config.itermax, patience=config.patience)
 
         # classification
         if config.two_stage and config.annotation is not None:
-            gsMap_embedding_finder.model.load_state_dict(torch.load(config.model_path))
+            if not _load_compatible_model_state(
+                gsMap_embedding_finder.model,
+                config.model_path,
+            ):
+                raise RuntimeError("Training produced an incompatible model checkpoint")
             gsMap_embedding_finder.mode = "classification"
             gsMap_embedding_finder.train(config.itermax, patience=config.patience)
     else:
         logger.info(f"Model found at {config.model_path}. Skipping training.")
 
     # Load the best model
-    gsMap_embedding_finder.model.load_state_dict(torch.load(config.model_path))
+    if not _load_compatible_model_state(gsMap_embedding_finder.model, config.model_path):
+        raise RuntimeError("Model checkpoint has an incompatible encoder input transform")
     gsmap_embedding_model = gsMap_embedding_finder.model
 
     # Configure the inference
@@ -342,6 +360,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "batch_embedding_size": int(batch_embedding_size),
             "class_size": int(class_size),
             "distribution": distribution,
+            "encoder_input_transform": gsmap_embedding_model.encoder_input_transform.value,
             "variational": variational,
             "use_tf": use_tf,
         },
