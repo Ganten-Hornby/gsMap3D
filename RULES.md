@@ -3,12 +3,14 @@
 ## Project Configuration
 
 - `PROJECT_ROOT`: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning`
+- `ANALYSIS_ROOT`: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d`
 - `WORKFLOW_DB`: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/REBUTTAL_WORKFLOW.sqlite`
-- `REBUTTAL_SOURCE`: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/rebuttal/rebuttal.qmd`
+- `REBUTTAL_SOURCE`: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/analysis/revision_graph_3d/rebuttal/rebuttal.qmd`
 - Source review plan: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning/comments_response_plan.docx`
 - Source review plan SHA-256: `b9660d97ba8fc3777c5cfa2655bd9af5270a5d85c0780c239e94febe3671edf8`
 - Working branch: `3d-graph-learning`
 - Authoritative revision worktree: `/storage/yangjianLab/lilounan/gsMap3D-3d-graph-learning`. Keep all revision code, analyses, logs, and artifacts in this worktree; do not create ad hoc alternative revision worktrees, use opaque scratch aliases such as `meta_lcl`, or place revision edits in the main worktree.
+- Revision analysis scripts, authored analysis documents, and rebuttal sources belong in the `analysis/revision_graph_3d` submodule. Keep the main repository's tracked product documentation under `docs/`; do not mix revision-authored documents into that directory.
 - The manuscript/SI project root, render command, local deliverable, and sync target are not configured yet. Do not apply manuscript edits, render, or sync until those values are resolved.
 
 `REBUTTAL_WORKFLOW.sqlite` is the only task and dependency ledger. Do not create or maintain a Markdown task queue.
@@ -40,9 +42,9 @@ Comments outside this scope are not to be added unless the user explicitly broad
 
 ## Authored Comment and Response Workspace
 
-- Canonical ordered source: `rebuttal/rebuttal.qmd`
-- Reviewer comment excerpts: `rebuttal/comments/<response-id>.md`
-- Author response fragments: `rebuttal/responses/<response-id>.qmd`
+- Canonical ordered source: `analysis/revision_graph_3d/rebuttal/rebuttal.qmd`
+- Reviewer comment excerpts: `analysis/revision_graph_3d/rebuttal/comments/<response-id>.md`
+- Author response fragments: `analysis/revision_graph_3d/rebuttal/responses/<response-id>.qmd`
 - Each response fragment must contain exactly one `.author-response` block whose `response-id` matches its filename and SQLite response ID.
 - Comment excerpts are source records, not task state. Reconcile any correction against `comments_response_plan.docx` and its recorded SHA-256.
 - Response fragments remain empty until the corresponding analysis task is complete and the automatically enqueued response task has been started.
