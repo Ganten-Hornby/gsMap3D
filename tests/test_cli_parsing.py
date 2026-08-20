@@ -121,6 +121,7 @@ def test_quick_mode_report_defaults_do_not_downsample_visualizations(cli_runner_
     assert "--subsample-n-points" in result.output
     assert "--downsampling-n-spots-2d" in result.output
     assert "--downsampling-n-spots-3d" in result.output
+    assert "--force-report-re-run" in result.output
     assert ReportConfig.__dataclass_fields__["subsample_n_points"].default is None
     assert ReportConfig.__dataclass_fields__["downsampling_n_spots_2d"].default is None
     assert ReportConfig.__dataclass_fields__["downsampling_n_spots_3d"].default is None
