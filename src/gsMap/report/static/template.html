@@ -1207,7 +1207,7 @@
                     <div x-show="cauchyActivated && !loadingCauchyData" class="flex flex-wrap items-center gap-4 border-b border-gray-200 bg-gray-50 p-4">
                         <div class="flex items-center gap-2">
                             <label class="text-sm font-medium text-gray-700">View:</label>
-                            <select x-model="cauchyViewMode" @change="renderCauchyHeatmap()"
+                            <select x-model="cauchyViewMode" @change="onCauchyViewChange()"
                                 class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
                                 <option value="all">All Samples (Aggregated)</option>
                                 <option value="sample">Per Sample</option>
@@ -1252,7 +1252,8 @@
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200">
-                                <template x-for="(row, idx) in filteredCauchyTable" :key="idx">
+                                <template x-for="(row, idx) in visibleCauchyTable"
+                                    :key="row.annotation + '\u001f' + (row.sample_name || '') + '\u001f' + idx">
                                     <tr class="table-row-hover">
                                         <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
                                         <td class="px-4 py-2 text-sm">
@@ -1286,6 +1287,23 @@
                         <div x-show="filteredCauchyTable.length === 0" class="text-center py-8 text-gray-500">
                             <p class="text-sm">No enrichment results found for the selected trait and annotation.</p>
                             <p class="text-xs mt-1 text-gray-400">Try another trait, annotation, or view.</p>
+                        </div>
+                        <div x-show="filteredCauchyTable.length > cauchyTablePageSize"
+                            class="sticky bottom-0 flex items-center justify-between gap-3 border-t border-slate-200 bg-white/95 px-4 py-2 text-xs text-slate-600 backdrop-blur">
+                            <span>
+                                <span x-text="(cauchyTablePage * cauchyTablePageSize + 1).toLocaleString()"></span>–<span
+                                    x-text="Math.min(filteredCauchyTable.length, (cauchyTablePage + 1) * cauchyTablePageSize).toLocaleString()"></span>
+                                of <span x-text="filteredCauchyTable.length.toLocaleString()"></span>
+                            </span>
+                            <div class="flex items-center gap-2">
+                                <button type="button" @click="cauchyTablePage = Math.max(0, cauchyTablePage - 1)"
+                                    :disabled="cauchyTablePage <= 0"
+                                    class="rounded-md border border-slate-200 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+                                <span>Page <span x-text="cauchyTablePage + 1"></span>/<span x-text="cauchyTablePageCount"></span></span>
+                                <button type="button" @click="cauchyTablePage = Math.min(cauchyTablePageCount - 1, cauchyTablePage + 1)"
+                                    :disabled="cauchyTablePage >= cauchyTablePageCount - 1"
+                                    class="rounded-md border border-slate-200 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
+                            </div>
                         </div>
                     </div>
 
@@ -1446,6 +1464,14 @@
                 // Raw data
                 reportMeta: {},
                 cauchyData: [],
+                cauchyHeatmapData: [],
+                cauchyIndex: null,
+                cauchyTableCache: {},
+                cauchyHeatmapCache: {},
+                _cauchyShardPromises: {},
+                _cauchyTableCacheOrder: [],
+                _cauchyHeatmapCacheOrder: [],
+                _cauchyRequestKey: '',
                 topGenesPccCache: {},  // Per-trait cache: { traitName: [geneData] }
                 topGenesPccLoadedTraits: {},  // Track loaded traits
                 topGenesList: [],
@@ -1474,11 +1500,14 @@
                 spatial3dAnnotationData: null,
                 spatial3dTraitCache: {},
                 spatial3dAnnotationCache: {},
+                _spatial3dTraitCacheOrder: [],
+                _spatial3dAnnotationCacheOrder: [],
                 spatial3dViewMode: 'trait',
                 spatial3dAspectMode: 'physical',
                 spatial3dPointSize: 1.2,
                 spatial3dOpacity: 0.72,
                 spatial3dHighlightHotspots: true,
+                spatial3dInteractionPointLimit: 25000,
                 spatial3dError: '',
                 _scriptPromises: {},
                 _spatial3dSyncing: false,
@@ -1488,7 +1517,7 @@
                 spatial2dPlotTraitInitialized: false,
                 spatial2dPlotAnnotationInitialized: false,
                 spatial2dActivated: false,
-                spatial2dViewMode: 'compare',
+                spatial2dViewMode: 'trait',
                 spatial2dPointScale: 1.0,
                 spatial2dError: '',
                 _spatial2dObserver: null,
@@ -1497,6 +1526,8 @@
                 // Per-sample data loading (for efficient on-demand loading)
                 sampleDataCache: {},        // { sampleName: data } - cache loaded samples
                 sampleTraitCache: {},       // { "sample\u001ftrait": decoded trait payload }
+                _sampleDataCacheOrder: [],
+                _sampleTraitCacheOrder: [],
                 _sampleLoadsInFlight: 0,
                 loadingSampleData: false,   // Loading indicator
                 loadingSpatial2dTraitData: false,  // Loading indicator for trait switch on 2D plot
@@ -1649,8 +1680,9 @@
                 // Performance optimization caches
                 _umapTraitColorCache: null,      // { values, order, cmax }
                 _umapAnnoColorCache: null,       // { anno, traces } for discrete annotations
-                _spatial2dTraitColorCache: null, // { sample, trait, colors }
                 _spatial2dAnnoTracesCache: null, // { sample, anno, traces }
+                _pointHoverContexts: {},
+                _pointHoverContextOrder: [],
                 _traitChangeDebounceTimer: null, // Debounce timer for trait changes
                 annotationHiddenCategories: {}, // { annotationName: { category: true } }
                 _annotationLegendClickTimer: null,
@@ -1669,6 +1701,8 @@
                 cauchyHeatmapMetric: 'mlog10_p_cauchy',
                 cauchyHeatmapCluster: true,
                 cauchyHeatmapNormalize: false,
+                cauchyTablePage: 0,
+                cauchyTablePageSize: 200,
                 _cauchyUserHeight: null,
 
                 // Memoized: filtered gene table
@@ -1749,6 +1783,21 @@
                     return result;
                 },
 
+                get cauchyTablePageCount() {
+                    return Math.max(1, Math.ceil(
+                        this.filteredCauchyTable.length / this.cauchyTablePageSize
+                    ));
+                },
+
+                get visibleCauchyTable() {
+                    const page = Math.min(
+                        Math.max(0, Number(this.cauchyTablePage) || 0),
+                        this.cauchyTablePageCount - 1
+                    );
+                    const start = page * this.cauchyTablePageSize;
+                    return this.filteredCauchyTable.slice(start, start + this.cauchyTablePageSize);
+                },
+
                 // Wait for Plotly to load (deferred)
                 waitForPlotly(timeoutMs = 20000) {
                     return new Promise((resolve, reject) => {
@@ -1794,12 +1843,6 @@
                         console.log("Loaded report meta:", this.traits.length, "traits,", this.samples.length, "samples");
                     } else {
                         console.warn("GSMAP_REPORT_META not found!");
-                    }
-
-                    if (window.GSMAP_CAUCHY) {
-                        this.cauchyData = window.GSMAP_CAUCHY;
-                        this.cauchyActivated = true;
-                        console.log("Loaded", this.cauchyData.length, "Cauchy results");
                     }
 
                     // Gene trait correlation data is now loaded per-trait on demand
@@ -1972,15 +2015,15 @@
                 },
 
                 async loadCauchyData() {
-                    if (this.cauchyActivated) return this.cauchyData;
                     this.loadingCauchyData = true;
                     try {
-                        await this.loadScript('js_data/cauchy_results.js');
-                        if (!window.GSMAP_CAUCHY) throw new Error('Enrichment payload is missing');
-                        this.cauchyData = window.GSMAP_CAUCHY;
+                        if (!this.cauchyIndex) {
+                            await this.loadScript('js_data/cauchy_index.js');
+                            this.cauchyIndex = window.GSMAP_CAUCHY_INDEX;
+                        }
+                        if (!this.cauchyIndex) throw new Error('Enrichment index is missing');
                         this.cauchyActivated = true;
-                        this._cauchyFilterCache = null;
-                        this.$nextTick(() => this.renderCauchyHeatmap());
+                        await this.loadActiveCauchyData();
                         return this.cauchyData;
                     } catch (error) {
                         console.error('Failed to load enrichment data:', error);
@@ -1988,6 +2031,151 @@
                     } finally {
                         this.loadingCauchyData = false;
                     }
+                },
+
+                decodeCauchyRows(payload, defaults = {}) {
+                    if (!payload?.columns || !payload?.data) return [];
+                    const columns = payload.columns;
+                    return payload.data.map(values => {
+                        const row = { ...defaults };
+                        for (let index = 0; index < columns.length; index++) {
+                            row[columns[index]] = values[index];
+                        }
+                        return row;
+                    });
+                },
+
+                getBoundedCache(cache, order, key) {
+                    const value = cache[key];
+                    if (value === undefined) return null;
+                    const position = order.indexOf(key);
+                    if (position >= 0) order.splice(position, 1);
+                    order.push(key);
+                    return value;
+                },
+
+                setBoundedCache(cache, order, key, value, limit, onEvict = null) {
+                    const position = order.indexOf(key);
+                    if (position >= 0) order.splice(position, 1);
+                    cache[key] = value;
+                    order.push(key);
+                    while (order.length > limit) {
+                        const oldest = order.shift();
+                        if (oldest !== undefined && oldest !== key) {
+                            const evicted = cache[oldest];
+                            delete cache[oldest];
+                            if (onEvict) onEvict(oldest, evicted);
+                        }
+                    }
+                    return value;
+                },
+
+                evictSampleTraits(sampleName) {
+                    const prefix = `${sampleName}\u001f`;
+                    for (const key of [...this._sampleTraitCacheOrder]) {
+                        if (!key.startsWith(prefix)) continue;
+                        delete this.sampleTraitCache[key];
+                        const position = this._sampleTraitCacheOrder.indexOf(key);
+                        if (position >= 0) this._sampleTraitCacheOrder.splice(position, 1);
+                    }
+                },
+
+                cacheSampleData(sampleName, data) {
+                    return this.setBoundedCache(
+                        this.sampleDataCache,
+                        this._sampleDataCacheOrder,
+                        sampleName,
+                        data,
+                        3,
+                        oldest => this.evictSampleTraits(oldest)
+                    );
+                },
+
+                cacheSampleTrait(compoundKey, decoded) {
+                    return this.setBoundedCache(
+                        this.sampleTraitCache,
+                        this._sampleTraitCacheOrder,
+                        compoundKey,
+                        decoded,
+                        8,
+                        oldest => {
+                            const separator = oldest.indexOf('\u001f');
+                            const sample = oldest.slice(0, separator);
+                            const trait = oldest.slice(separator + 1);
+                            const data = this.sampleDataCache[sample];
+                            if (data?.traits) delete data.traits[trait];
+                        }
+                    );
+                },
+
+                async loadCauchyShard(entry, cache, order, defaults = {}) {
+                    if (!entry?.file || !entry?.key) return [];
+                    const cached = this.getBoundedCache(cache, order, entry.key);
+                    if (cached) return cached;
+                    if (this._cauchyShardPromises[entry.key]) {
+                        return this._cauchyShardPromises[entry.key];
+                    }
+                    const loading = (async () => {
+                        await this.loadScript(entry.file);
+                        const encoded = window.GSMAP_CAUCHY_SHARDS?.[entry.key];
+                        if (!encoded) {
+                            throw new Error(`Enrichment shard was not defined: ${entry.key}`);
+                        }
+                        const rows = this.decodeCauchyRows(encoded, defaults);
+                        delete window.GSMAP_CAUCHY_SHARDS[entry.key];
+                        return this.setBoundedCache(cache, order, entry.key, rows, 4);
+                    })();
+                    this._cauchyShardPromises[entry.key] = loading;
+                    try {
+                        return await loading;
+                    } finally {
+                        delete this._cauchyShardPromises[entry.key];
+                    }
+                },
+
+                async loadActiveCauchyData() {
+                    if (!this.cauchyIndex) return;
+                    const mode = this.cauchyViewMode;
+                    const trait = this.selectedTrait;
+                    const annotation = this.selectedAnnotationCategory;
+                    const requestKey = `${mode}\u001f${trait}\u001f${annotation}`;
+                    this._cauchyRequestKey = requestKey;
+                    this.loadingCauchyData = true;
+                    this.cauchyTablePage = 0;
+                    try {
+                        const tableEntry = this.cauchyIndex.table?.[mode]?.[trait]?.[annotation];
+                        const heatmapEntry = this.cauchyIndex.heatmap?.[mode]?.[annotation];
+                        const [tableRows, heatmapRows] = await Promise.all([
+                            this.loadCauchyShard(
+                                tableEntry,
+                                this.cauchyTableCache,
+                                this._cauchyTableCacheOrder,
+                                tableEntry?.defaults || {}
+                            ),
+                            this.loadCauchyShard(
+                                heatmapEntry,
+                                this.cauchyHeatmapCache,
+                                this._cauchyHeatmapCacheOrder
+                            )
+                        ]);
+                        if (requestKey !== this._cauchyRequestKey) return;
+                        this.cauchyData = tableRows;
+                        this.cauchyHeatmapData = heatmapRows;
+                        this._cauchyFilterCache = null;
+                        this._cauchyFilterKey = '';
+                        this.$nextTick(() => this.renderCauchyHeatmap());
+                    } finally {
+                        if (requestKey === this._cauchyRequestKey) {
+                            this.loadingCauchyData = false;
+                        }
+                    }
+                },
+
+                onCauchyViewChange() {
+                    this._cauchyUserHeight = null;
+                    this.loadActiveCauchyData().catch(error => {
+                        console.error('Failed to change enrichment view:', error);
+                    });
                 },
 
                 async activateSpatial2d() {
@@ -2070,9 +2258,14 @@
                         const script = document.createElement('script');
                         script.src = src;
                         script.async = true;
-                        script.onload = () => resolve(src);
+                        script.onload = () => {
+                            delete this._scriptPromises[src];
+                            script.remove();
+                            resolve(src);
+                        };
                         script.onerror = () => {
                             delete this._scriptPromises[src];
+                            script.remove();
                             reject(new Error(`Failed to load ${src}`));
                         };
                         document.body.appendChild(script);
@@ -2160,30 +2353,47 @@
                     if (!trait || !this.spatial3dIndex) return null;
                     this.spatial3dTraitLoading = true;
                     try {
-                        let decoded = this.spatial3dTraitCache[trait];
+                        let decoded = this.getBoundedCache(
+                            this.spatial3dTraitCache,
+                            this._spatial3dTraitCacheOrder,
+                            trait
+                        );
                         if (!decoded) {
                             const entry = this.spatial3dIndex.traits?.[trait];
                             if (!entry?.file) throw new Error(`No 3D payload for trait ${trait}`);
                             await this.loadScript(entry.file);
-                            const encoded = window.GSMAP_SPATIAL_3D_TRAITS?.[trait];
-                            if (!encoded) throw new Error(`3D values were not defined for ${trait}`);
-                            decoded = {
-                                ...encoded,
-                                values: this.decodeTypedArray(encoded.values),
-                                extra: {
-                                    x: this.decodeTypedArray(encoded.extra?.x),
-                                    y: this.decodeTypedArray(encoded.extra?.y),
-                                    z: this.decodeTypedArray(encoded.extra?.z),
-                                    values: this.decodeTypedArray(encoded.extra?.values),
-                                    annotation_codes: Object.fromEntries(
-                                        Object.entries(encoded.extra?.annotation_codes || {}).map(
-                                            ([name, codes]) => [name, this.decodeTypedArray(codes)]
+                            decoded = this.getBoundedCache(
+                                this.spatial3dTraitCache,
+                                this._spatial3dTraitCacheOrder,
+                                trait
+                            );
+                            if (!decoded) {
+                                const encoded = window.GSMAP_SPATIAL_3D_TRAITS?.[trait];
+                                if (!encoded) throw new Error(`3D values were not defined for ${trait}`);
+                                decoded = {
+                                    ...encoded,
+                                    values: this.decodeTypedArray(encoded.values),
+                                    extra: {
+                                        x: this.decodeTypedArray(encoded.extra?.x),
+                                        y: this.decodeTypedArray(encoded.extra?.y),
+                                        z: this.decodeTypedArray(encoded.extra?.z),
+                                        values: this.decodeTypedArray(encoded.extra?.values),
+                                        annotation_codes: Object.fromEntries(
+                                            Object.entries(encoded.extra?.annotation_codes || {}).map(
+                                                ([name, codes]) => [name, this.decodeTypedArray(codes)]
+                                            )
                                         )
-                                    )
-                                }
-                            };
-                            this.spatial3dTraitCache[trait] = decoded;
-                            delete window.GSMAP_SPATIAL_3D_TRAITS[trait];
+                                    }
+                                };
+                                this.setBoundedCache(
+                                    this.spatial3dTraitCache,
+                                    this._spatial3dTraitCacheOrder,
+                                    trait,
+                                    decoded,
+                                    4
+                                );
+                                delete window.GSMAP_SPATIAL_3D_TRAITS[trait];
+                            }
                         }
                         if (trait === this.selectedTrait) this.spatial3dTraitData = decoded;
                         return decoded;
@@ -2196,16 +2406,33 @@
                     if (!annotation || !this.spatial3dIndex) return null;
                     this.spatial3dAnnotationLoading = true;
                     try {
-                        let decoded = this.spatial3dAnnotationCache[annotation];
+                        let decoded = this.getBoundedCache(
+                            this.spatial3dAnnotationCache,
+                            this._spatial3dAnnotationCacheOrder,
+                            annotation
+                        );
                         if (!decoded) {
                             const entry = this.spatial3dIndex.annotations?.[annotation];
                             if (!entry?.file) throw new Error(`No 3D payload for annotation ${annotation}`);
                             await this.loadScript(entry.file);
-                            const encoded = window.GSMAP_SPATIAL_3D_ANNOTATIONS?.[annotation];
-                            if (!encoded) throw new Error(`3D values were not defined for ${annotation}`);
-                            decoded = this.decodeCategoricalPayload(encoded);
-                            this.spatial3dAnnotationCache[annotation] = decoded;
-                            delete window.GSMAP_SPATIAL_3D_ANNOTATIONS[annotation];
+                            decoded = this.getBoundedCache(
+                                this.spatial3dAnnotationCache,
+                                this._spatial3dAnnotationCacheOrder,
+                                annotation
+                            );
+                            if (!decoded) {
+                                const encoded = window.GSMAP_SPATIAL_3D_ANNOTATIONS?.[annotation];
+                                if (!encoded) throw new Error(`3D values were not defined for ${annotation}`);
+                                decoded = this.decodeCategoricalPayload(encoded);
+                                this.setBoundedCache(
+                                    this.spatial3dAnnotationCache,
+                                    this._spatial3dAnnotationCacheOrder,
+                                    annotation,
+                                    decoded,
+                                    3
+                                );
+                                delete window.GSMAP_SPATIAL_3D_ANNOTATIONS[annotation];
+                            }
                         }
                         if (annotation === this.selectedAnnotationCategory) {
                             this.spatial3dAnnotationData = decoded;
@@ -2657,7 +2884,14 @@
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
+                        this.configureSpatial3dInteractionLod(plot, {
+                            x: points.x,
+                            y: points.y,
+                            z: points.z,
+                            color: traitValues
+                        });
                         this.bindSpatial3dCameraSync('spatial3dPlotTrait', 'spatial3dPlotAnnotation');
+                        this.bindSpatial3dInteractionLod(plot);
                     });
                     return rendered;
                 },
@@ -2722,7 +2956,15 @@
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
+                        this.configureSpatial3dInteractionLod(plot, {
+                            x: points.x,
+                            y: points.y,
+                            z: points.z,
+                            color: points.codes,
+                            text: annotationHoverLabels
+                        });
                         this.bindSpatial3dCameraSync('spatial3dPlotAnnotation', 'spatial3dPlotTrait');
+                        this.bindSpatial3dInteractionLod(plot);
                     });
                     return rendered;
                 },
@@ -2733,6 +2975,83 @@
                     if (this.spatial3dViewMode !== 'annotation') renders.push(this.renderSpatial3dTrait());
                     if (this.spatial3dViewMode !== 'trait') renders.push(this.renderSpatial3dAnnotation());
                     await Promise.all(renders.filter(Boolean).map(render => Promise.resolve(render)));
+                },
+
+                configureSpatial3dInteractionLod(plot, full) {
+                    const nPoints = Number(full?.x?.length || 0);
+                    const limit = Math.max(1000, Number(this.spatial3dInteractionPointLimit) || 25000);
+                    const previous = plot?.__gsMapInteractionLod;
+                    if (previous?.restoreTimer) clearTimeout(previous.restoreTimer);
+                    if (!plot || nPoints <= limit) {
+                        if (plot) plot.__gsMapInteractionLod = null;
+                        return;
+                    }
+                    const indices = new Uint32Array(limit);
+                    const scale = nPoints / limit;
+                    for (let index = 0; index < limit; index++) {
+                        indices[index] = Math.min(nPoints - 1, Math.floor(index * scale));
+                    }
+                    plot.__gsMapInteractionLod = {
+                        traceIndex: 0,
+                        active: false,
+                        requested: false,
+                        pending: false,
+                        restoreTimer: null,
+                        full,
+                        reduced: {
+                            x: this.selectPointValues(full.x, indices),
+                            y: this.selectPointValues(full.y, indices),
+                            z: this.selectPointValues(full.z, indices),
+                            color: this.selectPointValues(full.color, indices),
+                            text: full.text ? this.selectPointValues(full.text, indices) : null
+                        }
+                    };
+                },
+
+                applySpatial3dInteractionLod(plot, active) {
+                    const state = plot?.__gsMapInteractionLod;
+                    if (!state) return;
+                    state.requested = active;
+                    if (state.active === active || state.pending) return;
+                    state.pending = true;
+                    const source = active ? state.reduced : state.full;
+                    const update = {
+                        x: [source.x],
+                        y: [source.y],
+                        z: [source.z],
+                        'marker.color': [source.color]
+                    };
+                    if (source.text) update.text = [source.text];
+                    Promise.resolve(Plotly.restyle(plot, update, [state.traceIndex])).then(() => {
+                        state.active = active;
+                    }).catch(error => {
+                        console.warn('3D interaction LOD update failed:', error);
+                        state.requested = state.active;
+                    }).finally(() => {
+                        state.pending = false;
+                        if (state.requested !== state.active) {
+                            this.applySpatial3dInteractionLod(plot, state.requested);
+                        }
+                    });
+                },
+
+                bindSpatial3dInteractionLod(plot) {
+                    if (!plot?.on || plot.__gsMapInteractionLodBound) return;
+                    plot.__gsMapInteractionLodBound = true;
+                    plot.on('plotly_relayouting', () => {
+                        const state = plot.__gsMapInteractionLod;
+                        if (!state) return;
+                        if (state.restoreTimer) clearTimeout(state.restoreTimer);
+                        this.applySpatial3dInteractionLod(plot, true);
+                    });
+                    plot.on('plotly_relayout', () => {
+                        const state = plot.__gsMapInteractionLod;
+                        if (!state) return;
+                        if (state.restoreTimer) clearTimeout(state.restoreTimer);
+                        state.restoreTimer = setTimeout(() => {
+                            this.applySpatial3dInteractionLod(plot, false);
+                        }, 220);
+                    });
                 },
 
                 bindSpatial3dCameraSync(sourceId, targetId) {
@@ -2845,7 +3164,6 @@
 
                     // Invalidate trait-specific caches
                     this._umapTraitColorCache = null;
-                    this._spatial2dTraitColorCache = null;
 
                     // Debounce the heavy operations (50ms)
                     this._traitChangeDebounceTimer = setTimeout(() => {
@@ -2888,6 +3206,11 @@
                         try { this.renderSpatial3dTrait(); } catch(e) { console.error('3D trait render:', e); }
                         this.loadingSpatial2dTraitData = false;
                     });
+                    if (this.cauchyActivated) {
+                        this.loadActiveCauchyData().catch(error => {
+                            console.error('Enrichment trait load:', error);
+                        });
+                    }
                 },
 
                 async onAnnotationChange() {
@@ -2910,7 +3233,9 @@
                         if (this.umapActivated) try { this.renderUmapPlots(); } catch(e) { console.error('UMAP render:', e); }
                         try { this.renderSpatial2DPlot(); } catch(e) { console.error('2D render:', e); }
                         try { this.renderSpatial3dViews(); } catch(e) { console.error('3D render:', e); }
-                        if (this.cauchyActivated) try { this.renderCauchyHeatmap(); } catch(e) { console.error('Cauchy heatmap render:', e); }
+                        if (this.cauchyActivated) {
+                            this.loadActiveCauchyData().catch(e => console.error('Cauchy annotation load:', e));
+                        }
                     });
                 },
 
@@ -2918,7 +3243,6 @@
                     const sampleName = this.selectedSample;
                     const trait = this.selectedTrait;
                     // Invalidate sample-specific caches
-                    this._spatial2dTraitColorCache = null;
                     this._spatial2dAnnoTracesCache = null;
 
                     if (!this.spatial2dActivated) return;
@@ -2943,8 +3267,12 @@
                 // Load sample data on-demand via dynamic script injection
                 async loadSampleData(sampleName) {
                     // Return cached data if available
-                    if (this.sampleDataCache[sampleName]) {
-                        const cached = this.sampleDataCache[sampleName];
+                    const cached = this.getBoundedCache(
+                        this.sampleDataCache,
+                        this._sampleDataCacheOrder,
+                        sampleName
+                    );
+                    if (cached) {
                         if (sampleName === this.selectedSample) this.currentSampleData = cached;
                         return cached;
                     }
@@ -2984,7 +3312,7 @@
                             data = window[sampleInfo.var_name];
                         }
                         if (!data) throw new Error(`Data not found for ${sampleName}`);
-                        this.sampleDataCache[sampleName] = data;
+                        this.cacheSampleData(sampleName, data);
                         if (sampleName === this.selectedSample) this.currentSampleData = data;
                         const nSpots = data.n_points || data.sx?.length || data.spot?.length || 0;
                         const nSpotsOriginal = sampleInfo.n_spots_original || nSpots;
@@ -3009,7 +3337,11 @@
                         return data[trait] || null;
                     }
                     const compoundKey = `${sampleName}\u001f${trait}`;
-                    let decoded = this.sampleTraitCache[compoundKey];
+                    let decoded = this.getBoundedCache(
+                        this.sampleTraitCache,
+                        this._sampleTraitCacheOrder,
+                        compoundKey
+                    );
                     if (!decoded) {
                         const entry = sampleInfo.trait_files?.[trait];
                         if (!entry?.file) throw new Error(`No 2D payload for ${trait} in ${sampleName}`);
@@ -3032,7 +3364,7 @@
                                     )
                                 } : null
                             };
-                            this.sampleTraitCache[compoundKey] = decoded;
+                            this.cacheSampleTrait(compoundKey, decoded);
                             delete window.GSMAP_SAMPLE_TRAITS[compoundKey];
                         }
                     }
@@ -3152,6 +3484,7 @@
                         this.cauchySortKey = key;
                         this.cauchySortAsc = ['trait', 'annotation', 'sample_name'].includes(key);
                     }
+                    this.cauchyTablePage = 0;
                 },
 
                 // Manhattan Plot
@@ -3329,12 +3662,9 @@
                 // Cauchy Heatmap
                 renderCauchyHeatmap() {
                     const plotDiv = document.getElementById('cauchyHeatmap');
-                    if (!plotDiv || !this.cauchyData || this.cauchyData.length === 0) return;
+                    if (!plotDiv || !this.cauchyHeatmapData || this.cauchyHeatmapData.length === 0) return;
 
-                    let data = this.cauchyData.filter(r =>
-                        (this.cauchyViewMode === 'all' ? r.type === 'aggregated' : r.type === 'sample') &&
-                        r.annotation_name === this.selectedAnnotationCategory
-                    );
+                    const data = this.cauchyHeatmapData;
                     if (data.length === 0) {
                         Plotly.purge(plotDiv);
                         return;
@@ -3344,8 +3674,12 @@
                     const annotationValues = [...new Set(data.map(r => r.annotation))].sort();
                     const traitValues = [...new Set(data.map(r => r.trait))].sort();
 
+                    const rowByKey = new Map(data.map(row => [
+                        `${row.annotation}\u001f${row.trait}`,
+                        row
+                    ]));
                     let zData = annotationValues.map(anno => traitValues.map(trait => {
-                        const match = data.find(r => r.annotation === anno && r.trait === trait);
+                        const match = rowByKey.get(`${anno}\u001f${trait}`);
                         return match && match[metric] != null ? match[metric] : 0;
                     }));
 
@@ -3499,55 +3833,120 @@
                     }, this.getPlotlyConfig());
                 },
 
-                // Simple Hierarchical Clustering (UPGMA / Average Linkage)
+                // Hierarchical clustering (UPGMA / average linkage). A heap avoids
+                // rescanning every cluster pair after each merge.
                 clusterData(matrix) {
                     if (matrix.length <= 1) return [0];
 
                     const n = matrix.length;
-                    const dist = (a, b) => Math.sqrt(a.reduce((acc, v, i) => acc + Math.pow(v - b[i], 2), 0));
-
-                    // Initial clusters
-                    let clusters = matrix.map((v, i) => ({
-                        indices: [i],
-                        vec: v,
-                        size: 1
-                    }));
-
-                    // Distance matrix between clusters
-                    const getClusterDist = (c1, c2) => dist(c1.vec, c2.vec);
-
-                    while (clusters.length > 1) {
-                        let minDist = Infinity;
-                        let pair = [0, 1];
-
-                        for (let i = 0; i < clusters.length; i++) {
-                            for (let j = i + 1; j < clusters.length; j++) {
-                                const d = getClusterDist(clusters[i], clusters[j]);
-                                if (d < minDist) {
-                                    minDist = d;
-                                    pair = [i, j];
-                                }
-                            }
-                        }
-
-                        // Merge pair
-                        const [i, j] = pair;
-                        const c1 = clusters[i];
-                        const c2 = clusters[j];
-
-                        const mergedVec = c1.vec.map((v, idx) => (v * c1.size + c2.vec[idx] * c2.size) / (c1.size + c2.size));
-                        const mergedCluster = {
-                            indices: [...c1.indices, ...c2.indices],
-                            vec: mergedVec,
-                            size: c1.size + c2.size
-                        };
-
-                        // Update clusters array
-                        clusters.splice(j, 1);
-                        clusters.splice(i, 1, mergedCluster);
+                    // Very large matrices are ordered by peak position and mean. This
+                    // keeps interaction bounded if a report has hundreds of categories.
+                    if (n > 400) {
+                        return matrix.map((row, index) => ({
+                            index,
+                            peak: row.indexOf(Math.max(...row)),
+                            mean: row.reduce((sum, value) => sum + value, 0) / row.length
+                        })).sort((left, right) =>
+                            left.peak - right.peak || left.mean - right.mean || left.index - right.index
+                        ).map(entry => entry.index);
                     }
 
-                    return clusters[0].indices;
+                    const capacity = 2 * n - 1;
+                    const distances = new Float64Array(capacity * capacity);
+                    distances.fill(Infinity);
+                    const active = new Uint8Array(capacity);
+                    const sizes = new Float64Array(capacity);
+                    const leaves = Array(capacity);
+                    const heap = [];
+                    const compare = (left, right) =>
+                        left.distance - right.distance || left.a - right.a || left.b - right.b;
+                    const heapPush = entry => {
+                        heap.push(entry);
+                        let child = heap.length - 1;
+                        while (child > 0) {
+                            const parent = Math.floor((child - 1) / 2);
+                            if (compare(heap[parent], entry) <= 0) break;
+                            heap[child] = heap[parent];
+                            child = parent;
+                        }
+                        heap[child] = entry;
+                    };
+                    const heapPop = () => {
+                        const root = heap[0];
+                        const tail = heap.pop();
+                        if (heap.length && tail) {
+                            let parent = 0;
+                            while (true) {
+                                const left = parent * 2 + 1;
+                                if (left >= heap.length) break;
+                                const right = left + 1;
+                                const child = right < heap.length && compare(heap[right], heap[left]) < 0
+                                    ? right : left;
+                                if (compare(tail, heap[child]) <= 0) break;
+                                heap[parent] = heap[child];
+                                parent = child;
+                            }
+                            heap[parent] = tail;
+                        }
+                        return root;
+                    };
+                    const setDistance = (a, b, value) => {
+                        distances[a * capacity + b] = value;
+                        distances[b * capacity + a] = value;
+                    };
+                    const getDistance = (a, b) => distances[a * capacity + b];
+                    const euclidean = (left, right) => {
+                        let squared = 0;
+                        for (let index = 0; index < left.length; index++) {
+                            const delta = Number(left[index]) - Number(right[index]);
+                            squared += delta * delta;
+                        }
+                        return Math.sqrt(squared);
+                    };
+
+                    for (let left = 0; left < n; left++) {
+                        active[left] = 1;
+                        sizes[left] = 1;
+                        leaves[left] = [left];
+                        for (let right = left + 1; right < n; right++) {
+                            const distance = euclidean(matrix[left], matrix[right]);
+                            setDistance(left, right, distance);
+                            heapPush({ distance, a: left, b: right });
+                        }
+                    }
+
+                    let nextCluster = n;
+                    let activeCount = n;
+                    while (activeCount > 1) {
+                        let closest = heapPop();
+                        while (closest && (!active[closest.a] || !active[closest.b])) {
+                            closest = heapPop();
+                        }
+                        if (!closest) break;
+                        const { a, b } = closest;
+                        const merged = nextCluster++;
+                        const mergedSize = sizes[a] + sizes[b];
+                        active[a] = 0;
+                        active[b] = 0;
+                        active[merged] = 1;
+                        sizes[merged] = mergedSize;
+                        leaves[merged] = [...leaves[a], ...leaves[b]];
+                        for (let other = 0; other < merged; other++) {
+                            if (!active[other]) continue;
+                            const distance = (
+                                sizes[a] * getDistance(a, other) +
+                                sizes[b] * getDistance(b, other)
+                            ) / mergedSize;
+                            setDistance(merged, other, distance);
+                            heapPush({
+                                distance,
+                                a: Math.min(merged, other),
+                                b: Math.max(merged, other)
+                            });
+                        }
+                        activeCount -= 1;
+                    }
+                    return leaves[nextCluster - 1] || matrix.map((_, index) => index);
                 },
 
                 // UMAP Plots - render both trait and annotation views
@@ -3555,30 +3954,6 @@
                     if (!this.umapData || !this.plotlyReady) return;
                     this.renderUmapPlotTrait();
                     this.renderUmapPlotAnnotation();
-                },
-
-                buildUmapHoverText(includeTrait = false) {
-                    if (!this.umapData) return [];
-                    const nPoints = Number(this.umapData.spot?.length || 0);
-                    return Array.from({ length: nPoints }, (_, index) => {
-                        const lines = [];
-                        for (const annotation of this.annotations) {
-                            if (!this.umapData[annotation]) continue;
-                            lines.push(
-                                `<b>${this.escapeSpatial2dHoverValue(annotation)}:</b> ` +
-                                this.escapeSpatial2dHoverValue(this.umapData[annotation][index])
-                            );
-                        }
-                        if (includeTrait && this.selectedTrait && this.umapData[this.selectedTrait]) {
-                            const value = this.umapData[this.selectedTrait][index];
-                            lines.push(
-                                `<b>−log10(P):</b> ${typeof value === 'number'
-                                    ? value.toFixed(1)
-                                    : this.escapeSpatial2dHoverValue(value)}`
-                            );
-                        }
-                        return lines.join('<br>');
-                    });
                 },
 
                 // Render only trait-colored UMAP plots (called on trait change)
@@ -3597,7 +3972,6 @@
                         traitColorValues = new Array(this.umapData.spot.length).fill(0);
                     }
 
-                    const traitHoverText = this.buildUmapHoverText(true);
                     const visibleIndices = this.visibleUmapPointIndices();
 
                     const cellPointSize = this.umapData.point_size_cell || 4;
@@ -3610,7 +3984,6 @@
                         this.umapData.umap_cell_y,
                         traitColorValues,
                         traitColorMap,
-                        traitHoverText,
                         'Cell Embedding',
                         traitColorLabel,
                         cellPointSize,
@@ -3625,7 +3998,6 @@
                             this.umapData.umap_niche_y,
                             traitColorValues,
                             traitColorMap,
-                            traitHoverText,
                             'Niche Embedding',
                             traitColorLabel,
                             nichePointSize,
@@ -3645,8 +4017,6 @@
                     const annoColorMap = this.getAnnotationColorMap(anno) ||
                         (this.umapData.color_maps && this.umapData.color_maps[anno]) || null;
 
-                    const annoHoverText = this.buildUmapHoverText(false);
-
                     const cellPointSize = this.umapData.point_size_cell || 4;
                     const nichePointSize = this.umapData.point_size_niche || 4;
 
@@ -3657,7 +4027,6 @@
                         this.umapData.umap_cell_y,
                         annoColorValues,
                         annoColorMap,
-                        annoHoverText,
                         'Cell Embedding',
                         anno,
                         cellPointSize
@@ -3671,7 +4040,6 @@
                             this.umapData.umap_niche_y,
                             annoColorValues,
                             annoColorMap,
-                            annoHoverText,
                             'Niche Embedding',
                             anno,
                             nichePointSize
@@ -3766,29 +4134,104 @@
                     return colors;
                 },
 
+                setPointHoverContext(key, context) {
+                    const position = this._pointHoverContextOrder.indexOf(key);
+                    if (position >= 0) this._pointHoverContextOrder.splice(position, 1);
+                    this._pointHoverContexts[key] = context;
+                    this._pointHoverContextOrder.push(key);
+                    // Contexts reference active plot arrays and are removed by
+                    // plot prefix on re-render. Allow two categorical UMAPs to
+                    // retain hover details for hundreds of traces each.
+                    while (this._pointHoverContextOrder.length > 4096) {
+                        const oldest = this._pointHoverContextOrder.shift();
+                        if (oldest !== undefined && oldest !== key) {
+                            delete this._pointHoverContexts[oldest];
+                        }
+                    }
+                    return key;
+                },
+
+                clearPointHoverContexts(prefix) {
+                    for (const key of [...this._pointHoverContextOrder]) {
+                        if (!key.startsWith(prefix)) continue;
+                        delete this._pointHoverContexts[key];
+                        const position = this._pointHoverContextOrder.indexOf(key);
+                        if (position >= 0) this._pointHoverContextOrder.splice(position, 1);
+                    }
+                },
+
+                pointHoverSourceIndex(point, context) {
+                    const pointIndex = Number(point?.pointNumber || 0);
+                    return context?.indices ? Number(context.indices[pointIndex]) : pointIndex;
+                },
+
+                appendPointAnnotationLines(lines, context, sourceIndex) {
+                    if (context?.compactAnnotations) {
+                        for (const [name, codes] of Object.entries(context.compactAnnotations)) {
+                            const schema = context.annotationSchemas?.[name];
+                            if (!codes || !schema) continue;
+                            const category = schema.categories?.[codes[sourceIndex]] ?? 'Unknown';
+                            lines.push(
+                                `<b>${this.escapeSpatial2dHoverValue(name)}:</b> ` +
+                                this.escapeSpatial2dHoverValue(category)
+                            );
+                        }
+                        return;
+                    }
+                    const data = context?.annotationData;
+                    for (const name of context?.annotationNames || []) {
+                        if (!data?.[name]) continue;
+                        lines.push(
+                            `<b>${this.escapeSpatial2dHoverValue(name)}:</b> ` +
+                            this.escapeSpatial2dHoverValue(data[name][sourceIndex])
+                        );
+                    }
+                },
+
+                pointHoverBackground(point, context, sourceIndex) {
+                    if (context?.hoverKind === 'trait') {
+                        return this.interpolateContinuousColor(
+                            this.pointMarkerColorValue(point),
+                            context.colorMap,
+                            context.cmin,
+                            context.cmax
+                        );
+                    }
+                    const annotation = context?.annotation;
+                    const code = annotation?.codes?.[sourceIndex];
+                    return annotation?.colors?.[Number(code)] || context?.color || '#334155';
+                },
+
                 showPointHoverTooltip(event) {
                     const point = event?.points?.[0];
                     const pointer = event?.event;
                     if (!point || !pointer) return;
                     const tooltip = this.getPointHoverTooltip();
-                    const background = point.customdata || '#334155';
                     const metadata = point.data?.meta || {};
+                    const context = this._pointHoverContexts[metadata.hoverContextKey] || metadata;
+                    const sourceIndex = this.pointHoverSourceIndex(point, context);
+                    const background = this.pointHoverBackground(point, context, sourceIndex);
                     const lines = [];
-                    if (metadata.hoverPrefix) {
-                        lines.push(`<b>${this.escapeSpatial2dHoverValue(metadata.hoverPrefix)}</b>`);
+                    if (context.hoverPrefix) {
+                        lines.push(`<b>${this.escapeSpatial2dHoverValue(context.hoverPrefix)}</b>`);
                     }
-                    if (point.text) lines.push(point.text);
-                    if (metadata.hoverKind === 'trait') {
+                    if (context.includeSpots && context.spots?.[sourceIndex] != null) {
+                        lines.push(
+                            `<b>Spot:</b> ${this.escapeSpatial2dHoverValue(context.spots[sourceIndex])}`
+                        );
+                    }
+                    this.appendPointAnnotationLines(lines, context, sourceIndex);
+                    if (context.hoverKind === 'trait') {
                         const value = Number(this.pointMarkerColorValue(point));
                         if (Number.isFinite(value)) lines.push(`<b>−log10(P):</b> ${value.toFixed(1)}`);
                     }
-                    if (metadata.axisTitles?.length >= 2) {
+                    if (context.axisTitles?.length >= 2) {
                         lines.push(
-                            `<b>${this.escapeSpatial2dHoverValue(metadata.axisTitles[0])}:</b> ` +
+                            `<b>${this.escapeSpatial2dHoverValue(context.axisTitles[0])}:</b> ` +
                             `${Number(point.x).toFixed(2)}`
                         );
                         lines.push(
-                            `<b>${this.escapeSpatial2dHoverValue(metadata.axisTitles[1])}:</b> ` +
+                            `<b>${this.escapeSpatial2dHoverValue(context.axisTitles[1])}:</b> ` +
                             `${Number(point.y).toFixed(2)}`
                         );
                     }
@@ -3825,9 +4268,10 @@
                 },
 
                 // Render continuous UMAP with low signals first so hotspots remain visible.
-                renderSingleUmapContinuous(divId, x, y, colorValues, colorMap, hoverText, title, colorLabel, pointSize, visibleIndices = null) {
+                renderSingleUmapContinuous(divId, x, y, colorValues, colorMap, title, colorLabel, pointSize, visibleIndices = null) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
+                    this.clearPointHoverContexts(`umap\u001f${divId}\u001f`);
 
                     const opacity = Math.max(0.75, Number(this.umapData.default_opacity || 0.8));
                     let rendering = this._umapTraitColorCache;
@@ -3856,23 +4300,31 @@
                             values: colorValues,
                             visibleIndices,
                             order,
-                            cmax: resolvedCmax,
-                            hoverColors: order.map(index => this.interpolateContinuousColor(
-                                colorValues[index], colorMap, 0, resolvedCmax
-                            ))
+                            cmax: resolvedCmax
                         };
                         this._umapTraitColorCache = rendering;
                     }
                     const ordered = values => rendering.order.map(index => values[index]);
+                    const hoverContextKey = this.setPointHoverContext(
+                        `umap\u001f${divId}\u001ftrait\u001f${this.selectedTrait}\u001f${this.selectedAnnotationCategory}`,
+                        {
+                            hoverKind: 'trait',
+                            indices: rendering.order,
+                            annotationData: this.umapData,
+                            annotationNames: this.annotations,
+                            colorMap,
+                            cmin: 0,
+                            cmax: rendering.cmax
+                        }
+                    );
 
                     const trace = {
                         x: ordered(x),
                         y: ordered(y),
                         mode: 'markers',
                         type: 'scattergl',
-                        text: ordered(hoverText),
-                        customdata: rendering.hoverColors,
                         hoverinfo: 'none',
+                        meta: { hoverContextKey },
                         marker: {
                             size: this.resolveUmapPointSize(pointSize),
                             color: ordered(colorValues),
@@ -3898,9 +4350,10 @@
                 },
 
                 // Optimized: render discrete (annotation) UMAP with cached trace indices
-                renderSingleUmapDiscrete(divId, x, y, annoValues, colorMap, hoverText, title, annoName, pointSize) {
+                renderSingleUmapDiscrete(divId, x, y, annoValues, colorMap, title, annoName, pointSize) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
+                    this.clearPointHoverContexts(`umap\u001f${divId}\u001f`);
 
                     const opacity = Math.max(0.78, Number(this.umapData.default_opacity || 0.8));
                     const groups = new Map();
@@ -3916,6 +4369,16 @@
                     const traces = uniqueValues.map((val, i) => {
                         const indices = groups.get(val);
                         const color = (colorMap && colorMap[val]) || defaultColors[i % defaultColors.length];
+                        const hoverContextKey = this.setPointHoverContext(
+                            `umap\u001f${divId}\u001fannotation\u001f${annoName}\u001f${val}`,
+                            {
+                                hoverKind: 'annotation',
+                                indices,
+                                annotationData: this.umapData,
+                                annotationNames: this.annotations,
+                                color
+                            }
+                        );
                         return {
                             x: indices.map(idx => x[idx]),
                             y: indices.map(idx => y[idx]),
@@ -3923,9 +4386,8 @@
                             type: 'scattergl',
                             name: val,
                             visible: this.isAnnotationCategoryVisible(val, annoName),
-                            text: indices.map(idx => hoverText[idx]),
-                            customdata: indices.map(() => color),
                             hoverinfo: 'none',
+                            meta: { hoverContextKey },
                             marker: {
                                 size: this.resolveUmapPointSize(pointSize),
                                 color,
@@ -3940,11 +4402,11 @@
                 },
 
                 // Legacy method for backward compatibility (used in init)
-                renderSingleUmap(divId, x, y, annoValues, colorMap, isContinuous, hoverText, title, annoName, pointSize) {
+                renderSingleUmap(divId, x, y, annoValues, colorMap, isContinuous, title, annoName, pointSize) {
                     if (isContinuous) {
-                        this.renderSingleUmapContinuous(divId, x, y, annoValues, colorMap, hoverText, title, annoName, pointSize);
+                        this.renderSingleUmapContinuous(divId, x, y, annoValues, colorMap, title, annoName, pointSize);
                     } else {
-                        this.renderSingleUmapDiscrete(divId, x, y, annoValues, colorMap, hoverText, title, annoName, pointSize);
+                        this.renderSingleUmapDiscrete(divId, x, y, annoValues, colorMap, title, annoName, pointSize);
                     }
                 },
 
@@ -3993,48 +4455,6 @@
                     })[character]);
                 },
 
-                // Materialize annotation labels only for the active sample, then reuse them
-                // across trait and annotation renders. Extra trait spots pass their own codes.
-                buildSpatial2dAnnotationHoverText(data, annotationCodes = null) {
-                    if (!data) return null;
-                    if (!annotationCodes && data._annotationHoverText) {
-                        return data._annotationHoverText;
-                    }
-
-                    const annotations = Object.entries(data.annotations || {});
-                    const firstCodes = annotationCodes
-                        ? Object.values(annotationCodes).find(codes => codes?.length !== undefined)
-                        : null;
-                    const nPoints = annotationCodes
-                        ? Number(firstCodes?.length || 0)
-                        : Number(data.sx?.length || 0);
-                    if (!nPoints) return null;
-
-                    const includeSpots = !annotationCodes && Array.isArray(data.spot)
-                        && data.spot.length === nPoints;
-                    const hoverText = new Array(nPoints);
-                    for (let index = 0; index < nPoints; index++) {
-                        const lines = [];
-                        if (includeSpots) {
-                            lines.push(`<b>Spot:</b> ${this.escapeSpatial2dHoverValue(data.spot[index])}`);
-                        }
-                        for (const [name, payload] of annotations) {
-                            const codes = annotationCodes ? annotationCodes[name] : payload.codes;
-                            if (!codes) continue;
-                            const category = payload.categories?.[codes[index]] ?? 'Unknown';
-                            lines.push(
-                                `<b>${this.escapeSpatial2dHoverValue(name)}:</b> ` +
-                                this.escapeSpatial2dHoverValue(category)
-                            );
-                        }
-                        hoverText[index] = lines.join('<br>');
-                    }
-
-                    const frozen = Object.freeze(hoverText);
-                    if (!annotationCodes) data._annotationHoverText = frozen;
-                    return frozen;
-                },
-
                 resolveContinuousColorMaximum(values, requestedMaximum) {
                     const requested = Number(requestedMaximum);
                     if (Number.isFinite(requested) && requested > 0) return requested;
@@ -4046,25 +4466,11 @@
                     return maximum > 0 ? maximum : 1;
                 },
 
-                spatial2dTraitHoverColors(values, colorMap, cmin, cmax, data, trait) {
-                    const cache = this._spatial2dTraitColorCache;
-                    if (cache?.data === data && cache.trait === trait && cache.values === values &&
-                        cache.cmin === cmin && cache.cmax === cmax) {
-                        return cache.colors;
-                    }
-                    const colors = Array.from(values, value =>
-                        this.interpolateContinuousColor(value, colorMap, cmin, cmax)
-                    );
-                    this._spatial2dTraitColorCache = {
-                        data, trait, values, cmin, cmax, colors
-                    };
-                    return colors;
-                },
-
                 // Render one compact 2D payload. Large categorical data remain a single WebGL trace.
                 renderSpatial2DPlotSingle(divId, plotType) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
+                    this.clearPointHoverContexts(`spatial2d\u001f${divId}\u001f`);
 
                     const data = this.currentSampleData;
                     if (!data) return;
@@ -4110,17 +4516,30 @@
                                 x, y, null, annotation, annotationName
                             )
                             : { x, y, indices: null };
-                        const fullHoverText = this.buildSpatial2dAnnotationHoverText(data);
-                        const hoverText = this.selectPointValues(fullHoverText, points.indices);
-                        const fullHoverColors = this.spatial2dTraitHoverColors(
-                            colorValues, colorMap, cmin, cmax, data, trait
+                        const baseAnnotationCodes = Object.fromEntries(
+                            Object.entries(data.annotations || {}).map(
+                                ([name, payload]) => [name, payload.codes]
+                            )
+                        );
+                        const hoverContextKey = this.setPointHoverContext(
+                            `spatial2d\u001f${divId}\u001ftrait\u001f${sample}\u001f${trait}\u001f${annotationName}`,
+                            {
+                                hoverKind: 'trait',
+                                indices: points.indices,
+                                compactAnnotations: baseAnnotationCodes,
+                                annotationSchemas: data.annotations || {},
+                                spots: data.spot,
+                                includeSpots: Array.isArray(data.spot),
+                                colorMap,
+                                cmin,
+                                cmax,
+                                axisTitles
+                            }
                         );
                         traces.push({
                             x: points.x, y: points.y, mode: 'markers', type: 'scattergl',
-                            text: hoverText,
-                            customdata: this.selectPointValues(fullHoverColors, points.indices),
                             hoverinfo: 'none',
-                            meta: { hoverKind: 'trait', axisTitles },
+                            meta: { hoverContextKey },
                             marker: {
                                 size: pointSize,
                                 color: this.selectPointValues(colorValues, points.indices),
@@ -4155,47 +4574,42 @@
                                     y: compactTraitPayload.extra.y,
                                     indices: null
                                 });
-                            const fullExtraHoverText = this.buildSpatial2dAnnotationHoverText(
-                                data,
-                                compactTraitPayload.extra.annotation_codes
-                            );
-                            if (extraPoints?.x?.length) traces.push({
-                                x: extraPoints.x,
-                                y: extraPoints.y,
-                                mode: 'markers',
-                                type: 'scattergl',
-                                text: this.selectPointValues(
-                                    fullExtraHoverText,
-                                    extraPoints.indices
-                                ),
-                                customdata: Array.from(
-                                    this.selectPointValues(
-                                        compactTraitPayload.extra.values,
-                                        extraPoints.indices
-                                    ),
-                                    value => this.interpolateContinuousColor(
-                                        value, colorMap, cmin, cmax
-                                    )
-                                ),
-                                hoverinfo: 'none',
-                                meta: {
-                                    hoverKind: 'trait',
-                                    hoverPrefix: 'Retained top signal',
-                                    axisTitles
-                                },
-                                name: 'Retained high-signal spots',
-                                marker: {
-                                    size: Math.max(2.5, pointSize * 1.5),
-                                    color: this.selectPointValues(
-                                        compactTraitPayload.extra.values,
-                                        extraPoints.indices
-                                    ),
-                                    colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
-                                    ...colorLimits,
-                                    opacity: 1,
-                                    showscale: false
-                                }
-                            });
+                            if (extraPoints?.x?.length) {
+                                const extraHoverContextKey = this.setPointHoverContext(
+                                    `spatial2d\u001f${divId}\u001fextra\u001f${sample}\u001f${trait}\u001f${annotationName}`,
+                                    {
+                                        hoverKind: 'trait',
+                                        hoverPrefix: 'Retained top signal',
+                                        indices: extraPoints.indices,
+                                        compactAnnotations: compactTraitPayload.extra.annotation_codes,
+                                        annotationSchemas: data.annotations || {},
+                                        colorMap,
+                                        cmin,
+                                        cmax,
+                                        axisTitles
+                                    }
+                                );
+                                traces.push({
+                                    x: extraPoints.x,
+                                    y: extraPoints.y,
+                                    mode: 'markers',
+                                    type: 'scattergl',
+                                    hoverinfo: 'none',
+                                    meta: { hoverContextKey: extraHoverContextKey },
+                                    name: 'Retained high-signal spots',
+                                    marker: {
+                                        size: Math.max(2.5, pointSize * 1.5),
+                                        color: this.selectPointValues(
+                                            compactTraitPayload.extra.values,
+                                            extraPoints.indices
+                                        ),
+                                        colorscale: colorMap.map((c, i) => [i / (colorMap.length - 1), c]),
+                                        ...colorLimits,
+                                        opacity: 1,
+                                        showscale: false
+                                    }
+                                });
+                            }
                         }
                     } else {
                         const anno = this.selectedAnnotationCategory;
@@ -4222,18 +4636,28 @@
                             annotation,
                             anno
                         );
-                        const fullHoverText = this.buildSpatial2dAnnotationHoverText(data);
-                        const hoverText = points.indices && fullHoverText
-                            ? points.indices.map(index => fullHoverText[index])
-                            : fullHoverText;
+                        const baseAnnotationCodes = Object.fromEntries(
+                            Object.entries(data.annotations || {}).map(
+                                ([name, payload]) => [name, payload.codes]
+                            )
+                        );
+                        const hoverContextKey = this.setPointHoverContext(
+                            `spatial2d\u001f${divId}\u001fannotation\u001f${sample}\u001f${anno}`,
+                            {
+                                hoverKind: 'annotation',
+                                indices: points.indices,
+                                compactAnnotations: baseAnnotationCodes,
+                                annotationSchemas: data.annotations || {},
+                                annotation,
+                                spots: data.spot,
+                                includeSpots: Array.isArray(data.spot),
+                                axisTitles
+                            }
+                        );
                         traces.push({
                             x: points.x, y: points.y, mode: 'markers', type: 'scattergl',
-                            text: hoverText,
-                            customdata: Array.from(points.codes, code =>
-                                annotation.colors[Number(code)] || '#94a3b8'
-                            ),
                             hoverinfo: 'none',
-                            meta: { hoverKind: 'annotation', axisTitles },
+                            meta: { hoverContextKey },
                             marker: {
                                 size: pointSize,
                                 color: points.codes,

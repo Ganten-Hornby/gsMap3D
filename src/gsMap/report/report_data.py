@@ -47,6 +47,14 @@ from gsMap.spatial_ldsc.io import (
 
 logger = logging.getLogger(__name__)
 
+CAUCHY_PAYLOAD_VERSION = 2
+CAUCHY_TABLE_CONSTANT_COLUMNS = {"trait", "annotation_name", "type"}
+CAUCHY_HEATMAP_METRICS = (
+    "mlog10_p_cauchy",
+    "mlog10_p_median",
+    "top_95_quantile",
+)
+
 
 def _available_cpu_count() -> int:
     """Return the CPU count assigned to this process, including under SLURM."""
@@ -575,29 +583,40 @@ class ReportDataManager:
     def collect_cauchy_results(self):
         """Collect and save Cauchy combination results."""
         cauchy_file = self.report_data_dir / "cauchy_results.csv"
-        cauchy_js = self.js_data_dir / "cauchy_results.js"
-        # Since this combines all traits/annotations, we check for the final csv
-        if self._is_step_complete([cauchy_file, cauchy_js]):
-            # Validate all configured traits are covered in cached results
-            df = pd.read_csv(cauchy_file)
-            cached_traits = set(df["trait"].unique()) if "trait" in df.columns else set()
-            cached_annotations = (
-                set(df["annotation_name"].unique()) if "annotation_name" in df.columns else set()
-            )
-            missing_traits = sorted(set(self.traits) - cached_traits)
-            missing_annotations = sorted(
-                set(self.report_config.annotation_list) - cached_annotations
-            )
-            if not missing_traits and not missing_annotations:
-                logger.info("Cauchy results already collected. Skipping.")
-                return
-            logger.warning(
-                f"Cached Cauchy results are incomplete; missing traits={missing_traits}, "
-                f"missing annotations={missing_annotations}. Regenerating them."
-            )
+        data_are_current = False
+        if cauchy_file.is_file() and cauchy_file.stat().st_size > 0:
+            try:
+                coverage = pd.read_csv(
+                    cauchy_file,
+                    usecols=["trait", "annotation_name"],
+                )
+            except (OSError, ValueError, pd.errors.ParserError) as error:
+                logger.warning(
+                    f"Cached Cauchy results could not be validated ({error}); regenerating them."
+                )
+            else:
+                cached_traits = set(coverage["trait"].dropna().astype(str).unique())
+                cached_annotations = set(coverage["annotation_name"].dropna().astype(str).unique())
+                missing_traits = sorted(set(self.traits) - cached_traits)
+                missing_annotations = sorted(
+                    set(self.report_config.annotation_list) - cached_annotations
+                )
+                data_are_current = not missing_traits and not missing_annotations
+                if not data_are_current:
+                    logger.warning(
+                        "Cached Cauchy results are incomplete; "
+                        f"missing traits={missing_traits}, "
+                        f"missing annotations={missing_annotations}. Regenerating them."
+                    )
 
-        _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
-        _export_cauchy_js(self.report_data_dir, self.js_data_dir)
+        if self.force_re_run or not data_are_current:
+            _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
+
+        payloads_are_current = _cauchy_payloads_current(cauchy_file, self.js_data_dir)
+        if self.force_re_run or not payloads_are_current:
+            _export_cauchy_js(self.report_data_dir, self.js_data_dir)
+        else:
+            logger.info("Compact lazy Cauchy payloads are current. Skipping export.")
 
     def prepare_umap_data(self):
         """Prepare UMAP data from embeddings."""
@@ -2560,14 +2579,220 @@ def _export_per_sample_spatial_js(
     )
 
 
-def _export_cauchy_js(data_dir: Path, js_data_dir: Path):
-    """Export Cauchy results as JS module."""
+def _cauchy_source_signature(cauchy_file: Path) -> dict[str, int]:
+    stat = cauchy_file.stat()
+    return {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _cauchy_payload_token(*parts: str) -> str:
+    """Return a readable collision-resistant token for a lazy payload."""
+
+    normalized_parts = []
+    for part in parts:
+        normalized = "".join(
+            character if character.isalnum() else "_" for character in str(part)
+        ).strip("_")
+        normalized_parts.append(normalized[:32] or "value")
+    digest = hashlib.sha256("\x1f".join(map(str, parts)).encode()).hexdigest()[:12]
+    return f"{'__'.join(normalized_parts)}__{digest}"
+
+
+def _cauchy_payloads_current(cauchy_file: Path, js_data_dir: Path) -> bool:
+    manifest_path = js_data_dir / "cauchy_manifest.json"
+    if not cauchy_file.is_file() or not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if manifest.get("version") != CAUCHY_PAYLOAD_VERSION:
+        return False
+    if manifest.get("source") != _cauchy_source_signature(cauchy_file):
+        return False
+    outputs = manifest.get("outputs", [])
+    return bool(outputs) and all(
+        (js_data_dir / relative).is_file() and (js_data_dir / relative).stat().st_size > 0
+        for relative in outputs
+    )
+
+
+def _compact_cauchy_payload(frame: pd.DataFrame, *, drop_columns: set[str]) -> str:
+    """Serialize rows without repeated JSON object keys or shard constants."""
+
+    columns = [column for column in frame.columns if column not in drop_columns]
+    return frame[columns].to_json(
+        orient="split",
+        index=False,
+        double_precision=10,
+    )
+
+
+def _write_cauchy_shard(
+    path: Path,
+    *,
+    key: str,
+    frame: pd.DataFrame,
+    drop_columns: set[str],
+) -> None:
+    payload = _compact_cauchy_payload(frame, drop_columns=drop_columns)
+    content = (
+        "window.GSMAP_CAUCHY_SHARDS=window.GSMAP_CAUCHY_SHARDS||{};"
+        f"window.GSMAP_CAUCHY_SHARDS[{json.dumps(key)}]={payload};"
+    )
+    _atomic_write_text(path, content)
+
+
+def _export_cauchy_js(data_dir: Path, js_data_dir: Path) -> None:
+    """Export file://-compatible Cauchy shards loaded only for the active view."""
+
     cauchy_file = data_dir / "cauchy_results.csv"
-    if cauchy_file.exists():
-        df = pd.read_csv(cauchy_file)
-        data_json = df.to_json(orient="records")
-        js_content = f"window.GSMAP_CAUCHY = {data_json};"
-        _atomic_write_text(js_data_dir / "cauchy_results.js", js_content)
+    if not cauchy_file.is_file():
+        return
+
+    started = time.perf_counter()
+    frame = pd.read_csv(cauchy_file)
+    required = {
+        "trait",
+        "annotation_name",
+        "annotation",
+        "type",
+        *CAUCHY_HEATMAP_METRICS,
+    }
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise ValueError(f"Cauchy report data are missing columns: {missing}")
+
+    frame["trait"] = frame["trait"].astype(str)
+    frame["annotation_name"] = frame["annotation_name"].astype(str)
+    frame["annotation"] = frame["annotation"].astype(str)
+    frame["type"] = frame["type"].astype(str)
+    mode_for_type = {"aggregated": "all", "sample": "sample"}
+    shard_dir = js_data_dir / "cauchy"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    index: dict[str, object] = {
+        "version": CAUCHY_PAYLOAD_VERSION,
+        "table": {"all": {}, "sample": {}},
+        "heatmap": {"all": {}, "sample": {}},
+    }
+    output_files: list[str] = []
+
+    for result_type, mode_frame in frame.groupby("type", sort=False, observed=True):
+        mode = mode_for_type.get(str(result_type))
+        if mode is None:
+            logger.warning(f"Skipping unsupported Cauchy result type: {result_type}")
+            continue
+
+        table_index: dict[str, dict[str, dict[str, object]]] = index["table"][mode]
+        for (trait, annotation_name), shard in mode_frame.groupby(
+            ["trait", "annotation_name"],
+            sort=False,
+            observed=True,
+        ):
+            key = f"table\x1f{mode}\x1f{trait}\x1f{annotation_name}"
+            token = _cauchy_payload_token("table", mode, trait, annotation_name)
+            relative = f"cauchy/{token}.js"
+            _write_cauchy_shard(
+                js_data_dir / relative,
+                key=key,
+                frame=shard,
+                drop_columns=CAUCHY_TABLE_CONSTANT_COLUMNS,
+            )
+            table_index.setdefault(trait, {})[annotation_name] = {
+                "file": f"js_data/{relative}",
+                "key": key,
+                "n_rows": len(shard),
+                "defaults": {
+                    "trait": trait,
+                    "annotation_name": annotation_name,
+                    "type": str(result_type),
+                },
+            }
+            output_files.append(relative)
+
+        heatmap_index: dict[str, dict[str, object]] = index["heatmap"][mode]
+        for annotation_name, annotation_frame in mode_frame.groupby(
+            "annotation_name",
+            sort=False,
+            observed=True,
+        ):
+            compact = annotation_frame.groupby(
+                ["trait", "annotation"],
+                sort=False,
+                observed=True,
+                as_index=False,
+            )[list(CAUCHY_HEATMAP_METRICS)].median()
+            if mode == "sample" and "sample_name" in annotation_frame:
+                sample_counts = (
+                    annotation_frame.groupby(
+                        ["trait", "annotation"],
+                        sort=False,
+                        observed=True,
+                    )["sample_name"]
+                    .nunique()
+                    .rename("n_samples")
+                    .reset_index()
+                )
+                compact = compact.merge(
+                    sample_counts,
+                    on=["trait", "annotation"],
+                    how="left",
+                    sort=False,
+                )
+
+            key = f"heatmap\x1f{mode}\x1f{annotation_name}"
+            token = _cauchy_payload_token("heatmap", mode, annotation_name)
+            relative = f"cauchy/{token}.js"
+            _write_cauchy_shard(
+                js_data_dir / relative,
+                key=key,
+                frame=compact,
+                drop_columns=set(),
+            )
+            heatmap_index[annotation_name] = {
+                "file": f"js_data/{relative}",
+                "key": key,
+                "n_rows": len(compact),
+                "aggregation": ("median_across_samples" if mode == "sample" else "aggregated"),
+            }
+            output_files.append(relative)
+
+    index_content = (
+        "window.GSMAP_CAUCHY_INDEX="
+        + json.dumps(index, ensure_ascii=False, separators=(",", ":"))
+        + ";"
+    )
+    _atomic_write_text(js_data_dir / "cauchy_index.js", index_content)
+    output_files.append("cauchy_index.js")
+
+    manifest = {
+        "version": CAUCHY_PAYLOAD_VERSION,
+        "source": _cauchy_source_signature(cauchy_file),
+        "outputs": sorted(output_files),
+    }
+    _atomic_write_text(
+        js_data_dir / "cauchy_manifest.json",
+        json.dumps(manifest, separators=(",", ":"), sort_keys=True),
+    )
+
+    referenced = {
+        Path(relative).name for relative in output_files if relative.startswith("cauchy/")
+    }
+    for stale in shard_dir.glob("*.js"):
+        if stale.name not in referenced:
+            stale.unlink()
+    # Version 1 loaded all rows into a single browser global.  Remove it only
+    # after the complete version-2 index and manifest have been published.
+    (js_data_dir / "cauchy_results.js").unlink(missing_ok=True)
+
+    logger.info(
+        "Exported lazy Cauchy payloads: "
+        f"{len(output_files) - 1} shards for {len(frame):,} source rows in "
+        f"{time.perf_counter() - started:.2f}s"
+    )
 
 
 def _export_manhattan_js(data_dir: Path, js_data_dir: Path):

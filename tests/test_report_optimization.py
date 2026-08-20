@@ -15,7 +15,9 @@ from gsMap.report.report_data import (
     _available_cpu_count,
     _calculate_pcc_for_traits_fast,
     _calculate_umap_from_embeddings,
+    _cauchy_payloads_current,
     _export_annotation_schemas_js,
+    _export_cauchy_js,
     _load_chrom_tick_positions,
     _load_gss_pcc_sample,
     _ManhattanWeightContext,
@@ -66,6 +68,60 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
 
     config.downsampling_n_spots_2d = 50_000
     assert not _report_visualization_config_matches(config)
+
+
+def test_cauchy_export_is_file_scheme_compatible_and_sharded(tmp_path):
+    data_dir = tmp_path / "report_data"
+    js_data_dir = tmp_path / "js_data"
+    data_dir.mkdir()
+    js_data_dir.mkdir()
+    rows = []
+    for result_type, sample_names in (
+        ("aggregated", ["All Samples"]),
+        ("sample", ["sample_a", "sample_b"]),
+    ):
+        for trait in ("trait/a", "trait_b"):
+            for annotation_name in ("cell type", "region"):
+                for annotation_index, annotation in enumerate(("A", "B")):
+                    for sample_name in sample_names:
+                        value = annotation_index + (0.5 if sample_name == "sample_b" else 0.0)
+                        rows.append(
+                            {
+                                "trait": trait,
+                                "annotation_name": annotation_name,
+                                "annotation": annotation,
+                                "p_cauchy": 10 ** -(value + 1),
+                                "p_median": 10 ** -(value + 0.5),
+                                "top_95_quantile": value + 2,
+                                "sig_spots": 3,
+                                "total_spots": 10,
+                                "type": result_type,
+                                "sample_name": sample_name,
+                                "mlog10_p_cauchy": value + 1,
+                                "mlog10_p_median": value + 0.5,
+                            }
+                        )
+    pd.DataFrame(rows).to_csv(data_dir / "cauchy_results.csv", index=False)
+    (js_data_dir / "cauchy_results.js").write_text("legacy monolith")
+
+    _export_cauchy_js(data_dir, js_data_dir)
+
+    index_text = (js_data_dir / "cauchy_index.js").read_text(encoding="utf-8")
+    index = json.loads(index_text.split("=", 1)[1].rstrip(";"))
+    assert index["version"] == 2
+    assert set(index["table"]) == {"all", "sample"}
+    entry = index["table"]["sample"]["trait/a"]["cell type"]
+    assert entry["n_rows"] == 4
+    assert entry["file"].startswith("js_data/cauchy/")
+    shard_text = (tmp_path / entry["file"]).read_text(encoding="utf-8")
+    assert "window.GSMAP_CAUCHY_SHARDS" in shard_text
+    assert "fetch(" not in shard_text
+    assert not (js_data_dir / "cauchy_results.js").exists()
+    assert _cauchy_payloads_current(data_dir / "cauchy_results.csv", js_data_dir)
+
+    heatmap_entry = index["heatmap"]["sample"]["cell type"]
+    assert heatmap_entry["aggregation"] == "median_across_samples"
+    assert heatmap_entry["n_rows"] == 4
 
 
 def test_annotation_schema_export_is_small_canonical_palette(tmp_path):

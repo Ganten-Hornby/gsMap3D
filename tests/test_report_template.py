@@ -122,6 +122,8 @@ def test_large_secondary_datasets_are_loaded_near_their_sections(
 ) -> None:
     assert '<script src="js_data/cauchy_results.js"></script>' not in report_template
     assert '<script src="js_data/umap_data.js"></script>' not in report_template
+    assert "loadScript('js_data/cauchy_index.js')" in report_template
+    assert "loadCauchyShard(entry, cache, order" in report_template
     assert "setupDeferredPlotLoading()" in report_template
     assert "loadUmapData()" in report_template
     assert "loadCauchyData()" in report_template
@@ -139,7 +141,8 @@ def test_trait_selector_supports_fuzzy_keyboard_search(report_template: str) -> 
 def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     report_template: str,
 ) -> None:
-    assert "spatial2dViewMode: 'compare'" in report_template
+    assert "spatial2dViewMode: 'trait'" in report_template
+    assert "setSpatial2dViewMode('compare')" in report_template
     assert "setSpatial2dViewMode('annotation')" in report_template
     assert 'aria-label="2D point-size multiplier"' in report_template
     assert 'max="12" step="0.25"' in report_template
@@ -164,7 +167,9 @@ def test_spatial_views_offer_scalable_hover_details(report_template: str) -> Non
     assert "−log10(P): %{marker.color:.2f}" in report_template
     assert "annotationHoverLabels" in report_template
     assert "base.n_points <= 200000" in report_template
-    assert "buildSpatial2dAnnotationHoverText(data)" in report_template
+    assert "appendPointAnnotationLines(lines, context, sourceIndex)" in report_template
+    assert "setPointHoverContext(key, context)" in report_template
+    assert "buildSpatial2dAnnotationHoverText" not in report_template
     assert "compactTraitPayload.extra.annotation_codes" in report_template
     assert "Object.entries(data.annotations || {})" in report_template
     assert "<b>${anno}</b> code: %{marker.color:.0f}" not in report_template
@@ -179,26 +184,28 @@ def test_umap_uses_readable_geometry_hover_and_canonical_annotation_colors(
     assert "strongest trait signals are drawn on top" in report_template
     assert "currentAnnotationLegend" in report_template
     assert "this.getAnnotationColorMap(anno)" in report_template
-    hover_builder = report_template[
-        report_template.index("buildUmapHoverText(includeTrait = false)") : report_template.index(
-            "// Render only trait-colored UMAP plots"
-        )
+    continuous_renderer = report_template[
+        report_template.index(
+            "                renderSingleUmapContinuous(divId"
+        ) : report_template.index("// Optimized: render discrete")
     ]
-    assert "<b>Spot:</b>" not in hover_builder
-    assert "<b>Sample:</b>" not in hover_builder
+    assert "includeSpots" not in continuous_renderer
+    assert "spots:" not in continuous_renderer
     assert "bindPointHoverTooltip" in report_template
     assert "pointer.clientX + gap" in report_template
-    assert "customdata: rendering.hoverColors" in report_template
-    assert "customdata: indices.map(() => color)" in report_template
+    assert "_pointHoverContextOrder.length > 4096" in report_template
+    assert "customdata: rendering.hoverColors" not in report_template
+    assert "customdata: indices.map(() => color)" not in report_template
 
 
 def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
     report_template: str,
 ) -> None:
     assert "data.axis_titles" in report_template
-    assert "meta: { hoverKind: 'trait', axisTitles }" in report_template
-    assert "meta: { hoverKind: 'annotation', axisTitles }" in report_template
-    assert "spatial2dTraitHoverColors" in report_template
+    assert "meta: { hoverContextKey }" in report_template
+    assert "hoverKind: 'trait'" in report_template
+    assert "hoverKind: 'annotation'" in report_template
+    assert "spatial2dTraitHoverColors" not in report_template
     assert "this.bindPointHoverTooltip(plotDiv)" in report_template
     assert "tooltip.style.background = background" in report_template
 
@@ -232,12 +239,33 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
     ]
     heatmap = report_template[
         report_template.index("                renderCauchyHeatmap() {") : report_template.index(
-            "// Simple Hierarchical Clustering"
+            "// Hierarchical clustering"
         )
     ]
     assert "isAnnotationCategoryVisible" not in table_filter
     assert "cauchyFocusedAnnotation" not in table_filter
     assert "isAnnotationCategoryVisible" not in heatmap
+
+
+def test_enrichment_is_sharded_paginated_and_uses_bounded_browser_caches(
+    report_template: str,
+) -> None:
+    assert "cauchyTablePageSize: 200" in report_template
+    assert "get visibleCauchyTable()" in report_template
+    assert "_cauchyShardPromises" in report_template
+    assert "setBoundedCache(cache, order, entry.key, rows, 4)" in report_template
+    assert "const rowByKey = new Map" in report_template
+    assert "window.GSMAP_CAUCHY =" not in report_template
+    assert "fetch(" not in report_template
+
+
+def test_spatial3d_reduces_only_during_camera_interaction(report_template: str) -> None:
+    assert "spatial3dInteractionPointLimit: 25000" in report_template
+    assert "configureSpatial3dInteractionLod(plot" in report_template
+    assert "plotly_relayouting" in report_template
+    assert "applySpatial3dInteractionLod(plot, true)" in report_template
+    assert "applySpatial3dInteractionLod(plot, false)" in report_template
+    assert "state.requested !== state.active" in report_template
 
 
 def test_enrichment_annotation_badges_support_point_map_multi_selection(
