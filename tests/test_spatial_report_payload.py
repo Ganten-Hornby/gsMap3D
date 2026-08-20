@@ -128,14 +128,12 @@ def test_large_stratified_sampling_preserves_rare_sample_and_annotation():
     assert set(metadata.iloc[positions]["region"]) == {"common", "rare"}
 
 
-def test_top_trait_positions_exclude_display_sample():
+def test_top_trait_positions_include_display_sample():
     values = np.arange(10, dtype=np.float32)
-    selected = np.zeros(10, dtype=bool)
-    selected[[9, 5]] = True
 
-    result = _top_trait_positions(values, selected, 3)
+    result = _top_trait_positions(values, 3)
 
-    assert result.tolist() == [8, 7, 6]
+    assert result.tolist() == [9, 8, 7]
 
 
 def test_2d_point_size_has_visible_density_aware_bounds():
@@ -190,15 +188,18 @@ def test_spatial_3d_export_uses_shared_geometry_and_lazy_features(tmp_path):
     assert len(decode_typed_array(base["x"])) == 8
     assert base["coordinate_ranges"] == [19.0, 38.0, 10.0]
     assert len(decode_typed_array(trait["values"])) == 8
-    assert trait["n_extra"] == 3
-    assert set(trait["extra"]["annotation_codes"]) == {"region"}
-    extra_region_codes = decode_typed_array(trait["extra"]["annotation_codes"]["region"])
-    assert len(extra_region_codes) == trait["n_extra"]
-    extra_positions = decode_typed_array(trait["extra"]["x"]).astype(int)
-    assert [region["categories"][code] for code in extra_region_codes] == [
-        metadata.loc[position, "region"] for position in extra_positions
+    assert trait["n_top"] == 3
+    assert trait["q95"] == pytest.approx(18.05)
+    assert trait["cmax"] == pytest.approx(18.981)
+    assert set(trait["top"]["annotation_codes"]) == {"region"}
+    top_region_codes = decode_typed_array(trait["top"]["annotation_codes"]["region"])
+    assert len(top_region_codes) == trait["n_top"]
+    top_positions = decode_typed_array(trait["top"]["x"]).astype(int)
+    assert top_positions.tolist() == [19, 18, 17]
+    assert [region["categories"][code] for code in top_region_codes] == [
+        metadata.loc[position, "region"] for position in top_positions
     ]
-    assert index["trait_extra_annotation_codes"] == ["region"]
+    assert index["trait_top_annotation_codes"] == ["region"]
     provenance = pd.read_parquet(report_data / "spatial_3d/spatial_3d_display_spots.parquet")
     assert len(provenance) == 8
 
@@ -244,23 +245,21 @@ def test_sample_export_splits_base_and_traits(tmp_path):
     sample_b_trait = _assignment_payload(
         tmp_path / index["sample_b"]["trait_files"]["trait"]["file"]
     )
-    assert sample_a_trait["cmax"] == sample_b_trait["cmax"] == 19.0
+    assert sample_a_trait["cmax"] == sample_b_trait["cmax"] == pytest.approx(18.981)
+    assert sample_a_trait["q95"] == sample_b_trait["q95"] == pytest.approx(18.05)
     assert sample_a_trait["scale_scope"] == "all_samples"
     assert sample_a_trait["values"]["dtype"] == "uint16"
     assert sample_a_trait["values"]["scale"] == 0.1
-    assert sample_a_trait["n_extra"] == 2
-    assert set(sample_a_trait["extra"]["annotation_codes"]) == {"region"}
-    base_x = set(decode_typed_array(base["sx"]).tolist())
-    extra_x = decode_typed_array(sample_a_trait["extra"]["x"])
-    assert base_x.isdisjoint(extra_x.tolist())
-    expected_top_omitted = sorted(set(range(10)).difference(base_x), reverse=True)[:2]
-    assert decode_typed_array(sample_a_trait["extra"]["values"]).tolist() == pytest.approx(
-        expected_top_omitted
+    assert sample_a_trait["n_top"] == 2
+    assert set(sample_a_trait["top"]["annotation_codes"]) == {"region"}
+    assert decode_typed_array(sample_a_trait["top"]["x"]).tolist() == [9.0, 8.0]
+    assert decode_typed_array(sample_a_trait["top"]["values"]).tolist() == pytest.approx(
+        [9.0, 8.0]
     )
-    region_codes = decode_typed_array(sample_a_trait["extra"]["annotation_codes"]["region"])
+    region_codes = decode_typed_array(sample_a_trait["top"]["annotation_codes"]["region"])
     region_categories = base["annotations"]["region"]["categories"]
     assert [region_categories[code] for code in region_codes] == [
-        metadata.loc[position, "region"] for position in expected_top_omitted
+        metadata.loc[position, "region"] for position in [9, 8]
     ]
 
 

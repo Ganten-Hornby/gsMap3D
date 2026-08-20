@@ -386,6 +386,11 @@ class ReportDataManager:
                 ticks = _load_chrom_tick_positions(csv_path)
                 if ticks:
                     chrom_tick_positions[trait] = ticks
+                    if not _manhattan_js_has_embedded_ticks(js_path):
+                        logger.info(
+                            f"Updating cached Manhattan payload metadata for {trait}..."
+                        )
+                        _export_single_manhattan_js(trait, csv_path, self.js_data_dir)
                 else:
                     logger.warning(
                         f"Cached Manhattan output for {trait} has no valid chromosome "
@@ -501,7 +506,11 @@ class ReportDataManager:
             logger.info("Skipping static plot rendering for non-spatial dataset type")
             return
 
-        from .visualize import MultiSampleSpatialRasterCache, VisualizeRunner
+        from .visualize import (
+            MultiSampleSpatialRasterCache,
+            SpatialOverviewTileStore,
+            VisualizeRunner,
+        )
 
         visualizer = VisualizeRunner(self.report_config)
 
@@ -513,26 +522,63 @@ class ReportDataManager:
             # Keep one shared view of the full metadata. Copying this table can
             # add tens of gigabytes of peak RSS for large spatial atlases.
             obs_data = self.metadata
-            overview_cache = MultiSampleSpatialRasterCache(
-                obs_data,
-                self.sample_names,
-            )
-            # Render LDSC plots
             spatial_plot_dir = self.web_report_dir / "spatial_plots"
-            spatial_plot_dir.mkdir(exist_ok=True)
-            for trait in self.traits:
-                trait_plot_path = spatial_plot_dir / f"ldsc_{safe_name(trait)}.png"
-                if not self._is_step_complete([trait_plot_path]):
-                    logger.info(f"Rendering LDSC plot for {trait}...")
-                    visualizer._create_single_trait_multi_sample_raster_plot(
-                        obs_ldsc_merged=obs_data,
-                        trait_abbreviation=trait,
-                        sample_name_list=self.sample_names,
-                        output_png_path=trait_plot_path,
-                        n_rows=n_rows,
-                        n_cols=n_cols,
-                        raster_cache=overview_cache,
-                    )
+            trait_plot_dir = spatial_plot_dir / "by_trait"
+            sample_plot_dir = spatial_plot_dir / "by_sample"
+            trait_paths = {
+                trait: trait_plot_dir / f"ldsc_{safe_name(trait)}.png"
+                for trait in self.traits
+            }
+            sample_paths = {
+                sample: sample_plot_dir / f"sample_{safe_name(sample)}.png"
+                for sample in self.sample_names
+            }
+            missing_trait_plots = {
+                trait for trait, path in trait_paths.items() if not self._is_step_complete([path])
+            }
+            missing_sample_plots = {
+                sample for sample, path in sample_paths.items() if not self._is_step_complete([path])
+            }
+            if missing_trait_plots or missing_sample_plots:
+                overview_cache = MultiSampleSpatialRasterCache(obs_data, self.sample_names)
+                with SpatialOverviewTileStore(
+                    overview_cache,
+                    self.traits,
+                    plot_origin=self.report_config.plot_origin,
+                    temporary_dir=spatial_plot_dir,
+                ) as tile_store:
+                    for trait_index, trait in enumerate(self.traits):
+                        values = pd.to_numeric(obs_data[trait], errors="coerce").to_numpy(
+                            dtype=np.float32, copy=False
+                        )
+                        finite_values = values[np.isfinite(values)]
+                        color_maximum = (
+                            float(np.quantile(finite_values, 0.999))
+                            if finite_values.size
+                            else 1.0
+                        )
+                        if not np.isfinite(color_maximum) or color_maximum <= 0:
+                            color_maximum = 1.0
+                        tile_store.encode_trait(trait_index, values, color_maximum)
+                        if trait in missing_trait_plots:
+                            logger.info(f"Rendering all-sample overview for {trait}...")
+                            visualizer._create_single_trait_multi_sample_tile_plot(
+                                tile_store,
+                                trait_index,
+                                trait_paths[trait],
+                                max_cols=self.report_config.single_trait_multi_sample_max_cols,
+                            )
+
+                    for sample_index, sample in enumerate(self.sample_names):
+                        if sample not in missing_sample_plots:
+                            continue
+                        logger.info(f"Rendering all-trait overview for {sample}...")
+                        visualizer._create_single_sample_multi_trait_tile_plot(
+                            tile_store,
+                            sample_index,
+                            sample_paths[sample],
+                            max_cols=self.report_config.single_sample_multi_trait_max_cols,
+                        )
 
         # Gene diagnostic plots
         # Ensure base metadata exists (needed for common_spots and ldsc_results)
@@ -658,7 +704,6 @@ class ReportDataManager:
             self.traits,
             self.sample_names,
             self.web_report_dir,
-            getattr(self, "chrom_tick_positions", None),
             getattr(self, "umap_info", None),
             is_3d=self.is_3d,
             spatial_3d_info=getattr(self, "spatial_3d_info", None),
@@ -1647,6 +1692,10 @@ def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):
         "snp": df["SNP"].tolist() if "SNP" in df.columns else [],
         "is_top": df["is_top_pcc"].astype(int).tolist() if "is_top_pcc" in df.columns else [],
         "bp": df["BP"].astype(int).tolist() if "BP" in df.columns else [],
+        "chrom_ticks": {
+            str(int(chromosome)): float(positions.median())
+            for chromosome, positions in df.groupby("CHR")["BP_cum"]
+        },
     }
 
     json_str = json.dumps(data_struct, separators=(",", ":"))
@@ -1654,6 +1703,17 @@ def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):
     js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
 
     _atomic_write_text(js_data_dir / f"manhattan_{trait}.js", js_content)
+
+
+def _manhattan_js_has_embedded_ticks(path: Path) -> bool:
+    """Check the small payload tail without loading a potentially large JS file."""
+
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, path.stat().st_size - 16_384))
+            return b'"chrom_ticks":' in handle.read()
+    except OSError:
+        return False
 
 
 # =============================================================================
@@ -2279,54 +2339,165 @@ def _save_report_metadata(
     traits: list[str],
     sample_names: list[str],
     report_dir: Path,
-    chrom_tick_positions: dict | None = None,
     umap_info: dict | None = None,
     is_3d: bool = False,
     spatial_3d_info: dict | None = None,
 ):
     """Save report configuration metadata as JSON."""
     logger.info("Saving report configuration metadata...")
-    report_meta = report_config.to_dict_with_paths_as_strings()
-
-    report_meta["traits"] = traits
-    report_meta["samples"] = sample_names
-    report_meta["annotations"] = report_config.annotation_list
-    report_meta["top_corr_genes"] = report_config.top_corr_genes
-    report_meta["plot_origin"] = report_config.plot_origin
-    report_meta["legend_marker_size"] = report_config.legend_marker_size
-    report_meta["downsampling_n_spots_2d"] = getattr(
-        report_config, "downsampling_n_spots_2d", 100000
-    )
-    report_meta["multi_sample_trait_plots"] = (
-        {trait: f"ldsc_{safe_name(trait)}.png" for trait in traits}
-        if report_config.generate_multi_sample_plots
-        else {}
-    )
-
-    # Add chromosome tick positions for Manhattan plot
-    if chrom_tick_positions:
-        report_meta["chrom_tick_positions"] = chrom_tick_positions
-
-    # Add UMAP info
-    if umap_info:
-        report_meta["umap_info"] = umap_info
-
-    # Add 3D visualization info
-    report_meta["is_3d"] = is_3d
-    report_meta["has_3d_widget"] = spatial_3d_info is not None
-    report_meta["spatial_3d"] = spatial_3d_info
-    report_meta["spatial_3d_widget_path"] = None
-
-    # Add dataset type info for conditional section rendering
+    full_config = report_config.to_dict_with_paths_as_strings()
     dataset_type_value = report_config.dataset_type
     if hasattr(dataset_type_value, "value"):
         dataset_type_value = dataset_type_value.value
-    report_meta["dataset_type"] = dataset_type_value
-    report_meta["dataset_type_label"] = {
+    dataset_type_label = {
         "spatial3D": "Spatial 3D",
         "spatial2D": "Spatial 2D",
         "scRNA": "Single Cell RNA-seq",
     }.get(dataset_type_value, dataset_type_value)
+
+    def section(*keys: str) -> dict:
+        return {
+            key: full_config[key]
+            for key in keys
+            if key in full_config and full_config[key] not in (None, [], {})
+        }
+
+    coordinate_info = (spatial_3d_info or {}).get("coordinate_info") or {}
+    coordinate_summary = {
+        key: coordinate_info[key]
+        for key in (
+            "z_source",
+            "z_axis_input",
+            "z_scale",
+            "z_is_physical",
+            "default_aspect_mode",
+            "axis_titles",
+            "cut_axis_title",
+        )
+        if key in coordinate_info
+    }
+    configuration = {
+        "analysis": {
+            "project_name": full_config.get("project_name"),
+            "dataset_type": dataset_type_value,
+            "species": full_config.get("species"),
+            "n_samples": len(sample_names),
+            "n_traits": len(traits),
+            "annotations": list(report_config.annotation_list or []),
+            "cauchy_annotations": list(report_config.cauchy_annotations or []),
+            "random_seed": full_config.get("random_seed"),
+        },
+        "inputs": section(
+            "workdir",
+            "h5ad_path",
+            "h5ad_list_file",
+            "h5ad_yaml",
+            "spatial_key",
+            "data_layer",
+            "homolog_file",
+            "sumstats_config_file",
+            "snp_gene_weight_adata_path",
+            "w_ld_dir",
+        ),
+        "graph_and_matching": section(
+            "graph_mode",
+            "n_neighbors",
+            "graph_radius",
+            "graph_sigma",
+            "spatial_neighbors",
+            "homogeneous_neighbors",
+            "homogeneous_selection_mode",
+            "n_adjacent_slices",
+            "adjacent_slice_spatial_neighbors",
+            "cross_slice_selection_mode",
+            "cross_slice_z_coordinate",
+            "cross_slice_z_scale",
+            "cross_slice_max_distance",
+            "cross_slice_marker_score_strategy",
+        ),
+        "latent_representation": section(
+            "latent_representation_cell",
+            "latent_representation_niche",
+            "embedding_size",
+            "feat_cell",
+            "n_modules",
+            "module_dim",
+            "n_enc_layer",
+            "nhead",
+        ),
+        "association": section(
+            "n_blocks",
+            "chisq_max",
+            "use_gpu",
+            "ldsc_compute_workers",
+            "ldsc_read_workers",
+        ),
+        "visualization": {
+            **section(
+                "downsampling_n_spots_2d",
+                "downsampling_n_spots_3d",
+                "downsampling_n_spots_umap",
+                "downsampling_n_spots_pcc",
+                "top_corr_genes",
+                "plot_origin",
+                "generate_multi_sample_plots",
+            ),
+            "signal_opacity_upper_anchor": "shared_per_trait_q95",
+            "signal_color_upper_anchor": "shared_per_trait_q99.9",
+            "top_signal_overlay_spots": 500,
+            "top_signal_overlay_default": False,
+        },
+    }
+    if coordinate_summary:
+        configuration["spatial_3d_coordinates"] = coordinate_summary
+
+    runtime_keys = (
+        "species",
+        "graph_mode",
+        "n_neighbors",
+        "spatial_neighbors",
+        "homogeneous_neighbors",
+        "cross_slice_selection_mode",
+        "latent_representation_cell",
+        "latent_representation_niche",
+    )
+    report_meta = {
+        key: full_config.get(key) for key in runtime_keys if full_config.get(key) is not None
+    }
+    report_meta.update(
+        {
+            "traits": traits,
+            "samples": sample_names,
+            "annotations": report_config.annotation_list,
+            "top_corr_genes": report_config.top_corr_genes,
+            "plot_origin": report_config.plot_origin,
+            "legend_marker_size": report_config.legend_marker_size,
+            "downsampling_n_spots_2d": report_config.downsampling_n_spots_2d,
+            "downsampling_n_spots_3d": report_config.downsampling_n_spots_3d,
+            "downsampling_n_spots_umap": report_config.downsampling_n_spots_umap,
+            "generate_multi_sample_plots": report_config.generate_multi_sample_plots,
+            "multi_sample_trait_plots": (
+                {trait: f"by_trait/ldsc_{safe_name(trait)}.png" for trait in traits}
+                if report_config.generate_multi_sample_plots
+                else {}
+            ),
+            "single_sample_multi_trait_plots": (
+                {
+                    sample: f"by_sample/sample_{safe_name(sample)}.png"
+                    for sample in sample_names
+                }
+                if report_config.generate_multi_sample_plots
+                else {}
+            ),
+            "umap_info": umap_info,
+            "is_3d": is_3d,
+            "has_3d_widget": spatial_3d_info is not None,
+            "spatial_3d": spatial_3d_info,
+            "dataset_type": dataset_type_value,
+            "dataset_type_label": dataset_type_label,
+            "configuration": configuration,
+        }
+    )
 
     _write_text_if_changed(
         report_dir / "report_meta.json", json.dumps(report_meta, sort_keys=True)
@@ -2806,6 +2977,10 @@ def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
                 if "is_top_pcc" in df.columns
                 else [],
                 "bp": df["BP"].astype(int).tolist() if "BP" in df.columns else [],
+                "chrom_ticks": {
+                    str(int(chromosome)): float(positions.median())
+                    for chromosome, positions in df.groupby("CHR")["BP_cum"]
+                },
             }
 
             json_str = json.dumps(data_struct, separators=(",", ":"))

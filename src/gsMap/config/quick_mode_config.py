@@ -296,7 +296,13 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
 
         for trait in traits:
             safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-            plot_path = spatial_plot_dir / f"ldsc_{safe_trait}.png"
+            plot_path = spatial_plot_dir / "by_trait" / f"ldsc_{safe_trait}.png"
+            if not plot_path.exists():
+                missing_web_files.append(plot_path)
+
+        for sample_name in (config.sample_h5ad_dict or {}):
+            safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
+            plot_path = spatial_plot_dir / "by_sample" / f"sample_{safe_sample}.png"
             if not plot_path.exists():
                 missing_web_files.append(plot_path)
 

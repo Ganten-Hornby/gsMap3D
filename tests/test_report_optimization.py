@@ -22,6 +22,7 @@ from gsMap.report.report_data import (
     _cauchy_payloads_current,
     _export_annotation_schemas_js,
     _export_cauchy_js,
+    _export_single_manhattan_js,
     _load_chrom_tick_positions,
     _load_gss_pcc_sample,
     _ManhattanWeightContext,
@@ -32,10 +33,15 @@ from gsMap.report.report_data import (
     _render_single_sample_gene_plot_task,
     _report_worker_count,
     _sample_spatial_export_signature,
+    _save_report_metadata,
     _write_text_if_changed,
 )
 from gsMap.report.spatial_payload import SPATIAL_PAYLOAD_VERSION
-from gsMap.report.visualize import MultiSampleSpatialRasterCache, VisualizeRunner
+from gsMap.report.visualize import (
+    MultiSampleSpatialRasterCache,
+    SpatialOverviewTileStore,
+    VisualizeRunner,
+)
 
 
 def test_report_3d_display_default_balances_density_and_interaction():
@@ -100,6 +106,38 @@ def test_multi_sample_raster_renderer_writes_compact_png(tmp_path):
     assert not (tmp_path / ".overview.png.partial").exists()
 
 
+def test_overview_tile_store_generates_both_foldable_plot_directions(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "sample_name": ["a", "a", "b", "b"],
+            "sx": [0.0, 1.0, 0.0, 1.0],
+            "sy": [0.0, 1.0, 1.0, 0.0],
+            "trait_1": [0.0, 1.0, 2.0, 3.0],
+            "trait_2": [3.0, 2.0, 1.0, 0.0],
+        }
+    )
+    cache = MultiSampleSpatialRasterCache(frame, ["a", "b"], resolution=32)
+    runner = VisualizeRunner(SimpleNamespace(plot_origin="upper"))
+    by_trait = tmp_path / "by_trait.png"
+    by_sample = tmp_path / "by_sample.png"
+
+    with SpatialOverviewTileStore(
+        cache,
+        ["trait_1", "trait_2"],
+        temporary_dir=tmp_path,
+        max_ram_bytes=1,
+    ) as store:
+        assert store.storage_mode == "memmap"
+        for trait_index, trait in enumerate(store.trait_names):
+            store.encode_trait(trait_index, frame[trait].to_numpy(), 3.0)
+        runner._create_single_trait_multi_sample_tile_plot(store, 0, by_trait, max_cols=2)
+        runner._create_single_sample_multi_trait_tile_plot(store, 0, by_sample, max_cols=2)
+
+    assert by_trait.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert by_sample.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert not list(tmp_path.glob(".gsmap_spatial_overview_*.dat"))
+
+
 def test_report_completion_detects_changed_visualization_limits(tmp_path):
     config = SimpleNamespace(
         web_report_dir=tmp_path,
@@ -121,6 +159,85 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
 
     config.downsampling_n_spots_2d = 50_000
     assert not _report_visualization_config_matches(config)
+
+
+def test_report_metadata_exposes_curated_configuration_without_chromosome_maps(tmp_path):
+    class Config:
+        dataset_type = DatasetType.SPATIAL_3D
+        annotation_list = ["cell_type"]
+        cauchy_annotations = ["cell_type"]
+        top_corr_genes = 10
+        plot_origin = "upper"
+        legend_marker_size = 10.0
+        downsampling_n_spots_2d = 100_000
+        downsampling_n_spots_3d = 100_000
+        downsampling_n_spots_umap = 50_000
+        generate_multi_sample_plots = True
+
+        def to_dict_with_paths_as_strings(self):
+            return {
+                "project_name": "demo",
+                "dataset_type": "spatial3D",
+                "species": "MOUSE",
+                "graph_mode": "symmetric_knn",
+                "n_neighbors": 10,
+                "spatial_neighbors": 30,
+                "homogeneous_neighbors": 20,
+                "cross_slice_selection_mode": "physical",
+                "latent_representation_cell": "emb_cell",
+                "latent_representation_niche": "emb_niche",
+                "downsampling_n_spots_2d": 100_000,
+                "downsampling_n_spots_3d": 100_000,
+                "downsampling_n_spots_umap": 50_000,
+                "generate_multi_sample_plots": True,
+                "sample_h5ad_dict": {"sample": "/large/not/useful.h5ad"},
+                "sumstats_config_dict": {"trait": "/large/not/useful.sumstats"},
+            }
+
+    metadata = _save_report_metadata(
+        Config(),
+        ["trait"],
+        ["sample"],
+        tmp_path,
+        spatial_3d_info={
+            "coordinate_info": {
+                "z_source": "registered_coordinate",
+                "z_is_physical": True,
+                "sample_z_positions": {"sample": 12.5},
+            }
+        },
+        is_3d=True,
+    )
+
+    assert "chrom_tick_positions" not in metadata
+    assert "sample_h5ad_dict" not in metadata
+    assert "sumstats_config_dict" not in metadata
+    assert metadata["configuration"]["analysis"]["n_samples"] == 1
+    assert metadata["configuration"]["visualization"]["signal_opacity_upper_anchor"] == (
+        "shared_per_trait_q95"
+    )
+    assert "sample_z_positions" not in metadata["configuration"]["spatial_3d_coordinates"]
+    assert metadata["multi_sample_trait_plots"]["trait"].startswith("by_trait/")
+    assert metadata["single_sample_multi_trait_plots"]["sample"].startswith("by_sample/")
+
+
+def test_manhattan_payload_carries_its_own_chromosome_ticks(tmp_path):
+    csv_path = tmp_path / "trait_manhattan.csv"
+    pd.DataFrame(
+        {
+            "BP_cum": [10.0, 20.0, 40.0, 60.0],
+            "logp": [1.0, 2.0, 3.0, 4.0],
+            "GENE": ["A", "B", "C", "D"],
+            "CHR": [1, 1, 2, 2],
+        }
+    ).to_csv(csv_path, index=False)
+
+    _export_single_manhattan_js("trait", csv_path, tmp_path)
+
+    payload = json.loads(
+        (tmp_path / "manhattan_trait.js").read_text().split("=", 1)[1].rstrip(";")
+    )
+    assert payload["chrom_ticks"] == {"1": 15.0, "2": 50.0}
 
 
 def test_report_completion_requires_lazy_cauchy_index_and_manifest(tmp_path):

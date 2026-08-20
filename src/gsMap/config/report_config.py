@@ -81,7 +81,7 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     single_trait_multi_sample_dpi: int = 300
     share_coords: bool = False
 
-    # Whether to generate compact single-trait overviews across all spatial samples.
+    # Generate both static overview matrices: traits across samples and samples across traits.
     generate_multi_sample_plots: bool = False
 
     # Plot origin for spatial plots ('upper' or 'lower')

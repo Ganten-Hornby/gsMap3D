@@ -1,5 +1,7 @@
 import gc
 import logging
+import math
+import tempfile
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,6 +17,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import scipy.stats as stats
+from PIL import Image, ImageDraw, ImageFont
 from rich import print
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial import KDTree
@@ -118,6 +121,162 @@ class MultiSampleSpatialRasterCache:
             np.maximum.at(raster, sample["pixel_indices"][finite], sample_values[finite])
         raster[~np.isfinite(raster)] = np.nan
         return raster.reshape(height, width)
+
+
+class SpatialOverviewTileStore:
+    """Encode every sample/trait tissue raster once for both overview directions."""
+
+    def __init__(
+        self,
+        raster_cache: MultiSampleSpatialRasterCache,
+        trait_names: list[str],
+        *,
+        plot_origin: str = "upper",
+        temporary_dir: Path | None = None,
+        max_ram_bytes: int = 512 * 1024**2,
+    ) -> None:
+        self.raster_cache = raster_cache
+        self.sample_names = raster_cache.sample_name_list
+        self.trait_names = [str(trait) for trait in trait_names]
+        self.resolution = raster_cache.resolution
+        self.plot_origin = plot_origin
+        self.color_maxima = np.ones(len(self.trait_names), dtype=np.float32)
+        self._temporary_path: Path | None = None
+
+        shape = (
+            len(self.sample_names),
+            len(self.trait_names),
+            self.resolution,
+            self.resolution,
+        )
+        required_bytes = int(np.prod(shape, dtype=np.int64))
+        if required_bytes <= max_ram_bytes:
+            self.tiles = np.zeros(shape, dtype=np.uint8)
+            self.storage_mode = "ram"
+        else:
+            temporary_dir = Path(temporary_dir or Path.cwd())
+            temporary_dir.mkdir(parents=True, exist_ok=True)
+            handle = tempfile.NamedTemporaryFile(
+                prefix=".gsmap_spatial_overview_",
+                suffix=".uint8.dat",
+                dir=temporary_dir,
+                delete=False,
+            )
+            handle.close()
+            self._temporary_path = Path(handle.name)
+            self.tiles = np.memmap(self._temporary_path, mode="w+", dtype=np.uint8, shape=shape)
+            self.tiles[:] = 0
+            self.storage_mode = "memmap"
+        logger.info(
+            "Spatial overview tile cache: "
+            f"{required_bytes / 1024**2:,.1f} MiB via {self.storage_mode}"
+        )
+
+    def encode_trait(self, trait_index: int, values: np.ndarray, color_maximum: float) -> None:
+        """Rasterize and quantize one trait for every sample."""
+
+        maximum = float(color_maximum)
+        if not np.isfinite(maximum) or maximum <= 0:
+            maximum = 1.0
+        self.color_maxima[trait_index] = maximum
+
+        for sample_index, sample_name in enumerate(self.sample_names):
+            raster = self.raster_cache.rasterize(sample_name, values)
+            if self.plot_origin == "lower":
+                raster = np.flipud(raster)
+            height, width = raster.shape
+            y_offset = (self.resolution - height) // 2
+            x_offset = (self.resolution - width) // 2
+            target = self.tiles[
+                sample_index,
+                trait_index,
+                y_offset : y_offset + height,
+                x_offset : x_offset + width,
+            ]
+            finite = np.isfinite(raster)
+            if finite.any():
+                normalized = np.clip(raster[finite] / maximum, 0, 1)
+                target[finite] = 1 + np.rint(normalized * 254).astype(np.uint8)
+
+    def close(self) -> None:
+        if isinstance(self.tiles, np.memmap):
+            self.tiles.flush()
+            mmap = getattr(self.tiles, "_mmap", None)
+            if mmap is not None:
+                mmap.close()
+        if self._temporary_path is not None:
+            self._temporary_path.unlink(missing_ok=True)
+            self._temporary_path = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+
+def _overview_color_lut(colors: list[str]) -> np.ndarray:
+    """Build a compact white/missing plus blue-to-red lookup table."""
+
+    color_map = mcolors.LinearSegmentedColormap.from_list(
+        "gsmap_spatial_overview", list(reversed(colors))
+    )
+    lookup = np.full((256, 3), 255, dtype=np.uint8)
+    lookup[1:] = np.rint(color_map(np.linspace(0, 1, 255))[:, :3] * 255).astype(np.uint8)
+    return lookup
+
+
+def _overview_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
+    filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    path = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / filename
+    return ImageFont.truetype(str(path), size=size)
+
+
+def _fit_overview_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    maximum_width: int,
+) -> str:
+    """Ellipsize a label to fit one overview cell."""
+
+    label = str(text)
+    if draw.textlength(label, font=font) <= maximum_width:
+        return label
+    suffix = "…"
+    low, high = 0, len(label)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if draw.textlength(label[:middle] + suffix, font=font) <= maximum_width:
+            low = middle
+        else:
+            high = middle - 1
+    return label[:low] + suffix
+
+
+def _draw_centered_overview_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    x: int,
+    y: int,
+    width: int,
+    font: ImageFont.FreeTypeFont,
+    fill: str = "#334155",
+) -> None:
+    label = _fit_overview_text(draw, text, font, width)
+    text_width = draw.textlength(label, font=font)
+    draw.text((x + (width - text_width) / 2, y), label, font=font, fill=fill)
+
+
+def _atomic_save_overview_png(image: Image.Image, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(f".{output_path.name}.partial")
+    temporary_path.unlink(missing_ok=True)
+    try:
+        image.save(temporary_path, format="PNG", compress_level=3, optimize=False)
+        temporary_path.replace(output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def remove_outliers_MAD(data, threshold=3.5):
@@ -637,6 +796,154 @@ class VisualizeRunner:
 
         print(f"Calculated grid layout: {n_rows} rows × {n_cols} cols for {item_count} items")
         return n_rows, n_cols
+
+    def _create_single_trait_multi_sample_tile_plot(
+        self,
+        tile_store: SpatialOverviewTileStore,
+        trait_index: int,
+        output_png_path: Path,
+        max_cols: int = 8,
+    ) -> None:
+        """Compose one trait across samples from the shared uint8 tile cache."""
+
+        sample_names = tile_store.sample_names
+        n_cols = min(max(1, int(max_cols)), max(1, len(sample_names)))
+        n_rows = max(1, math.ceil(len(sample_names) / n_cols))
+        resolution = tile_store.resolution
+        margin = 14
+        header_height = 42
+        label_height = 20
+        gap = 8
+        cell_width = resolution + gap
+        cell_height = resolution + label_height + gap
+        colorbar_width = 88
+        image_width = margin * 2 + n_cols * cell_width + colorbar_width
+        image_height = header_height + margin + n_rows * cell_height
+
+        canvas = Image.new("RGB", (image_width, image_height), "white")
+        draw = ImageDraw.Draw(canvas)
+        title_font = _overview_font(18, bold=True)
+        label_font = _overview_font(9)
+        tick_font = _overview_font(9)
+        trait = tile_store.trait_names[trait_index]
+        _draw_centered_overview_text(
+            draw, trait, margin, 10, image_width - 2 * margin, title_font, "#0f172a"
+        )
+        lookup = _overview_color_lut(self.custom_colors_list)
+
+        for sample_index, sample_name in enumerate(sample_names):
+            row, column = divmod(sample_index, n_cols)
+            x = margin + column * cell_width
+            y = header_height + row * cell_height
+            tile = Image.fromarray(lookup[np.asarray(tile_store.tiles[sample_index, trait_index])])
+            canvas.paste(tile, (x, y))
+            draw.rectangle(
+                (x, y, x + resolution - 1, y + resolution - 1),
+                outline="#e2e8f0",
+                width=1,
+            )
+            _draw_centered_overview_text(
+                draw,
+                sample_name,
+                x,
+                y + resolution + 2,
+                resolution,
+                label_font,
+                "#475569",
+            )
+
+        bar_x = margin + n_cols * cell_width + 24
+        bar_y = header_height + max(10, (image_height - header_height - 260) // 2)
+        bar_height = min(260, max(80, image_height - bar_y - 44))
+        gradient_indices = np.rint(np.linspace(255, 1, bar_height)).astype(np.uint8)
+        gradient = np.repeat(lookup[gradient_indices, None, :], 16, axis=1)
+        canvas.paste(Image.fromarray(gradient), (bar_x, bar_y))
+        draw.rectangle((bar_x, bar_y, bar_x + 15, bar_y + bar_height - 1), outline="#cbd5e1")
+        maximum = float(tile_store.color_maxima[trait_index])
+        draw.text((bar_x + 22, bar_y - 5), f"{maximum:.2f}", font=tick_font, fill="#475569")
+        draw.text((bar_x + 22, bar_y + bar_height - 10), "0", font=tick_font, fill="#475569")
+        draw.text((bar_x - 4, bar_y - 24), "−log10(P)", font=tick_font, fill="#334155")
+        _atomic_save_overview_png(canvas, output_png_path)
+
+    def _create_single_sample_multi_trait_tile_plot(
+        self,
+        tile_store: SpatialOverviewTileStore,
+        sample_index: int,
+        output_png_path: Path,
+        max_cols: int = 5,
+    ) -> None:
+        """Compose every trait for one sample, each with its own color bar."""
+
+        trait_names = tile_store.trait_names
+        n_cols = min(max(1, int(max_cols)), max(1, len(trait_names)))
+        n_rows = max(1, math.ceil(len(trait_names) / n_cols))
+        resolution = tile_store.resolution
+        margin = 14
+        header_height = 44
+        gap = 10
+        title_height = 22
+        colorbar_height = 30
+        cell_width = resolution + gap
+        cell_height = title_height + resolution + colorbar_height + gap
+        image_width = margin * 2 + n_cols * cell_width
+        image_height = header_height + margin + n_rows * cell_height
+
+        canvas = Image.new("RGB", (image_width, image_height), "white")
+        draw = ImageDraw.Draw(canvas)
+        header_font = _overview_font(18, bold=True)
+        trait_font = _overview_font(9, bold=True)
+        tick_font = _overview_font(8)
+        sample_name = tile_store.sample_names[sample_index]
+        _draw_centered_overview_text(
+            draw,
+            sample_name,
+            margin,
+            10,
+            image_width - 2 * margin,
+            header_font,
+            "#0f172a",
+        )
+        lookup = _overview_color_lut(self.custom_colors_list)
+        gradient_width = max(40, resolution - 40)
+        gradient_indices = np.rint(np.linspace(1, 255, gradient_width)).astype(np.uint8)
+        gradient = np.repeat(lookup[gradient_indices][None, :, :], 8, axis=0)
+        gradient_image = Image.fromarray(gradient)
+
+        for trait_index, trait in enumerate(trait_names):
+            row, column = divmod(trait_index, n_cols)
+            x = margin + column * cell_width
+            y = header_height + row * cell_height
+            _draw_centered_overview_text(
+                draw, trait, x, y + 2, resolution, trait_font, "#334155"
+            )
+            tile_y = y + title_height
+            tile = Image.fromarray(lookup[np.asarray(tile_store.tiles[sample_index, trait_index])])
+            canvas.paste(tile, (x, tile_y))
+            draw.rectangle(
+                (x, tile_y, x + resolution - 1, tile_y + resolution - 1),
+                outline="#e2e8f0",
+                width=1,
+            )
+            bar_x = x + 20
+            bar_y = tile_y + resolution + 4
+            canvas.paste(gradient_image, (bar_x, bar_y))
+            draw.rectangle(
+                (bar_x, bar_y, bar_x + gradient_width - 1, bar_y + 7),
+                outline="#cbd5e1",
+                width=1,
+            )
+            maximum = float(tile_store.color_maxima[trait_index])
+            draw.text((bar_x, bar_y + 9), "0", font=tick_font, fill="#64748b")
+            maximum_label = f"{maximum:.2f}"
+            maximum_width = draw.textlength(maximum_label, font=tick_font)
+            draw.text(
+                (bar_x + gradient_width - maximum_width, bar_y + 9),
+                maximum_label,
+                font=tick_font,
+                fill="#64748b",
+            )
+
+        _atomic_save_overview_png(canvas, output_png_path)
 
     def _create_single_trait_multi_sample_raster_plot(
         self,

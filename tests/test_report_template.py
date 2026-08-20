@@ -159,28 +159,29 @@ def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     assert 'aria-label="2D point opacity"' not in report_template
     assert "spatial2dOpacity" not in report_template
     assert "bindSpatial2dViewportSync" in report_template
-    assert "Retained high-signal spots" in report_template
+    assert "Top-500 signal spots" in report_template
     assert "Color scale is shared across samples" in report_template
 
 
 def test_spatial_views_can_toggle_retained_hotspot_emphasis(report_template: str) -> None:
-    assert "spatial3dHighlightHotspots: true" in report_template
-    assert "spatial2dHighlightHotspots" not in report_template
-    assert report_template.count("Top 500 highlighted") == 1
-    assert report_template.count("Top 500 normal size") == 1
-    assert "const highlight = this.spatial3dHighlightHotspots" in report_template
-    assert "size: Math.max(2.5, pointSize * 1.5)" in report_template
+    assert "spatial3dHighlightHotspots: false" in report_template
+    assert "spatial2dHighlightHotspots: false" in report_template
+    assert report_template.count("Show top 500") == 2
+    assert report_template.count("Hide top 500") == 2
+    assert "feature.n_top > 0 && feature.top?.x?.length" in report_template
+    assert "compactTraitPayload?.n_top > 0" in report_template
+    assert report_template.count("size: pointSize * 1.3") == 2
 
 
 def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:
-    assert "hoverPrefix: 'Retained top signal'" in report_template
+    assert "hoverPrefix: 'Top-500 signal'" in report_template
     assert "−log10(P): %{marker.color:.2f}" in report_template
     assert "annotationHoverLabels" in report_template
     assert "base.n_points <= 200000" in report_template
     assert "appendPointAnnotationLines(lines, context, sourceIndex)" in report_template
     assert "setPointHoverContext(key, context)" in report_template
     assert "buildSpatial2dAnnotationHoverText" not in report_template
-    assert "compactTraitPayload.extra.annotation_codes" in report_template
+    assert "compactTraitPayload.top.annotation_codes" in report_template
     assert "Object.entries(data.annotations || {})" in report_template
     assert "<b>${anno}</b> code: %{marker.color:.0f}" not in report_template
 
@@ -223,8 +224,8 @@ def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
 def test_shared_annotation_selection_filters_all_point_maps(report_template: str) -> None:
     assert "visibleUmapPointIndices()" in report_template
     assert "const annotation = this.spatial3dAnnotationCache?.[annotationName]" in report_template
-    assert "feature.extra.annotation_codes?.[annotationName]" in report_template
-    assert "compactTraitPayload.extra.annotation_codes?.[annotationName]" in report_template
+    assert "feature.top.annotation_codes?.[annotationName]" in report_template
+    assert "compactTraitPayload.top.annotation_codes?.[annotationName]" in report_template
     assert "this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait')" in report_template
     assert (
         "if (this.spatial3dViewMode !== 'annotation') this.renderSpatial3dTrait()"
@@ -278,22 +279,30 @@ def test_spatial3d_keeps_full_display_payload_during_camera_interaction(
     assert "plotly_relayouting" not in report_template
 
 
-def test_spatial_association_views_share_cutoff_and_opacity_curve(
+def test_spatial_association_views_have_independent_q95_opacity_controls(
     report_template: str,
 ) -> None:
-    assert "associationMinLogP: 0" in report_template
-    assert "associationOpacityStrength: 1.5" in report_template
+    assert "spatial3dAssociationMinLogP: 0" in report_template
+    assert "spatial2dAssociationMinLogP: 0" in report_template
+    assert "spatial3dAssociationOpacityStrength: 0.65" in report_template
+    assert "spatial2dAssociationOpacityStrength: 0.65" in report_template
     assert report_template.count('aria-label="Association opacity gradient strength"') == 1
     assert report_template.count('aria-label="2D association opacity gradient strength"') == 1
-    assert "filterAssociationPlotPoints(points, values)" in report_template
-    assert "associationOpacityArray(values, cmin, cmax, maximumOpacity)" in report_template
-    assert "buildSpatial3dAssociationTraces(points, values, marker" in report_template
-    assert "const binCount = 6" in report_template
+    assert "filterAssociationPlotPoints(points, values, thresholdValue = 0)" in report_template
+    assert "value, cmin, q95, maximumOpacity, strengthValue, thresholdValue" in report_template
+    assert "const binCount = 8" in report_template
+    assert "opacitySums[bin] / indices.length" in report_template
+    assert "this.spatial3dViewMode === 'compare' && traitFeature" in report_template
+    assert "this.spatial2dViewMode === 'compare' && comparisonTrait?.values" in report_template
 
 
 def test_report_exposes_lazy_all_sample_trait_overview(report_template: str) -> None:
-    assert "All-sample trait overview" in report_template
+    assert "One trait across all samples" in report_template
+    assert "One sample across all traits" in report_template
     assert "multiSampleTraitPlotUrl" in report_template
+    assert "singleSampleMultiTraitPlotUrl" in report_template
+    assert "allSampleTraitOverviewOpen ? multiSampleTraitPlotUrl : ''" in report_template
+    assert "singleSampleTraitOverviewOpen ? singleSampleMultiTraitPlotUrl : ''" in report_template
     assert 'loading="lazy"' in report_template
     assert 'decoding="async"' in report_template
 
@@ -305,7 +314,15 @@ def test_run_details_are_collapsed_and_summarized_before_raw_config(
     assert "get runDetailCards()" in report_template
     assert "Graph and neighborhood" in report_template
     assert "Browser visualization" in report_template
-    assert "Complete machine-readable configuration" in report_template
+    assert "Configuration" in report_template
+    assert "Complete machine-readable configuration" not in report_template
+    assert "JSON.stringify(reportMeta.configuration || {}, null, 2)" in report_template
+
+
+def test_spatial_widgets_do_not_repeat_outer_panel_titles(report_template: str) -> None:
+    assert "spatial3dLayout(title)" not in report_template
+    assert "this.spatial3dLayout(`Trait:" not in report_template
+    assert "this.spatial3dLayout(`Annotation:" not in report_template
 
 
 def test_enrichment_annotation_badges_support_point_map_multi_selection(
