@@ -45,7 +45,7 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
         typer.Option(
             help=(
                 "Maximum representative spots rendered in the browser's 3D view. "
-                "Trait-specific high-signal spots omitted by sampling are retained separately."
+                "Larger datasets use deterministic annotation-aware sampling."
             ),
             min=1000,
             max=2000000,
