@@ -49,7 +49,8 @@ class transform(nn.Module):
         else:
             self.input_size = input_size + batch_emb_size
             self.transform = full_block(self.input_size, hidden_size)
-            self.norm = nn.LayerNorm(hidden_size)
+
+        self.norm = nn.LayerNorm(hidden_size)
 
     def forward(self, x, batch):
         if self.use_tf:
