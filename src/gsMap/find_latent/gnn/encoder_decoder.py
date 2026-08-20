@@ -101,19 +101,18 @@ class Encoder(nn.Module):
         self.fc_mean = nn.Linear(hidden_size, emb_size)
         self.fc_var = nn.Linear(hidden_size, emb_size)
 
-    def forward(self, x, batch):
+    def forward(self, x, batch, sample=True):
         xtf = self.tf(x, batch)
         h = self.mlp(xtf)
+        mu = self.fc_mean(h)
+        self.mu = mu
         if not self.variational:
-            mu = self.fc_mean(h)
             return mu
 
-        mu = self.fc_mean(h)
         logvar = self.fc_var(h)
-        self.mu = mu
         self.sigma = logvar.exp().sqrt()
         self.dist = Normal(self.mu, self.sigma)
-        return self.dist.rsample()
+        return self.dist.rsample() if sample else self.mu
 
     def kl_loss(self):
         if not hasattr(self, "dist"):

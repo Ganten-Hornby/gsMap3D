@@ -123,10 +123,11 @@ class StEmbeding(nn.Module):
         z = torch.cat(z_list, dim=1)
         return self.decoder["classification"](z, batch)
 
-    def encode(self, x_list, batch):
+    def encode(self, x_list, batch, sample=True):
+        """Encode inputs as posterior samples or deterministic posterior means."""
         batch = self._process_batch(batch)
         z_list = []
         for eid in range(self.z_num):
-            z = self.encoder[eid](x_list[eid], batch)
+            z = self.encoder[eid](x_list[eid], batch, sample=sample)
             z_list.append(z)
         return z_list

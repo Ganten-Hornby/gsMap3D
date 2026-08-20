@@ -845,7 +845,7 @@ class InferenceData:
         Inference_loader = DataLoader(dataset=dataset, batch_size=512, shuffle=False)
 
         # Inference process
-        emb_cell, emb_niche, class_prob = [], [], []
+        emb_cell, emb_niche = [], []
 
         for (
             expression_gcn_focal,
@@ -858,25 +858,18 @@ class InferenceData:
 
             self.model.eval()
             with torch.no_grad():
-                mu_focal = self.model.encode(
-                    [expression_focal, expression_gcn_focal], batch_indices_fcocal
-                )
-                _, x_class, _, _ = self.model(
-                    [expression_focal, expression_gcn_focal], batch_indices_fcocal
+                embedding_means = self.model.encode(
+                    [expression_focal, expression_gcn_focal],
+                    batch_indices_fcocal,
+                    sample=False,
                 )
 
-                class_prob.append(x_class.cpu().numpy())
-                emb_cell.append(mu_focal[0].cpu().numpy())
-                emb_niche.append(mu_focal[1].cpu().numpy())
+                emb_cell.append(embedding_means[0].cpu().numpy())
+                emb_niche.append(embedding_means[1].cpu().numpy())
 
         # Concatenate results and store embeddings in adata
         emb_cell = np.concatenate(emb_cell, axis=0)
         emb_niche = np.concatenate(emb_niche, axis=0)
-        class_prob = np.concatenate(class_prob, axis=0)
-
-        # if self.label_name is not None:
-        #     class_prob = pd.DataFrame(softmax(class_prob,axis=1), columns=self.label_name,index=adata.obs_names)
-        #     adata.obsm["class_prob"] = class_prob
 
         adata.obsm[self.params.latent_representation_cell] = emb_cell
         adata.obsm[self.params.latent_representation_niche] = emb_niche
