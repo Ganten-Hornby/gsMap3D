@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import torch
+from sklearn.preprocessing import LabelEncoder
 
 from gsMap.find_latent.gnn.gcn import GCN
 from gsMap.find_latent.st_process import (
@@ -192,7 +193,8 @@ def test_section_inference_never_densifies_the_full_expression_matrix(monkeypatc
         model=_IdentityEmbeddingModel(),
         label_name=None,
         params=params,
-    ).infer_embedding_single(0, tmp_path / "fixture.h5ad")
+        batch_label_encoder=LabelEncoder().fit(["fixture"]),
+    ).infer_embedding_single("fixture", tmp_path / "fixture.h5ad")
 
     assert dense_row_counts
     assert max(dense_row_counts) < adata.n_obs

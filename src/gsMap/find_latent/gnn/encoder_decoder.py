@@ -117,10 +117,18 @@ class Encoder(nn.Module):
         self.fc_mean = nn.Linear(hidden_size, emb_size)
         self.fc_var = nn.Linear(hidden_size, emb_size)
 
-    def forward(self, x, batch):
+    def _encode_hidden(self, x, batch):
         encoder_input = self.input_transform.apply(x)
         xtf = self.tf(encoder_input, batch)
-        h = self.mlp(xtf)
+        return self.mlp(xtf)
+
+    def encode_mean(self, x, batch):
+        """Return the deterministic mean head used as the final embedding."""
+
+        return self.fc_mean(self._encode_hidden(x, batch))
+
+    def forward(self, x, batch):
+        h = self._encode_hidden(x, batch)
         if not self.variational:
             mu = self.fc_mean(h)
             return mu

@@ -1,3 +1,5 @@
+import hashlib
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -40,6 +42,7 @@ class StEmbeding(nn.Module):
         variational=True,
         batch_representation="embedding",
         dispersion="gene",
+        batch_label_classes=None,
     ):
         super().__init__()
 
@@ -48,6 +51,9 @@ class StEmbeding(nn.Module):
         self.distribution = distribution
         self.batch_representation = batch_representation
         self.num_batches = batch_size
+        self.latent_embedding_statistic = (
+            "posterior_mean" if variational else "deterministic_encoder_output"
+        )
         self.encoder_input_transform = (
             EncoderInputTransform.LOG1P
             if self.distribution in ["nb", "zinb"]
@@ -57,6 +63,13 @@ class StEmbeding(nn.Module):
             "_encoder_input_transform_version",
             torch.tensor(self.encoder_input_transform.checkpoint_version, dtype=torch.int8),
         )
+        if batch_label_classes is not None:
+            encoded_labels = "\0".join(str(label) for label in batch_label_classes).encode()
+            signature = hashlib.sha256(encoded_labels).digest()
+            self.register_buffer(
+                "_batch_label_encoding_signature",
+                torch.tensor(list(signature), dtype=torch.uint8),
+            )
 
         self.logtheta = nn.Parameter(torch.randn(batch_size, out_put_size))
 
@@ -113,8 +126,19 @@ class StEmbeding(nn.Module):
         expected = self._encoder_input_transform_version
         return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
 
+    def has_compatible_batch_label_encoding(self, state_dict) -> bool:
+        if not hasattr(self, "_batch_label_encoding_signature"):
+            return True
+        observed = state_dict.get("_batch_label_encoding_signature")
+        if observed is None:
+            return False
+        expected = self._batch_label_encoding_signature
+        return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
+
     def load_compatible_state_dict(self, state_dict) -> bool:
-        if not self.has_compatible_encoder_input_transform(state_dict):
+        if not self.has_compatible_encoder_input_transform(
+            state_dict
+        ) or not self.has_compatible_batch_label_encoding(state_dict):
             return False
         if "_encoder_input_transform_version" not in state_dict:
             state_dict = state_dict.copy()
@@ -152,9 +176,11 @@ class StEmbeding(nn.Module):
         return self.decoder["classification"](z, batch)
 
     def encode(self, x_list, batch):
+        """Return deterministic mean-head outputs for downstream embeddings."""
+
         batch = self._process_batch(batch)
         z_list = []
         for eid in range(self.z_num):
-            z = self.encoder[eid](x_list[eid], batch)
-            z_list.append(z)
+            mu = self.encoder[eid].encode_mean(x_list[eid], batch)
+            z_list.append(mu)
         return z_list

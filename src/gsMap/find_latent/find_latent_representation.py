@@ -199,6 +199,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         distribution=distribution,
         use_tf=use_tf,
         variational=variational,
+        batch_label_classes=get_trainning_data.batch_label_encoder.classes_,
     )
 
     # Configure the optimizer
@@ -240,7 +241,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     if not model_is_compatible:
         if os.path.exists(config.model_path):
             logger.info(
-                "Existing model uses an incompatible encoder input transform; retraining."
+                "Existing model uses incompatible encoder or batch-label semantics; retraining."
             )
         # reconstruction
         gsMap_embedding_finder.train(config.itermax, patience=config.patience)
@@ -259,11 +260,18 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
 
     # Load the best model
     if not _load_compatible_model_state(gsMap_embedding_finder.model, config.model_path):
-        raise RuntimeError("Model checkpoint has an incompatible encoder input transform")
+        raise RuntimeError("Model checkpoint has incompatible encoder or batch-label semantics")
     gsmap_embedding_model = gsMap_embedding_finder.model
 
     # Configure the inference
-    infer = InferenceData(hvg, batch_size, gsmap_embedding_model, label_name, config)
+    infer = InferenceData(
+        hvg,
+        batch_size,
+        gsmap_embedding_model,
+        label_name,
+        config,
+        get_trainning_data.batch_label_encoder,
+    )
 
     output_h5ad_path_dict: OrderedDict[str, Path] = OrderedDict()
     # Do the DEG in the training adata if annotation is provided and high quality cell QC is enabled
@@ -297,9 +305,9 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     training_adata.write_h5ad(training_adata_path)
     logger.info(f"Saved training adata to {training_adata_path}")
 
-    for st_id, (sample_name, st_file) in enumerate(config.sample_h5ad_dict.items()):
+    for sample_name, st_file in config.sample_h5ad_dict.items():
         # Infer the embedding
-        adata = infer.infer_embedding_single(st_id, st_file)
+        adata = infer.infer_embedding_single(sample_name, st_file)
 
         # Calculate module scores and apply QC for each annotation
         if config.high_quality_cell_qc and config.annotation is not None:
@@ -361,6 +369,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "class_size": int(class_size),
             "distribution": distribution,
             "encoder_input_transform": gsmap_embedding_model.encoder_input_transform.value,
+            "latent_embedding_statistic": gsmap_embedding_model.latent_embedding_statistic,
             "variational": variational,
             "use_tf": use_tf,
         },
@@ -373,6 +382,9 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "patience": int(config.patience),
             "two_stage": config.two_stage,
             "graph_context_mode": get_trainning_data.graph_context_mode,
+            "batch_label_classes": [
+                str(label) for label in get_trainning_data.batch_label_encoder.classes_
+            ],
         },
         "outputs": {
             "latent_files": output_h5ad_path_dict_str,

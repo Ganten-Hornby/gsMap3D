@@ -12,6 +12,7 @@ import scipy.sparse as sp
 import torch
 from anndata import AnnData
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TimeRemainingColumn
+from sklearn.preprocessing import LabelEncoder
 
 from gsMap.config import FindLatentRepresentationsConfig
 
@@ -433,7 +434,7 @@ def create_subsampled_adata(
                 adata = adata[sampled_cells].copy()
 
         # Add batch information to obs
-        adata.obs["batch_id"] = f"S{st_id}"
+        adata.obs["batch_id"] = sample_name
         adata.obs["sample_name"] = sample_name
 
         # Add label information to obs (ensure it's properly set)
@@ -810,6 +811,7 @@ class TrainingData:
         self.label_merge = None
         self.batch_merge = None
         self.batch_size = None
+        self.batch_label_encoder = LabelEncoder()
         self.label_name = None
         self.graph_context_mode = _TRAINING_ROWS_GRAPH_CONTEXT
 
@@ -914,7 +916,7 @@ class TrainingData:
             label = np.zeros(concatenated_adata.n_obs)
 
         # Get batch information from obs
-        batch_labels = concatenated_adata.obs["batch_id"].values
+        batch_labels = concatenated_adata.obs["batch_id"].astype(str).to_numpy()
 
         # Get expression array for HVG genes
         expression_array = torch.Tensor(concatenated_adata[:, hvg].X.toarray())
@@ -979,8 +981,10 @@ class TrainingData:
                 batch_adata.n_obs,
             )
 
-        # Convert batch labels to numeric codes
-        batch_codes = pd.Categorical(batch_labels).codes
+        # Fit one explicit mapping and reuse it for inference.  In particular,
+        # never assume that an ordinal sample index is the same as a categorical
+        # code (for example, lexicographic ordering places S10 before S2).
+        batch_codes = self.batch_label_encoder.fit_transform(batch_labels)
 
         # Convert labels to categorical codes
         cat_labels = pd.Categorical(label)
@@ -989,7 +993,7 @@ class TrainingData:
         # Store results
         self.expression_merge = expression_array
         self.expression_gcn_merge = expression_array_gcn
-        self.batch_merge = torch.from_numpy(np.array(batch_codes, copy=True)).float()
+        self.batch_merge = torch.from_numpy(np.array(batch_codes, copy=True)).long()
         self.label_merge = torch.from_numpy(np.array(label_codes, copy=True)).long()
 
         if self.params.annotation is not None:
@@ -998,7 +1002,7 @@ class TrainingData:
             self.label_name = None
 
         # Set batch size
-        self.batch_size = len(torch.unique(self.batch_merge))
+        self.batch_size = len(self.batch_label_encoder.classes_)
 
 
 # Inference for each ST dataset
@@ -1010,9 +1014,18 @@ class InferenceData:
         batch_size: Integer defining the batch size for inference.
         model: Model to be used for inference.
         params: Dictionary containing additional parameters for inference.
+        batch_label_encoder: Label encoder fitted on the training batches.
     """
 
-    def __init__(self, hvg, batch_size, model, label_name, params):
+    def __init__(
+        self,
+        hvg,
+        batch_size,
+        model,
+        label_name,
+        params,
+        batch_label_encoder: LabelEncoder,
+    ):
         self.params = params
         self.gcov = GCN(self.params.K)
         self.hvg = hvg
@@ -1020,13 +1033,26 @@ class InferenceData:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = model.to(self.device)
         self.label_name = label_name
+        self.batch_label_encoder = batch_label_encoder
+        if len(self.batch_label_encoder.classes_) != self.batch_size:
+            raise ValueError("Batch encoder classes do not match the model batch size")
         self.processed_list_path = self.params.latent_dir / "processed.list"
+
+    def _encode_batch_label(self, batch_label: str) -> int:
+        """Encode an inference batch with the mapping fitted during training."""
+
+        try:
+            return int(self.batch_label_encoder.transform([str(batch_label)])[0])
+        except ValueError as error:
+            raise RuntimeError(
+                f"Inference batch {batch_label!r} was not present during training"
+            ) from error
 
     def _infer_tensor_rows(
         self,
         expression_gcn: torch.Tensor,
         expression: torch.Tensor,
-        st_id: int,
+        batch_code: int,
         row_indices: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Run only bounded model batches for the selected tensor rows."""
@@ -1046,7 +1072,7 @@ class InferenceData:
                 expression_gcn_focal = expression_gcn[batch_rows].to(self.device)
                 expression_focal = expression[batch_rows].to(self.device)
                 batch_indices_focal = torch.full(
-                    (batch_rows.numel(),), st_id, dtype=torch.long, device=self.device
+                    (batch_rows.numel(),), batch_code, dtype=torch.long, device=self.device
                 )
                 mu_focal = self.model.encode(
                     [expression_focal, expression_gcn_focal], batch_indices_focal
@@ -1056,9 +1082,10 @@ class InferenceData:
 
         return emb_cell, emb_niche
 
-    def infer_embedding_single(self, st_id, st_file) -> AnnData:
+    def infer_embedding_single(self, batch_label, st_file) -> AnnData:
         st_name = (Path(st_file).name).split(".h5ad")[0]
         logger.info(f"Infering cell embeddings for {st_name}...")
+        batch_code = self._encode_batch_label(batch_label)
 
         # Load the ST data
         adata = sc.read_h5ad(st_file)
@@ -1102,7 +1129,7 @@ class InferenceData:
                 chunk_cell, chunk_niche = self._infer_tensor_rows(
                     expression_array_gcn,
                     expression_array,
-                    st_id,
+                    batch_code,
                     chunk.focal_local_indices,
                 )
                 emb_cell[chunk.focal_global_indices] = chunk_cell
@@ -1139,7 +1166,7 @@ class InferenceData:
                 f"{adata.n_obs} cells."
             )
             emb_cell, emb_niche = self._infer_tensor_rows(
-                expression_array_gcn, expression_array, st_id
+                expression_array_gcn, expression_array, batch_code
             )
 
         # if self.label_name is not None:
