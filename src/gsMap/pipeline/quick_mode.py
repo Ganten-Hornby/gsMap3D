@@ -135,7 +135,7 @@ def run_quick_mode(config: QuickModeConfig):
         logger.info("=== Step 5: Generate Report ===")
         start_time = time.time()
 
-        if check_report_done(config, verbose=True):
+        if not config.force_report_re_run and check_report_done(config, verbose=True):
             logger.info("Report already exists. Skipping...")
         else:
             run_report(
