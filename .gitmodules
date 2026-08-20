@@ -1,0 +1,4 @@
+[submodule "analysis/revision_graph_3d"]
+	path = analysis/revision_graph_3d
+	url = https://github.com/SGGb0nd/gsMap3D-analysis.git
+	branch = main
