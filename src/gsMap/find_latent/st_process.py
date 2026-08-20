@@ -746,8 +746,25 @@ class TrainingData:
                 f"{batch_adata.n_obs} cells."
             )
 
-        # Convert batch labels to numeric codes
-        batch_codes = pd.Categorical(batch_labels).codes
+        # Keep batch codes aligned with the input sample order used by inference.
+        # Without explicit categories, pandas sorts string labels lexicographically
+        # (S0, S1, S10, ..., S2), which disagrees with inference's numeric st_id
+        # once the dataset contains S10.
+        sample_h5ad_dict = getattr(self.params, "sample_h5ad_dict", None)
+        if sample_h5ad_dict is None:
+            batch_categories = pd.unique(batch_labels).tolist()
+        else:
+            batch_categories = [f"S{st_id}" for st_id in range(len(sample_h5ad_dict))]
+
+        categorical_batches = pd.Categorical(
+            batch_labels,
+            categories=batch_categories,
+            ordered=True,
+        )
+        batch_codes = categorical_batches.codes
+        if np.any(batch_codes < 0):
+            unknown_batches = sorted(set(batch_labels) - set(batch_categories))
+            raise ValueError(f"Unknown batch IDs in training data: {unknown_batches}")
 
         # Convert labels to categorical codes
         cat_labels = pd.Categorical(label)
@@ -765,7 +782,7 @@ class TrainingData:
             self.label_name = None
 
         # Set batch size
-        self.batch_size = len(torch.unique(self.batch_merge))
+        self.batch_size = len(batch_categories)
 
 
 # Inference for each ST dataset
