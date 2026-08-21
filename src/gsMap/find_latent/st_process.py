@@ -852,13 +852,13 @@ class InferenceData:
 
             self.model.eval()
             with torch.no_grad():
-                embedding_means = self.model.encode(
+                embedding_samples = self.model.encode(
                     [expression_focal, expression_gcn_focal],
-                    sample=False,
+                    sample=True,
                 )
 
-                emb_cell.append(embedding_means[0].cpu().numpy())
-                emb_niche.append(embedding_means[1].cpu().numpy())
+                emb_cell.append(embedding_samples[0].cpu().numpy())
+                emb_niche.append(embedding_samples[1].cpu().numpy())
 
         # Concatenate results and store embeddings in adata
         emb_cell = np.concatenate(emb_cell, axis=0)

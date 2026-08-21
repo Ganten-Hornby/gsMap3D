@@ -23,7 +23,7 @@ def _make_variational_model():
     )
 
 
-def test_mean_embeddings_are_deterministic_while_training_interface_still_samples():
+def test_explicit_means_are_deterministic_while_default_inference_samples_z():
     torch.manual_seed(42)
     model = _make_variational_model().eval()
     expression = torch.rand(6, 4)
