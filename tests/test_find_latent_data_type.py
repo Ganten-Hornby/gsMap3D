@@ -4,7 +4,10 @@ import anndata
 import numpy as np
 import scipy.sparse as sp
 
-from gsMap.find_latent.find_latent_representation import _resolve_expression_model
+from gsMap.find_latent.find_latent_representation import (
+    _resolve_expression_model,
+    _serialize_label_names,
+)
 from gsMap.find_latent.st_process import find_common_hvg, setup_data_layer
 
 
@@ -32,6 +35,14 @@ def test_continuous_x_uses_gaussian_nonvariational_model():
     assert actual_layer == "X"
     assert not is_count_data
     assert model_config == ("gaussian", False, False)
+
+
+def test_unsupervised_label_names_serialize_as_empty_list():
+    assert _serialize_label_names(None) == []
+
+
+def test_array_label_names_serialize_as_list():
+    assert _serialize_label_names(np.asarray(["a", "b"])) == ["a", "b"]
 
 
 def test_find_common_hvg_accepts_gene_named_var_index(tmp_path, monkeypatch):

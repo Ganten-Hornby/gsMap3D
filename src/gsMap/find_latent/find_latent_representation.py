@@ -39,6 +39,17 @@ def _resolve_expression_model(is_count_data, requested_distribution, use_tf):
     return "gaussian", False, False
 
 
+def _serialize_label_names(label_name):
+    """Return metadata-safe label names for supervised and unsupervised runs."""
+    if label_name is None:
+        return []
+    if isinstance(label_name, list):
+        return label_name
+    if hasattr(label_name, "tolist"):
+        return label_name.tolist()
+    return list(label_name)
+
+
 def set_seed(seed_value):
     """
     Set seed for reproducibility in PyTorch and other libraries.
@@ -313,11 +324,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         "annotation_info": {
             "annotation_key": config.annotation,
             "n_classes": int(class_size),
-            "label_names": label_name
-            if isinstance(label_name, list)
-            else label_name.tolist()
-            if hasattr(label_name, "tolist")
-            else list(label_name),
+            "label_names": _serialize_label_names(label_name),
         },
     }
 
