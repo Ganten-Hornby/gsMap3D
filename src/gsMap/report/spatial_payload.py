@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SPATIAL_PAYLOAD_VERSION = 6
+SPATIAL_PAYLOAD_VERSION = 8
 P_VALUE_COLORS = [
     "#313695",
     "#4575b4",
@@ -311,43 +311,21 @@ def _stratified_positions(
     return positions
 
 
-def _top_trait_positions(
-    values: np.ndarray,
-    selected_mask: np.ndarray,
-    n_extra: int,
-) -> np.ndarray:
-    """Return top finite trait positions not already present in the display sample."""
-
-    if n_extra <= 0:
-        return np.empty(0, dtype=np.int64)
-
-    ranked_values = np.where(np.isfinite(values), values, -np.inf)
-    finite_count = int(np.isfinite(values).sum())
-    if finite_count == 0:
-        return np.empty(0, dtype=np.int64)
-
-    candidate_count = min(finite_count, max(n_extra * 2, n_extra + 64))
-    while True:
-        if candidate_count >= len(values):
-            candidates = np.arange(len(values), dtype=np.int64)
-        else:
-            split = len(values) - candidate_count
-            candidates = np.argpartition(ranked_values, split)[split:]
-        candidates = candidates[np.argsort(ranked_values[candidates])[::-1]]
-        candidates = candidates[~selected_mask[candidates]]
-        if len(candidates) >= n_extra or candidate_count >= finite_count:
-            return candidates[:n_extra]
-        candidate_count = min(finite_count, candidate_count * 2)
-
-
 def _robust_trait_max(values: np.ndarray) -> float:
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return 1.0
-    n_top = min(20, max(1, int(np.ceil(finite.size * 0.001))))
-    top = np.partition(finite, finite.size - n_top)[-n_top:]
-    upper = float(np.median(top))
+    upper = float(np.quantile(finite, 0.999))
     return upper if upper > 0 else max(1.0, float(np.max(finite)))
+
+
+def _trait_q95(values: np.ndarray) -> float:
+    """Return the shared per-trait upper anchor used by signal opacity."""
+
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0
+    return max(0.0, float(np.quantile(finite, 0.95)))
 
 
 def _finite_range(values: np.ndarray | None) -> float:
@@ -393,7 +371,6 @@ def export_spatial_3d_payloads(
     web_report_dir: Path,
     max_points: int,
     force: bool = False,
-    extreme_points_per_trait: int = 500,
     coordinate_info: dict | None = None,
 ) -> dict | None:
     """Create shared 3D coordinates and lazy feature payloads for Plotly rendering."""
@@ -438,10 +415,8 @@ def export_spatial_3d_payloads(
         "version": SPATIAL_PAYLOAD_VERSION,
         "n_total": len(metadata),
         "n_display": target_size,
-        "extreme_points_per_trait": extreme_points_per_trait,
         "traits": available_traits,
         "annotations": available_annotations,
-        "trait_extra_annotation_codes": True,
         "coordinate_info": coordinate_info,
         "source": source_signature,
         "coordinate_bounds": coordinate_bounds,
@@ -479,8 +454,6 @@ def export_spatial_3d_payloads(
         annotation: _categorical_schema(metadata[annotation])
         for annotation in available_annotations
     }
-    annotation_codes = _categorical_code_arrays(metadata, annotation_schemas)
-
     base_payload = {
         "version": SPATIAL_PAYLOAD_VERSION,
         "n_points": target_size,
@@ -500,31 +473,16 @@ def export_spatial_3d_payloads(
         + ";",
     )
 
-    selected_mask = np.zeros(len(metadata), dtype=bool)
-    selected_mask[positions] = True
     trait_index = {}
     outputs = [base_relative]
     for trait in available_traits:
         values = pd.to_numeric(metadata[trait], errors="coerce").to_numpy(dtype=np.float32)
-        extra_positions = _top_trait_positions(
-            values, selected_mask, min(extreme_points_per_trait, len(metadata) - target_size)
-        )
-        extra = {
-            "x": encode_typed_array(all_coordinates[extra_positions, 0]),
-            "y": encode_typed_array(all_coordinates[extra_positions, 1]),
-            "z": encode_typed_array(all_coordinates[extra_positions, 2]),
-            "values": encode_typed_array(values[extra_positions]),
-            "annotation_codes": {
-                annotation: encode_typed_array(codes[extra_positions], dtype=dtype)
-                for annotation, (codes, dtype) in annotation_codes.items()
-            },
-        }
         payload = {
             "values": encode_typed_array(values[positions]),
-            "extra": extra,
-            "n_extra": int(len(extra_positions)),
             "cmin": 0.0,
             "cmax": _robust_trait_max(values),
+            "q95": _trait_q95(values),
+            "scale_scope": "all_spots",
         }
         filename = f"trait_{safe_name(trait)}.js"
         relative = f"js_data/spatial_3d/{filename}"
@@ -556,8 +514,6 @@ def export_spatial_3d_payloads(
         "traits": trait_index,
         "annotations": annotation_index,
         "colorscale": P_VALUE_COLORS,
-        "extreme_points_per_trait": extreme_points_per_trait,
-        "trait_extra_annotation_codes": available_annotations,
         "coordinate_info": coordinate_info,
     }
     index_relative = "js_data/spatial_3d/spatial_3d_index.js"
@@ -617,14 +573,12 @@ def export_sample_spatial_payloads(
     annotations: list[str],
     js_data_dir: Path,
     max_points: int,
-    extreme_points_per_trait: int = 500,
     coordinate_info: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """Write compact per-sample bases and independently loadable trait arrays.
 
-    Trait colors share one robust scale across every sample. When a sample is
-    downsampled, a small trait-specific overlay retains the strongest omitted
-    associations so spatial hotspots are not lost by representative sampling.
+    Trait colors share one robust scale across every sample. Display spots are
+    sampled once per tissue and reused by every trait.
     """
 
     payload_dir = js_data_dir / "spatial_2d"
@@ -646,7 +600,6 @@ def export_sample_spatial_payloads(
     )
     sample_positions = {}
     sample_all_positions = {}
-    sample_selected_masks = {}
     annotation_schemas = {
         annotation: _categorical_schema(metadata[annotation])
         for annotation in annotations
@@ -673,9 +626,6 @@ def export_sample_spatial_payloads(
             positions = all_positions
         sample_positions[sample_name] = positions
         sample_all_positions[sample_name] = all_positions
-        selected_mask = np.zeros(n_original, dtype=bool)
-        selected_mask[local_positions] = True
-        sample_selected_masks[sample_name] = selected_mask
 
         if has_spatial_coordinates:
             sx = sx_all[positions]
@@ -740,36 +690,17 @@ def export_sample_spatial_payloads(
         quantization_scale = 0.1
         maximum_encoded_value = (np.iinfo(np.uint16).max - 1) * quantization_scale
         shared_cmax = min(_robust_trait_max(all_values), maximum_encoded_value)
+        shared_q95 = min(_trait_q95(all_values), maximum_encoded_value)
         for sample_name in samples:
             positions = sample_positions[sample_name]
             values = all_values[positions]
             all_positions = sample_all_positions[sample_name]
             sample_values = all_values[all_positions]
-            n_available_extra = len(all_positions) - len(positions)
-            extra_local_positions = _top_trait_positions(
-                sample_values,
-                sample_selected_masks[sample_name],
-                min(extreme_points_per_trait, n_available_extra),
-            )
-            extra_positions = all_positions[extra_local_positions]
             payload = {
                 "values": encode_nonnegative_quantized_array(values, quantization_scale),
-                "extra": {
-                    "x": encode_typed_array(sx_all[extra_positions]),
-                    "y": encode_typed_array(sy_all[extra_positions]),
-                    "values": encode_nonnegative_quantized_array(
-                        all_values[extra_positions], quantization_scale
-                    ),
-                    "annotation_codes": {
-                        annotation: encode_typed_array(codes[extra_positions], dtype=dtype)
-                        for annotation, (codes, dtype) in annotation_codes.items()
-                    },
-                }
-                if has_spatial_coordinates
-                else None,
-                "n_extra": int(len(extra_positions)),
                 "cmin": 0.0,
                 "cmax": shared_cmax,
+                "q95": shared_q95,
                 "n_clipped": int(np.count_nonzero(sample_values > shared_cmax)),
                 "scale_scope": "all_samples",
             }

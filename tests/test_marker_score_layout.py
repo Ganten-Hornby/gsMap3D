@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import multiprocessing
+from pathlib import Path
 from types import SimpleNamespace
 
 import anndata as ad
@@ -20,7 +22,25 @@ from gsMap.latent2gene.memmap_io import (
     _automatic_lustre_stripe_count,
     _should_use_tmp_storage,
 )
-from gsMap.spatial_ldsc.io import _shared_marker_cache_base, load_marker_scores_memmap_format
+from gsMap.spatial_ldsc.io import (
+    _acquire_shared_marker_cache,
+    load_marker_scores_memmap_format,
+)
+
+
+def _hold_marker_cache_lease(marker_path, cache_dir, metadata, ready, release):
+    from gsMap.spatial_ldsc import io as spatial_io
+
+    spatial_io._paths_share_storage_device = lambda *_: False
+    spatial_io.shutil.disk_usage = lambda _path: SimpleNamespace(free=10 * 1024**3)
+    marker_lease = spatial_io._acquire_shared_marker_cache(
+        Path(marker_path),
+        Path(cache_dir),
+        metadata,
+    )
+    ready.set()
+    release.wait(timeout=10)
+    marker_lease.close()
 
 
 def test_sequential_marker_layout_appends_skipped_rows_and_is_atomic(tmp_path):
@@ -42,7 +62,10 @@ def test_sequential_marker_layout_appends_skipped_rows_and_is_atomic(tmp_path):
     assert not list(tmp_path.glob("*.incomplete.*"))
 
 
-def test_shared_marker_read_cache_is_reused(tmp_path, monkeypatch):
+def test_shared_marker_read_cache_is_reused_then_removed_by_final_reader(
+    tmp_path,
+    monkeypatch,
+):
     source_dir = tmp_path / "source"
     cache_dir = tmp_path / "cache"
     source_dir.mkdir()
@@ -58,16 +81,73 @@ def test_shared_marker_read_cache_is_reused(tmp_path, monkeypatch):
         lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
 
-    first = _shared_marker_cache_base(marker_path, cache_dir, metadata)
-    second = _shared_marker_cache_base(marker_path, cache_dir, metadata)
+    first = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
+    second = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
 
-    assert first == second
+    assert first.path == second.path
     np.testing.assert_array_equal(
-        np.fromfile(first.with_suffix(".dat"), dtype=np.float16).reshape(4, 3),
+        np.fromfile(first.path.with_suffix(".dat"), dtype=np.float16).reshape(4, 3),
         marker_values,
     )
-    assert first.with_suffix(".meta.json").is_file()
+    assert first.path.with_suffix(".meta.json").is_file()
     assert len(list((cache_dir / "gsmap_read_cache").glob("*.dat"))) == 1
+
+    first.close()
+    assert first.path.with_suffix(".dat").is_file()
+    second.close()
+    assert not first.path.with_suffix(".dat").exists()
+    assert not first.path.with_suffix(".meta.json").exists()
+    assert len(list((cache_dir / "gsmap_read_cache").glob("*.lock"))) == 1
+
+
+def test_shared_marker_read_cache_is_retained_across_processes(tmp_path):
+    source_dir = tmp_path / "source"
+    cache_dir = tmp_path / "cache"
+    source_dir.mkdir()
+    cache_dir.mkdir()
+    marker_path = source_dir / "marker_scores.dat"
+    np.arange(12, dtype=np.float16).tofile(marker_path)
+    metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
+
+    context = multiprocessing.get_context("spawn")
+    first_ready = context.Event()
+    first_release = context.Event()
+    second_ready = context.Event()
+    second_release = context.Event()
+    first_process = context.Process(
+        target=_hold_marker_cache_lease,
+        args=(marker_path, cache_dir, metadata, first_ready, first_release),
+    )
+    second_process = context.Process(
+        target=_hold_marker_cache_lease,
+        args=(marker_path, cache_dir, metadata, second_ready, second_release),
+    )
+
+    try:
+        first_process.start()
+        assert first_ready.wait(timeout=10)
+        second_process.start()
+        assert second_ready.wait(timeout=10)
+        cache_files = list((cache_dir / "gsmap_read_cache").glob("*.dat"))
+        assert len(cache_files) == 1
+
+        first_release.set()
+        first_process.join(timeout=10)
+        assert first_process.exitcode == 0
+        assert cache_files[0].is_file()
+
+        second_release.set()
+        second_process.join(timeout=10)
+        assert second_process.exitcode == 0
+        assert not cache_files[0].exists()
+    finally:
+        first_release.set()
+        second_release.set()
+        for process in (first_process, second_process):
+            process.join(timeout=2)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
 
 
 def test_shared_marker_read_cache_can_be_reused_without_populating(tmp_path, monkeypatch):
@@ -80,15 +160,180 @@ def test_shared_marker_read_cache_can_be_reused_without_populating(tmp_path, mon
     metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
     monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
 
-    resolved = _shared_marker_cache_base(
+    marker_lease = _acquire_shared_marker_cache(
         marker_path,
         cache_dir,
         metadata,
         populate=False,
     )
 
-    assert resolved == marker_path
+    assert marker_lease.path == marker_path
     assert not list((cache_dir / "gsmap_read_cache").glob("*.dat"))
+    marker_lease.close()
+
+
+def test_invalid_same_key_cache_is_removed_before_capacity_check(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    cache_dir = tmp_path / "cache"
+    source_dir.mkdir()
+    cache_dir.mkdir()
+    marker_path = source_dir / "marker_scores.dat"
+    marker_values = np.arange(12, dtype=np.float16).reshape(4, 3)
+    marker_values.tofile(marker_path)
+    metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    )
+    initial_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
+    cache_base = initial_lease.path
+    initial_lease.close()
+
+    invalid_data = cache_base.with_suffix(".dat")
+    invalid_metadata = cache_base.with_suffix(".meta.json")
+    abandoned_partial = cache_base.parent / f".{cache_base.name}.dat.999.partial"
+    invalid_data.write_bytes(b"truncated cache")
+    invalid_metadata.write_text('{"complete": false}\n')
+    abandoned_partial.write_bytes(b"abandoned partial copy")
+
+    capacity_checks = 0
+
+    def disk_usage_after_cleanup(_path):
+        nonlocal capacity_checks
+        capacity_checks += 1
+        assert not invalid_data.exists()
+        assert not invalid_metadata.exists()
+        assert not abandoned_partial.exists()
+        return SimpleNamespace(free=10 * 1024**3)
+
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        disk_usage_after_cleanup,
+    )
+    recovered_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
+    try:
+        assert capacity_checks == 1
+        np.testing.assert_array_equal(
+            np.fromfile(recovered_lease.path.with_suffix(".dat"), dtype=np.float16).reshape(4, 3),
+            marker_values,
+        )
+    finally:
+        recovered_lease.close()
+
+
+def test_nonpopulating_reader_removes_invalid_same_key_cache(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    cache_dir = tmp_path / "cache"
+    source_dir.mkdir()
+    cache_dir.mkdir()
+    marker_path = source_dir / "marker_scores.dat"
+    np.arange(12, dtype=np.float16).tofile(marker_path)
+    metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    )
+    initial_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
+    cache_base = initial_lease.path
+    initial_lease.close()
+
+    invalid_data = cache_base.with_suffix(".dat")
+    invalid_metadata = cache_base.with_suffix(".meta.json")
+    abandoned_partial = cache_base.parent / f".{cache_base.name}.dat.999.partial"
+    invalid_data.write_bytes(b"truncated cache")
+    invalid_metadata.write_text("not json\n")
+    abandoned_partial.write_bytes(b"abandoned partial copy")
+
+    report_lease = _acquire_shared_marker_cache(
+        marker_path,
+        cache_dir,
+        metadata,
+        populate=False,
+    )
+    try:
+        assert report_lease.path == marker_path
+        assert not invalid_data.exists()
+        assert not invalid_metadata.exists()
+        assert not abandoned_partial.exists()
+    finally:
+        report_lease.close()
+
+
+def test_invalid_cache_is_removed_even_when_regeneration_does_not_fit(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    cache_dir = tmp_path / "cache"
+    source_dir.mkdir()
+    cache_dir.mkdir()
+    marker_path = source_dir / "marker_scores.dat"
+    np.arange(12, dtype=np.float16).tofile(marker_path)
+    metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    )
+    initial_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
+    cache_base = initial_lease.path
+    initial_lease.close()
+
+    invalid_data = cache_base.with_suffix(".dat")
+    invalid_metadata = cache_base.with_suffix(".meta.json")
+    abandoned_partial = cache_base.parent / f".{cache_base.name}.dat.999.partial"
+    invalid_data.write_bytes(b"truncated cache")
+    invalid_metadata.write_text('{"complete": false}\n')
+    abandoned_partial.write_bytes(b"abandoned partial copy")
+
+    def insufficient_capacity_after_cleanup(_path):
+        assert not invalid_data.exists()
+        assert not invalid_metadata.exists()
+        assert not abandoned_partial.exists()
+        return SimpleNamespace(free=0)
+
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        insufficient_capacity_after_cleanup,
+    )
+    fallback_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
+    try:
+        assert fallback_lease.path == marker_path
+        assert not invalid_data.exists()
+        assert not invalid_metadata.exists()
+        assert not abandoned_partial.exists()
+    finally:
+        fallback_lease.close()
+
+
+def test_marker_cache_acquisition_removes_inactive_orphan(tmp_path, monkeypatch):
+    source_dir = tmp_path / "source"
+    cache_dir = tmp_path / "cache"
+    shared_cache_dir = cache_dir / "gsmap_read_cache"
+    source_dir.mkdir()
+    cache_dir.mkdir()
+    shared_cache_dir.mkdir()
+    marker_path = source_dir / "marker_scores.dat"
+    np.arange(12, dtype=np.float16).tofile(marker_path)
+    metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
+
+    orphan_base = shared_cache_dir / "marker_scores_orphaned"
+    orphan_base.with_suffix(".dat").write_bytes(b"orphaned cache")
+    orphan_base.with_suffix(".meta.json").write_text('{"complete": true}\n')
+    orphan_base.with_suffix(".lock").touch()
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    )
+
+    marker_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
+    assert not orphan_base.with_suffix(".dat").exists()
+    assert not orphan_base.with_suffix(".meta.json").exists()
+    marker_lease.close()
 
 
 @pytest.mark.parametrize(
@@ -223,6 +468,63 @@ def test_loader_preserves_legacy_identity_layout(tmp_path):
         assert loaded.obs_names.tolist() == source.obs_names.tolist()
         np.testing.assert_array_equal(loaded.X, marker_values)
         assert "marker_score_row_layout" not in loaded.uns
+    finally:
+        loaded.uns["memmap_manager"].close()
+
+
+def test_loader_removes_scratch_cache_when_memmap_manager_closes(tmp_path, monkeypatch):
+    source_path = tmp_path / "concatenated_latent_adata.h5ad"
+    source = _source_adata(source_path)
+    marker_path = tmp_path / "marker_scores.dat"
+    marker_values = np.arange(12, dtype=np.float16).reshape(4, 3)
+    _write_marker_memmap(marker_path, marker_values)
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    )
+    config = SimpleNamespace(
+        marker_scores_memmap_path=marker_path,
+        concatenated_latent_adata_path=source_path,
+        memmap_tmp_dir=scratch_dir,
+        spatial_key="spatial",
+    )
+
+    loaded = load_marker_scores_memmap_format(config)
+    cache_dir = scratch_dir / "gsmap_read_cache"
+    assert len(list(cache_dir.glob("*.dat"))) == 1
+    np.testing.assert_array_equal(loaded.X, marker_values)
+
+    loaded.uns["memmap_manager"].close()
+    assert not list(cache_dir.glob("*.dat"))
+    assert not list(cache_dir.glob("*.meta.json"))
+    assert source.obs_names.tolist() == loaded.obs_names.tolist()
+
+
+def test_report_style_loader_does_not_populate_full_scratch_cache(tmp_path, monkeypatch):
+    source_path = tmp_path / "concatenated_latent_adata.h5ad"
+    _source_adata(source_path)
+    marker_path = tmp_path / "marker_scores.dat"
+    marker_values = np.arange(12, dtype=np.float16).reshape(4, 3)
+    _write_marker_memmap(marker_path, marker_values)
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+
+    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    config = SimpleNamespace(
+        marker_scores_memmap_path=marker_path,
+        concatenated_latent_adata_path=source_path,
+        memmap_tmp_dir=scratch_dir,
+        spatial_key="spatial",
+    )
+
+    loaded = load_marker_scores_memmap_format(config, populate_cache=False)
+    try:
+        np.testing.assert_array_equal(loaded.X, marker_values)
+        assert not list((scratch_dir / "gsmap_read_cache").glob("*.dat"))
     finally:
         loaded.uns["memmap_manager"].close()
 

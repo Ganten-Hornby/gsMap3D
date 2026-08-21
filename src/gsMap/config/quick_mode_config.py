@@ -140,9 +140,7 @@ def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
     return len(missing_files) == 0 and _report_visualization_config_matches(config, verbose)
 
 
-def _report_visualization_config_matches(
-    config: QuickModeConfig, verbose: bool = False
-) -> bool:
+def _report_visualization_config_matches(config: QuickModeConfig, verbose: bool = False) -> bool:
     """Return whether cached report payloads use the requested display limits."""
     report_meta_path = config.web_report_dir / "report_meta.json"
     if not report_meta_path.is_file():
@@ -193,7 +191,8 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         web_report_dir / "report_meta.json",
         js_data_dir / "sample_index.js",
         js_data_dir / "report_meta.js",
-        js_data_dir / "cauchy_results.js",
+        js_data_dir / "cauchy_index.js",
+        js_data_dir / "cauchy_manifest.json",
     ]
 
     for f in core_web_files:
@@ -294,15 +293,16 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
     # Multi-sample plots (Spatial only, and if enabled)
     if dataset_type != DatasetType.SCRNA_SEQ and config.generate_multi_sample_plots:
         spatial_plot_dir = web_report_dir / "spatial_plots"
-        annotation_plot_dir = web_report_dir / "annotation_plots"
 
         for trait in traits:
-            plot_path = spatial_plot_dir / f"ldsc_{trait}.png"
+            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+            plot_path = spatial_plot_dir / "by_trait" / f"ldsc_{safe_trait}.png"
             if not plot_path.exists():
                 missing_web_files.append(plot_path)
 
-        for anno in annotation_list:
-            plot_path = annotation_plot_dir / f"anno_{anno}.png"
+        for sample_name in (config.sample_h5ad_dict or {}):
+            safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
+            plot_path = spatial_plot_dir / "by_sample" / f"sample_{safe_sample}.png"
             if not plot_path.exists():
                 missing_web_files.append(plot_path)
 
