@@ -16,6 +16,8 @@ from .gnn.gcn import GCN, SpatialGraph, build_graph_for_mode
 
 logger = logging.getLogger(__name__)
 
+SOURCE_OBS_NAME = "_gsmap_source_obs_name"
+
 
 def propagate_spatial_features(
     expression: torch.Tensor,
@@ -23,8 +25,17 @@ def propagate_spatial_features(
     stable_ids: np.ndarray,
     params,
     gcov: GCN,
+    output_indices: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, SpatialGraph]:
-    """Construct the configured graph and propagate one expression block."""
+    """Construct a graph and return K-hop features for requested output nodes."""
+
+    output_index_tensor = None
+    if output_indices is not None:
+        output_index_tensor = torch.as_tensor(
+            output_indices,
+            dtype=torch.long,
+            device=expression.device,
+        )
 
     graph = build_graph_for_mode(
         coords=coords,
@@ -35,7 +46,12 @@ def propagate_spatial_features(
         sigma=params.graph_sigma,
     )
     if params.graph_mode.lower() == "no_graph":
-        return expression.repeat(1, params.K), graph
+        output_expression = (
+            expression
+            if output_index_tensor is None
+            else expression.index_select(0, output_index_tensor)
+        )
+        return output_expression.repeat(1, params.K), graph
 
     edge_index = torch.from_numpy(graph.edges.T).long()
     edge_weight = None
@@ -47,6 +63,7 @@ def propagate_spatial_features(
             edge_index,
             edge_weight,
             legacy_normalization=params.graph_mode.lower() in {"legacy_bug", "legacy_symmetric"},
+            output_indices=output_index_tensor,
         ),
         graph,
     )
@@ -242,8 +259,10 @@ def create_subsampled_adata(
     sample_h5ad_dict, n_cell_used, params: FindLatentRepresentationsConfig
 ):
     """
-    Create subsampled adata for each sample with sample-specific stratified sampling,
-    add batch and label information, and return concatenated adata.
+    Select loss cells from each sample with sample-specific stratified sampling.
+
+    Original within-section observation IDs are retained so :class:`TrainingData`
+    can compute spatial features on the complete graph before selecting these rows.
 
     Args:
         sample_h5ad_dict (dict): Dictionary mapping sample names to file paths of ST datasets.
@@ -272,6 +291,10 @@ def create_subsampled_adata(
 
         # Setup data layer consistently
         is_count_data, actual_data_layer = setup_data_layer(adata, params.data_layer)
+
+        # Preserve the within-sample observation ID so training rows can be
+        # selected from features propagated over the complete spatial graph.
+        adata.obs[SOURCE_OBS_NAME] = adata.obs_names.astype(str)
 
         # Filter cells based on annotation if provided
         if params.annotation is not None:
@@ -701,7 +724,7 @@ class TrainingData:
         self.label_name = None
 
     def prepare(self, concatenated_adata, hvg):
-        logger.info("Processing concatenated subsampled data...")
+        logger.info("Processing training cells with full-graph spatial context...")
 
         # Get labels from obs
         if self.params.annotation is not None:
@@ -724,33 +747,96 @@ class TrainingData:
             dtype=expression_array.dtype,
         )
 
+        sample_h5ad_dict = getattr(self.params, "sample_h5ad_dict", None)
+        use_full_graph_context = bool(
+            getattr(self.params, "do_sampling", False) and sample_h5ad_dict
+        )
+        if use_full_graph_context and SOURCE_OBS_NAME not in concatenated_adata.obs:
+            raise ValueError(
+                f"Training data is missing {SOURCE_OBS_NAME!r}; "
+                "cannot align sampled cells to the full spatial graph"
+            )
+        source_paths = (
+            {
+                f"S{sample_index}": Path(sample_path)
+                for sample_index, sample_path in enumerate(sample_h5ad_dict.values())
+            }
+            if use_full_graph_context
+            else {}
+        )
+
         for batch_id in concatenated_adata.obs["batch_id"].unique():
+            batch_key = str(batch_id)
             batch_mask = concatenated_adata.obs["batch_id"] == batch_id
             batch_adata = concatenated_adata[batch_mask]
             batch_indices = np.flatnonzero(batch_mask.to_numpy())
             batch_expression = expression_array[batch_indices]
 
-            logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
+            if use_full_graph_context:
+                if batch_key not in source_paths:
+                    raise ValueError(f"Unknown batch ID in training data: {batch_id!r}")
+                context_adata = sc.read_h5ad(source_paths[batch_key])
+                context_adata.var_names_make_unique()
+                setup_data_layer(context_adata, self.params.data_layer)
 
-            batch_expression_gcn, graph = propagate_spatial_features(
-                expression=batch_expression,
-                coords=np.asarray(batch_adata.obsm[self.params.spatial_key]),
-                stable_ids=batch_adata.obs_names.to_numpy(),
-                params=self.params,
-                gcov=self.gcov,
-            )
+                context_ids = pd.Index(context_adata.obs_names.astype(str))
+                if not context_ids.is_unique:
+                    raise ValueError(
+                        f"Observation IDs must be unique within {batch_id} for full-graph training"
+                    )
+                selected_ids = batch_adata.obs[SOURCE_OBS_NAME].astype(str)
+                selected_positions = context_ids.get_indexer(selected_ids)
+                if np.any(selected_positions < 0):
+                    missing_ids = selected_ids.to_numpy()[selected_positions < 0][:5]
+                    raise ValueError(
+                        f"Could not locate sampled cells in full graph {batch_id}: "
+                        f"{missing_ids.tolist()}"
+                    )
+
+                context_matrix = context_adata[:, hvg].X
+                if sp.issparse(context_matrix):
+                    context_matrix = context_matrix.toarray()
+                context_expression = torch.as_tensor(
+                    np.asarray(context_matrix),
+                    dtype=torch.float32,
+                )
+                logger.info(
+                    f"Processing batch {batch_id} on the full graph: "
+                    f"{context_adata.n_obs} context cells, {batch_adata.n_obs} loss cells..."
+                )
+                batch_expression_gcn, graph = propagate_spatial_features(
+                    expression=context_expression,
+                    coords=np.asarray(context_adata.obsm[self.params.spatial_key]),
+                    stable_ids=context_adata.obs_names.to_numpy(),
+                    params=self.params,
+                    gcov=self.gcov,
+                    output_indices=selected_positions,
+                )
+                graph_cell_count = context_adata.n_obs
+            else:
+                logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
+                batch_expression_gcn, graph = propagate_spatial_features(
+                    expression=batch_expression,
+                    coords=np.asarray(batch_adata.obsm[self.params.spatial_key]),
+                    stable_ids=batch_adata.obs_names.to_numpy(),
+                    params=self.params,
+                    gcov=self.gcov,
+                )
+                graph_cell_count = batch_adata.n_obs
             expression_array_gcn[batch_indices] = batch_expression_gcn
 
             logger.info(
                 f"Graph for {batch_id} has {graph.edges.shape[0]} directed edges, "
-                f"{batch_adata.n_obs} cells."
+                f"{graph_cell_count} context cells and {batch_adata.n_obs} loss cells."
             )
+            if use_full_graph_context:
+                del context_adata, context_expression, context_matrix
+            del batch_expression_gcn, graph
 
         # Keep batch codes aligned with the input sample order used by inference.
         # Without explicit categories, pandas sorts string labels lexicographically
         # (S0, S1, S10, ..., S2), which disagrees with inference's numeric st_id
         # once the dataset contains S10.
-        sample_h5ad_dict = getattr(self.params, "sample_h5ad_dict", None)
         if sample_h5ad_dict is None:
             batch_categories = pd.unique(batch_labels).tolist()
         else:

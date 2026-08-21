@@ -318,6 +318,7 @@ class GCN(MessagePassing):
         edge_index: torch.Tensor,
         edge_weight: torch.Tensor | None = None,
         legacy_normalization: bool = False,
+        output_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if legacy_normalization:
             if edge_weight is not None:
@@ -340,11 +341,21 @@ class GCN(MessagePassing):
                 dtype=x.dtype,
             )
 
-        xs = [x]
+        current = x
+        outputs = []
         for _ in range(self.K):
-            xs.append(self.propagate(edge_index, x=xs[-1], edge_weight=normalized_weight))
+            current = self.propagate(
+                edge_index,
+                x=current,
+                edge_weight=normalized_weight,
+            )
+            outputs.append(
+                current
+                if output_indices is None
+                else current.index_select(0, output_indices)
+            )
 
-        return torch.cat(xs[1:], dim=1)
+        return torch.cat(outputs, dim=1)
 
     def message(self, x_j: torch.Tensor, edge_weight: torch.Tensor) -> torch.Tensor:
         return edge_weight.view(-1, 1) * x_j

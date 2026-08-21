@@ -75,10 +75,11 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     hvg, n_cell_used, gene_homolog_dict = find_common_hvg(config.sample_h5ad_dict, config)
     common_genes = np.array(list(gene_homolog_dict.keys()))
 
-    # Create subsampled concatenated adata with sample-specific stratified sampling
+    # Select the cells used by the loss with sample-specific stratified sampling.
     training_adata = create_subsampled_adata(config.sample_h5ad_dict, n_cell_used, config)
 
-    # Prepare the trainning data
+    # Propagate spatial features on each complete section graph, then retain
+    # only the selected training rows for the model loss (v2 graph workflow).
     get_trainning_data = TrainingData(config)
     get_trainning_data.prepare(training_adata, hvg)
 
@@ -282,6 +283,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         },
         "training_info": {
             "n_cells_used": int(cell_size),
+            "graph_context": "full_graph_before_training_selection",
             "n_genes_used": int(len(hvg)),
             "n_common_genes": int(len(common_genes)),
             "batch_size": int(config.batch_size),
