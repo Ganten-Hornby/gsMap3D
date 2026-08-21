@@ -122,6 +122,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
     variances_list = []
     cell_number = []
+    input_data_types = {}
 
     logger.info("Finding highly variable genes (HVGs)...")
 
@@ -151,6 +152,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             is_count_data, actual_data_layer = setup_data_layer(
                 adata_temp, params.data_layer, verbose=False
             )
+            input_data_types[sample_name] = is_count_data
             cell_number.append(adata_temp.n_obs)
 
             try:
@@ -178,6 +180,16 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         raise ValueError(
             "No valid HVG results obtained from any sample. Please check your data and parameters."
         )
+
+    detected_types = set(input_data_types.values())
+    if len(detected_types) != 1:
+        count_samples = [name for name, value in input_data_types.items() if value]
+        continuous_samples = [name for name, value in input_data_types.items() if not value]
+        raise ValueError(
+            "All input sections must use the same expression data type; "
+            f"count sections={count_samples}, continuous sections={continuous_samples}"
+        )
+    is_count_data = detected_types.pop()
 
     # Find the common genes across all samples
     common_genes = np.array(
@@ -252,7 +264,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             f"Only {len(gene_homolog_dict)} genes could be mapped to human symbols. Please check the homolog file."
         )
 
-    return hvg, n_cell_used, gene_homolog_dict
+    return hvg, n_cell_used, gene_homolog_dict, is_count_data
 
 
 def create_subsampled_adata(

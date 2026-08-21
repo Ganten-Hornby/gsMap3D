@@ -32,6 +32,13 @@ from .st_process import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_expression_model(is_count_data, requested_distribution, use_tf):
+    """Choose likelihood and variational behavior from the actual expression matrix."""
+    if is_count_data:
+        return requested_distribution, True, use_tf
+    return "gaussian", False, False
+
+
 def set_seed(seed_value):
     """
     Set seed for reproducibility in PyTorch and other libraries.
@@ -72,7 +79,10 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     set_seed(config.random_seed)
 
     # Find the hvg
-    hvg, n_cell_used, gene_homolog_dict = find_common_hvg(config.sample_h5ad_dict, config)
+    hvg, n_cell_used, gene_homolog_dict, is_count_data = find_common_hvg(
+        config.sample_h5ad_dict,
+        config,
+    )
     common_genes = np.array(list(gene_homolog_dict.keys()))
 
     # Select the cells used by the loss with sample-specific stratified sampling.
@@ -83,15 +93,19 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     get_trainning_data = TrainingData(config)
     get_trainning_data.prepare(training_adata, hvg)
 
-    # Configure the distribution
-    if config.data_layer in ["count", "counts"]:
-        distribution = config.distribution
-        variational = True
-        use_tf = config.use_tf
-    else:
-        distribution = "gaussian"
-        variational = False
-        use_tf = False
+    # Configure the model from the detected matrix contents, not the layer name.
+    distribution, variational, use_tf = _resolve_expression_model(
+        is_count_data,
+        config.distribution,
+        config.use_tf,
+    )
+    logger.info(
+        "Detected %s expression; using distribution=%s, variational=%s, use_tf=%s.",
+        "count" if is_count_data else "continuous",
+        distribution,
+        variational,
+        use_tf,
+    )
 
     # Instantiation the LGCN VAE
     input_size = [
@@ -278,6 +292,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "batch_embedding_size": int(batch_embedding_size),
             "class_size": int(class_size),
             "distribution": distribution,
+            "input_is_count_data": bool(is_count_data),
             "variational": variational,
             "use_tf": use_tf,
         },
