@@ -836,12 +836,8 @@ class InferenceData:
             f"Graph for {st_name} has {graph.edges.shape[0]} directed edges, {adata.n_obs} cells."
         )
 
-        # Build batch vector as one-hot encoding
-        n_cell = adata.n_obs
-        batch_indices = torch.full((n_cell,), st_id, dtype=torch.long)
-
         # Prepare the evaluation DataLoader
-        dataset = TensorDataset(expression_array_gcn, expression_array, batch_indices)
+        dataset = TensorDataset(expression_array_gcn, expression_array)
         Inference_loader = DataLoader(dataset=dataset, batch_size=512, shuffle=False)
 
         # Inference process
@@ -850,17 +846,14 @@ class InferenceData:
         for (
             expression_gcn_focal,
             expression_focal,
-            batch_indices_fcocal,
         ) in Inference_loader:
             expression_gcn_focal = expression_gcn_focal.to(self.device)
             expression_focal = expression_focal.to(self.device)
-            batch_indices_fcocal = batch_indices_fcocal.to(self.device)
 
             self.model.eval()
             with torch.no_grad():
                 embedding_means = self.model.encode(
                     [expression_focal, expression_gcn_focal],
-                    batch_indices_fcocal,
                     sample=False,
                 )
 

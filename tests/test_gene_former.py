@@ -45,7 +45,6 @@ def test_transformer_encoder_returns_embedding_without_sampling():
         input_size=4,
         hidden_size=32,
         emb_size=8,
-        batch_emb_size=4,
         module_dim=5,
         hidden_gmf=32,
         n_modules=4,
@@ -55,10 +54,9 @@ def test_transformer_encoder_returns_embedding_without_sampling():
         variational=True,
     ).eval()
     expression = torch.rand(6, 4)
-    batch_embedding = torch.rand(6, 4)
 
     with torch.no_grad():
-        result = encoder(expression, batch_embedding, sample=False)
+        result = encoder(expression, sample=False)
 
     assert result.shape == (6, 8)
     assert torch.isfinite(result).all()

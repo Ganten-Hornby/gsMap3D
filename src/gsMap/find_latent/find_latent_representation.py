@@ -103,7 +103,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     label_name = get_trainning_data.label_name
 
     # Configure the batch embedding dim
-    batch_embedding_size = 64
+    batch_embedding_size = 16
 
     # Configure the model
     gsmap_lgcn_model = StEmbeding(

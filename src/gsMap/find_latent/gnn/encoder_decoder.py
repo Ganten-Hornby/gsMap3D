@@ -17,14 +17,13 @@ def full_block(in_dim, out_dim, p_drop=0.1):
 
 class transform(nn.Module):
     """
-    batch transform encoder
+    Expression transform without batch conditioning.
     """
 
     def __init__(
         self,
         input_size,
         hidden_size,
-        batch_emb_size,
         module_dim,
         hidden_gmf,
         n_modules,
@@ -36,7 +35,7 @@ class transform(nn.Module):
         self.use_tf = use_tf
 
         if self.use_tf:
-            self.input_size = hidden_gmf + batch_emb_size
+            self.input_size = hidden_gmf
             self.gmf = GeneModuleFormer(
                 input_dim=input_size,
                 module_dim=module_dim,
@@ -47,17 +46,15 @@ class transform(nn.Module):
             )
             self.transform = full_block(self.input_size, hidden_size)
         else:
-            self.input_size = input_size + batch_emb_size
+            self.input_size = input_size
             self.transform = full_block(self.input_size, hidden_size)
 
         self.norm = nn.LayerNorm(hidden_size)
 
-    def forward(self, x, batch):
+    def forward(self, x):
         if self.use_tf:
             x = self.gmf(x)
-            x = self.transform(torch.cat([x, batch], dim=1))
-        else:
-            x = self.transform(torch.cat([x, batch], dim=1))
+        x = self.transform(x)
         return self.norm(x)
 
 
@@ -71,7 +68,6 @@ class Encoder(nn.Module):
         input_size,
         hidden_size,
         emb_size,
-        batch_emb_size,
         module_dim,
         hidden_gmf,
         n_modules,
@@ -86,7 +82,6 @@ class Encoder(nn.Module):
         self.tf = transform(
             input_size,
             hidden_size,
-            batch_emb_size,
             module_dim,
             hidden_gmf,
             n_modules,
@@ -102,8 +97,8 @@ class Encoder(nn.Module):
         self.fc_mean = nn.Linear(hidden_size, emb_size)
         self.fc_var = nn.Linear(hidden_size, emb_size)
 
-    def forward(self, x, batch, sample=True):
-        xtf = self.tf(x, batch)
+    def forward(self, x, sample=True):
+        xtf = self.tf(x)
         h = self.mlp(xtf)
         mu = self.fc_mean(h)
         self.mu = mu
@@ -139,14 +134,12 @@ class Decoder(nn.Module):
         class_size,
         decoder_type,
         distribution,
-        n_layers=3,
     ):
         super().__init__()
 
         self.decoder_type = decoder_type
-        self.mlp = nn.ModuleList()
 
-        # Set initial input size
+        # Batch conditions every decoder hidden layer, but never the output heads.
         if decoder_type == "reconstruction":
             input_size = emb_size + batch_emb_size
         elif decoder_type == "classification":
@@ -154,20 +147,19 @@ class Decoder(nn.Module):
         else:
             raise ValueError(f"Unknown decoder_type: {decoder_type}")
 
-        # Build MLP layers with batch embedding concat at each step
-        if isinstance(n_layers, int):
-            n_layers = [hidden_size] * n_layers
+        self.mlp = nn.ModuleList(
+            [
+                full_block(input_size, hidden_size),
+                full_block(hidden_size + batch_emb_size, hidden_size),
+            ]
+        )
 
-        for hidden_size in n_layers:
-            self.mlp.append(full_block(input_size, hidden_size))
-            input_size = hidden_size + batch_emb_size  # update for next layer input
-
-        # Final output layer
+        # Gene/classification heads only see the hidden state, never batch directly.
         if decoder_type == "reconstruction":
-            self.zi_logit = nn.Linear(input_size, out_put_size)
-            self.fc_rec = nn.Linear(input_size, out_put_size)
+            self.zi_logit = nn.Linear(hidden_size, out_put_size)
+            self.fc_rec = nn.Linear(hidden_size, out_put_size)
         elif decoder_type == "classification":
-            self.fc_class = nn.Linear(input_size, class_size)
+            self.fc_class = nn.Linear(hidden_size, class_size)
 
         if distribution in ["nb", "zinb"]:
             self.act = nn.Softmax(dim=-1)
@@ -176,10 +168,8 @@ class Decoder(nn.Module):
 
     def forward(self, z, batch):
         x = torch.cat([z, batch], dim=1)
-
-        for layer in self.mlp:
-            x = layer(x)
-            x = torch.cat([x, batch], dim=1)  # concat batch after each layer
+        x = self.mlp[0](x)
+        x = self.mlp[1](torch.cat([x, batch], dim=1))
 
         if self.decoder_type == "reconstruction":
             x_hat = self.act(self.fc_rec(x))

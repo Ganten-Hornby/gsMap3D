@@ -7,7 +7,10 @@ from .encoder_decoder import Decoder, Encoder
 
 class StEmbeding(nn.Module):
     """
-    Learn graph-smoothed and expression embeddings for each cell, with optional batch correction.
+    Learn graph-smoothed and expression embeddings with decoder-only batch correction.
+
+    Encoders do not receive batch information. A batch representation conditions both hidden
+    layers of the decoder; output heads only receive the final hidden state.
 
     Args:
         input_size (list): List of input feature sizes for each encoder.
@@ -66,7 +69,6 @@ class StEmbeding(nn.Module):
                     self.input_size[eid],
                     hidden_size,
                     embedding_size,
-                    self.batch_embedding_size,
                     module_dim,
                     hidden_gmf,
                     n_modules,
@@ -108,7 +110,7 @@ class StEmbeding(nn.Module):
 
         x_rec_list, zi_logit_list, z_list = [], [], []
         for eid in range(self.z_num):
-            z = self.encoder[eid](x_list[eid], batch)
+            z = self.encoder[eid](x_list[eid])
             x_rec, zi_logit = self.decoder["reconstruction"](z, batch)
             x_rec = x_rec * library_size
 
@@ -123,11 +125,10 @@ class StEmbeding(nn.Module):
         z = torch.cat(z_list, dim=1)
         return self.decoder["classification"](z, batch)
 
-    def encode(self, x_list, batch, sample=True):
-        """Encode inputs as posterior samples or deterministic posterior means."""
-        batch = self._process_batch(batch)
+    def encode(self, x_list, sample=True):
+        """Encode inputs without batch conditioning."""
         z_list = []
         for eid in range(self.z_num):
-            z = self.encoder[eid](x_list[eid], batch, sample=sample)
+            z = self.encoder[eid](x_list[eid], sample=sample)
             z_list.append(z)
         return z_list
