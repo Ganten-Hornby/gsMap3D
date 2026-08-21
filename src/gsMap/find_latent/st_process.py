@@ -166,9 +166,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
                         adata_temp, n_top_genes=params.feat_cell, subset=False, flavor="seurat"
                     )
 
-                var_df = adata_temp.var.copy()
-                var_df["gene"] = var_df.index.tolist()
-                variances_list.append(var_df)
+                variances_list.append(adata_temp.var.copy())
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[HVG skipped] {e}")
                 continue
@@ -205,7 +203,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     df["highly_variable"] = df["highly_variable"].astype(int)
 
     if is_count_data:
-        df = df.groupby("gene", observed=True).agg(
+        df = df.groupby(level=0).agg(
             dict(
                 residual_variances="median",
                 highly_variable="sum",
@@ -220,7 +218,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             inplace=True,
         )
     else:
-        df = df.groupby("gene", observed=True).agg(
+        df = df.groupby(level=0).agg(
             dict(
                 dispersions_norm="median",
                 highly_variable="sum",
