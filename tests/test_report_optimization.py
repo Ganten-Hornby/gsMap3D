@@ -7,13 +7,22 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
+from gsMap.config.latent2gene_config import DatasetType
+from gsMap.config.quick_mode_config import (
+    _report_visualization_config_matches,
+    get_report_missing_files,
+)
 from gsMap.config.report_config import ReportConfig
 from gsMap.latent2gene.marker_layout import SequentialMarkerRowWriter
 from gsMap.report.diagnosis import load_gwas_data
 from gsMap.report.report_data import (
     _available_cpu_count,
     _calculate_pcc_for_traits_fast,
+    _calculate_umap_from_embeddings,
+    _cauchy_payloads_current,
     _export_annotation_schemas_js,
+    _export_cauchy_js,
+    _export_single_manhattan_js,
     _load_chrom_tick_positions,
     _load_gss_pcc_sample,
     _ManhattanWeightContext,
@@ -24,15 +33,304 @@ from gsMap.report.report_data import (
     _render_single_sample_gene_plot_task,
     _report_worker_count,
     _sample_spatial_export_signature,
+    _save_report_metadata,
     _write_text_if_changed,
 )
 from gsMap.report.spatial_payload import SPATIAL_PAYLOAD_VERSION
+from gsMap.report.visualize import (
+    MultiSampleSpatialRasterCache,
+    SpatialOverviewTileStore,
+    VisualizeRunner,
+)
 
 
 def test_report_3d_display_default_keeps_all_spots():
     field = ReportConfig.__dataclass_fields__["downsampling_n_spots_3d"]
 
     assert field.default is None
+
+
+def test_report_umap_and_2d_defaults_prioritize_visual_density():
+    umap_field = ReportConfig.__dataclass_fields__["downsampling_n_spots_umap"]
+    spatial_2d_field = ReportConfig.__dataclass_fields__["downsampling_n_spots_2d"]
+
+    assert umap_field.default == 50_000
+    assert spatial_2d_field.default == 100_000
+
+
+def test_multi_sample_raster_cache_reuses_geometry_and_keeps_strongest_pixel():
+    frame = pd.DataFrame(
+        {
+            "sample_name": ["a", "a", "a", "b"],
+            "sx": [0.0, 0.0, 1.0, 4.0],
+            "sy": [0.0, 0.0, 1.0, 5.0],
+            "trait": [1.0, 4.0, 2.0, 3.0],
+        }
+    )
+    cache = MultiSampleSpatialRasterCache(frame, ["a", "b"], resolution=32)
+
+    raster = cache.rasterize("a", frame["trait"].to_numpy())
+
+    assert np.nanmax(raster) == 4.0
+    assert sorted(raster[np.isfinite(raster)].tolist()) == [2.0, 4.0]
+    assert cache.samples["a"]["positions"].tolist() == [0, 1, 2]
+
+
+def test_multi_sample_raster_renderer_writes_compact_png(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "sample_name": ["a", "a", "b", "b"],
+            "sx": [0.0, 1.0, 0.0, 1.0],
+            "sy": [0.0, 1.0, 1.0, 0.0],
+            "trait": [0.0, 1.0, 2.0, 3.0],
+        }
+    )
+    output = tmp_path / "overview.png"
+    cache = MultiSampleSpatialRasterCache(frame, ["a", "b"], resolution=32)
+    runner = VisualizeRunner(SimpleNamespace(plot_origin="upper"))
+
+    runner._create_single_trait_multi_sample_raster_plot(
+        obs_ldsc_merged=frame,
+        trait_abbreviation="trait",
+        sample_name_list=["a", "b"],
+        output_png_path=output,
+        n_rows=1,
+        n_cols=2,
+        raster_cache=cache,
+        subplot_width_inches=0.8,
+        dpi=60,
+    )
+
+    assert output.is_file()
+    assert output.stat().st_size > 100
+    assert not (tmp_path / ".overview.png.partial").exists()
+
+
+def test_overview_tile_store_generates_both_foldable_plot_directions(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "sample_name": ["a", "a", "b", "b"],
+            "sx": [0.0, 1.0, 0.0, 1.0],
+            "sy": [0.0, 1.0, 1.0, 0.0],
+            "trait_1": [0.0, 1.0, 2.0, 3.0],
+            "trait_2": [3.0, 2.0, 1.0, 0.0],
+        }
+    )
+    cache = MultiSampleSpatialRasterCache(frame, ["a", "b"], resolution=32)
+    runner = VisualizeRunner(SimpleNamespace(plot_origin="upper"))
+    by_trait = tmp_path / "by_trait.png"
+    by_sample = tmp_path / "by_sample.png"
+
+    with SpatialOverviewTileStore(
+        cache,
+        ["trait_1", "trait_2"],
+        temporary_dir=tmp_path,
+        max_ram_bytes=1,
+    ) as store:
+        assert store.storage_mode == "memmap"
+        for trait_index, trait in enumerate(store.trait_names):
+            store.encode_trait(trait_index, frame[trait].to_numpy(), 3.0)
+        runner._create_single_trait_multi_sample_tile_plot(store, 0, by_trait, max_cols=2)
+        runner._create_single_sample_multi_trait_tile_plot(store, 0, by_sample, max_cols=2)
+
+    assert by_trait.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert by_sample.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert not list(tmp_path.glob(".gsmap_spatial_overview_*.dat"))
+
+
+def test_report_completion_detects_changed_visualization_limits(tmp_path):
+    config = SimpleNamespace(
+        web_report_dir=tmp_path,
+        downsampling_n_spots_umap=50_000,
+        downsampling_n_spots_2d=100_000,
+        downsampling_n_spots_3d=100_000,
+    )
+    (tmp_path / "report_meta.json").write_text(
+        json.dumps(
+            {
+                "downsampling_n_spots_umap": 50_000,
+                "downsampling_n_spots_2d": 100_000,
+                "downsampling_n_spots_3d": 100_000,
+            }
+        )
+    )
+
+    assert _report_visualization_config_matches(config)
+
+    config.downsampling_n_spots_2d = 50_000
+    assert not _report_visualization_config_matches(config)
+
+
+def test_report_metadata_exposes_curated_configuration_without_chromosome_maps(tmp_path):
+    class Config:
+        dataset_type = DatasetType.SPATIAL_3D
+        annotation_list = ["cell_type"]
+        cauchy_annotations = ["cell_type"]
+        top_corr_genes = 10
+        plot_origin = "upper"
+        legend_marker_size = 10.0
+        downsampling_n_spots_2d = 100_000
+        downsampling_n_spots_3d = 100_000
+        downsampling_n_spots_umap = 50_000
+        generate_multi_sample_plots = True
+
+        def to_dict_with_paths_as_strings(self):
+            return {
+                "project_name": "demo",
+                "dataset_type": "spatial3D",
+                "species": "MOUSE",
+                "graph_mode": "symmetric_knn",
+                "n_neighbors": 10,
+                "spatial_neighbors": 30,
+                "homogeneous_neighbors": 20,
+                "cross_slice_selection_mode": "physical",
+                "latent_representation_cell": "emb_cell",
+                "latent_representation_niche": "emb_niche",
+                "downsampling_n_spots_2d": 100_000,
+                "downsampling_n_spots_3d": 100_000,
+                "downsampling_n_spots_umap": 50_000,
+                "generate_multi_sample_plots": True,
+                "sample_h5ad_dict": {"sample": "/large/not/useful.h5ad"},
+                "sumstats_config_dict": {"trait": "/large/not/useful.sumstats"},
+            }
+
+    metadata = _save_report_metadata(
+        Config(),
+        ["trait"],
+        ["sample"],
+        tmp_path,
+        spatial_3d_info={
+            "coordinate_info": {
+                "z_source": "registered_coordinate",
+                "z_is_physical": True,
+                "sample_z_positions": {"sample": 12.5},
+            }
+        },
+        is_3d=True,
+    )
+
+    assert "chrom_tick_positions" not in metadata
+    assert "sample_h5ad_dict" not in metadata
+    assert "sumstats_config_dict" not in metadata
+    assert metadata["configuration"]["analysis"]["n_samples"] == 1
+    assert metadata["configuration"]["visualization"]["signal_opacity_upper_anchor"] == (
+        "shared_per_trait_q95"
+    )
+    assert "sample_z_positions" not in metadata["configuration"]["spatial_3d_coordinates"]
+    assert metadata["multi_sample_trait_plots"]["trait"].startswith("by_trait/")
+    assert metadata["single_sample_multi_trait_plots"]["sample"].startswith("by_sample/")
+
+
+def test_manhattan_payload_carries_its_own_chromosome_ticks(tmp_path):
+    csv_path = tmp_path / "trait_manhattan.csv"
+    pd.DataFrame(
+        {
+            "BP_cum": [10.0, 20.0, 40.0, 60.0],
+            "logp": [1.0, 2.0, 3.0, 4.0],
+            "GENE": ["A", "B", "C", "D"],
+            "CHR": [1, 1, 2, 2],
+        }
+    ).to_csv(csv_path, index=False)
+
+    _export_single_manhattan_js("trait", csv_path, tmp_path)
+
+    payload = json.loads(
+        (tmp_path / "manhattan_trait.js").read_text().split("=", 1)[1].rstrip(";")
+    )
+    assert payload["chrom_ticks"] == {"1": 15.0, "2": 50.0}
+
+
+def test_report_completion_requires_lazy_cauchy_index_and_manifest(tmp_path):
+    web_report_dir = tmp_path / "web"
+    js_data_dir = web_report_dir / "js_data"
+    report_data_dir = tmp_path / "data"
+    js_data_dir.mkdir(parents=True)
+    report_data_dir.mkdir()
+    for path in (
+        web_report_dir / "index.html",
+        web_report_dir / "report_meta.json",
+        js_data_dir / "sample_index.js",
+        js_data_dir / "report_meta.js",
+        js_data_dir / "cauchy_results.js",
+        report_data_dir / "spot_metadata.csv",
+        report_data_dir / "gene_list.csv",
+        report_data_dir / "cauchy_results.csv",
+    ):
+        path.touch()
+
+    config = SimpleNamespace(
+        dataset_type=DatasetType.SCRNA_SEQ,
+        web_report_dir=web_report_dir,
+        report_data_dir=report_data_dir,
+        trait_name_list=[],
+        annotation_list=[],
+        generate_multi_sample_plots=False,
+        concatenated_latent_adata_path=None,
+    )
+    _, missing_web = get_report_missing_files(config)
+    assert js_data_dir / "cauchy_index.js" in missing_web
+    assert js_data_dir / "cauchy_manifest.json" in missing_web
+    assert js_data_dir / "cauchy_results.js" not in missing_web
+
+    (js_data_dir / "cauchy_index.js").touch()
+    (js_data_dir / "cauchy_manifest.json").touch()
+    missing_data, missing_web = get_report_missing_files(config)
+    assert missing_data == []
+    assert missing_web == []
+
+
+def test_cauchy_export_is_file_scheme_compatible_and_sharded(tmp_path):
+    data_dir = tmp_path / "report_data"
+    js_data_dir = tmp_path / "js_data"
+    data_dir.mkdir()
+    js_data_dir.mkdir()
+    rows = []
+    for result_type, sample_names in (
+        ("aggregated", ["All Samples"]),
+        ("sample", ["sample_a", "sample_b"]),
+    ):
+        for trait in ("trait/a", "trait_b"):
+            for annotation_name in ("cell type", "region"):
+                for annotation_index, annotation in enumerate(("A", "B")):
+                    for sample_name in sample_names:
+                        value = annotation_index + (0.5 if sample_name == "sample_b" else 0.0)
+                        rows.append(
+                            {
+                                "trait": trait,
+                                "annotation_name": annotation_name,
+                                "annotation": annotation,
+                                "p_cauchy": 10 ** -(value + 1),
+                                "p_median": 10 ** -(value + 0.5),
+                                "top_95_quantile": value + 2,
+                                "sig_spots": 3,
+                                "total_spots": 10,
+                                "type": result_type,
+                                "sample_name": sample_name,
+                                "mlog10_p_cauchy": value + 1,
+                                "mlog10_p_median": value + 0.5,
+                            }
+                        )
+    pd.DataFrame(rows).to_csv(data_dir / "cauchy_results.csv", index=False)
+    (js_data_dir / "cauchy_results.js").write_text("legacy monolith")
+
+    _export_cauchy_js(data_dir, js_data_dir)
+
+    index_text = (js_data_dir / "cauchy_index.js").read_text(encoding="utf-8")
+    index = json.loads(index_text.split("=", 1)[1].rstrip(";"))
+    assert index["version"] == 2
+    assert set(index["table"]) == {"all", "sample"}
+    entry = index["table"]["sample"]["trait/a"]["cell type"]
+    assert entry["n_rows"] == 4
+    assert entry["file"].startswith("js_data/cauchy/")
+    shard_text = (tmp_path / entry["file"]).read_text(encoding="utf-8")
+    assert "window.GSMAP_CAUCHY_SHARDS" in shard_text
+    assert "fetch(" not in shard_text
+    assert not (js_data_dir / "cauchy_results.js").exists()
+    assert _cauchy_payloads_current(data_dir / "cauchy_results.csv", js_data_dir)
+
+    heatmap_entry = index["heatmap"]["sample"]["cell type"]
+    assert heatmap_entry["aggregation"] == "median_across_samples"
+    assert heatmap_entry["n_rows"] == 4
 
 
 def test_annotation_schema_export_is_small_canonical_palette(tmp_path):
@@ -68,6 +366,53 @@ def test_report_worker_count_uses_existing_cpu_configuration(monkeypatch):
 
     assert _report_worker_count(config, ceiling=20) == 15
     assert _report_worker_count(config, ceiling=4) == 4
+
+
+def test_nonfinite_precomputed_umap_is_recomputed_from_embedding(monkeypatch):
+    adata = ad.AnnData(X=np.zeros((4, 1), dtype=np.float32))
+    adata.obsm["emb_cell"] = np.arange(12, dtype=np.float32).reshape(4, 3)
+    adata.obsm["X_umap"] = np.array(
+        [[0.0, 1.0], [np.nan, np.nan], [2.0, 3.0], [4.0, 5.0]],
+        dtype=np.float32,
+    )
+    calls = []
+
+    def fake_neighbors(target, *, use_rep):
+        calls.append(("neighbors", use_rep))
+
+    expected = np.array(
+        [[10.0, 11.0], [12.0, 13.0], [14.0, 15.0], [16.0, 17.0]],
+        dtype=np.float32,
+    )
+
+    def fake_umap(target):
+        calls.append(("umap", None))
+        target.obsm["X_umap"] = expected.copy()
+
+    monkeypatch.setattr("gsMap.report.report_data.sc.pp.neighbors", fake_neighbors)
+    monkeypatch.setattr("gsMap.report.report_data.sc.tl.umap", fake_umap)
+
+    result = _calculate_umap_from_embeddings(adata, "emb_cell")
+
+    assert calls == [("neighbors", "emb_cell"), ("umap", None)]
+    np.testing.assert_array_equal(result, expected)
+
+
+def test_finite_precomputed_umap_is_reused(monkeypatch):
+    adata = ad.AnnData(X=np.zeros((3, 1), dtype=np.float32))
+    adata.obsm["emb_cell"] = np.ones((3, 2), dtype=np.float32)
+    expected = np.arange(6, dtype=np.float32).reshape(3, 2)
+    adata.obsm["X_umap"] = expected.copy()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("finite precomputed UMAP should be reused")
+
+    monkeypatch.setattr("gsMap.report.report_data.sc.pp.neighbors", fail_if_called)
+    monkeypatch.setattr("gsMap.report.report_data.sc.tl.umap", fail_if_called)
+
+    result = _calculate_umap_from_embeddings(adata, "emb_cell")
+
+    np.testing.assert_array_equal(result, expected)
 
 
 def test_report_marker_reader_preserves_requested_row_and_gene_order(tmp_path):

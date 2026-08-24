@@ -56,11 +56,8 @@ class GeneModuler(nn.Module):
         self.extractor = Linear2D(input_dim=input_dim, hidden_dim=hidden_dim, n_modules=n_modules)
 
     def forward(self, x, batch=None):
-        if batch is not None:
-            module = self.layernorm(x, batch)
-        else:
-            module = self.layernorm(x)
-        module = self.extractor(x).transpose(2, 1)
+        module = self.layernorm(x)
+        module = self.extractor(module).transpose(2, 1)
         return F.relu(module)
 
 
@@ -82,14 +79,19 @@ class PositionalEncoding(nn.Module):
             torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model)
         )
         pe[:, 0::2] = torch.sin(position * angular_speed)
-        pe[:, 1::2] = torch.cos(position * angular_speed)
+        pe[:, 1::2] = torch.cos(position * angular_speed[: d_model // 2])
         self.register_buffer("pe", pe.unsqueeze(0))
 
     def forward(self, x):
         # x is N, L, D
         # pe is 1, maxlen, D
+        if x.size(1) > self.pe.size(1):
+            raise ValueError(
+                f"Sequence length {x.size(1)} exceeds positional encoding limit "
+                f"{self.pe.size(1)}"
+            )
         scaled_x = x * np.sqrt(self.d_model)
-        encoded = scaled_x + self.pe[:, x.size(1), :]
+        encoded = scaled_x + self.pe[:, : x.size(1), :]
         return encoded
 
 
@@ -115,6 +117,11 @@ class GeneModuleFormer(nn.Module):
         n_enc_layer=3,
     ):
         super().__init__()
+
+        if hidden_dim % nhead != 0:
+            raise ValueError(
+                f"Transformer hidden_dim ({hidden_dim}) must be divisible by nhead ({nhead})"
+            )
 
         self.moduler = GeneModuler(input_dim=input_dim, hidden_dim=module_dim, n_modules=n_modules)
 

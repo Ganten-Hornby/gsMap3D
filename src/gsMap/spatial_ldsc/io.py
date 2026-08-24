@@ -25,6 +25,95 @@ _MARKER_CACHE_COPY_BUFFER_BYTES = 16 * 1024**2
 _MARKER_CACHE_MINIMUM_HEADROOM_BYTES = 5 * 1024**3
 
 
+class MarkerScoreMemmapLease:
+    """Keep a shared scratch copy alive until its final reader closes."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        lock_handle=None,
+        cache_base: Path | None = None,
+    ) -> None:
+        self.path = path
+        self._lock_handle = lock_handle
+        self._cache_base = cache_base
+        self._closed = False
+
+    @property
+    def uses_scratch(self) -> bool:
+        return self._cache_base is not None
+
+    def close(self) -> None:
+        """Release this reader and delete scratch after the last reader."""
+        if self._closed:
+            return
+        self._closed = True
+
+        lock_handle = self._lock_handle
+        if lock_handle is None:
+            return
+
+        cache_base = self._cache_base
+        try:
+            # Drop our shared-reader lock before probing for the exclusive lock.
+            # A successful probe means no other process is still using the cache.
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                logger.info(
+                    f"Released shared marker-score cache reader; other readers still use "
+                    f"{cache_base.with_suffix('.dat')}"
+                )
+                return
+
+            cache_data = cache_base.with_suffix(".dat")
+            cache_metadata = cache_base.with_suffix(".meta.json")
+            removed_bytes = cache_data.stat().st_size if cache_data.is_file() else 0
+            cache_data.unlink(missing_ok=True)
+            cache_metadata.unlink(missing_ok=True)
+            logger.info(
+                f"Removed final-reader marker-score scratch cache: {cache_data} "
+                f"({removed_bytes / 1024**3:.2f} GiB freed)"
+            )
+        except OSError as error:
+            logger.warning(f"Could not remove marker-score scratch cache: {error}")
+        finally:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            lock_handle.close()
+            self._lock_handle = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback_obj):
+        del exc_type, exc_value, traceback_obj
+        self.close()
+        return False
+
+
+class _LeasedMarkerMemmapManager:
+    """Close a marker mapping before releasing its scratch-reader lease."""
+
+    def __init__(self, memmap: MemMapDense, lease: MarkerScoreMemmapLease) -> None:
+        self.memmap = memmap
+        self.lease = lease
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.memmap.close()
+        finally:
+            self.lease.close()
+
+
 def _cached_marker_memmap_is_valid(cache_base: Path, expected_bytes: int) -> bool:
     data_path = cache_base.with_suffix(".dat")
     metadata_path = cache_base.with_suffix(".meta.json")
@@ -44,18 +133,75 @@ def _paths_share_storage_device(source: Path, destination_dir: Path) -> bool:
     return source.stat().st_dev == destination_dir.stat().st_dev
 
 
-def _shared_marker_cache_base(
+def _remove_inactive_marker_caches(
+    cache_dir: Path,
+    *,
+    exclude_lock_path: Path,
+) -> None:
+    """Best-effort cleanup for caches orphaned by interrupted processes."""
+    for lock_path in cache_dir.glob("marker_scores_*.lock"):
+        if lock_path == exclude_lock_path:
+            continue
+        try:
+            with lock_path.open("a+b") as lock_handle:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+
+                cache_base = lock_path.with_suffix("")
+                cache_data = cache_base.with_suffix(".dat")
+                cache_metadata = cache_base.with_suffix(".meta.json")
+                removed_bytes = cache_data.stat().st_size if cache_data.is_file() else 0
+                cache_data.unlink(missing_ok=True)
+                cache_metadata.unlink(missing_ok=True)
+                for partial_path in cache_dir.glob(f".{cache_base.name}.*.partial"):
+                    partial_path.unlink(missing_ok=True)
+                if removed_bytes:
+                    logger.info(
+                        f"Removed inactive marker-score cache {cache_data} "
+                        f"({removed_bytes / 1024**3:.2f} GiB freed)"
+                    )
+        except OSError as error:
+            logger.warning(f"Could not inspect inactive marker-score cache {lock_path}: {error}")
+
+
+def _remove_invalid_marker_cache(cache_base: Path) -> int:
+    """Remove all same-key artifacts while its exclusive lock is held."""
+    artifact_paths = [
+        cache_base.with_suffix(".dat"),
+        cache_base.with_suffix(".meta.json"),
+        *cache_base.parent.glob(f".{cache_base.name}.*.partial"),
+    ]
+    removed_bytes = 0
+    for artifact_path in artifact_paths:
+        try:
+            removed_bytes += artifact_path.stat().st_size
+        except FileNotFoundError:
+            continue
+        artifact_path.unlink()
+
+    if removed_bytes:
+        logger.info(
+            f"Removed invalid marker-score cache artifacts for {cache_base.name} "
+            f"before capacity checking ({removed_bytes / 1024**3:.2f} GiB freed)"
+        )
+    return removed_bytes
+
+
+def _acquire_shared_marker_cache(
     memmap_path: Path,
     tmp_dir: Path,
     marker_metadata: dict,
     *,
     populate: bool = True,
-) -> Path:
-    """Stage one immutable marker file per node/cache directory.
+) -> MarkerScoreMemmapLease:
+    """Acquire one immutable marker file per node/cache directory.
 
     All concurrent LDSC processes using the same ``tmp_dir`` share the cache.
-    An advisory lock ensures that only one process copies the source, and an
-    atomic rename prevents readers from observing a partial file.
+    Shared advisory locks retain it while readers are active. The last reader
+    removes the large data and metadata files, while the tiny lock file remains
+    available for race-free coordination.
     """
     source_data = memmap_path.with_suffix(".dat")
     source_stat = source_data.stat()
@@ -67,7 +213,7 @@ def _shared_marker_cache_base(
         logger.info(
             f"Marker scratch {tmp_dir} is on the source filesystem; reading {source_data} directly"
         )
-        return memmap_path
+        return MarkerScoreMemmapLease(memmap_path)
 
     identity = "\0".join(
         [
@@ -87,25 +233,62 @@ def _shared_marker_cache_base(
     lock_path = cache_dir / f"marker_scores_{cache_key}.lock"
 
     expected_bytes = source_stat.st_size
-    if _cached_marker_memmap_is_valid(cache_base, expected_bytes):
-        logger.info(f"Reusing shared marker-score cache: {cache_data}")
-        return cache_base
-
-    if not populate:
-        logger.info(
-            f"No complete shared marker-score cache is available in {cache_dir}; "
-            f"reading selected rows directly from {source_data}"
+    lock_handle = lock_path.open("a+b")
+    try:
+        # Every cache reader retains a shared lock for the entire mmap lifetime.
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
+        _remove_inactive_marker_caches(
+            cache_dir,
+            exclude_lock_path=lock_path,
         )
-        return memmap_path
+        if _cached_marker_memmap_is_valid(cache_base, expected_bytes):
+            logger.info(f"Reusing leased marker-score scratch cache: {cache_data}")
+            return MarkerScoreMemmapLease(
+                cache_base,
+                lock_handle=lock_handle,
+                cache_base=cache_base,
+            )
 
-    with lock_path.open("a+b") as lock_handle:
-        logger.info(f"Waiting for shared marker-score cache lock: {lock_path}")
+        # Upgrade through an explicit unlock. Recovery/population is serialized
+        # and validity is repeated because another process may win the race.
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        logger.info(f"Waiting for marker-score scratch recovery lock: {lock_path}")
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
         if _cached_marker_memmap_is_valid(cache_base, expected_bytes):
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
             logger.info(
-                f"Reusing shared marker-score cache prepared by another process: {cache_data}"
+                f"Reusing marker-score scratch cache prepared by another process: {cache_data}"
             )
-            return cache_base
+            return MarkerScoreMemmapLease(
+                cache_base,
+                lock_handle=lock_handle,
+                cache_base=cache_base,
+            )
+
+        # We now hold this key's exclusive lock, so no valid reader or writer
+        # can be using any same-key artifact. Reclaim incomplete data before
+        # measuring capacity; otherwise a crashed 700 GiB copy could make its
+        # own replacement appear not to fit.
+        try:
+            _remove_invalid_marker_cache(cache_base)
+        except OSError as error:
+            logger.warning(
+                f"Could not remove invalid marker-score cache {cache_base}: {error}. "
+                f"Reading source directly."
+            )
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+            return MarkerScoreMemmapLease(memmap_path)
+
+        if not populate:
+            logger.info(
+                f"No complete marker-score scratch cache is available in {cache_dir}; "
+                f"removed invalid artifacts and will read selected rows directly from "
+                f"{source_data}"
+            )
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+            return MarkerScoreMemmapLease(memmap_path)
 
         free_bytes = shutil.disk_usage(cache_dir).free
         headroom = max(_MARKER_CACHE_MINIMUM_HEADROOM_BYTES, expected_bytes // 20)
@@ -115,16 +298,15 @@ def _shared_marker_cache_base(
                 f"requires {expected_bytes / 1024**3:.1f} GiB plus "
                 f"{headroom / 1024**3:.1f} GiB headroom. Reading source directly."
             )
-            return memmap_path
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+            return MarkerScoreMemmapLease(memmap_path)
 
         partial_data = cache_dir / f".{cache_data.name}.{os.getpid()}.partial"
         partial_metadata = cache_dir / f".{cache_metadata.name}.{os.getpid()}.partial"
-        partial_data.unlink(missing_ok=True)
-        partial_metadata.unlink(missing_ok=True)
         try:
             logger.info(
-                f"Populating shared marker-score cache once for this node: "
-                f"{source_data} -> {cache_data}"
+                f"Populating leased marker-score scratch cache: {source_data} -> {cache_data}"
             )
             with (
                 source_data.open("rb") as source,
@@ -155,23 +337,38 @@ def _shared_marker_cache_base(
                 handle.write("\n")
             os.replace(partial_data, cache_data)
             os.replace(partial_metadata, cache_metadata)
-            logger.info(f"Published shared marker-score cache: {cache_data}")
-            return cache_base
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_SH)
+            logger.info(f"Published leased marker-score scratch cache: {cache_data}")
+            return MarkerScoreMemmapLease(
+                cache_base,
+                lock_handle=lock_handle,
+                cache_base=cache_base,
+            )
         except OSError as error:
             logger.warning(f"Could not populate shared marker-score cache: {error}")
-            return memmap_path
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            lock_handle.close()
+            return MarkerScoreMemmapLease(memmap_path)
         finally:
             partial_data.unlink(missing_ok=True)
             partial_metadata.unlink(missing_ok=True)
+    except BaseException:
+        if not lock_handle.closed:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            lock_handle.close()
+        raise
 
 
-def resolve_marker_scores_memmap_path(
+def acquire_marker_scores_memmap(
     config: SpatialLDSCConfig,
     marker_metadata: dict,
     *,
     populate_cache: bool = True,
-) -> Path:
-    """Resolve the marker memmap base path for a read workload.
+) -> MarkerScoreMemmapLease:
+    """Acquire the marker memmap path for one complete read workload.
 
     Full spatial LDSC scans benefit from staging the complete marker matrix on
     configured scratch storage. Report PCC preparation reads only a sampled set
@@ -181,8 +378,8 @@ def resolve_marker_scores_memmap_path(
 
     memmap_path = Path(config.marker_scores_memmap_path)
     if config.memmap_tmp_dir is None:
-        return memmap_path
-    return _shared_marker_cache_base(
+        return MarkerScoreMemmapLease(memmap_path)
+    return _acquire_shared_marker_cache(
         memmap_path,
         Path(config.memmap_tmp_dir),
         marker_metadata,
@@ -591,13 +788,20 @@ def prepare_trait_data(
     return data, common_snps
 
 
-def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
+def load_marker_scores_memmap_format(
+    config: SpatialLDSCConfig,
+    *,
+    populate_cache: bool = True,
+) -> ad.AnnData:
     """
     Load marker scores memmap and wrap it in an AnnData object with metadata
     from a reference h5ad file using configuration.
 
     Args:
-        config: SpatialLDSCConfig containing paths and settings
+        config: SpatialLDSCConfig containing paths and settings.
+        populate_cache: Copy the full matrix to configured scratch when no
+            shared copy exists. Full LDSC scans should retain the default;
+            report workloads should disable it because they read selected data.
 
     Returns:
         AnnData object with X backed by the memory map
@@ -623,6 +827,7 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
     src_adata = ad.read_h5ad(metadata_path, backed="r")
     row_order = None
     mm = None
+    marker_lease = None
     try:
         shape = (src_adata.n_obs, src_adata.n_vars)
         if tuple(marker_metadata["shape"]) != shape:
@@ -631,13 +836,14 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
                 f"AnnData shape {shape}"
             )
 
-        effective_memmap_path = resolve_marker_scores_memmap_path(
+        marker_lease = acquire_marker_scores_memmap(
             config,
             marker_metadata,
+            populate_cache=populate_cache,
         )
 
         mm = MemMapDense(
-            effective_memmap_path,
+            marker_lease.path,
             shape=shape,
             dtype=np.dtype(marker_metadata["dtype"]),
             mode=mode,
@@ -701,6 +907,8 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
     except Exception:
         if mm is not None:
             mm.close()
+        if marker_lease is not None:
+            marker_lease.close()
         raise
     finally:
         if row_order is not None:
@@ -708,8 +916,9 @@ def load_marker_scores_memmap_format(config: SpatialLDSCConfig) -> ad.AnnData:
         if src_adata.isbacked:
             src_adata.file.close()
 
-    # Attach the manager to allow access to MemMapDense methods
-    adata.uns["memmap_manager"] = mm
+    # Closing this manager closes the mmap first, then removes the node-local
+    # scratch copy if this process was its final reader.
+    adata.uns["memmap_manager"] = _LeasedMarkerMemmapManager(mm, marker_lease)
     if row_order is not None:
         adata.uns["marker_score_row_layout"] = marker_metadata["row_layout"]
 

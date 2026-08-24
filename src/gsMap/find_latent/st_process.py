@@ -26,6 +26,7 @@ from .gnn.gcn import (
 logger = logging.getLogger(__name__)
 
 _SOURCE_OBS_INDEX_KEY = "_gsmap_source_obs_index"
+SOURCE_OBS_NAME = "_gsmap_source_obs_name"
 _FULL_SOURCE_GRAPH_SAMPLED_FOCAL = "full_source_graph_sampled_focal"
 _TRAINING_ROWS_GRAPH_CONTEXT = "training_rows"
 
@@ -130,6 +131,7 @@ def propagate_spatial_features(
     params,
     gcov: GCN,
     section_labels: np.ndarray | None = None,
+    output_indices: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, SpatialGraph]:
     """Construct the configured graph and propagate one expression block."""
 
@@ -147,21 +149,24 @@ def propagate_spatial_features(
         section_labels=section_labels,
     )
     if params.graph_mode.lower() == "no_graph":
-        return expression.repeat(1, params.K), graph
+        propagated = expression.repeat(1, params.K)
+        if output_indices is not None:
+            propagated = propagated[torch.as_tensor(output_indices, dtype=torch.long)]
+        return propagated, graph
 
     edge_index = torch.from_numpy(graph.edges.T).long()
     edge_weight = None
     if graph.weights is not None:
         edge_weight = torch.from_numpy(graph.weights).to(dtype=expression.dtype)
-    return (
-        gcov(
-            expression,
-            edge_index,
-            edge_weight,
-            legacy_normalization=params.graph_mode.lower() in {"legacy_bug", "legacy_symmetric"},
-        ),
-        graph,
+    propagated = gcov(
+        expression,
+        edge_index,
+        edge_weight,
+        legacy_normalization=params.graph_mode.lower() in {"legacy_bug", "legacy_symmetric"},
     )
+    if output_indices is not None:
+        propagated = propagated[torch.as_tensor(output_indices, dtype=torch.long)]
+    return propagated, graph
 
 
 def convert_to_human_genes(adata, gene_homolog_dict: dict, species: str = None):
@@ -217,6 +222,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
     variances_list = []
     cell_number = []
+    input_data_types = {}
 
     logger.info("Finding highly variable genes (HVGs)...")
 
@@ -246,6 +252,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             is_count_data, actual_data_layer = setup_data_layer(
                 adata_temp, params.data_layer, verbose=False
             )
+            input_data_types[sample_name] = is_count_data
             cell_number.append(adata_temp.n_obs)
 
             try:
@@ -259,9 +266,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
                         adata_temp, n_top_genes=params.feat_cell, subset=False, flavor="seurat"
                     )
 
-                var_df = adata_temp.var.copy()
-                var_df["gene"] = var_df.index.tolist()
-                variances_list.append(var_df)
+                variances_list.append(adata_temp.var.copy())
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[HVG skipped] {e}")
                 continue
@@ -273,6 +278,16 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         raise ValueError(
             "No valid HVG results obtained from any sample. Please check your data and parameters."
         )
+
+    detected_types = set(input_data_types.values())
+    if len(detected_types) != 1:
+        count_samples = [name for name, value in input_data_types.items() if value]
+        continuous_samples = [name for name, value in input_data_types.items() if not value]
+        raise ValueError(
+            "All input sections must use the same expression data type; "
+            f"count sections={count_samples}, continuous sections={continuous_samples}"
+        )
+    is_count_data = detected_types.pop()
 
     # Find the common genes across all samples
     common_genes = np.array(
@@ -288,7 +303,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     df["highly_variable"] = df["highly_variable"].astype(int)
 
     if is_count_data:
-        df = df.groupby("gene", observed=True).agg(
+        df = df.groupby(level=0).agg(
             dict(
                 residual_variances="median",
                 highly_variable="sum",
@@ -303,7 +318,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             inplace=True,
         )
     else:
-        df = df.groupby("gene", observed=True).agg(
+        df = df.groupby(level=0).agg(
             dict(
                 dispersions_norm="median",
                 highly_variable="sum",
@@ -347,7 +362,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
             f"Only {len(gene_homolog_dict)} genes could be mapped to human symbols. Please check the homolog file."
         )
 
-    return hvg, n_cell_used, gene_homolog_dict
+    return hvg, n_cell_used, gene_homolog_dict, is_count_data
 
 
 def create_subsampled_adata(
@@ -375,6 +390,7 @@ def create_subsampled_adata(
         # Load the data
         adata = sc.read_h5ad(st_file)
         adata.obs[_SOURCE_OBS_INDEX_KEY] = np.arange(adata.n_obs, dtype=np.int64)
+        adata.obs[SOURCE_OBS_NAME] = adata.obs_names.astype(str)
 
         # Filter out mitochondrial and hemoglobin genes
         gene_keep = ~adata.var_names.str.match(re.compile(r"^(HB.-|MT-)", re.IGNORECASE))
@@ -815,6 +831,35 @@ class TrainingData:
         self.label_name = None
         self.graph_context_mode = _TRAINING_ROWS_GRAPH_CONTEXT
 
+    @staticmethod
+    def _source_rows(batch_adata: AnnData, source_adata: AnnData) -> np.ndarray:
+        """Resolve sampled focal rows against their unsampled source object."""
+
+        if _SOURCE_OBS_INDEX_KEY in batch_adata.obs:
+            source_rows = batch_adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(dtype=np.int64)
+        elif SOURCE_OBS_NAME in batch_adata.obs:
+            source_index = pd.Index(source_adata.obs_names.astype(str))
+            if not source_index.is_unique:
+                raise RuntimeError("Source observation names must be unique")
+            source_rows = source_index.get_indexer(
+                batch_adata.obs[SOURCE_OBS_NAME].astype(str)
+            )
+            if np.any(source_rows < 0):
+                raise RuntimeError("Sampled focal observations are absent from their source AnnData")
+        else:
+            raise RuntimeError(
+                "Training data is missing source-row provenance required for "
+                "full-density graph propagation"
+            )
+
+        if np.unique(source_rows).size != source_rows.size:
+            raise RuntimeError("Sampled training rows contain duplicate source indices")
+        if source_rows.size and (
+            source_rows.min() < 0 or source_rows.max() >= source_adata.n_obs
+        ):
+            raise RuntimeError("Sampled training rows fall outside the source AnnData")
+        return source_rows
+
     def _propagate_sampled_rows_on_full_section_graph(
         self,
         *,
@@ -824,21 +869,10 @@ class TrainingData:
     ) -> torch.Tensor:
         """Propagate sampled focal rows using their full-density source graph."""
 
-        if _SOURCE_OBS_INDEX_KEY not in batch_adata.obs:
-            raise RuntimeError(
-                "Training data is missing source-row provenance required for "
-                "full-density graph propagation"
-            )
-
         source_adata = sc.read_h5ad(source_path)
         source_adata.var_names_make_unique()
         setup_data_layer(source_adata, self.params.data_layer)
-
-        source_rows = batch_adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(dtype=np.int64)
-        if np.unique(source_rows).size != source_rows.size:
-            raise RuntimeError("Sampled training rows contain duplicate source indices")
-        if source_rows.size and (source_rows.min() < 0 or source_rows.max() >= source_adata.n_obs):
-            raise RuntimeError("Sampled training rows fall outside the source AnnData")
+        source_rows = self._source_rows(batch_adata, source_adata)
 
         coords = np.asarray(source_adata.obsm[self.params.spatial_key])
         stable_ids = source_adata.obs_names.to_numpy()
@@ -901,6 +935,33 @@ class TrainingData:
             )
         return propagated_focal
 
+    def _propagate_sampled_rows_on_full_graph(
+        self,
+        *,
+        batch_adata: AnnData,
+        hvg: list[str],
+        source_path: str | Path,
+    ) -> tuple[torch.Tensor, int]:
+        """Propagate a non-section graph before selecting sampled focal rows."""
+
+        source_adata = sc.read_h5ad(source_path)
+        source_adata.var_names_make_unique()
+        setup_data_layer(source_adata, self.params.data_layer)
+        source_rows = self._source_rows(batch_adata, source_adata)
+        expression = torch.from_numpy(_dense_float32(source_adata[:, hvg].X))
+        propagated, graph = propagate_spatial_features(
+            expression=expression,
+            coords=np.asarray(source_adata.obsm[self.params.spatial_key]),
+            stable_ids=source_adata.obs_names.to_numpy(),
+            params=self.params,
+            gcov=self.gcov,
+            section_labels=_section_labels_for_graph(source_adata, self.params),
+        )
+        selected = propagated[source_rows].clone()
+        edge_count = graph.edges.shape[0]
+        del expression, propagated, graph, source_adata
+        return selected, edge_count
+
     def prepare(
         self,
         concatenated_adata,
@@ -930,15 +991,22 @@ class TrainingData:
             dtype=expression_array.dtype,
         )
 
+        if source_h5ad_dict is None:
+            source_h5ad_dict = getattr(self.params, "sample_h5ad_dict", None)
         sample_items = list(source_h5ad_dict.items()) if source_h5ad_dict is not None else []
         section_modes = {"sectionwise_2d", "section_aware_3d"}
-        use_full_section_graph = self.params.graph_mode.lower() in section_modes
-        if use_full_section_graph:
+        graph_mode = self.params.graph_mode.lower()
+        use_full_graph_context = bool(
+            getattr(self.params, "do_sampling", False)
+            and sample_items
+            and graph_mode != "no_graph"
+        )
+        if use_full_graph_context:
             self.graph_context_mode = _FULL_SOURCE_GRAPH_SAMPLED_FOCAL
         n_batches = len(pd.unique(batch_labels))
-        if use_full_section_graph and len(sample_items) != n_batches:
+        if use_full_graph_context and len(sample_items) != n_batches:
             raise RuntimeError(
-                "Full-density section graph training requires one source H5AD per training batch"
+                "Full-density graph training requires one source H5AD per training batch"
             )
 
         for batch_ordinal, batch_id in enumerate(concatenated_adata.obs["batch_id"].unique()):
@@ -949,19 +1017,33 @@ class TrainingData:
 
             logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
 
-            if use_full_section_graph:
+            if use_full_graph_context:
                 sample_name, source_path = sample_items[batch_ordinal]
-                observed_sample_names = batch_adata.obs["sample_name"].astype(str).unique()
-                if observed_sample_names.tolist() != [sample_name]:
+                observed_sample_names = (
+                    batch_adata.obs["sample_name"].astype(str).unique()
+                    if "sample_name" in batch_adata.obs
+                    else np.asarray([], dtype=str)
+                )
+                if observed_sample_names.size and observed_sample_names.tolist() != [sample_name]:
                     raise RuntimeError(
                         f"Training batch {batch_id!r} does not match source sample {sample_name!r}"
                     )
-                batch_expression_gcn = self._propagate_sampled_rows_on_full_section_graph(
-                    batch_adata=batch_adata,
-                    hvg=hvg,
-                    source_path=source_path,
-                )
-                graph_description = "full-density section graph chunks"
+                if graph_mode in section_modes:
+                    batch_expression_gcn = self._propagate_sampled_rows_on_full_section_graph(
+                        batch_adata=batch_adata,
+                        hvg=hvg,
+                        source_path=source_path,
+                    )
+                    graph_description = "full-density section graph chunks"
+                else:
+                    batch_expression_gcn, edge_count = (
+                        self._propagate_sampled_rows_on_full_graph(
+                            batch_adata=batch_adata,
+                            hvg=hvg,
+                            source_path=source_path,
+                        )
+                    )
+                    graph_description = f"full-density graph with {edge_count} directed edges"
             else:
                 batch_expression_gcn, graph = propagate_spatial_features(
                     expression=batch_expression,

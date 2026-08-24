@@ -1,23 +1,9 @@
-from enum import Enum
-
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
 from torch.distributions import kl_divergence as kl
 
 from .gene_former import GeneModuleFormer
-
-
-class EncoderInputTransform(str, Enum):
-    IDENTITY = "identity"
-    LOG1P = "log1p"
-
-    @property
-    def checkpoint_version(self) -> int:
-        return 1 if self is EncoderInputTransform.LOG1P else 0
-
-    def apply(self, x):
-        return torch.log1p(x) if self is EncoderInputTransform.LOG1P else x
 
 
 def full_block(in_dim, out_dim, p_drop=0.1):
@@ -31,14 +17,13 @@ def full_block(in_dim, out_dim, p_drop=0.1):
 
 class transform(nn.Module):
     """
-    batch transform encoder
+    Expression transform without batch conditioning.
     """
 
     def __init__(
         self,
         input_size,
         hidden_size,
-        batch_emb_size,
         module_dim,
         hidden_gmf,
         n_modules,
@@ -50,7 +35,7 @@ class transform(nn.Module):
         self.use_tf = use_tf
 
         if self.use_tf:
-            self.input_size = hidden_gmf + batch_emb_size
+            self.input_size = hidden_gmf
             self.gmf = GeneModuleFormer(
                 input_dim=input_size,
                 module_dim=module_dim,
@@ -61,16 +46,15 @@ class transform(nn.Module):
             )
             self.transform = full_block(self.input_size, hidden_size)
         else:
-            self.input_size = input_size + batch_emb_size
+            self.input_size = input_size
             self.transform = full_block(self.input_size, hidden_size)
-            self.norm = nn.LayerNorm(hidden_size)
 
-    def forward(self, x, batch):
+        self.norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, x):
         if self.use_tf:
             x = self.gmf(x)
-            x = self.transform(torch.cat([x, batch], dim=1))
-        else:
-            x = self.transform(torch.cat([x, batch], dim=1))
+        x = self.transform(x)
         return self.norm(x)
 
 
@@ -84,7 +68,6 @@ class Encoder(nn.Module):
         input_size,
         hidden_size,
         emb_size,
-        batch_emb_size,
         module_dim,
         hidden_gmf,
         n_modules,
@@ -92,16 +75,13 @@ class Encoder(nn.Module):
         n_enc_layer,
         use_tf,
         variational=True,
-        input_transform=EncoderInputTransform.IDENTITY,
     ):
         super().__init__()
         self.variational = variational
-        self.input_transform = input_transform
 
         self.tf = transform(
             input_size,
             hidden_size,
-            batch_emb_size,
             module_dim,
             hidden_gmf,
             n_modules,
@@ -117,28 +97,26 @@ class Encoder(nn.Module):
         self.fc_mean = nn.Linear(hidden_size, emb_size)
         self.fc_var = nn.Linear(hidden_size, emb_size)
 
-    def _encode_hidden(self, x, batch):
-        encoder_input = self.input_transform.apply(x)
-        xtf = self.tf(encoder_input, batch)
+    def _encode_hidden(self, x):
+        xtf = self.tf(x)
         return self.mlp(xtf)
 
-    def encode_mean(self, x, batch):
+    def encode_mean(self, x):
         """Return the deterministic mean head used as the final embedding."""
 
-        return self.fc_mean(self._encode_hidden(x, batch))
+        return self.fc_mean(self._encode_hidden(x))
 
-    def forward(self, x, batch):
-        h = self._encode_hidden(x, batch)
+    def forward(self, x, sample=True):
+        h = self._encode_hidden(x)
+        mu = self.fc_mean(h)
+        self.mu = mu
         if not self.variational:
-            mu = self.fc_mean(h)
             return mu
 
-        mu = self.fc_mean(h)
         logvar = self.fc_var(h)
-        self.mu = mu
         self.sigma = logvar.exp().sqrt()
         self.dist = Normal(self.mu, self.sigma)
-        return self.dist.rsample()
+        return self.dist.rsample() if sample else self.mu
 
     def kl_loss(self):
         if not hasattr(self, "dist"):
@@ -164,14 +142,11 @@ class Decoder(nn.Module):
         class_size,
         decoder_type,
         distribution,
-        n_layers=3,
     ):
         super().__init__()
 
         self.decoder_type = decoder_type
-        self.mlp = nn.ModuleList()
-
-        # Set initial input size
+        # Batch conditions decoder hidden layers, but never the output heads.
         if decoder_type == "reconstruction":
             input_size = emb_size + batch_emb_size
         elif decoder_type == "classification":
@@ -179,20 +154,18 @@ class Decoder(nn.Module):
         else:
             raise ValueError(f"Unknown decoder_type: {decoder_type}")
 
-        # Build MLP layers with batch embedding concat at each step
-        if isinstance(n_layers, int):
-            n_layers = [hidden_size] * n_layers
+        self.mlp = nn.ModuleList(
+            [
+                full_block(input_size, hidden_size),
+                full_block(hidden_size + batch_emb_size, hidden_size),
+            ]
+        )
 
-        for hidden_size in n_layers:
-            self.mlp.append(full_block(input_size, hidden_size))
-            input_size = hidden_size + batch_emb_size  # update for next layer input
-
-        # Final output layer
         if decoder_type == "reconstruction":
-            self.zi_logit = nn.Linear(input_size, out_put_size)
-            self.fc_rec = nn.Linear(input_size, out_put_size)
+            self.zi_logit = nn.Linear(hidden_size, out_put_size)
+            self.fc_rec = nn.Linear(hidden_size, out_put_size)
         elif decoder_type == "classification":
-            self.fc_class = nn.Linear(input_size, class_size)
+            self.fc_class = nn.Linear(hidden_size, class_size)
 
         if distribution in ["nb", "zinb"]:
             self.act = nn.Softmax(dim=-1)
@@ -201,10 +174,8 @@ class Decoder(nn.Module):
 
     def forward(self, z, batch):
         x = torch.cat([z, batch], dim=1)
-
-        for layer in self.mlp:
-            x = layer(x)
-            x = torch.cat([x, batch], dim=1)  # concat batch after each layer
+        x = self.mlp[0](x)
+        x = self.mlp[1](torch.cat([x, batch], dim=1))
 
         if self.decoder_type == "reconstruction":
             x_hat = self.act(self.fc_rec(x))

@@ -30,6 +30,7 @@ from .st_process import (
     convert_to_human_genes,
     create_subsampled_adata,
     find_common_hvg,
+    setup_data_layer,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,29 @@ logger = logging.getLogger(__name__)
 def _load_compatible_model_state(model: StEmbeding, model_path: str | Path) -> bool:
     state_dict = torch.load(model_path)
     return model.load_compatible_state_dict(state_dict)
+
+
+def _resolve_expression_model(is_count_data, requested_distribution, use_tf):
+    """Choose likelihood and variational behavior from expression values."""
+
+    if is_count_data:
+        return requested_distribution, True, use_tf
+    return "gaussian", False, False
+
+
+def _resolve_training_model_semantics(training_adata, config):
+    """Compatibility helper for callers that already loaded the training matrix."""
+
+    is_count_data, _ = setup_data_layer(
+        training_adata,
+        config.data_layer,
+        verbose=False,
+    )
+    return _resolve_expression_model(
+        is_count_data,
+        config.distribution,
+        config.use_tf,
+    )
 
 
 def set_seed(seed_value):
@@ -142,7 +166,10 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     set_seed(config.random_seed)
 
     # Find the hvg
-    hvg, n_cell_used, gene_homolog_dict = find_common_hvg(config.sample_h5ad_dict, config)
+    hvg, n_cell_used, gene_homolog_dict, is_count_data = find_common_hvg(
+        config.sample_h5ad_dict,
+        config,
+    )
     common_genes = np.array(list(gene_homolog_dict.keys()))
 
     # Create subsampled concatenated adata with sample-specific stratified sampling
@@ -156,15 +183,18 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         source_h5ad_dict=config.sample_h5ad_dict,
     )
 
-    # Configure the distribution
-    if config.data_layer in ["count", "counts"]:
-        distribution = config.distribution
-        variational = True
-        use_tf = config.use_tf
-    else:
-        distribution = "gaussian"
-        variational = False
-        use_tf = False
+    distribution, variational, use_tf = _resolve_expression_model(
+        is_count_data,
+        config.distribution,
+        config.use_tf,
+    )
+    logger.info(
+        "Detected %s expression; using distribution=%s, variational=%s, use_tf=%s.",
+        "count" if is_count_data else "continuous",
+        distribution,
+        variational,
+        use_tf,
+    )
 
     # Instantiation the LGCN VAE
     input_size = [
@@ -177,7 +207,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     label_name = get_trainning_data.label_name
 
     # Configure the batch embedding dim
-    batch_embedding_size = 64
+    batch_embedding_size = 16
 
     # Configure the model
     gsmap_lgcn_model = StEmbeding(
@@ -368,8 +398,10 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "batch_embedding_size": int(batch_embedding_size),
             "class_size": int(class_size),
             "distribution": distribution,
-            "encoder_input_transform": gsmap_embedding_model.encoder_input_transform.value,
+            "input_is_count_data": bool(is_count_data),
+            "encoder_input_transform": "identity",
             "latent_embedding_statistic": gsmap_embedding_model.latent_embedding_statistic,
+            "batch_conditioning": "decoder_only",
             "variational": variational,
             "use_tf": use_tf,
         },

@@ -10,6 +10,7 @@ import gc
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import threading
@@ -38,16 +39,25 @@ from gsMap.report.spatial_payload import (
     _categorical_schema,
     export_sample_spatial_payloads,
     export_spatial_3d_payloads,
+    safe_name,
 )
 from gsMap.report.visualize import (
     estimate_plotly_point_size,
 )
 from gsMap.spatial_ldsc.io import (
+    acquire_marker_scores_memmap,
     load_marker_scores_memmap_format,
-    resolve_marker_scores_memmap_path,
 )
 
 logger = logging.getLogger(__name__)
+
+CAUCHY_PAYLOAD_VERSION = 2
+CAUCHY_TABLE_CONSTANT_COLUMNS = {"trait", "annotation_name", "type"}
+CAUCHY_HEATMAP_METRICS = (
+    "mlog10_p_cauchy",
+    "mlog10_p_median",
+    "top_95_quantile",
+)
 
 
 def _available_cpu_count() -> int:
@@ -415,6 +425,11 @@ class ReportDataManager:
                 ticks = _load_chrom_tick_positions(csv_path)
                 if ticks:
                     chrom_tick_positions[trait] = ticks
+                    if not _manhattan_js_has_embedded_ticks(js_path):
+                        logger.info(
+                            f"Updating cached Manhattan payload metadata for {trait}..."
+                        )
+                        _export_single_manhattan_js(trait, csv_path, self.js_data_dir)
                 else:
                     logger.warning(
                         f"Cached Manhattan output for {trait} has no valid chromosome "
@@ -530,57 +545,79 @@ class ReportDataManager:
             logger.info("Skipping static plot rendering for non-spatial dataset type")
             return
 
-        from .visualize import VisualizeRunner
+        from .visualize import (
+            MultiSampleSpatialRasterCache,
+            SpatialOverviewTileStore,
+            VisualizeRunner,
+        )
 
         visualizer = VisualizeRunner(self.report_config)
 
         n_samples = len(self.sample_names)
-        n_cols = min(4, n_samples)
+        n_cols = min(8, max(1, math.ceil(math.sqrt(n_samples))))
         n_rows = (n_samples + n_cols - 1) // n_cols
 
-        obs_data = self.metadata.copy()
-        if "sample" not in obs_data.columns:
-            obs_data["sample"] = obs_data["sample_name"]
-
         if self.report_config.generate_multi_sample_plots:
-            # Render LDSC plots
+            # Keep one shared view of the full metadata. Copying this table can
+            # add tens of gigabytes of peak RSS for large spatial atlases.
+            obs_data = self.metadata
             spatial_plot_dir = self.web_report_dir / "spatial_plots"
-            spatial_plot_dir.mkdir(exist_ok=True)
-            for trait in self.traits:
-                trait_plot_path = spatial_plot_dir / f"ldsc_{trait}.png"
-                if not self._is_step_complete([trait_plot_path]):
-                    logger.info(f"Rendering LDSC plot for {trait}...")
-                    visualizer._create_single_trait_multi_sample_matplotlib_plot(
-                        obs_ldsc_merged=obs_data,
-                        trait_abbreviation=trait,
-                        sample_name_list=self.sample_names,
-                        output_png_path=trait_plot_path,
-                        n_rows=n_rows,
-                        n_cols=n_cols,
-                        subplot_width_inches=5.0,
-                    )
+            trait_plot_dir = spatial_plot_dir / "by_trait"
+            sample_plot_dir = spatial_plot_dir / "by_sample"
+            trait_paths = {
+                trait: trait_plot_dir / f"ldsc_{safe_name(trait)}.png"
+                for trait in self.traits
+            }
+            sample_paths = {
+                sample: sample_plot_dir / f"sample_{safe_name(sample)}.png"
+                for sample in self.sample_names
+            }
+            missing_trait_plots = {
+                trait for trait, path in trait_paths.items() if not self._is_step_complete([path])
+            }
+            missing_sample_plots = {
+                sample for sample, path in sample_paths.items() if not self._is_step_complete([path])
+            }
+            if missing_trait_plots or missing_sample_plots:
+                overview_cache = MultiSampleSpatialRasterCache(obs_data, self.sample_names)
+                with SpatialOverviewTileStore(
+                    overview_cache,
+                    self.traits,
+                    plot_origin=self.report_config.plot_origin,
+                    temporary_dir=spatial_plot_dir,
+                ) as tile_store:
+                    for trait_index, trait in enumerate(self.traits):
+                        values = pd.to_numeric(obs_data[trait], errors="coerce").to_numpy(
+                            dtype=np.float32, copy=False
+                        )
+                        finite_values = values[np.isfinite(values)]
+                        color_maximum = (
+                            float(np.quantile(finite_values, 0.999))
+                            if finite_values.size
+                            else 1.0
+                        )
+                        if not np.isfinite(color_maximum) or color_maximum <= 0:
+                            color_maximum = 1.0
+                        tile_store.encode_trait(trait_index, values, color_maximum)
+                        if trait in missing_trait_plots:
+                            logger.info(f"Rendering all-sample overview for {trait}...")
+                            visualizer._create_single_trait_multi_sample_tile_plot(
+                                tile_store,
+                                trait_index,
+                                trait_paths[trait],
+                                max_cols=self.report_config.single_trait_multi_sample_max_cols,
+                            )
 
-            # Render annotation plots
-            anno_dir = self.web_report_dir / "annotation_plots"
-            anno_dir.mkdir(exist_ok=True)
-            for anno in self.report_config.annotation_list:
-                anno_plot_path = anno_dir / f"anno_{anno}.png"
-                if not self._is_step_complete([anno_plot_path]):
-                    logger.info(f"Rendering plot for annotation: {anno}...")
-                    fig = visualizer._create_multi_sample_annotation_plot(
-                        obs_ldsc_merged=obs_data,
-                        annotation=anno,
-                        sample_names_list=self.sample_names,
-                        output_dir=None,
-                        n_rows=n_rows,
-                        n_cols=n_cols,
-                        fig_width=5 * n_cols,
-                        fig_height=5 * n_rows,
-                    )
-                    import matplotlib.pyplot as plt
-
-                    fig.savefig(anno_plot_path, dpi=300, bbox_inches="tight")
-                    plt.close(fig)
+                    for sample_index, sample in enumerate(self.sample_names):
+                        if sample not in missing_sample_plots:
+                            continue
+                        logger.info(f"Rendering all-trait overview for {sample}...")
+                        visualizer._create_single_sample_multi_trait_tile_plot(
+                            tile_store,
+                            sample_index,
+                            sample_paths[sample],
+                            max_cols=self.report_config.single_sample_multi_trait_max_cols,
+                        )
 
         # Gene diagnostic plots
         # Ensure base metadata exists (needed for common_spots and ldsc_results)
@@ -614,34 +651,46 @@ class ReportDataManager:
     def collect_cauchy_results(self):
         """Collect and save Cauchy combination results."""
         cauchy_file = self.report_data_dir / "cauchy_results.csv"
-        cauchy_js = self.js_data_dir / "cauchy_results.js"
-        # Since this combines all traits/annotations, we check for the final csv
-        if self._is_step_complete([cauchy_file, cauchy_js]):
-            # Validate all configured traits are covered in cached results
-            df = pd.read_csv(cauchy_file)
-            cached_traits = set(df["trait"].unique()) if "trait" in df.columns else set()
-            cached_annotations = (
-                set(df["annotation_name"].unique()) if "annotation_name" in df.columns else set()
-            )
-            missing_traits = sorted(set(self.traits) - cached_traits)
-            missing_annotations = sorted(
-                set(self.report_config.annotation_list) - cached_annotations
-            )
-            if not missing_traits and not missing_annotations:
-                logger.info("Cauchy results already collected. Skipping.")
-                return
-            logger.warning(
-                f"Cached Cauchy results are incomplete; missing traits={missing_traits}, "
-                f"missing annotations={missing_annotations}. Regenerating them."
-            )
+        data_are_current = False
+        if cauchy_file.is_file() and cauchy_file.stat().st_size > 0:
+            try:
+                coverage = pd.read_csv(
+                    cauchy_file,
+                    usecols=["trait", "annotation_name"],
+                )
+            except (OSError, ValueError, pd.errors.ParserError) as error:
+                logger.warning(
+                    f"Cached Cauchy results could not be validated ({error}); regenerating them."
+                )
+            else:
+                cached_traits = set(coverage["trait"].dropna().astype(str).unique())
+                cached_annotations = set(coverage["annotation_name"].dropna().astype(str).unique())
+                missing_traits = sorted(set(self.traits) - cached_traits)
+                missing_annotations = sorted(
+                    set(self.report_config.annotation_list) - cached_annotations
+                )
+                data_are_current = not missing_traits and not missing_annotations
+                if not data_are_current:
+                    logger.warning(
+                        "Cached Cauchy results are incomplete; "
+                        f"missing traits={missing_traits}, "
+                        f"missing annotations={missing_annotations}. Regenerating them."
+                    )
 
-        _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
-        _export_cauchy_js(self.report_data_dir, self.js_data_dir)
+        if self.force_re_run or not data_are_current:
+            _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
+
+        payloads_are_current = _cauchy_payloads_current(cauchy_file, self.js_data_dir)
+        if self.force_re_run or not payloads_are_current:
+            _export_cauchy_js(self.report_data_dir, self.js_data_dir)
+        else:
+            logger.info("Compact lazy Cauchy payloads are current. Skipping export.")
 
     def prepare_umap_data(self):
         """Prepare UMAP data from embeddings."""
         umap_file = self.report_data_dir / "umap_data.csv"
         umap_js = self.js_data_dir / "umap_data.js"
+        requested_limit = self.report_config.downsampling_n_spots_umap
         if self._is_step_complete([umap_file, umap_js]):
             report_meta_path = self.web_report_dir / "report_meta.json"
             if report_meta_path.is_file():
@@ -650,12 +699,21 @@ class ReportDataManager:
                         self.umap_info = json.load(handle).get("umap_info")
                 except (OSError, ValueError) as error:
                     logger.warning(f"Could not restore cached UMAP metadata: {error}")
-            if self.umap_info:
+            cached_limit = (
+                self.umap_info.get("downsampling_n_spots_umap") if self.umap_info else None
+            )
+            if self.umap_info and cached_limit == requested_limit:
                 logger.info("UMAP data already exists. Skipping.")
                 return
-            logger.warning(
-                "Cached UMAP data are missing their metadata; regenerating the UMAP export."
-            )
+            if self.umap_info:
+                logger.info(
+                    "Cached UMAP limit differs from the requested limit "
+                    f"({cached_limit} != {requested_limit}); regenerating the UMAP export."
+                )
+            else:
+                logger.warning(
+                    "Cached UMAP data are missing their metadata; regenerating the UMAP export."
+                )
 
         self.umap_info = _prepare_umap_data(
             self.report_config,
@@ -688,7 +746,6 @@ class ReportDataManager:
             self.traits,
             self.sample_names,
             self.web_report_dir,
-            getattr(self, "chrom_tick_positions", None),
             getattr(self, "umap_info", None),
             is_3d=self.is_3d,
             spatial_3d_info=getattr(self, "spatial_3d_info", None),
@@ -898,14 +955,38 @@ def _calculate_umap_from_embeddings(
     umap_key: str = "X_umap",
 ) -> np.ndarray:
     if umap_key in adata.obsm:
-        logger.info(f"Using pre-computed '{umap_key}' from adata.obsm, skipping neighbors + UMAP.")
-        return adata.obsm[umap_key]
+        coordinates = np.asarray(adata.obsm[umap_key])
+        finite_rows = np.isfinite(coordinates).all(axis=1)
+        if finite_rows.all():
+            logger.info(
+                f"Using pre-computed '{umap_key}' from adata.obsm, skipping neighbors + UMAP."
+            )
+            return coordinates.copy()
+
+        logger.warning(
+            f"Pre-computed '{umap_key}' contains "
+            f"{np.count_nonzero(~finite_rows):,}/{len(finite_rows):,} non-finite rows; "
+            f"recomputing a coherent UMAP from '{embedding_key}'."
+        )
+
+    embedding = np.asarray(adata.obsm[embedding_key])
+    if not np.isfinite(embedding).all():
+        nonfinite_values = int(np.count_nonzero(~np.isfinite(embedding)))
+        raise ValueError(
+            f"Embedding '{embedding_key}' contains {nonfinite_values:,} non-finite values; "
+            "cannot calculate UMAP."
+        )
 
     logger.info(f"Calculating UMAP for {embedding_key} with {adata.n_obs} spots using scanpy...")
     sc.pp.neighbors(adata, use_rep=embedding_key, n_neighbors=15, random_state=0)
     sc.tl.umap(adata, min_dist=0.5, spread=1.0, random_state=0)
 
-    return adata.obsm["X_umap"]
+    coordinates = np.asarray(adata.obsm["X_umap"]).copy()
+    if not np.isfinite(coordinates).all():
+        raise ValueError(f"Calculated UMAP for '{embedding_key}' contains non-finite values.")
+    if umap_key != "X_umap":
+        adata.obsm[umap_key] = coordinates
+    return coordinates
 
 
 def _render_scanpy_umap_panels(
@@ -1006,7 +1087,7 @@ def _prepare_umap_data(
     has_niche = niche_emb_key is not None and niche_emb_key in adata.obsm
 
     # Retain all observations unless an explicit report limit was supplied.
-    n_subsample = report_config.subsample_n_points
+    n_subsample = report_config.downsampling_n_spots_umap
     spot_names = adata.obs_names.values
     sample_names = adata.obs["sample_name"]
 
@@ -1102,6 +1183,7 @@ def _prepare_umap_data(
         "cell_emb_key": cell_emb_key,
         "niche_emb_key": niche_emb_key,
         "n_points": len(umap_metadata),
+        "downsampling_n_spots_umap": n_subsample,
         "point_size_cell": float(point_size_cell),
         "point_size_niche": float(point_size_niche) if point_size_niche is not None else None,
         "default_opacity": 0.7,
@@ -1242,7 +1324,11 @@ def _derive_section_plane_coordinates(
         }
 
     detected_counts = pd.Series(
-        [plane["cut_axis_title"] for plane in section_planes.values() if plane["cut_axis_detected"]]
+        [
+            plane["cut_axis_title"]
+            for plane in section_planes.values()
+            if plane["cut_axis_detected"]
+        ]
     ).value_counts()
     logger.info(
         "Detected section cut-normal axes from physical coordinates: "
@@ -1433,7 +1519,10 @@ def _load_gss_for_report_plots(
     if report_config.marker_score_format == "gene_block":
         gss_adata = _GeneBlockReportSource(report_config)
     else:
-        gss_adata = load_marker_scores_memmap_format(report_config)
+        gss_adata = load_marker_scores_memmap_format(
+            report_config,
+            populate_cache=False,
+        )
     common_spots = np.intersect1d(gss_adata.obs_names, ldsc_results.index)
     if len(common_spots) == 0:
         raise ValueError("No common spots found between GSS and LDSC results.")
@@ -1636,25 +1725,26 @@ def _load_gss_pcc_sample(
         finally:
             marker_store.close()
     else:
-        effective_marker_path = resolve_marker_scores_memmap_path(
+        marker_lease = acquire_marker_scores_memmap(
             report_config,
             marker_metadata,
             populate_cache=False,
         )
-        data_path = effective_marker_path.with_suffix(".dat")
-        n_workers = _report_worker_count(report_config, ceiling=32)
-        logger.info(
-            f"Reading the report marker sample with {n_workers} I/O workers from {data_path}; "
-            "the complete marker matrix will not be staged solely for PCC."
-        )
-        marker_scores = _read_marker_score_rows(
-            data_path=data_path,
-            shape=shape,
-            dtype=np.dtype(marker_metadata["dtype"]),
-            marker_rows=marker_rows,
-            gene_positions=gene_positions,
-            n_workers=n_workers,
-        )
+        with marker_lease:
+            data_path = marker_lease.path.with_suffix(".dat")
+            n_workers = _report_worker_count(report_config, ceiling=32)
+            logger.info(
+                f"Reading the report marker sample with {n_workers} I/O workers from {data_path}; "
+                "the complete marker matrix will not be staged solely for PCC."
+            )
+            marker_scores = _read_marker_score_rows(
+                data_path=data_path,
+                shape=shape,
+                dtype=np.dtype(marker_metadata["dtype"]),
+                marker_rows=marker_rows,
+                gene_positions=gene_positions,
+                n_workers=n_workers,
+            )
     logger.info(f"Prepared the PCC marker sample in {time.perf_counter() - started:.2f}s")
     return _GssPccSample(
         common_spots=common_spots,
@@ -1763,6 +1853,10 @@ def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):
         "snp": df["SNP"].tolist() if "SNP" in df.columns else [],
         "is_top": df["is_top_pcc"].astype(int).tolist() if "is_top_pcc" in df.columns else [],
         "bp": df["BP"].astype(int).tolist() if "BP" in df.columns else [],
+        "chrom_ticks": {
+            str(int(chromosome)): float(positions.median())
+            for chromosome, positions in df.groupby("CHR")["BP_cum"]
+        },
     }
 
     json_str = json.dumps(data_struct, separators=(",", ":"))
@@ -1770,6 +1864,17 @@ def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):
     js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
 
     _atomic_write_text(js_data_dir / f"manhattan_{trait}.js", js_content)
+
+
+def _manhattan_js_has_embedded_ticks(path: Path) -> bool:
+    """Check the small payload tail without loading a potentially large JS file."""
+
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, path.stat().st_size - 16_384))
+            return b'"chrom_ticks":' in handle.read()
+    except OSError:
+        return False
 
 
 # =============================================================================
@@ -1863,7 +1968,9 @@ def _apply_section_plane_coordinates(
         x_axis = int(plane.get("x_axis", 0))
         y_axis = int(plane.get("y_axis", 1))
         if x_axis == y_axis or not (0 <= x_axis < 3 and 0 <= y_axis < 3):
-            logger.warning(f"Ignoring invalid section-plane axes for sample {sample_name}: {plane}")
+            logger.warning(
+                f"Ignoring invalid section-plane axes for sample {sample_name}: {plane}"
+            )
             continue
         positions = order[offsets[code] : offsets[code + 1]]
         section_x[positions] = coordinate_arrays[x_axis][positions]
@@ -2397,49 +2504,163 @@ def _save_report_metadata(
     traits: list[str],
     sample_names: list[str],
     report_dir: Path,
-    chrom_tick_positions: dict | None = None,
     umap_info: dict | None = None,
     is_3d: bool = False,
     spatial_3d_info: dict | None = None,
 ):
     """Save report configuration metadata as JSON."""
     logger.info("Saving report configuration metadata...")
-    report_meta = report_config.to_dict_with_paths_as_strings()
-
-    report_meta["traits"] = traits
-    report_meta["samples"] = sample_names
-    report_meta["annotations"] = report_config.annotation_list
-    report_meta["top_corr_genes"] = report_config.top_corr_genes
-    report_meta["plot_origin"] = report_config.plot_origin
-    report_meta["legend_marker_size"] = report_config.legend_marker_size
-    report_meta["downsampling_n_spots_2d"] = getattr(
-        report_config, "downsampling_n_spots_2d", 250000
-    )
-
-    # Add chromosome tick positions for Manhattan plot
-    if chrom_tick_positions:
-        report_meta["chrom_tick_positions"] = chrom_tick_positions
-
-    # Add UMAP info
-    if umap_info:
-        report_meta["umap_info"] = umap_info
-
-    # Add 3D visualization info
-    report_meta["is_3d"] = is_3d
-    report_meta["has_3d_widget"] = spatial_3d_info is not None
-    report_meta["spatial_3d"] = spatial_3d_info
-    report_meta["spatial_3d_widget_path"] = None
-
-    # Add dataset type info for conditional section rendering
+    full_config = report_config.to_dict_with_paths_as_strings()
     dataset_type_value = report_config.dataset_type
     if hasattr(dataset_type_value, "value"):
         dataset_type_value = dataset_type_value.value
-    report_meta["dataset_type"] = dataset_type_value
-    report_meta["dataset_type_label"] = {
+    dataset_type_label = {
         "spatial3D": "Spatial 3D",
         "spatial2D": "Spatial 2D",
         "scRNA": "Single Cell RNA-seq",
     }.get(dataset_type_value, dataset_type_value)
+
+    def section(*keys: str) -> dict:
+        return {
+            key: full_config[key]
+            for key in keys
+            if key in full_config and full_config[key] not in (None, [], {})
+        }
+
+    coordinate_info = (spatial_3d_info or {}).get("coordinate_info") or {}
+    coordinate_summary = {
+        key: coordinate_info[key]
+        for key in (
+            "z_source",
+            "z_axis_input",
+            "z_scale",
+            "z_is_physical",
+            "default_aspect_mode",
+            "axis_titles",
+            "cut_axis_title",
+        )
+        if key in coordinate_info
+    }
+    configuration = {
+        "analysis": {
+            "project_name": full_config.get("project_name"),
+            "dataset_type": dataset_type_value,
+            "species": full_config.get("species"),
+            "n_samples": len(sample_names),
+            "n_traits": len(traits),
+            "annotations": list(report_config.annotation_list or []),
+            "cauchy_annotations": list(report_config.cauchy_annotations or []),
+            "random_seed": full_config.get("random_seed"),
+        },
+        "inputs": section(
+            "workdir",
+            "h5ad_path",
+            "h5ad_list_file",
+            "h5ad_yaml",
+            "spatial_key",
+            "data_layer",
+            "homolog_file",
+            "sumstats_config_file",
+            "snp_gene_weight_adata_path",
+            "w_ld_dir",
+        ),
+        "graph_and_matching": section(
+            "graph_mode",
+            "n_neighbors",
+            "graph_radius",
+            "graph_sigma",
+            "spatial_neighbors",
+            "homogeneous_neighbors",
+            "homogeneous_selection_mode",
+            "n_adjacent_slices",
+            "adjacent_slice_spatial_neighbors",
+            "cross_slice_selection_mode",
+            "cross_slice_z_coordinate",
+            "cross_slice_z_scale",
+            "cross_slice_max_distance",
+            "cross_slice_marker_score_strategy",
+        ),
+        "latent_representation": section(
+            "latent_representation_cell",
+            "latent_representation_niche",
+            "embedding_size",
+            "feat_cell",
+            "n_modules",
+            "module_dim",
+            "n_enc_layer",
+            "nhead",
+        ),
+        "association": section(
+            "n_blocks",
+            "chisq_max",
+            "use_gpu",
+            "ldsc_compute_workers",
+            "ldsc_read_workers",
+        ),
+        "visualization": {
+            **section(
+                "downsampling_n_spots_2d",
+                "downsampling_n_spots_3d",
+                "downsampling_n_spots_umap",
+                "downsampling_n_spots_pcc",
+                "top_corr_genes",
+                "plot_origin",
+                "generate_multi_sample_plots",
+            ),
+            "signal_opacity_upper_anchor": "shared_per_trait_q95",
+            "signal_color_upper_anchor": "shared_per_trait_q99.9",
+        },
+    }
+    if coordinate_summary:
+        configuration["spatial_3d_coordinates"] = coordinate_summary
+
+    runtime_keys = (
+        "species",
+        "graph_mode",
+        "n_neighbors",
+        "spatial_neighbors",
+        "homogeneous_neighbors",
+        "cross_slice_selection_mode",
+        "latent_representation_cell",
+        "latent_representation_niche",
+    )
+    report_meta = {
+        key: full_config.get(key) for key in runtime_keys if full_config.get(key) is not None
+    }
+    report_meta.update(
+        {
+            "traits": traits,
+            "samples": sample_names,
+            "annotations": report_config.annotation_list,
+            "top_corr_genes": report_config.top_corr_genes,
+            "plot_origin": report_config.plot_origin,
+            "legend_marker_size": report_config.legend_marker_size,
+            "downsampling_n_spots_2d": report_config.downsampling_n_spots_2d,
+            "downsampling_n_spots_3d": report_config.downsampling_n_spots_3d,
+            "downsampling_n_spots_umap": report_config.downsampling_n_spots_umap,
+            "generate_multi_sample_plots": report_config.generate_multi_sample_plots,
+            "multi_sample_trait_plots": (
+                {trait: f"by_trait/ldsc_{safe_name(trait)}.png" for trait in traits}
+                if report_config.generate_multi_sample_plots
+                else {}
+            ),
+            "single_sample_multi_trait_plots": (
+                {
+                    sample: f"by_sample/sample_{safe_name(sample)}.png"
+                    for sample in sample_names
+                }
+                if report_config.generate_multi_sample_plots
+                else {}
+            ),
+            "umap_info": umap_info,
+            "is_3d": is_3d,
+            "has_3d_widget": spatial_3d_info is not None,
+            "spatial_3d": spatial_3d_info,
+            "dataset_type": dataset_type_value,
+            "dataset_type_label": dataset_type_label,
+            "configuration": configuration,
+        }
+    )
 
     _write_text_if_changed(
         report_dir / "report_meta.json", json.dumps(report_meta, sort_keys=True)
@@ -2524,8 +2745,8 @@ def _sample_spatial_export_signature(data_dir: Path, meta: dict) -> dict:
         key: meta.get(key)
         for key in ("samples", "traits", "annotations", "downsampling_n_spots_2d")
     }
-    relevant_meta["spatial_3d_coordinate_info"] = (
-        (meta.get("spatial_3d") or {}).get("coordinate_info")
+    relevant_meta["spatial_3d_coordinate_info"] = (meta.get("spatial_3d") or {}).get(
+        "coordinate_info"
     )
     meta_digest = hashlib.sha256(
         json.dumps(relevant_meta, separators=(",", ":"), sort_keys=True).encode()
@@ -2680,14 +2901,220 @@ def _export_per_sample_spatial_js(
     )
 
 
-def _export_cauchy_js(data_dir: Path, js_data_dir: Path):
-    """Export Cauchy results as JS module."""
+def _cauchy_source_signature(cauchy_file: Path) -> dict[str, int]:
+    stat = cauchy_file.stat()
+    return {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _cauchy_payload_token(*parts: str) -> str:
+    """Return a readable collision-resistant token for a lazy payload."""
+
+    normalized_parts = []
+    for part in parts:
+        normalized = "".join(
+            character if character.isalnum() else "_" for character in str(part)
+        ).strip("_")
+        normalized_parts.append(normalized[:32] or "value")
+    digest = hashlib.sha256("\x1f".join(map(str, parts)).encode()).hexdigest()[:12]
+    return f"{'__'.join(normalized_parts)}__{digest}"
+
+
+def _cauchy_payloads_current(cauchy_file: Path, js_data_dir: Path) -> bool:
+    manifest_path = js_data_dir / "cauchy_manifest.json"
+    if not cauchy_file.is_file() or not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if manifest.get("version") != CAUCHY_PAYLOAD_VERSION:
+        return False
+    if manifest.get("source") != _cauchy_source_signature(cauchy_file):
+        return False
+    outputs = manifest.get("outputs", [])
+    return bool(outputs) and all(
+        (js_data_dir / relative).is_file() and (js_data_dir / relative).stat().st_size > 0
+        for relative in outputs
+    )
+
+
+def _compact_cauchy_payload(frame: pd.DataFrame, *, drop_columns: set[str]) -> str:
+    """Serialize rows without repeated JSON object keys or shard constants."""
+
+    columns = [column for column in frame.columns if column not in drop_columns]
+    return frame[columns].to_json(
+        orient="split",
+        index=False,
+        double_precision=10,
+    )
+
+
+def _write_cauchy_shard(
+    path: Path,
+    *,
+    key: str,
+    frame: pd.DataFrame,
+    drop_columns: set[str],
+) -> None:
+    payload = _compact_cauchy_payload(frame, drop_columns=drop_columns)
+    content = (
+        "window.GSMAP_CAUCHY_SHARDS=window.GSMAP_CAUCHY_SHARDS||{};"
+        f"window.GSMAP_CAUCHY_SHARDS[{json.dumps(key)}]={payload};"
+    )
+    _atomic_write_text(path, content)
+
+
+def _export_cauchy_js(data_dir: Path, js_data_dir: Path) -> None:
+    """Export file://-compatible Cauchy shards loaded only for the active view."""
+
     cauchy_file = data_dir / "cauchy_results.csv"
-    if cauchy_file.exists():
-        df = pd.read_csv(cauchy_file)
-        data_json = df.to_json(orient="records")
-        js_content = f"window.GSMAP_CAUCHY = {data_json};"
-        _atomic_write_text(js_data_dir / "cauchy_results.js", js_content)
+    if not cauchy_file.is_file():
+        return
+
+    started = time.perf_counter()
+    frame = pd.read_csv(cauchy_file)
+    required = {
+        "trait",
+        "annotation_name",
+        "annotation",
+        "type",
+        *CAUCHY_HEATMAP_METRICS,
+    }
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise ValueError(f"Cauchy report data are missing columns: {missing}")
+
+    frame["trait"] = frame["trait"].astype(str)
+    frame["annotation_name"] = frame["annotation_name"].astype(str)
+    frame["annotation"] = frame["annotation"].astype(str)
+    frame["type"] = frame["type"].astype(str)
+    mode_for_type = {"aggregated": "all", "sample": "sample"}
+    shard_dir = js_data_dir / "cauchy"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    index: dict[str, object] = {
+        "version": CAUCHY_PAYLOAD_VERSION,
+        "table": {"all": {}, "sample": {}},
+        "heatmap": {"all": {}, "sample": {}},
+    }
+    output_files: list[str] = []
+
+    for result_type, mode_frame in frame.groupby("type", sort=False, observed=True):
+        mode = mode_for_type.get(str(result_type))
+        if mode is None:
+            logger.warning(f"Skipping unsupported Cauchy result type: {result_type}")
+            continue
+
+        table_index: dict[str, dict[str, dict[str, object]]] = index["table"][mode]
+        for (trait, annotation_name), shard in mode_frame.groupby(
+            ["trait", "annotation_name"],
+            sort=False,
+            observed=True,
+        ):
+            key = f"table\x1f{mode}\x1f{trait}\x1f{annotation_name}"
+            token = _cauchy_payload_token("table", mode, trait, annotation_name)
+            relative = f"cauchy/{token}.js"
+            _write_cauchy_shard(
+                js_data_dir / relative,
+                key=key,
+                frame=shard,
+                drop_columns=CAUCHY_TABLE_CONSTANT_COLUMNS,
+            )
+            table_index.setdefault(trait, {})[annotation_name] = {
+                "file": f"js_data/{relative}",
+                "key": key,
+                "n_rows": len(shard),
+                "defaults": {
+                    "trait": trait,
+                    "annotation_name": annotation_name,
+                    "type": str(result_type),
+                },
+            }
+            output_files.append(relative)
+
+        heatmap_index: dict[str, dict[str, object]] = index["heatmap"][mode]
+        for annotation_name, annotation_frame in mode_frame.groupby(
+            "annotation_name",
+            sort=False,
+            observed=True,
+        ):
+            compact = annotation_frame.groupby(
+                ["trait", "annotation"],
+                sort=False,
+                observed=True,
+                as_index=False,
+            )[list(CAUCHY_HEATMAP_METRICS)].median()
+            if mode == "sample" and "sample_name" in annotation_frame:
+                sample_counts = (
+                    annotation_frame.groupby(
+                        ["trait", "annotation"],
+                        sort=False,
+                        observed=True,
+                    )["sample_name"]
+                    .nunique()
+                    .rename("n_samples")
+                    .reset_index()
+                )
+                compact = compact.merge(
+                    sample_counts,
+                    on=["trait", "annotation"],
+                    how="left",
+                    sort=False,
+                )
+
+            key = f"heatmap\x1f{mode}\x1f{annotation_name}"
+            token = _cauchy_payload_token("heatmap", mode, annotation_name)
+            relative = f"cauchy/{token}.js"
+            _write_cauchy_shard(
+                js_data_dir / relative,
+                key=key,
+                frame=compact,
+                drop_columns=set(),
+            )
+            heatmap_index[annotation_name] = {
+                "file": f"js_data/{relative}",
+                "key": key,
+                "n_rows": len(compact),
+                "aggregation": ("median_across_samples" if mode == "sample" else "aggregated"),
+            }
+            output_files.append(relative)
+
+    index_content = (
+        "window.GSMAP_CAUCHY_INDEX="
+        + json.dumps(index, ensure_ascii=False, separators=(",", ":"))
+        + ";"
+    )
+    _atomic_write_text(js_data_dir / "cauchy_index.js", index_content)
+    output_files.append("cauchy_index.js")
+
+    manifest = {
+        "version": CAUCHY_PAYLOAD_VERSION,
+        "source": _cauchy_source_signature(cauchy_file),
+        "outputs": sorted(output_files),
+    }
+    _atomic_write_text(
+        js_data_dir / "cauchy_manifest.json",
+        json.dumps(manifest, separators=(",", ":"), sort_keys=True),
+    )
+
+    referenced = {
+        Path(relative).name for relative in output_files if relative.startswith("cauchy/")
+    }
+    for stale in shard_dir.glob("*.js"):
+        if stale.name not in referenced:
+            stale.unlink()
+    # Version 1 loaded all rows into a single browser global.  Remove it only
+    # after the complete version-2 index and manifest have been published.
+    (js_data_dir / "cauchy_results.js").unlink(missing_ok=True)
+
+    logger.info(
+        "Exported lazy Cauchy payloads: "
+        f"{len(output_files) - 1} shards for {len(frame):,} source rows in "
+        f"{time.perf_counter() - started:.2f}s"
+    )
 
 
 def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
@@ -2713,6 +3140,10 @@ def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
                 if "is_top_pcc" in df.columns
                 else [],
                 "bp": df["BP"].astype(int).tolist() if "BP" in df.columns else [],
+                "chrom_ticks": {
+                    str(int(chromosome)): float(positions.median())
+                    for chromosome, positions in df.groupby("CHR")["BP_cum"]
+                },
             }
 
             json_str = json.dumps(data_struct, separators=(",", ":"))

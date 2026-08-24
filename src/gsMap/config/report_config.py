@@ -28,6 +28,15 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
         ),
     ] = 20000
 
+    downsampling_n_spots_umap: Annotated[
+        int | None,
+        typer.Option(
+            help="Optional maximum spots for report UMAPs; omit to retain all spots",
+            min=1000,
+            max=10000000,
+        ),
+    ] = None
+
     downsampling_n_spots_3d: Annotated[
         int | None,
         typer.Option(
@@ -70,7 +79,7 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     single_trait_multi_sample_dpi: int = 320
     share_coords: bool = False
 
-    # Weather to generate single-feature multi-sample plots (LDSC, annotation, and gene diagnostic plots)
+    # Generate both static overview matrices: traits across samples and samples across traits.
     generate_multi_sample_plots: bool = False
 
     # Plot origin for spatial plots ('upper' or 'lower')

@@ -4,12 +4,12 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from .encoder_decoder import Decoder, Encoder, EncoderInputTransform
+from .encoder_decoder import Decoder, Encoder
 
 
 class StEmbeding(nn.Module):
     """
-    Learn graph-smoothed and expression embeddings for each cell, with optional batch correction.
+    Learn graph-smoothed and expression embeddings with decoder-only batch correction.
 
     Args:
         input_size (list): List of input feature sizes for each encoder.
@@ -52,16 +52,11 @@ class StEmbeding(nn.Module):
         self.batch_representation = batch_representation
         self.num_batches = batch_size
         self.latent_embedding_statistic = (
-            "posterior_mean" if variational else "deterministic_encoder_output"
-        )
-        self.encoder_input_transform = (
-            EncoderInputTransform.LOG1P
-            if self.distribution in ["nb", "zinb"]
-            else EncoderInputTransform.IDENTITY
+            "posterior_sample" if variational else "deterministic_encoder_output"
         )
         self.register_buffer(
-            "_encoder_input_transform_version",
-            torch.tensor(self.encoder_input_transform.checkpoint_version, dtype=torch.int8),
+            "_embedding_architecture_version",
+            torch.tensor(3, dtype=torch.int8),
         )
         if batch_label_classes is not None:
             encoded_labels = "\0".join(str(label) for label in batch_label_classes).encode()
@@ -88,7 +83,6 @@ class StEmbeding(nn.Module):
                     self.input_size[eid],
                     hidden_size,
                     embedding_size,
-                    self.batch_embedding_size,
                     module_dim,
                     hidden_gmf,
                     n_modules,
@@ -96,7 +90,6 @@ class StEmbeding(nn.Module):
                     n_enc_layer,
                     use_tf,
                     variational,
-                    input_transform=self.encoder_input_transform,
                 )
             )
 
@@ -119,13 +112,6 @@ class StEmbeding(nn.Module):
         else:
             return F.one_hot(batch, num_classes=self.num_batches).float()
 
-    def has_compatible_encoder_input_transform(self, state_dict) -> bool:
-        observed = state_dict.get("_encoder_input_transform_version")
-        if observed is None:
-            return self.encoder_input_transform is EncoderInputTransform.IDENTITY
-        expected = self._encoder_input_transform_version
-        return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
-
     def has_compatible_batch_label_encoding(self, state_dict) -> bool:
         if not hasattr(self, "_batch_label_encoding_signature"):
             return True
@@ -135,17 +121,22 @@ class StEmbeding(nn.Module):
         expected = self._batch_label_encoding_signature
         return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
 
-    def load_compatible_state_dict(self, state_dict) -> bool:
-        if not self.has_compatible_encoder_input_transform(
-            state_dict
-        ) or not self.has_compatible_batch_label_encoding(state_dict):
+    def has_compatible_embedding_architecture(self, state_dict) -> bool:
+        observed = state_dict.get("_embedding_architecture_version")
+        if observed is None:
             return False
-        if "_encoder_input_transform_version" not in state_dict:
-            state_dict = state_dict.copy()
-            state_dict["_encoder_input_transform_version"] = (
-                self._encoder_input_transform_version.detach().clone()
-            )
-        self.load_state_dict(state_dict)
+        expected = self._embedding_architecture_version
+        return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
+
+    def load_compatible_state_dict(self, state_dict) -> bool:
+        if not self.has_compatible_batch_label_encoding(
+            state_dict
+        ) or not self.has_compatible_embedding_architecture(state_dict):
+            return False
+        try:
+            self.load_state_dict(state_dict)
+        except RuntimeError:
+            return False
         return True
 
     def forward(self, x_list, batch):
@@ -160,7 +151,7 @@ class StEmbeding(nn.Module):
 
         x_rec_list, zi_logit_list, z_list = [], [], []
         for eid in range(self.z_num):
-            z = self.encoder[eid](x_list[eid], batch)
+            z = self.encoder[eid](x_list[eid])
             x_rec, zi_logit = self.decoder["reconstruction"](z, batch)
             x_rec = x_rec * library_size
 
@@ -175,12 +166,11 @@ class StEmbeding(nn.Module):
         z = torch.cat(z_list, dim=1)
         return self.decoder["classification"](z, batch)
 
-    def encode(self, x_list, batch):
-        """Return deterministic mean-head outputs for downstream embeddings."""
+    def encode(self, x_list, batch=None, sample=True):
+        """Return batch-invariant encoder outputs for downstream embeddings."""
 
-        batch = self._process_batch(batch)
         z_list = []
         for eid in range(self.z_num):
-            mu = self.encoder[eid].encode_mean(x_list[eid], batch)
-            z_list.append(mu)
+            z = self.encoder[eid](x_list[eid], sample=sample)
+            z_list.append(z)
         return z_list

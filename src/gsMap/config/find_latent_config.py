@@ -158,7 +158,14 @@ class FindLatentModelConfig:
     ] = False
 
     do_sampling: Annotated[
-        bool, typer.Option("--do-sampling/--no-sampling", help="Down-sampling cells in training")
+        bool,
+        typer.Option(
+            "--do-sampling/--no-sampling",
+            help=(
+                "Down-sample cells used by the training loss; spatial features are still "
+                "propagated on each complete section graph"
+            ),
+        ),
     ] = True
 
     n_cell_training: Annotated[

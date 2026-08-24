@@ -13,7 +13,12 @@ from gsMap.find_latent.gnn.gcn import (
     build_radius_spatial_graph,
     build_spatial_graph,
 )
-from gsMap.find_latent.st_process import TrainingData
+from gsMap.find_latent.st_process import (
+    SOURCE_OBS_NAME,
+    TrainingData,
+    create_subsampled_adata,
+    propagate_spatial_features,
+)
 
 
 def _edge_id_set(edges, stable_ids):
@@ -196,3 +201,138 @@ def test_training_data_scatter_is_invariant_to_interleaved_batches():
     mapped_back[permutation] = shuffled.expression_gcn_merge.numpy()
 
     np.testing.assert_allclose(original.expression_gcn_merge.numpy(), mapped_back)
+
+
+def test_training_batch_codes_use_one_fitted_mapping_after_s10():
+    batch_order = [
+        "S10",
+        "S2",
+        "S0",
+        "S11",
+        "S1",
+        "S9",
+        "S3",
+        "S8",
+        "S4",
+        "S7",
+        "S5",
+        "S6",
+    ]
+    n_batches = len(batch_order)
+    adata = anndata.AnnData(
+        X=sp.csr_matrix(np.ones((n_batches, 1), dtype=np.float32)),
+        obs=pd.DataFrame(
+            {"batch_id": batch_order},
+            index=[f"spot-{batch_id}" for batch_id in batch_order],
+        ),
+        var=pd.DataFrame(index=["g0"]),
+    )
+    adata.obsm["spatial"] = np.arange(n_batches * 2, dtype=float).reshape(n_batches, 2)
+    params = SimpleNamespace(
+        K=1,
+        annotation=None,
+        spatial_key="spatial",
+        graph_mode="no_graph",
+        n_neighbors=1,
+        graph_radius=None,
+        graph_sigma=None,
+        sample_h5ad_dict={f"sample-{i}": None for i in range(n_batches)},
+    )
+
+    training_data = TrainingData(params)
+    training_data.prepare(adata, ["g0"])
+
+    expected_codes = training_data.batch_label_encoder.transform(batch_order)
+    np.testing.assert_array_equal(training_data.batch_merge.numpy(), expected_codes)
+    assert training_data.batch_size == n_batches
+
+
+def test_training_data_propagates_full_graph_before_selecting_loss_cells(tmp_path):
+    expression = np.arange(5, dtype=np.float32).reshape(-1, 1)
+    obs_names = np.asarray([f"cell-{index}" for index in range(5)])
+    full_adata = anndata.AnnData(
+        X=sp.csr_matrix(expression),
+        obs=pd.DataFrame(index=obs_names),
+        var=pd.DataFrame(index=["g0"]),
+    )
+    full_adata.obsm["spatial"] = np.column_stack(
+        [np.arange(5, dtype=float), np.zeros(5, dtype=float)]
+    )
+    full_path = tmp_path / "section.h5ad"
+    full_adata.write_h5ad(full_path)
+
+    selected_positions = np.asarray([0, 4])
+    training_adata = full_adata[selected_positions].copy()
+    training_adata.obs["batch_id"] = "S0"
+    training_adata.obs[SOURCE_OBS_NAME] = training_adata.obs_names.astype(str)
+    params = SimpleNamespace(
+        K=1,
+        annotation=None,
+        spatial_key="spatial",
+        graph_mode="symmetric_knn",
+        n_neighbors=1,
+        graph_radius=None,
+        graph_sigma=None,
+        data_layer="X",
+        do_sampling=True,
+        sample_h5ad_dict={"section": full_path},
+    )
+
+    training_data = TrainingData(params)
+    training_data.prepare(training_adata, ["g0"])
+
+    expected, _ = propagate_spatial_features(
+        expression=torch.from_numpy(expression),
+        coords=full_adata.obsm["spatial"],
+        stable_ids=obs_names,
+        params=params,
+        gcov=GCN(K=1),
+        output_indices=selected_positions,
+    )
+    full_graph_output, _ = propagate_spatial_features(
+        expression=torch.from_numpy(expression),
+        coords=full_adata.obsm["spatial"],
+        stable_ids=obs_names,
+        params=params,
+        gcov=GCN(K=1),
+    )
+    sampled_only, _ = propagate_spatial_features(
+        expression=torch.from_numpy(expression[selected_positions]),
+        coords=full_adata.obsm["spatial"][selected_positions],
+        stable_ids=obs_names[selected_positions],
+        params=params,
+        gcov=GCN(K=1),
+    )
+
+    torch.testing.assert_close(training_data.expression_gcn_merge, expected)
+    torch.testing.assert_close(expected, full_graph_output[selected_positions])
+    assert not torch.equal(training_data.expression_gcn_merge, sampled_only)
+
+
+def test_subsampling_preserves_source_ids_for_full_graph_alignment(tmp_path):
+    adata = anndata.AnnData(
+        X=sp.csr_matrix(np.arange(6, dtype=np.float32).reshape(-1, 1)),
+        obs=pd.DataFrame(index=[f"cell-{index}" for index in range(6)]),
+        var=pd.DataFrame(index=["g0"]),
+    )
+    adata.obsm["spatial"] = np.column_stack(
+        [np.arange(6, dtype=float), np.zeros(6, dtype=float)]
+    )
+    source_path = tmp_path / "source.h5ad"
+    adata.write_h5ad(source_path)
+    params = SimpleNamespace(
+        data_layer="X",
+        annotation=None,
+        do_sampling=True,
+    )
+
+    np.random.seed(2024)
+    sampled = create_subsampled_adata(
+        {"section": source_path},
+        [3],
+        params,
+    )
+
+    assert sampled.n_obs == 3
+    assert SOURCE_OBS_NAME in sampled.obs
+    assert set(sampled.obs[SOURCE_OBS_NAME]).issubset(set(adata.obs_names))

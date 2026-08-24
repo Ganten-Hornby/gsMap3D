@@ -102,7 +102,9 @@ def test_spatial3d_is_lazy_direct_plotly_and_labels_nonphysical_geometry(
     assert "GSMAP_SPATIAL_3D_INDEX" in report_template
     assert 'id="spatial3dPlotTrait"' in report_template
     assert 'id="spatial3dPlotAnnotation"' in report_template
-    assert "Expanded Z (visual aid)" in report_template
+    assert "resolveSpatial3dAspectMode" in report_template
+    assert "Expanded section-order Z" in report_template
+    assert 'x-model="spatial3dAspectMode"' not in report_template
     assert "spatial3dCoordinateInfo?.note" in report_template
     assert "xRange / largestXyRange" in report_template
     assert "yRange / largestXyRange" in report_template
@@ -122,6 +124,8 @@ def test_large_secondary_datasets_are_loaded_near_their_sections(
 ) -> None:
     assert '<script src="js_data/cauchy_results.js"></script>' not in report_template
     assert '<script src="js_data/umap_data.js"></script>' not in report_template
+    assert "loadScript('js_data/cauchy_index.js')" in report_template
+    assert "loadCauchyShard(entry, cache, order" in report_template
     assert "setupDeferredPlotLoading()" in report_template
     assert "loadUmapData()" in report_template
     assert "loadCauchyData()" in report_template
@@ -136,36 +140,44 @@ def test_trait_selector_supports_fuzzy_keyboard_search(report_template: str) -> 
     assert "selectActiveTrait()" in report_template
 
 
+def test_sample_selector_supports_fuzzy_keyboard_search(report_template: str) -> None:
+    assert 'id="sample-listbox"' in report_template
+    assert "get filteredSamples()" in report_template
+    assert "moveSampleSearch(1)" in report_template
+    assert "selectActiveSample()" in report_template
+    assert "selectSampleFromSearch(sample)" in report_template
+
+
 def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     report_template: str,
 ) -> None:
-    assert "spatial2dViewMode: 'compare'" in report_template
+    assert "spatial2dViewMode: 'trait'" in report_template
+    assert "setSpatial2dViewMode('compare')" in report_template
     assert "setSpatial2dViewMode('annotation')" in report_template
     assert 'aria-label="2D point-size multiplier"' in report_template
     assert 'max="12" step="0.25"' in report_template
     assert 'aria-label="2D point opacity"' not in report_template
     assert "spatial2dOpacity" not in report_template
     assert "bindSpatial2dViewportSync" in report_template
-    assert "Retained high-signal spots" in report_template
     assert "Color scale is shared across samples" in report_template
 
 
-def test_spatial_views_can_toggle_retained_hotspot_emphasis(report_template: str) -> None:
-    assert "spatial3dHighlightHotspots: true" in report_template
+def test_spatial_views_do_not_include_top_signal_overlays(report_template: str) -> None:
+    assert "spatial3dHighlightHotspots" not in report_template
     assert "spatial2dHighlightHotspots" not in report_template
-    assert report_template.count("Top 500 highlighted") == 1
-    assert report_template.count("Top 500 normal size") == 1
-    assert "const highlight = this.spatial3dHighlightHotspots" in report_template
-    assert "size: Math.max(2.5, pointSize * 1.5)" in report_template
+    assert "Show top 500" not in report_template
+    assert "Hide top 500" not in report_template
+    assert "Top-500 signal" not in report_template
+    assert "n_top" not in report_template
 
 
 def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:
-    assert "hoverPrefix: 'Retained top signal'" in report_template
     assert "−log10(P): %{marker.color:.2f}" in report_template
     assert "annotationHoverLabels" in report_template
     assert "base.n_points <= 200000" in report_template
-    assert "buildSpatial2dAnnotationHoverText(data)" in report_template
-    assert "compactTraitPayload.extra.annotation_codes" in report_template
+    assert "appendPointAnnotationLines(lines, context, sourceIndex)" in report_template
+    assert "setPointHoverContext(key, context)" in report_template
+    assert "buildSpatial2dAnnotationHoverText" not in report_template
     assert "Object.entries(data.annotations || {})" in report_template
     assert "<b>${anno}</b> code: %{marker.color:.0f}" not in report_template
 
@@ -179,26 +191,28 @@ def test_umap_uses_readable_geometry_hover_and_canonical_annotation_colors(
     assert "strongest trait signals are drawn on top" in report_template
     assert "currentAnnotationLegend" in report_template
     assert "this.getAnnotationColorMap(anno)" in report_template
-    hover_builder = report_template[
-        report_template.index("buildUmapHoverText(includeTrait = false)") : report_template.index(
-            "// Render only trait-colored UMAP plots"
-        )
+    continuous_renderer = report_template[
+        report_template.index(
+            "                renderSingleUmapContinuous(divId"
+        ) : report_template.index("// Optimized: render discrete")
     ]
-    assert "<b>Spot:</b>" not in hover_builder
-    assert "<b>Sample:</b>" not in hover_builder
+    assert "includeSpots" not in continuous_renderer
+    assert "spots:" not in continuous_renderer
     assert "bindPointHoverTooltip" in report_template
     assert "pointer.clientX + gap" in report_template
-    assert "customdata: rendering.hoverColors" in report_template
-    assert "customdata: indices.map(() => color)" in report_template
+    assert "_pointHoverContextOrder.length > 4096" in report_template
+    assert "customdata: rendering.hoverColors" not in report_template
+    assert "customdata: indices.map(() => color)" not in report_template
 
 
 def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
     report_template: str,
 ) -> None:
     assert "data.axis_titles" in report_template
-    assert "meta: { hoverKind: 'trait', axisTitles }" in report_template
-    assert "meta: { hoverKind: 'annotation', axisTitles }" in report_template
-    assert "spatial2dTraitHoverColors" in report_template
+    assert "meta: { hoverContextKey }" in report_template
+    assert "hoverKind: 'trait'" in report_template
+    assert "hoverKind: 'annotation'" in report_template
+    assert "spatial2dTraitHoverColors" not in report_template
     assert "this.bindPointHoverTooltip(plotDiv)" in report_template
     assert "tooltip.style.background = background" in report_template
 
@@ -206,8 +220,6 @@ def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
 def test_shared_annotation_selection_filters_all_point_maps(report_template: str) -> None:
     assert "visibleUmapPointIndices()" in report_template
     assert "const annotation = this.spatial3dAnnotationCache?.[annotationName]" in report_template
-    assert "feature.extra.annotation_codes?.[annotationName]" in report_template
-    assert "compactTraitPayload.extra.annotation_codes?.[annotationName]" in report_template
     assert "this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait')" in report_template
     assert (
         "if (this.spatial3dViewMode !== 'annotation') this.renderSpatial3dTrait()"
@@ -232,12 +244,90 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
     ]
     heatmap = report_template[
         report_template.index("                renderCauchyHeatmap() {") : report_template.index(
-            "// Simple Hierarchical Clustering"
+            "// Hierarchical clustering"
         )
     ]
     assert "isAnnotationCategoryVisible" not in table_filter
     assert "cauchyFocusedAnnotation" not in table_filter
     assert "isAnnotationCategoryVisible" not in heatmap
+
+
+def test_enrichment_is_sharded_paginated_and_uses_bounded_browser_caches(
+    report_template: str,
+) -> None:
+    assert "cauchyTablePageSize: 200" in report_template
+    assert "get visibleCauchyTable()" in report_template
+    assert "_cauchyShardPromises" in report_template
+    assert "setBoundedCache(cache, order, entry.key, rows, 4)" in report_template
+    assert "const rowByKey = new Map" in report_template
+    assert "window.GSMAP_CAUCHY =" not in report_template
+    assert "fetch(" not in report_template
+
+
+def test_spatial3d_keeps_full_display_payload_during_camera_interaction(
+    report_template: str,
+) -> None:
+    assert "spatial3dInteractionPointLimit" not in report_template
+    assert "configureSpatial3dInteractionLod" not in report_template
+    assert "applySpatial3dInteractionLod" not in report_template
+    assert "plotly_relayouting" not in report_template
+
+
+def test_spatial_association_views_have_independent_q95_opacity_controls(
+    report_template: str,
+) -> None:
+    assert "spatial3dAssociationMinLogP: 0" in report_template
+    assert "spatial2dAssociationMinLogP: 0" in report_template
+    assert "spatial3dAssociationOpacityStrength: 0.65" in report_template
+    assert "spatial2dAssociationOpacityStrength: 0.65" in report_template
+    assert report_template.count('aria-label="Association opacity gradient strength"') == 1
+    assert report_template.count('aria-label="2D association opacity gradient strength"') == 1
+    assert "filterAssociationPlotPoints(points, values, thresholdValue = 0)" in report_template
+    assert "value, cmin, q95, maximumOpacity, strengthValue, thresholdValue" in report_template
+    assert "const binCount = 8" in report_template
+    assert "opacitySums[bin] / indices.length" in report_template
+    assert "this.spatial3dViewMode === 'compare' && traitFeature" in report_template
+    assert "this.spatial2dViewMode === 'compare' && comparisonTrait?.values" in report_template
+
+
+def test_report_exposes_lazy_all_sample_trait_overview(report_template: str) -> None:
+    assert "One trait across all samples" in report_template
+    assert "One sample across all traits" in report_template
+    assert "multiSampleTraitPlotUrl" in report_template
+    assert "singleSampleMultiTraitPlotUrl" in report_template
+    assert (
+        '<template x-if="allSampleTraitOverviewOpen && '
+        "multiSamplePlotStatus !== 'error'\">"
+    ) in report_template
+    assert (
+        '<template x-if="singleSampleTraitOverviewOpen && '
+        "singleSamplePlotStatus !== 'error'\">"
+    ) in report_template
+    assert ':src="multiSampleTraitPlotUrl"' in report_template
+    assert ':src="singleSampleMultiTraitPlotUrl"' in report_template
+    assert "allSampleTraitOverviewOpen ? multiSampleTraitPlotUrl : ''" not in report_template
+    assert "singleSampleTraitOverviewOpen ? singleSampleMultiTraitPlotUrl : ''" not in report_template
+    assert "multiSamplePlotStatus === 'error'" in report_template
+    assert "singleSamplePlotStatus === 'error'" in report_template
+    assert 'decoding="async"' in report_template
+
+
+def test_run_details_are_collapsed_and_summarized_before_raw_config(
+    report_template: str,
+) -> None:
+    assert "info: false" in report_template
+    assert "get runDetailCards()" in report_template
+    assert "Graph and neighborhood" in report_template
+    assert "Browser visualization" in report_template
+    assert "Configuration" in report_template
+    assert "Complete machine-readable configuration" not in report_template
+    assert "JSON.stringify(reportMeta.configuration || {}, null, 2)" in report_template
+
+
+def test_spatial_widgets_do_not_repeat_outer_panel_titles(report_template: str) -> None:
+    assert "spatial3dLayout(title)" not in report_template
+    assert "this.spatial3dLayout(`Trait:" not in report_template
+    assert "this.spatial3dLayout(`Annotation:" not in report_template
 
 
 def test_enrichment_annotation_badges_support_point_map_multi_selection(
