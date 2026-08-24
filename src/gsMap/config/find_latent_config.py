@@ -41,10 +41,12 @@ class FindLatentModelConfig:
         typer.Option(
             help=(
                 "Spatial graph mode: symmetric_knn (default), radius, weighted_radius, "
-                "no_graph, or revision-only legacy_bug/legacy_symmetric"
+                "sectionwise_2d, section_aware_3d, no_graph, or revision-only "
+                "legacy_bug/legacy_symmetric"
             ),
             case_sensitive=False,
         ),
+        {"__display_in_quick_mode_cli__": True},
     ] = "symmetric_knn"
 
     graph_radius: Annotated[
@@ -57,7 +59,43 @@ class FindLatentModelConfig:
         typer.Option(help="Gaussian sigma for weighted-radius edges", min=0.0),
     ] = None
 
+    graph_section_key: Annotated[
+        str | None,
+        typer.Option(
+            help=(
+                "Observation column identifying physical sections for "
+                "sectionwise_2d and section_aware_3d graphs"
+            )
+        ),
+        {"__display_in_quick_mode_cli__": True},
+    ] = None
+
+    graph_z_scale: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Multiplier converting the stored z coordinate to the physical "
+                "XY units for section_aware_3d graphs"
+            ),
+            min=0.0,
+        ),
+        {"__display_in_quick_mode_cli__": True},
+    ] = 1.0
+
     K: Annotated[int, typer.Option(help="Graph convolution depth for LGCN", min=1, max=10)] = 3
+
+    inference_chunk_size: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Target number of focal spots per section-aligned inference chunk. "
+                "Physical sections remain intact, all spots are retained, and "
+                "section-aware chunks include graph halos."
+            ),
+            min=1,
+        ),
+        {"__display_in_quick_mode_cli__": True},
+    ] = 250_000
 
     # Model parameters
     hidden_size: Annotated[
@@ -233,6 +271,8 @@ class FindLatentRepresentationsConfig(
             "symmetric_knn",
             "radius",
             "weighted_radius",
+            "sectionwise_2d",
+            "section_aware_3d",
             "no_graph",
             "legacy_bug",
             "legacy_symmetric",
@@ -254,6 +294,11 @@ class FindLatentRepresentationsConfig(
             or self.graph_sigma <= 0
         ):
             raise ValueError("A positive graph_sigma is required for weighted_radius")
+        section_modes = {"sectionwise_2d", "section_aware_3d"}
+        if self.graph_mode in section_modes and not self.graph_section_key:
+            raise ValueError(f"graph_section_key is required for {self.graph_mode} mode")
+        if self.graph_mode == "section_aware_3d" and self.graph_z_scale <= 0:
+            raise ValueError("graph_z_scale must be positive for section_aware_3d mode")
         if self.graph_mode.startswith("legacy_"):
             logger.warning(
                 "graph_mode=%s is retained only for revision impact analysis; "
@@ -275,12 +320,25 @@ class FindLatentRepresentationsConfig(
             raise ValueError(
                 "At least one of h5ad_yaml, h5ad_path, h5ad_list_file, or spe_file_list must be provided"
             )
+        if self.graph_mode in section_modes and len(self.sample_h5ad_dict) != 1:
+            raise ValueError(
+                f"{self.graph_mode} currently requires all aligned sections in one H5AD file"
+            )
 
         # Define required and optional fields for validation
         required_fields = {
             "data_layer": ("layers", self.data_layer, "Data layer"),
             "spatial_key": ("obsm", self.spatial_key, "Spatial key"),
         }
+
+        if self.graph_mode in section_modes:
+            if self.graph_section_key is None:
+                raise RuntimeError("graph_section_key validation was not applied")
+            required_fields["graph_section_key"] = (
+                "obs",
+                self.graph_section_key,
+                "Physical section labels",
+            )
 
         # Add annotation as required if provided
         if self.annotation:

@@ -1,7 +1,5 @@
 """Tests for selective rank input loading and bounded prefetching."""
 
-from __future__ import annotations
-
 import threading
 from types import SimpleNamespace
 

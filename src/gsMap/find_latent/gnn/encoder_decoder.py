@@ -97,9 +97,17 @@ class Encoder(nn.Module):
         self.fc_mean = nn.Linear(hidden_size, emb_size)
         self.fc_var = nn.Linear(hidden_size, emb_size)
 
-    def forward(self, x, sample=True):
+    def _encode_hidden(self, x):
         xtf = self.tf(x)
-        h = self.mlp(xtf)
+        return self.mlp(xtf)
+
+    def encode_mean(self, x):
+        """Return the deterministic mean head used as the final embedding."""
+
+        return self.fc_mean(self._encode_hidden(x))
+
+    def forward(self, x, sample=True):
+        h = self._encode_hidden(x)
         mu = self.fc_mean(h)
         self.mu = mu
         if not self.variational:
@@ -138,8 +146,7 @@ class Decoder(nn.Module):
         super().__init__()
 
         self.decoder_type = decoder_type
-
-        # Batch conditions every decoder hidden layer, but never the output heads.
+        # Batch conditions decoder hidden layers, but never the output heads.
         if decoder_type == "reconstruction":
             input_size = emb_size + batch_emb_size
         elif decoder_type == "classification":
@@ -154,7 +161,6 @@ class Decoder(nn.Module):
             ]
         )
 
-        # Gene/classification heads only see the hidden state, never batch directly.
         if decoder_type == "reconstruction":
             self.zi_logit = nn.Linear(hidden_size, out_put_size)
             self.fc_rec = nn.Linear(hidden_size, out_put_size)

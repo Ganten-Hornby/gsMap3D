@@ -1,7 +1,9 @@
 import logging
 import os
 import random
+import re
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -16,6 +18,7 @@ from torch.utils.data import (
 
 from gsMap.config import FindLatentRepresentationsConfig
 
+from .gnn.gcn import order_sections_by_median_coordinate
 from .gnn.st_model import StEmbeding
 from .gnn.train_step import ModelTrain
 from .st_process import (
@@ -27,27 +30,38 @@ from .st_process import (
     convert_to_human_genes,
     create_subsampled_adata,
     find_common_hvg,
+    setup_data_layer,
 )
 
 logger = logging.getLogger(__name__)
 
 
+def _load_compatible_model_state(model: StEmbeding, model_path: str | Path) -> bool:
+    state_dict = torch.load(model_path)
+    return model.load_compatible_state_dict(state_dict)
+
+
 def _resolve_expression_model(is_count_data, requested_distribution, use_tf):
-    """Choose likelihood and variational behavior from the actual expression matrix."""
+    """Choose likelihood and variational behavior from expression values."""
+
     if is_count_data:
         return requested_distribution, True, use_tf
     return "gaussian", False, False
 
 
-def _serialize_label_names(label_name):
-    """Return metadata-safe label names for supervised and unsupervised runs."""
-    if label_name is None:
-        return []
-    if isinstance(label_name, list):
-        return label_name
-    if hasattr(label_name, "tolist"):
-        return label_name.tolist()
-    return list(label_name)
+def _resolve_training_model_semantics(training_adata, config):
+    """Compatibility helper for callers that already loaded the training matrix."""
+
+    is_count_data, _ = setup_data_layer(
+        training_adata,
+        config.data_layer,
+        verbose=False,
+    )
+    return _resolve_expression_model(
+        is_count_data,
+        config.distribution,
+        config.use_tf,
+    )
 
 
 def set_seed(seed_value):
@@ -75,6 +89,68 @@ def index_splitter(n, splits):
     return random_split(idx, splits_tensor)
 
 
+def _serialize_label_names(label_name: Any) -> list[Any]:
+    """Return annotation labels in a YAML-safe list for run metadata."""
+
+    if label_name is None:
+        return []
+    if isinstance(label_name, list):
+        return label_name
+    if hasattr(label_name, "tolist"):
+        values = label_name.tolist()
+        return values if isinstance(values, list) else [values]
+    return list(label_name)
+
+
+def _safe_section_name(value: object) -> str:
+    """Return a filesystem-safe section label."""
+
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_.-")
+    return token or "section"
+
+
+def write_latent_representation_outputs(
+    adata,
+    *,
+    sample_name: str,
+    config: FindLatentRepresentationsConfig,
+) -> OrderedDict[str, Path]:
+    """Write one latent H5AD per downstream sample or physical section."""
+
+    section_modes = {"sectionwise_2d", "section_aware_3d"}
+    if config.graph_mode not in section_modes:
+        output_path = config.latent_dir / f"{sample_name}_add_latent.h5ad"
+        adata.write_h5ad(output_path)
+        logger.info("Saved latent representation to %s", output_path)
+        return OrderedDict({sample_name: output_path})
+
+    section_key = config.graph_section_key
+    if section_key is None:
+        raise RuntimeError("graph_section_key is required for section-aware output")
+    section_labels = adata.obs[section_key].to_numpy()
+    ordered_sections = order_sections_by_median_coordinate(
+        np.asarray(adata.obsm[config.spatial_key]),
+        section_labels,
+    )
+    outputs: OrderedDict[str, Path] = OrderedDict()
+    for ordinal, section in enumerate(ordered_sections):
+        output_name = f"{sample_name}__section_{ordinal:03d}_{_safe_section_name(section)}"
+        output_path = config.latent_dir / f"{output_name}_add_latent.h5ad"
+        section_mask = np.asarray(section_labels.astype(str) == str(section))
+        section_adata = adata[section_mask].copy()
+        section_adata.write_h5ad(output_path)
+        outputs[output_name] = output_path
+        logger.info(
+            "Saved physical section %s/%s (%s spots) to %s",
+            ordinal + 1,
+            len(ordered_sections),
+            section_adata.n_obs,
+            output_path,
+        )
+        del section_adata
+    return outputs
+
+
 def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> dict[str, Any]:
     """
     Run the find latent representation pipeline.
@@ -96,15 +172,17 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     )
     common_genes = np.array(list(gene_homolog_dict.keys()))
 
-    # Select the cells used by the loss with sample-specific stratified sampling.
+    # Create subsampled concatenated adata with sample-specific stratified sampling
     training_adata = create_subsampled_adata(config.sample_h5ad_dict, n_cell_used, config)
 
-    # Propagate spatial features on each complete section graph, then retain
-    # only the selected training rows for the model loss (v2 graph workflow).
+    # Prepare the trainning data
     get_trainning_data = TrainingData(config)
-    get_trainning_data.prepare(training_adata, hvg)
+    get_trainning_data.prepare(
+        training_adata,
+        hvg,
+        source_h5ad_dict=config.sample_h5ad_dict,
+    )
 
-    # Configure the model from the detected matrix contents, not the layer name.
     distribution, variational, use_tf = _resolve_expression_model(
         is_count_data,
         config.distribution,
@@ -151,6 +229,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         distribution=distribution,
         use_tf=use_tf,
         variational=variational,
+        batch_label_classes=get_trainning_data.batch_label_encoder.classes_,
     )
 
     # Configure the optimizer
@@ -185,31 +264,46 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     gsMap_embedding_finder.set_loaders(train_loader, val_loader)
     print(gsMap_embedding_finder.model)
 
-    if not os.path.exists(config.model_path):
+    model_is_compatible = os.path.exists(config.model_path) and _load_compatible_model_state(
+        gsMap_embedding_finder.model,
+        config.model_path,
+    )
+    if not model_is_compatible:
+        if os.path.exists(config.model_path):
+            logger.info(
+                "Existing model uses incompatible encoder or batch-label semantics; retraining."
+            )
         # reconstruction
         gsMap_embedding_finder.train(config.itermax, patience=config.patience)
 
         # classification
         if config.two_stage and config.annotation is not None:
-            gsMap_embedding_finder.model.load_state_dict(torch.load(config.model_path))
+            if not _load_compatible_model_state(
+                gsMap_embedding_finder.model,
+                config.model_path,
+            ):
+                raise RuntimeError("Training produced an incompatible model checkpoint")
             gsMap_embedding_finder.mode = "classification"
             gsMap_embedding_finder.train(config.itermax, patience=config.patience)
     else:
         logger.info(f"Model found at {config.model_path}. Skipping training.")
 
     # Load the best model
-    gsMap_embedding_finder.model.load_state_dict(torch.load(config.model_path))
+    if not _load_compatible_model_state(gsMap_embedding_finder.model, config.model_path):
+        raise RuntimeError("Model checkpoint has incompatible encoder or batch-label semantics")
     gsmap_embedding_model = gsMap_embedding_finder.model
 
     # Configure the inference
-    infer = InferenceData(hvg, batch_size, gsmap_embedding_model, label_name, config)
-
-    output_h5ad_path_dict = OrderedDict(
-        {
-            sample_name: config.latent_dir / f"{sample_name}_add_latent.h5ad"
-            for sample_name in config.sample_h5ad_dict.keys()
-        }
+    infer = InferenceData(
+        hvg,
+        batch_size,
+        gsmap_embedding_model,
+        label_name,
+        config,
+        get_trainning_data.batch_label_encoder,
     )
+
+    output_h5ad_path_dict: OrderedDict[str, Path] = OrderedDict()
     # Do the DEG in the training adata if annotation is provided and high quality cell QC is enabled
     module_score_threshold_dict = {}
     if config.high_quality_cell_qc and config.annotation is not None:
@@ -241,11 +335,9 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     training_adata.write_h5ad(training_adata_path)
     logger.info(f"Saved training adata to {training_adata_path}")
 
-    for st_id, (sample_name, st_file) in enumerate(config.sample_h5ad_dict.items()):
-        output_path = output_h5ad_path_dict[sample_name]
-
+    for sample_name, st_file in config.sample_h5ad_dict.items():
         # Infer the embedding
-        adata = infer.infer_embedding_single(st_id, st_file)
+        adata = infer.infer_embedding_single(sample_name, st_file)
 
         # Calculate module scores and apply QC for each annotation
         if config.high_quality_cell_qc and config.annotation is not None:
@@ -280,10 +372,13 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         if config.data_layer in ["count", "counts"]:
             adata.obs["depth"] = np.array(adata.layers[config.data_layer].sum(axis=1)).flatten()
 
-        # Save the ST data with embeddings
-        adata.write_h5ad(output_path)
-
-        logger.info(f"Saved latent representation to {output_path}")
+        output_h5ad_path_dict.update(
+            write_latent_representation_outputs(
+                adata,
+                sample_name=sample_name,
+                config=config,
+            )
+        )
 
     # Convert config to dict with all Path objects as strings
     config_dict = config.to_dict_with_paths_as_strings()
@@ -304,22 +399,28 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             "class_size": int(class_size),
             "distribution": distribution,
             "input_is_count_data": bool(is_count_data),
+            "encoder_input_transform": "identity",
+            "latent_embedding_statistic": gsmap_embedding_model.latent_embedding_statistic,
+            "batch_conditioning": "decoder_only",
             "variational": variational,
             "use_tf": use_tf,
         },
         "training_info": {
             "n_cells_used": int(cell_size),
-            "graph_context": "full_graph_before_training_selection",
             "n_genes_used": int(len(hvg)),
             "n_common_genes": int(len(common_genes)),
             "batch_size": int(config.batch_size),
             "n_epochs": int(config.itermax),
             "patience": int(config.patience),
             "two_stage": config.two_stage,
+            "graph_context_mode": get_trainning_data.graph_context_mode,
+            "batch_label_classes": [
+                str(label) for label in get_trainning_data.batch_label_encoder.classes_
+            ],
         },
         "outputs": {
             "latent_files": output_h5ad_path_dict_str,
-            "n_sections": len(config.sample_h5ad_dict),
+            "n_sections": len(output_h5ad_path_dict),
         },
         "annotation_info": {
             "annotation_key": config.annotation,

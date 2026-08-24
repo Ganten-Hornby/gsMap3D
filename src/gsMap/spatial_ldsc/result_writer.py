@@ -1,7 +1,5 @@
 """Bounded, ordered result persistence for spatial LDSC."""
 
-from __future__ import annotations
-
 import gzip
 import logging
 import os
@@ -15,12 +13,20 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-if TYPE_CHECKING:
-    from typing import TextIO
+from gsMap.latent2gene.provenance import artifact_signature, atomic_json_dump
 
+if TYPE_CHECKING:
     from gsMap.config import SpatialLDSCConfig
 
 logger = logging.getLogger("gsMap.spatial_ldsc.result_writer")
+
+RESULT_METADATA_FORMAT_VERSION = 1
+
+
+def result_metadata_path(output_path: str | Path) -> Path:
+    """Return the completion sidecar for one spatial-LDSC CSV."""
+    output_path = Path(output_path)
+    return output_path.with_name(f"{output_path.name}.meta.json")
 
 
 @dataclass(slots=True)
@@ -46,7 +52,7 @@ class ResultWriter:
 
     def __init__(
         self,
-        config: SpatialLDSCConfig,
+        config: "SpatialLDSCConfig",
         trait_name: str,
         output_dir: Path,
         n_spots: int,
@@ -86,7 +92,7 @@ class ResultWriter:
         )
         os.close(descriptor)
         self.temporary_path = Path(temporary_name)
-        self.handle: TextIO | None = None
+        self.handle = None
         self.header_written = False
         self.final_path: Path | None = None
         self.closed = False
@@ -231,6 +237,20 @@ class ResultWriter:
                 self.handle = None
                 output_path = self.output_dir / self._generate_output_filename()
                 os.replace(self.temporary_path, output_path)
+                atomic_json_dump(
+                    result_metadata_path(output_path),
+                    {
+                        "format_version": RESULT_METADATA_FORMAT_VERSION,
+                        "complete": True,
+                        "trait_name": self.trait_name,
+                        "row_count": self.rows_written,
+                        "total_chunks": self.total_chunks,
+                        "processed_chunks": int(np.count_nonzero(self.seen_chunks)),
+                        "spot_start": int(self.min_spot_start),
+                        "spot_end": int(self.max_spot_end),
+                        "output_signature": artifact_signature(output_path),
+                    },
+                )
                 self.final_path = output_path
                 self.closed = True
                 self.condition.notify_all()

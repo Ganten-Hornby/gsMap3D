@@ -2,6 +2,7 @@
 Configuration for spatial LD score regression.
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -251,7 +252,8 @@ class SpatialLDSCCoreConfig(GWASSumstatsConfig):
     ] = None
 
     marker_score_format: Annotated[
-        Literal["memmap", "feather", "h5ad"] | None, typer.Option(help="Format of marker scores")
+        Literal["memmap", "gene_block", "feather", "h5ad"] | None,
+        typer.Option(help="Format of marker scores"),
     ] = None
 
 
@@ -323,7 +325,7 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
                             f"Setting end to {n_vars}."
                         )
                         end = n_vars
-            elif self.marker_score_format == "memmap":
+            elif self.marker_score_format in {"memmap", "gene_block"}:
                 # For memmap format, check the concatenated latent adata
                 adata_path = self.concatenated_latent_adata_path
                 shape = get_anndata_shape(str(adata_path))
@@ -418,4 +420,46 @@ def check_spatial_ldsc_done(config: SpatialLDSCConfig, trait_name: str) -> bool:
     Check if spatial_ldsc step is done for a specific trait.
     """
     result_file = config.get_ldsc_result_file(trait_name)
-    return result_file.exists()
+    if not result_file.exists():
+        return False
+    if config.marker_score_format == "gene_block":
+        manifest_path = Path(config.marker_score_blocks_manifest_path)
+        if not manifest_path.exists():
+            return False
+        from gsMap.latent2gene.gene_blocks import gene_block_store_is_read_compatible
+        from gsMap.latent2gene.provenance import artifact_signature
+        from gsMap.spatial_ldsc.result_writer import (
+            RESULT_METADATA_FORMAT_VERSION,
+            result_metadata_path,
+        )
+
+        if not gene_block_store_is_read_compatible(
+            manifest_path,
+            rank_memmap_path=config.rank_memmap_path,
+            mean_frac_path=config.mean_frac_path,
+            marker_metadata_path=config.concatenated_latent_adata_path,
+        ):
+            return False
+        if result_file.stat().st_mtime_ns < manifest_path.stat().st_mtime_ns:
+            logger.info(
+                "Spatial LDSC result for %s predates the marker-score store; recomputing",
+                trait_name,
+            )
+            return False
+        completion_path = result_metadata_path(result_file)
+        if not completion_path.exists():
+            return False
+        try:
+            with open(completion_path) as handle:
+                completion = json.load(handle)
+            if (
+                completion.get("format_version") != RESULT_METADATA_FORMAT_VERSION
+                or not completion.get("complete", False)
+                or completion.get("output_signature") != artifact_signature(result_file)
+                or completion.get("processed_chunks") != completion.get("total_chunks")
+                or int(completion.get("row_count", 0)) < 1
+            ):
+                return False
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+    return True

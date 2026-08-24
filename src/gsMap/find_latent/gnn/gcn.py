@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from scipy.spatial import cKDTree
-from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch_geometric.utils import add_remaining_self_loops, degree
 
@@ -269,6 +268,274 @@ def build_radius_spatial_graph(
     return SpatialGraph(edges.astype(np.int64, copy=False), weights)
 
 
+def _nearest_target_indices(
+    query_coords: np.ndarray,
+    target_coords: np.ndarray,
+    n_neighbors: int,
+    workers: int,
+) -> np.ndarray:
+    """Return cross-set KNNs with deterministic distance/ID tie-breaking."""
+
+    effective_k = min(n_neighbors, target_coords.shape[0])
+    if query_coords.shape[0] == 0 or effective_k == 0:
+        return np.empty((query_coords.shape[0], 0), dtype=np.int64)
+
+    candidate_k = min(target_coords.shape[0], max(effective_k + 2, 4 * effective_k))
+    tree = cKDTree(target_coords, balanced_tree=True, compact_nodes=True)
+    distances, indices = tree.query(query_coords, k=candidate_k, workers=workers)
+    if candidate_k == 1:
+        distances = distances[:, None]
+        indices = indices[:, None]
+
+    distances = np.asarray(distances, dtype=np.float64)
+    indices = np.asarray(indices, dtype=np.int64)
+    candidate_order = np.lexsort((indices, distances), axis=1)
+    sorted_indices = np.take_along_axis(indices, candidate_order, axis=1)
+    sorted_distances = np.take_along_axis(distances, candidate_order, axis=1)
+    selected = sorted_indices[:, :effective_k].copy()
+
+    if candidate_k < target_coords.shape[0]:
+        kth_distance = sorted_distances[:, effective_k - 1]
+        max_returned_distance = np.max(distances, axis=1)
+        unresolved = np.isclose(
+            kth_distance,
+            max_returned_distance,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+        for row in np.flatnonzero(unresolved):
+            radius = np.nextafter(kth_distance[row], np.inf)
+            candidates = np.asarray(tree.query_ball_point(query_coords[row], radius))
+            candidate_distances = np.linalg.norm(
+                target_coords[candidates] - query_coords[row], axis=1
+            )
+            order = np.lexsort((candidates, candidate_distances))
+            selected[row] = candidates[order[:effective_k]]
+
+    return selected
+
+
+def order_sections_by_median_coordinate(
+    coords: np.ndarray, section_labels: np.ndarray
+) -> np.ndarray:
+    """Return section labels ordered by their median final coordinate."""
+
+    coords = _validate_coordinates(coords)
+    section_labels = np.asarray(section_labels).astype(str)
+    if section_labels.shape != (coords.shape[0],):
+        raise ValueError(
+            f"section_labels must have shape ({coords.shape[0]},), got {section_labels.shape}"
+        )
+    unique_sections = np.unique(section_labels)
+    section_z = np.asarray(
+        [np.median(coords[section_labels == section, -1]) for section in unique_sections]
+    )
+    return unique_sections[np.argsort(section_z, kind="stable")]
+
+
+def build_section_aware_3d_graph(
+    coords: np.ndarray,
+    section_labels: np.ndarray,
+    n_neighbors: int,
+    undirected: bool = True,
+    stable_ids: np.ndarray | None = None,
+    workers: int = -1,
+) -> SpatialGraph:
+    """Build a physical 3D graph using a within-section KNN scale.
+
+    Each spot first selects K external neighbors from its own section. The
+    distance to its farthest selected within-section neighbor is its local
+    physical radius. Cross-section edges connect the spot to every cell in the
+    immediately preceding or following physical section within that radius.
+    If neither neighboring section contains a cell within the radius, the spot
+    falls back to at most ``max(1, K // 2)`` nearest cells from each available
+    neighboring section, but only when they are within twice the focal spot's
+    within-section radius. This explicit ceiling prevents forced edges across
+    large physical section gaps.
+
+    Coordinates must already use a common physical scale, including a
+    calibrated z axis. Sections are ordered by their median final coordinate.
+    Self-loops are absent; the GCN normalization adds them separately.
+    """
+
+    coords = _validate_coordinates(coords)
+    if coords.shape[1] != 3:
+        raise ValueError("section-aware 3D graphs require exactly three XYZ columns")
+    if n_neighbors < 1:
+        raise ValueError("n_neighbors must be at least 1")
+
+    section_labels = np.asarray(section_labels)
+    if section_labels.shape != (coords.shape[0],):
+        raise ValueError(
+            f"section_labels must have shape ({coords.shape[0]},), got {section_labels.shape}"
+        )
+    section_labels = section_labels.astype(str)
+    if coords.shape[0] <= 1:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+
+    canonical_coords, canonical_order = _canonicalize_nodes(coords, stable_ids)
+    canonical_sections = section_labels[canonical_order]
+    ordered_sections = order_sections_by_median_coordinate(canonical_coords, canonical_sections)
+
+    within_edges: list[np.ndarray] = []
+    within_radii = np.zeros(coords.shape[0], dtype=np.float64)
+    section_indices: dict[str, np.ndarray] = {}
+    for section in ordered_sections:
+        global_indices = np.flatnonzero(canonical_sections == section)
+        section_indices[section] = global_indices
+        local_coords = canonical_coords[global_indices]
+        selected = _external_knn_indices(local_coords, n_neighbors, workers)
+        effective_k = selected.shape[1]
+        if effective_k == 0:
+            continue
+
+        sources = np.repeat(global_indices, effective_k)
+        targets = global_indices[selected.reshape(-1)]
+        within_edges.append(np.column_stack((sources, targets)))
+        selected_distances = np.linalg.norm(
+            local_coords[:, None, :] - local_coords[selected], axis=2
+        )
+        within_radii[global_indices] = np.max(selected_distances, axis=1)
+
+    cross_edges: list[np.ndarray] = []
+    fallback_k = max(1, n_neighbors // 2)
+    for position, section in enumerate(ordered_sections):
+        focal_indices = section_indices[section]
+        focal_coords = canonical_coords[focal_indices]
+        neighboring_sections = []
+        if position > 0:
+            neighboring_sections.append(ordered_sections[position - 1])
+        if position + 1 < ordered_sections.size:
+            neighboring_sections.append(ordered_sections[position + 1])
+        if not neighboring_sections:
+            continue
+
+        has_radius_neighbor = np.zeros(focal_indices.size, dtype=bool)
+        for neighbor_section in neighboring_sections:
+            target_indices = section_indices[neighbor_section]
+            target_coords = canonical_coords[target_indices]
+            tree = cKDTree(target_coords, balanced_tree=True, compact_nodes=True)
+            matches = tree.query_ball_point(
+                focal_coords,
+                within_radii[focal_indices],
+                workers=workers,
+                return_sorted=True,
+            )
+            counts = np.fromiter((len(match) for match in matches), dtype=np.int64)
+            has_radius_neighbor |= counts > 0
+            if counts.sum() == 0:
+                continue
+            matched_targets = np.concatenate(
+                [np.asarray(match, dtype=np.int64) for match in matches if len(match)]
+            )
+            cross_edges.append(
+                np.column_stack(
+                    (
+                        np.repeat(focal_indices, counts),
+                        target_indices[matched_targets],
+                    )
+                )
+            )
+
+        fallback_indices = focal_indices[~has_radius_neighbor]
+        fallback_coords = canonical_coords[fallback_indices]
+        for neighbor_section in neighboring_sections:
+            target_indices = section_indices[neighbor_section]
+            selected = _nearest_target_indices(
+                fallback_coords,
+                canonical_coords[target_indices],
+                fallback_k,
+                workers,
+            )
+            if selected.shape[1] == 0:
+                continue
+            selected_targets = target_indices[selected]
+            selected_distances = np.linalg.norm(
+                fallback_coords[:, None, :] - canonical_coords[selected_targets],
+                axis=2,
+            )
+            within_ceiling = selected_distances <= (2.0 * within_radii[fallback_indices, None])
+            if not np.any(within_ceiling):
+                continue
+            cross_edges.append(
+                np.column_stack(
+                    (
+                        np.broadcast_to(fallback_indices[:, None], selected.shape)[within_ceiling],
+                        selected_targets[within_ceiling],
+                    )
+                )
+            )
+
+    edge_blocks = within_edges + cross_edges
+    if not edge_blocks:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+
+    canonical_edges = np.concatenate(edge_blocks)
+    edges = canonical_order[canonical_edges]
+    if undirected:
+        edges = np.concatenate((edges, edges[:, ::-1]), axis=0)
+    edges = np.unique(edges, axis=0).astype(np.int64, copy=False)
+    return SpatialGraph(edges, None)
+
+
+def build_sectionwise_2d_graph(
+    coords: np.ndarray,
+    section_labels: np.ndarray,
+    n_neighbors: int,
+    undirected: bool = True,
+    stable_ids: np.ndarray | None = None,
+    workers: int = -1,
+) -> SpatialGraph:
+    """Build independent within-section 2D KNN graphs in one H5AD.
+
+    Each spot selects up to ``n_neighbors`` external neighbors from its own
+    physical section. No cross-section edge is created. Coordinates may contain
+    XY or XYZ columns; only XY participates in this graph. Self-loops remain a
+    separate GCN operation.
+    """
+
+    coords = _validate_coordinates(coords)
+    if coords.shape[1] not in {2, 3}:
+        raise ValueError("sectionwise 2D graphs require XY or XYZ coordinates")
+    coords = coords[:, :2]
+    if n_neighbors < 1:
+        raise ValueError("n_neighbors must be at least 1")
+
+    section_labels = np.asarray(section_labels)
+    if section_labels.shape != (coords.shape[0],):
+        raise ValueError(
+            f"section_labels must have shape ({coords.shape[0]},), got {section_labels.shape}"
+        )
+    if coords.shape[0] <= 1:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+
+    canonical_coords, canonical_order = _canonicalize_nodes(coords, stable_ids)
+    canonical_sections = section_labels[canonical_order].astype(str)
+    edge_blocks: list[np.ndarray] = []
+    for section in np.unique(canonical_sections):
+        global_indices = np.flatnonzero(canonical_sections == section)
+        selected = _external_knn_indices(canonical_coords[global_indices], n_neighbors, workers)
+        effective_k = selected.shape[1]
+        if effective_k == 0:
+            continue
+        edge_blocks.append(
+            np.column_stack(
+                (
+                    np.repeat(global_indices, effective_k),
+                    global_indices[selected.reshape(-1)],
+                )
+            )
+        )
+
+    if not edge_blocks:
+        return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
+    edges = canonical_order[np.concatenate(edge_blocks)]
+    if undirected:
+        edges = np.concatenate((edges, edges[:, ::-1]), axis=0)
+    edges = np.unique(edges, axis=0).astype(np.int64, copy=False)
+    return SpatialGraph(edges, None)
+
+
 def build_graph_for_mode(
     coords: np.ndarray,
     stable_ids: np.ndarray,
@@ -276,6 +543,7 @@ def build_graph_for_mode(
     n_neighbors: int,
     radius: float | None = None,
     sigma: float | None = None,
+    section_labels: np.ndarray | None = None,
 ) -> SpatialGraph:
     """Dispatch graph construction for production and revision experiment arms."""
 
@@ -297,19 +565,38 @@ def build_graph_for_mode(
             stable_ids=stable_ids,
             sigma=sigma if mode == "weighted_radius" else None,
         )
+    if mode == "section_aware_3d":
+        if section_labels is None:
+            raise ValueError("section_labels are required for section_aware_3d mode")
+        return build_section_aware_3d_graph(
+            coords,
+            section_labels,
+            n_neighbors,
+            stable_ids=stable_ids,
+        )
+    if mode == "sectionwise_2d":
+        if section_labels is None:
+            raise ValueError("section_labels are required for sectionwise_2d mode")
+        return build_sectionwise_2d_graph(
+            coords,
+            section_labels,
+            n_neighbors,
+            stable_ids=stable_ids,
+        )
     if mode == "no_graph":
         return SpatialGraph(np.empty((0, 2), dtype=np.int64), None)
     raise ValueError(
         "graph_mode must be one of symmetric_knn, legacy_bug, "
-        "legacy_symmetric, radius, weighted_radius, or no_graph"
+        "legacy_symmetric, radius, weighted_radius, sectionwise_2d, "
+        "section_aware_3d, or no_graph"
     )
 
 
-class GCN(MessagePassing):
+class GCN(torch.nn.Module):
     """Parameter-free K-hop GCN feature propagation."""
 
     def __init__(self, K: int = 1):
-        super().__init__(aggr="add")
+        super().__init__()
         self.K = K
 
     def forward(
@@ -318,7 +605,6 @@ class GCN(MessagePassing):
         edge_index: torch.Tensor,
         edge_weight: torch.Tensor | None = None,
         legacy_normalization: bool = False,
-        output_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if legacy_normalization:
             if edge_weight is not None:
@@ -337,25 +623,21 @@ class GCN(MessagePassing):
                 edge_weight,
                 num_nodes=x.size(0),
                 add_self_loops=True,
-                flow=self.flow,
+                flow="source_to_target",
                 dtype=x.dtype,
             )
 
-        current = x
-        outputs = []
+        adjacency = torch.sparse_coo_tensor(
+            edge_index.flip(0),
+            normalized_weight,
+            size=(x.size(0), x.size(0)),
+            device=x.device,
+            dtype=x.dtype,
+            check_invariants=True,
+        ).coalesce()
+
+        xs = [x]
         for _ in range(self.K):
-            current = self.propagate(
-                edge_index,
-                x=current,
-                edge_weight=normalized_weight,
-            )
-            outputs.append(
-                current
-                if output_indices is None
-                else current.index_select(0, output_indices)
-            )
+            xs.append(torch.sparse.mm(adjacency, xs[-1]))
 
-        return torch.cat(outputs, dim=1)
-
-    def message(self, x_j: torch.Tensor, edge_weight: torch.Tensor) -> torch.Tensor:
-        return edge_weight.view(-1, 1) * x_j
+        return torch.cat(xs[1:], dim=1)

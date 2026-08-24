@@ -1,3 +1,5 @@
+import hashlib
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -8,9 +10,6 @@ from .encoder_decoder import Decoder, Encoder
 class StEmbeding(nn.Module):
     """
     Learn graph-smoothed and expression embeddings with decoder-only batch correction.
-
-    Encoders do not receive batch information. A batch representation conditions both hidden
-    layers of the decoder; output heads only receive the final hidden state.
 
     Args:
         input_size (list): List of input feature sizes for each encoder.
@@ -43,6 +42,7 @@ class StEmbeding(nn.Module):
         variational=True,
         batch_representation="embedding",
         dispersion="gene",
+        batch_label_classes=None,
     ):
         super().__init__()
 
@@ -51,6 +51,20 @@ class StEmbeding(nn.Module):
         self.distribution = distribution
         self.batch_representation = batch_representation
         self.num_batches = batch_size
+        self.latent_embedding_statistic = (
+            "posterior_sample" if variational else "deterministic_encoder_output"
+        )
+        self.register_buffer(
+            "_embedding_architecture_version",
+            torch.tensor(3, dtype=torch.int8),
+        )
+        if batch_label_classes is not None:
+            encoded_labels = "\0".join(str(label) for label in batch_label_classes).encode()
+            signature = hashlib.sha256(encoded_labels).digest()
+            self.register_buffer(
+                "_batch_label_encoding_signature",
+                torch.tensor(list(signature), dtype=torch.uint8),
+            )
 
         self.logtheta = nn.Parameter(torch.randn(batch_size, out_put_size))
 
@@ -98,6 +112,33 @@ class StEmbeding(nn.Module):
         else:
             return F.one_hot(batch, num_classes=self.num_batches).float()
 
+    def has_compatible_batch_label_encoding(self, state_dict) -> bool:
+        if not hasattr(self, "_batch_label_encoding_signature"):
+            return True
+        observed = state_dict.get("_batch_label_encoding_signature")
+        if observed is None:
+            return False
+        expected = self._batch_label_encoding_signature
+        return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
+
+    def has_compatible_embedding_architecture(self, state_dict) -> bool:
+        observed = state_dict.get("_embedding_architecture_version")
+        if observed is None:
+            return False
+        expected = self._embedding_architecture_version
+        return bool(torch.equal(observed.detach().cpu(), expected.detach().cpu()))
+
+    def load_compatible_state_dict(self, state_dict) -> bool:
+        if not self.has_compatible_batch_label_encoding(
+            state_dict
+        ) or not self.has_compatible_embedding_architecture(state_dict):
+            return False
+        try:
+            self.load_state_dict(state_dict)
+        except RuntimeError:
+            return False
+        return True
+
     def forward(self, x_list, batch):
         batch = self._process_batch(batch)
 
@@ -125,8 +166,9 @@ class StEmbeding(nn.Module):
         z = torch.cat(z_list, dim=1)
         return self.decoder["classification"](z, batch)
 
-    def encode(self, x_list, sample=True):
-        """Encode inputs without batch conditioning."""
+    def encode(self, x_list, batch=None, sample=True):
+        """Return batch-invariant encoder outputs for downstream embeddings."""
+
         z_list = []
         for eid in range(self.z_num):
             z = self.encoder[eid](x_list[eid], sample=sample)

@@ -1,19 +1,14 @@
 """Compact, browser-oriented payloads for spatial report visualizations."""
 
-from __future__ import annotations
-
 import base64
 import json
 import logging
 import os
 import time
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +364,7 @@ def export_spatial_3d_payloads(
     annotations: list[str],
     report_data_dir: Path,
     web_report_dir: Path,
-    max_points: int,
+    max_points: int | None,
     force: bool = False,
     coordinate_info: dict | None = None,
 ) -> dict | None:
@@ -401,7 +396,11 @@ def export_spatial_3d_payloads(
 
     available_traits = [trait for trait in traits if trait in metadata]
     available_annotations = [annotation for annotation in annotations if annotation in metadata]
-    target_size = min(len(metadata), max(1, int(max_points)))
+    target_size = (
+        len(metadata)
+        if max_points is None
+        else min(len(metadata), max(1, int(max_points)))
+    )
     metadata_file = report_data_dir / "spot_metadata.csv"
     source_signature = None
     if metadata_file.is_file():
@@ -572,7 +571,8 @@ def export_sample_spatial_payloads(
     traits: list[str],
     annotations: list[str],
     js_data_dir: Path,
-    max_points: int,
+    max_points: int | None,
+    extreme_points_per_trait: int = 500,
     coordinate_info: dict | None = None,
 ) -> tuple[dict, list[str]]:
     """Write compact per-sample bases and independently loadable trait arrays.
@@ -613,7 +613,11 @@ def export_sample_spatial_payloads(
         if all_positions.size == 0:
             raise ValueError(f"No spot metadata found for configured sample: {sample_name}")
         n_original = int(all_positions.size)
-        if has_spatial_coordinates and n_original > max_points:
+        if (
+            has_spatial_coordinates
+            and max_points is not None
+            and n_original > max_points
+        ):
             local_positions = _stratified_positions(
                 metadata.iloc[all_positions],
                 max_points,

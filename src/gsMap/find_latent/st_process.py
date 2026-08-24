@@ -1,22 +1,127 @@
 import logging
 import re
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
 import torch
+from anndata import AnnData
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TimeRemainingColumn
-from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import LabelEncoder
 
 from gsMap.config import FindLatentRepresentationsConfig
 
-from .gnn.gcn import GCN, SpatialGraph, build_graph_for_mode
+from .gnn.gcn import (
+    GCN,
+    SpatialGraph,
+    build_graph_for_mode,
+    order_sections_by_median_coordinate,
+)
 
 logger = logging.getLogger(__name__)
 
+_SOURCE_OBS_INDEX_KEY = "_gsmap_source_obs_index"
 SOURCE_OBS_NAME = "_gsmap_source_obs_name"
+_FULL_SOURCE_GRAPH_SAMPLED_FOCAL = "full_source_graph_sampled_focal"
+_TRAINING_ROWS_GRAPH_CONTEXT = "training_rows"
+
+
+def _dense_float32(matrix: Any) -> np.ndarray:
+    """Materialize one already-bounded expression block as float32."""
+
+    dense = matrix.toarray() if sp.issparse(matrix) else np.asarray(matrix)
+    return np.asarray(dense, dtype=np.float32)
+
+
+@dataclass(frozen=True)
+class SectionInferenceChunk:
+    """A focal block and the graph context required for exact propagation."""
+
+    focal_global_indices: np.ndarray
+    context_global_indices: np.ndarray
+    focal_local_indices: np.ndarray
+
+
+def iter_section_inference_chunks(
+    coords: np.ndarray,
+    section_labels: np.ndarray,
+    graph_mode: str,
+    target_focal_spots: int,
+    propagation_depth: int,
+) -> Iterator[SectionInferenceChunk]:
+    """Yield complete-section focal chunks with enough context for exact K-hop GCN.
+
+    ``sectionwise_2d`` chunks contain only their focal sections because no edge
+    crosses a section boundary. ``section_aware_3d`` chunks include K+2 physical
+    sections on either side. K sections cover every possible K-hop path, one
+    extra section preserves the full normalized degree of its endpoint, and the
+    second extra section preserves the fallback-edge decision of that endpoint's
+    outer neighbor.
+    """
+
+    coords = np.asarray(coords)
+    section_labels = np.asarray(section_labels).astype(str)
+    if coords.shape[0] != section_labels.shape[0]:
+        raise ValueError("coords and section_labels must contain the same number of spots")
+    if target_focal_spots < 1:
+        raise ValueError("target_focal_spots must be positive")
+    if propagation_depth < 1:
+        raise ValueError("propagation_depth must be positive")
+
+    mode = graph_mode.lower()
+    if mode == "section_aware_3d":
+        ordered_sections = order_sections_by_median_coordinate(coords, section_labels)
+        halo_sections = propagation_depth + 2
+    elif mode == "sectionwise_2d":
+        ordered_sections = np.unique(section_labels)
+        halo_sections = 0
+    else:
+        raise ValueError(f"Section-aligned inference is not defined for graph_mode={graph_mode!r}")
+
+    section_indices = {
+        section: np.flatnonzero(section_labels == section) for section in ordered_sections
+    }
+    focal_start = 0
+    while focal_start < ordered_sections.size:
+        focal_stop = focal_start
+        focal_size = 0
+        while focal_stop < ordered_sections.size:
+            next_size = section_indices[ordered_sections[focal_stop]].size
+            if focal_size and focal_size + next_size > target_focal_spots:
+                break
+            focal_size += next_size
+            focal_stop += 1
+            if focal_size >= target_focal_spots:
+                break
+
+        context_start = max(0, focal_start - halo_sections)
+        context_stop = min(ordered_sections.size, focal_stop + halo_sections)
+        focal_sections = ordered_sections[focal_start:focal_stop]
+        context_sections = ordered_sections[context_start:context_stop]
+        focal_global = np.sort(
+            np.concatenate([section_indices[section] for section in focal_sections])
+        )
+        context_global = np.sort(
+            np.concatenate([section_indices[section] for section in context_sections])
+        )
+        focal_local = np.searchsorted(context_global, focal_global)
+        if not np.array_equal(context_global[focal_local], focal_global):
+            raise RuntimeError("Focal spots are not contained in their inference context")
+        yield SectionInferenceChunk(focal_global, context_global, focal_local)
+        focal_start = focal_stop
+
+
+def _section_labels_for_graph(adata, params) -> np.ndarray | None:
+    """Extract section labels for graph modes that preserve section identity."""
+
+    if params.graph_mode.lower() not in {"section_aware_3d", "sectionwise_2d"}:
+        return None
+    return adata.obs[params.graph_section_key].to_numpy()
 
 
 def propagate_spatial_features(
@@ -25,17 +130,14 @@ def propagate_spatial_features(
     stable_ids: np.ndarray,
     params,
     gcov: GCN,
+    section_labels: np.ndarray | None = None,
     output_indices: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, SpatialGraph]:
-    """Construct a graph and return K-hop features for requested output nodes."""
+    """Construct the configured graph and propagate one expression block."""
 
-    output_index_tensor = None
-    if output_indices is not None:
-        output_index_tensor = torch.as_tensor(
-            output_indices,
-            dtype=torch.long,
-            device=expression.device,
-        )
+    if params.graph_mode.lower() == "section_aware_3d" and params.graph_z_scale != 1.0:
+        coords = np.array(coords, dtype=np.float64, copy=True)
+        coords[:, -1] *= params.graph_z_scale
 
     graph = build_graph_for_mode(
         coords=coords,
@@ -44,29 +146,27 @@ def propagate_spatial_features(
         n_neighbors=params.n_neighbors,
         radius=params.graph_radius,
         sigma=params.graph_sigma,
+        section_labels=section_labels,
     )
     if params.graph_mode.lower() == "no_graph":
-        output_expression = (
-            expression
-            if output_index_tensor is None
-            else expression.index_select(0, output_index_tensor)
-        )
-        return output_expression.repeat(1, params.K), graph
+        propagated = expression.repeat(1, params.K)
+        if output_indices is not None:
+            propagated = propagated[torch.as_tensor(output_indices, dtype=torch.long)]
+        return propagated, graph
 
     edge_index = torch.from_numpy(graph.edges.T).long()
     edge_weight = None
     if graph.weights is not None:
         edge_weight = torch.from_numpy(graph.weights).to(dtype=expression.dtype)
-    return (
-        gcov(
-            expression,
-            edge_index,
-            edge_weight,
-            legacy_normalization=params.graph_mode.lower() in {"legacy_bug", "legacy_symmetric"},
-            output_indices=output_index_tensor,
-        ),
-        graph,
+    propagated = gcov(
+        expression,
+        edge_index,
+        edge_weight,
+        legacy_normalization=params.graph_mode.lower() in {"legacy_bug", "legacy_symmetric"},
     )
+    if output_indices is not None:
+        propagated = propagated[torch.as_tensor(output_indices, dtype=torch.long)]
+    return propagated, graph
 
 
 def convert_to_human_genes(adata, gene_homolog_dict: dict, species: str = None):
@@ -269,10 +369,8 @@ def create_subsampled_adata(
     sample_h5ad_dict, n_cell_used, params: FindLatentRepresentationsConfig
 ):
     """
-    Select loss cells from each sample with sample-specific stratified sampling.
-
-    Original within-section observation IDs are retained so :class:`TrainingData`
-    can compute spatial features on the complete graph before selecting these rows.
+    Create subsampled adata for each sample with sample-specific stratified sampling,
+    add batch and label information, and return concatenated adata.
 
     Args:
         sample_h5ad_dict (dict): Dictionary mapping sample names to file paths of ST datasets.
@@ -291,6 +389,8 @@ def create_subsampled_adata(
 
         # Load the data
         adata = sc.read_h5ad(st_file)
+        adata.obs[_SOURCE_OBS_INDEX_KEY] = np.arange(adata.n_obs, dtype=np.int64)
+        adata.obs[SOURCE_OBS_NAME] = adata.obs_names.astype(str)
 
         # Filter out mitochondrial and hemoglobin genes
         gene_keep = ~adata.var_names.str.match(re.compile(r"^(HB.-|MT-)", re.IGNORECASE))
@@ -301,10 +401,6 @@ def create_subsampled_adata(
 
         # Setup data layer consistently
         is_count_data, actual_data_layer = setup_data_layer(adata, params.data_layer)
-
-        # Preserve the within-sample observation ID so training rows can be
-        # selected from features propagated over the complete spatial graph.
-        adata.obs[SOURCE_OBS_NAME] = adata.obs_names.astype(str)
 
         # Filter cells based on annotation if provided
         if params.annotation is not None:
@@ -354,7 +450,7 @@ def create_subsampled_adata(
                 adata = adata[sampled_cells].copy()
 
         # Add batch information to obs
-        adata.obs["batch_id"] = f"S{st_id}"
+        adata.obs["batch_id"] = sample_name
         adata.obs["sample_name"] = sample_name
 
         # Add label information to obs (ensure it's properly set)
@@ -731,10 +827,148 @@ class TrainingData:
         self.label_merge = None
         self.batch_merge = None
         self.batch_size = None
+        self.batch_label_encoder = LabelEncoder()
         self.label_name = None
+        self.graph_context_mode = _TRAINING_ROWS_GRAPH_CONTEXT
 
-    def prepare(self, concatenated_adata, hvg):
-        logger.info("Processing training cells with full-graph spatial context...")
+    @staticmethod
+    def _source_rows(batch_adata: AnnData, source_adata: AnnData) -> np.ndarray:
+        """Resolve sampled focal rows against their unsampled source object."""
+
+        if _SOURCE_OBS_INDEX_KEY in batch_adata.obs:
+            source_rows = batch_adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(dtype=np.int64)
+        elif SOURCE_OBS_NAME in batch_adata.obs:
+            source_index = pd.Index(source_adata.obs_names.astype(str))
+            if not source_index.is_unique:
+                raise RuntimeError("Source observation names must be unique")
+            source_rows = source_index.get_indexer(
+                batch_adata.obs[SOURCE_OBS_NAME].astype(str)
+            )
+            if np.any(source_rows < 0):
+                raise RuntimeError("Sampled focal observations are absent from their source AnnData")
+        else:
+            raise RuntimeError(
+                "Training data is missing source-row provenance required for "
+                "full-density graph propagation"
+            )
+
+        if np.unique(source_rows).size != source_rows.size:
+            raise RuntimeError("Sampled training rows contain duplicate source indices")
+        if source_rows.size and (
+            source_rows.min() < 0 or source_rows.max() >= source_adata.n_obs
+        ):
+            raise RuntimeError("Sampled training rows fall outside the source AnnData")
+        return source_rows
+
+    def _propagate_sampled_rows_on_full_section_graph(
+        self,
+        *,
+        batch_adata: AnnData,
+        hvg: list[str],
+        source_path: str | Path,
+    ) -> torch.Tensor:
+        """Propagate sampled focal rows using their full-density source graph."""
+
+        source_adata = sc.read_h5ad(source_path)
+        source_adata.var_names_make_unique()
+        setup_data_layer(source_adata, self.params.data_layer)
+        source_rows = self._source_rows(batch_adata, source_adata)
+
+        coords = np.asarray(source_adata.obsm[self.params.spatial_key])
+        stable_ids = source_adata.obs_names.to_numpy()
+        section_labels = _section_labels_for_graph(source_adata, self.params)
+        if section_labels is None:
+            raise RuntimeError("Section labels are required for full-density training propagation")
+
+        propagated_focal = torch.empty(
+            (source_rows.size, len(hvg) * self.params.K),
+            dtype=torch.float32,
+        )
+        source_to_focal = np.full(source_adata.n_obs, -1, dtype=np.int32)
+        source_to_focal[source_rows] = np.arange(source_rows.size, dtype=np.int32)
+        completed = np.zeros(source_rows.size, dtype=bool)
+
+        chunks = iter_section_inference_chunks(
+            coords,
+            section_labels,
+            graph_mode=self.params.graph_mode,
+            target_focal_spots=self.params.inference_chunk_size,
+            propagation_depth=self.params.K,
+        )
+        for chunk_number, chunk in enumerate(chunks, start=1):
+            focal_positions = source_to_focal[chunk.focal_global_indices]
+            selected_mask = focal_positions >= 0
+            if not np.any(selected_mask):
+                continue
+
+            selected_source_rows = chunk.focal_global_indices[selected_mask]
+            selected_positions = focal_positions[selected_mask].astype(np.int64, copy=False)
+            context = chunk.context_global_indices
+            expression = torch.from_numpy(_dense_float32(source_adata[context, hvg].X))
+            propagated, graph = propagate_spatial_features(
+                expression=expression,
+                coords=coords[context],
+                stable_ids=stable_ids[context],
+                params=self.params,
+                gcov=self.gcov,
+                section_labels=section_labels[context],
+            )
+            selected_local_rows = np.searchsorted(context, selected_source_rows)
+            if not np.array_equal(context[selected_local_rows], selected_source_rows):
+                raise RuntimeError("Sampled focal rows are missing from their graph context")
+            propagated_focal[selected_positions] = propagated[selected_local_rows]
+            completed[selected_positions] = True
+            logger.info(
+                "Training graph chunk %d: %d sampled focal spots, %d full-density "
+                "context spots, %d directed edges",
+                chunk_number,
+                selected_positions.size,
+                context.size,
+                graph.edges.shape[0],
+            )
+            del expression, propagated, graph
+
+        if not np.all(completed):
+            missing = int((~completed).sum())
+            raise RuntimeError(
+                f"Full-density graph propagation missed {missing} sampled focal rows"
+            )
+        return propagated_focal
+
+    def _propagate_sampled_rows_on_full_graph(
+        self,
+        *,
+        batch_adata: AnnData,
+        hvg: list[str],
+        source_path: str | Path,
+    ) -> tuple[torch.Tensor, int]:
+        """Propagate a non-section graph before selecting sampled focal rows."""
+
+        source_adata = sc.read_h5ad(source_path)
+        source_adata.var_names_make_unique()
+        setup_data_layer(source_adata, self.params.data_layer)
+        source_rows = self._source_rows(batch_adata, source_adata)
+        expression = torch.from_numpy(_dense_float32(source_adata[:, hvg].X))
+        propagated, graph = propagate_spatial_features(
+            expression=expression,
+            coords=np.asarray(source_adata.obsm[self.params.spatial_key]),
+            stable_ids=source_adata.obs_names.to_numpy(),
+            params=self.params,
+            gcov=self.gcov,
+            section_labels=_section_labels_for_graph(source_adata, self.params),
+        )
+        selected = propagated[source_rows].clone()
+        edge_count = graph.edges.shape[0]
+        del expression, propagated, graph, source_adata
+        return selected, edge_count
+
+    def prepare(
+        self,
+        concatenated_adata,
+        hvg,
+        source_h5ad_dict: Mapping[str, str | Path] | None = None,
+    ):
+        logger.info("Processing concatenated subsampled data...")
 
         # Get labels from obs
         if self.params.annotation is not None:
@@ -743,7 +977,7 @@ class TrainingData:
             label = np.zeros(concatenated_adata.n_obs)
 
         # Get batch information from obs
-        batch_labels = concatenated_adata.obs["batch_id"].values
+        batch_labels = concatenated_adata.obs["batch_id"].astype(str).to_numpy()
 
         # Get expression array for HVG genes
         expression_array = torch.Tensor(concatenated_adata[:, hvg].X.toarray())
@@ -757,110 +991,82 @@ class TrainingData:
             dtype=expression_array.dtype,
         )
 
-        sample_h5ad_dict = getattr(self.params, "sample_h5ad_dict", None)
+        if source_h5ad_dict is None:
+            source_h5ad_dict = getattr(self.params, "sample_h5ad_dict", None)
+        sample_items = list(source_h5ad_dict.items()) if source_h5ad_dict is not None else []
+        section_modes = {"sectionwise_2d", "section_aware_3d"}
+        graph_mode = self.params.graph_mode.lower()
         use_full_graph_context = bool(
-            getattr(self.params, "do_sampling", False) and sample_h5ad_dict
+            getattr(self.params, "do_sampling", False)
+            and sample_items
+            and graph_mode != "no_graph"
         )
-        if use_full_graph_context and SOURCE_OBS_NAME not in concatenated_adata.obs:
-            raise ValueError(
-                f"Training data is missing {SOURCE_OBS_NAME!r}; "
-                "cannot align sampled cells to the full spatial graph"
+        if use_full_graph_context:
+            self.graph_context_mode = _FULL_SOURCE_GRAPH_SAMPLED_FOCAL
+        n_batches = len(pd.unique(batch_labels))
+        if use_full_graph_context and len(sample_items) != n_batches:
+            raise RuntimeError(
+                "Full-density graph training requires one source H5AD per training batch"
             )
-        source_paths = (
-            {
-                f"S{sample_index}": Path(sample_path)
-                for sample_index, sample_path in enumerate(sample_h5ad_dict.values())
-            }
-            if use_full_graph_context
-            else {}
-        )
 
-        for batch_id in concatenated_adata.obs["batch_id"].unique():
-            batch_key = str(batch_id)
+        for batch_ordinal, batch_id in enumerate(concatenated_adata.obs["batch_id"].unique()):
             batch_mask = concatenated_adata.obs["batch_id"] == batch_id
             batch_adata = concatenated_adata[batch_mask]
             batch_indices = np.flatnonzero(batch_mask.to_numpy())
             batch_expression = expression_array[batch_indices]
 
+            logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
+
             if use_full_graph_context:
-                if batch_key not in source_paths:
-                    raise ValueError(f"Unknown batch ID in training data: {batch_id!r}")
-                context_adata = sc.read_h5ad(source_paths[batch_key])
-                context_adata.var_names_make_unique()
-                setup_data_layer(context_adata, self.params.data_layer)
-
-                context_ids = pd.Index(context_adata.obs_names.astype(str))
-                if not context_ids.is_unique:
-                    raise ValueError(
-                        f"Observation IDs must be unique within {batch_id} for full-graph training"
+                sample_name, source_path = sample_items[batch_ordinal]
+                observed_sample_names = (
+                    batch_adata.obs["sample_name"].astype(str).unique()
+                    if "sample_name" in batch_adata.obs
+                    else np.asarray([], dtype=str)
+                )
+                if observed_sample_names.size and observed_sample_names.tolist() != [sample_name]:
+                    raise RuntimeError(
+                        f"Training batch {batch_id!r} does not match source sample {sample_name!r}"
                     )
-                selected_ids = batch_adata.obs[SOURCE_OBS_NAME].astype(str)
-                selected_positions = context_ids.get_indexer(selected_ids)
-                if np.any(selected_positions < 0):
-                    missing_ids = selected_ids.to_numpy()[selected_positions < 0][:5]
-                    raise ValueError(
-                        f"Could not locate sampled cells in full graph {batch_id}: "
-                        f"{missing_ids.tolist()}"
+                if graph_mode in section_modes:
+                    batch_expression_gcn = self._propagate_sampled_rows_on_full_section_graph(
+                        batch_adata=batch_adata,
+                        hvg=hvg,
+                        source_path=source_path,
                     )
-
-                context_matrix = context_adata[:, hvg].X
-                if sp.issparse(context_matrix):
-                    context_matrix = context_matrix.toarray()
-                context_expression = torch.as_tensor(
-                    np.asarray(context_matrix),
-                    dtype=torch.float32,
-                )
-                logger.info(
-                    f"Processing batch {batch_id} on the full graph: "
-                    f"{context_adata.n_obs} context cells, {batch_adata.n_obs} loss cells..."
-                )
-                batch_expression_gcn, graph = propagate_spatial_features(
-                    expression=context_expression,
-                    coords=np.asarray(context_adata.obsm[self.params.spatial_key]),
-                    stable_ids=context_adata.obs_names.to_numpy(),
-                    params=self.params,
-                    gcov=self.gcov,
-                    output_indices=selected_positions,
-                )
-                graph_cell_count = context_adata.n_obs
+                    graph_description = "full-density section graph chunks"
+                else:
+                    batch_expression_gcn, edge_count = (
+                        self._propagate_sampled_rows_on_full_graph(
+                            batch_adata=batch_adata,
+                            hvg=hvg,
+                            source_path=source_path,
+                        )
+                    )
+                    graph_description = f"full-density graph with {edge_count} directed edges"
             else:
-                logger.info(f"Processing batch {batch_id} with {batch_adata.n_obs} cells...")
                 batch_expression_gcn, graph = propagate_spatial_features(
                     expression=batch_expression,
                     coords=np.asarray(batch_adata.obsm[self.params.spatial_key]),
                     stable_ids=batch_adata.obs_names.to_numpy(),
                     params=self.params,
                     gcov=self.gcov,
+                    section_labels=_section_labels_for_graph(batch_adata, self.params),
                 )
-                graph_cell_count = batch_adata.n_obs
+                graph_description = f"{graph.edges.shape[0]} directed edges"
             expression_array_gcn[batch_indices] = batch_expression_gcn
 
             logger.info(
-                f"Graph for {batch_id} has {graph.edges.shape[0]} directed edges, "
-                f"{graph_cell_count} context cells and {batch_adata.n_obs} loss cells."
+                "Graph features for %s used %s for %d sampled focal cells.",
+                batch_id,
+                graph_description,
+                batch_adata.n_obs,
             )
-            if use_full_graph_context:
-                del context_adata, context_expression, context_matrix
-            del batch_expression_gcn, graph
 
-        # Keep batch codes aligned with the input sample order used by inference.
-        # Without explicit categories, pandas sorts string labels lexicographically
-        # (S0, S1, S10, ..., S2), which disagrees with inference's numeric st_id
-        # once the dataset contains S10.
-        if sample_h5ad_dict is None:
-            batch_categories = pd.unique(batch_labels).tolist()
-        else:
-            batch_categories = [f"S{st_id}" for st_id in range(len(sample_h5ad_dict))]
-
-        categorical_batches = pd.Categorical(
-            batch_labels,
-            categories=batch_categories,
-            ordered=True,
-        )
-        batch_codes = categorical_batches.codes
-        if np.any(batch_codes < 0):
-            unknown_batches = sorted(set(batch_labels) - set(batch_categories))
-            raise ValueError(f"Unknown batch IDs in training data: {unknown_batches}")
+        # Fit one explicit mapping and reuse it for inference.  In particular,
+        # never assume that an ordinal sample index is the same as a categorical
+        # code (for example, lexicographic ordering places S10 before S2).
+        batch_codes = self.batch_label_encoder.fit_transform(batch_labels)
 
         # Convert labels to categorical codes
         cat_labels = pd.Categorical(label)
@@ -869,7 +1075,7 @@ class TrainingData:
         # Store results
         self.expression_merge = expression_array
         self.expression_gcn_merge = expression_array_gcn
-        self.batch_merge = torch.from_numpy(np.array(batch_codes, copy=True)).float()
+        self.batch_merge = torch.from_numpy(np.array(batch_codes, copy=True)).long()
         self.label_merge = torch.from_numpy(np.array(label_codes, copy=True)).long()
 
         if self.params.annotation is not None:
@@ -878,7 +1084,7 @@ class TrainingData:
             self.label_name = None
 
         # Set batch size
-        self.batch_size = len(batch_categories)
+        self.batch_size = len(self.batch_label_encoder.classes_)
 
 
 # Inference for each ST dataset
@@ -890,9 +1096,18 @@ class InferenceData:
         batch_size: Integer defining the batch size for inference.
         model: Model to be used for inference.
         params: Dictionary containing additional parameters for inference.
+        batch_label_encoder: Label encoder fitted on the training batches.
     """
 
-    def __init__(self, hvg, batch_size, model, label_name, params):
+    def __init__(
+        self,
+        hvg,
+        batch_size,
+        model,
+        label_name,
+        params,
+        batch_label_encoder: LabelEncoder,
+    ):
         self.params = params
         self.gcov = GCN(self.params.K)
         self.hvg = hvg
@@ -900,11 +1115,59 @@ class InferenceData:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = model.to(self.device)
         self.label_name = label_name
+        self.batch_label_encoder = batch_label_encoder
+        if len(self.batch_label_encoder.classes_) != self.batch_size:
+            raise ValueError("Batch encoder classes do not match the model batch size")
         self.processed_list_path = self.params.latent_dir / "processed.list"
 
-    def infer_embedding_single(self, st_id, st_file) -> Path:
+    def _encode_batch_label(self, batch_label: str) -> int:
+        """Encode an inference batch with the mapping fitted during training."""
+
+        try:
+            return int(self.batch_label_encoder.transform([str(batch_label)])[0])
+        except ValueError as error:
+            raise RuntimeError(
+                f"Inference batch {batch_label!r} was not present during training"
+            ) from error
+
+    def _infer_tensor_rows(
+        self,
+        expression_gcn: torch.Tensor,
+        expression: torch.Tensor,
+        batch_code: int,
+        row_indices: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Run only bounded model batches for the selected tensor rows."""
+
+        if row_indices is None:
+            row_indices = np.arange(expression.size(0), dtype=np.int64)
+        else:
+            row_indices = np.asarray(row_indices, dtype=np.int64)
+
+        emb_cell = np.empty((row_indices.size, self.params.embedding_size), dtype=np.float32)
+        emb_niche = np.empty_like(emb_cell)
+        self.model.eval()
+        with torch.inference_mode():
+            for output_start in range(0, row_indices.size, 512):
+                output_stop = min(output_start + 512, row_indices.size)
+                batch_rows = torch.from_numpy(row_indices[output_start:output_stop])
+                expression_gcn_focal = expression_gcn[batch_rows].to(self.device)
+                expression_focal = expression[batch_rows].to(self.device)
+                batch_indices_focal = torch.full(
+                    (batch_rows.numel(),), batch_code, dtype=torch.long, device=self.device
+                )
+                mu_focal = self.model.encode(
+                    [expression_focal, expression_gcn_focal], batch_indices_focal
+                )
+                emb_cell[output_start:output_stop] = mu_focal[0].cpu().numpy()
+                emb_niche[output_start:output_stop] = mu_focal[1].cpu().numpy()
+
+        return emb_cell, emb_niche
+
+    def infer_embedding_single(self, batch_label, st_file) -> AnnData:
         st_name = (Path(st_file).name).split(".h5ad")[0]
         logger.info(f"Infering cell embeddings for {st_name}...")
+        batch_code = self._encode_batch_label(batch_label)
 
         # Load the ST data
         adata = sc.read_h5ad(st_file)
@@ -916,49 +1179,81 @@ class InferenceData:
         # Setup data layer consistently
         is_count_data, actual_data_layer = setup_data_layer(adata, self.params.data_layer)
 
-        # print(adata.shape)
-        # Convert expression data to torch.Tensor
-        expression_array = torch.Tensor(adata[:, self.hvg].X.toarray())
+        coords = np.asarray(adata.obsm[self.params.spatial_key])
+        stable_ids = adata.obs_names.to_numpy()
+        section_labels = _section_labels_for_graph(adata, self.params)
+        section_modes = {"sectionwise_2d", "section_aware_3d"}
 
-        # Graph convolution of expression array
-        expression_array_gcn, graph = propagate_spatial_features(
-            expression=expression_array,
-            coords=np.asarray(adata.obsm[self.params.spatial_key]),
-            stable_ids=adata.obs_names.to_numpy(),
-            params=self.params,
-            gcov=self.gcov,
-        )
-        logger.info(
-            f"Graph for {st_name} has {graph.edges.shape[0]} directed edges, {adata.n_obs} cells."
-        )
-
-        # Prepare the evaluation DataLoader
-        dataset = TensorDataset(expression_array_gcn, expression_array)
-        Inference_loader = DataLoader(dataset=dataset, batch_size=512, shuffle=False)
-
-        # Inference process
-        emb_cell, emb_niche = [], []
-
-        for (
-            expression_gcn_focal,
-            expression_focal,
-        ) in Inference_loader:
-            expression_gcn_focal = expression_gcn_focal.to(self.device)
-            expression_focal = expression_focal.to(self.device)
-
-            self.model.eval()
-            with torch.no_grad():
-                embedding_samples = self.model.encode(
-                    [expression_focal, expression_gcn_focal],
-                    sample=True,
+        if self.params.graph_mode.lower() in section_modes:
+            if section_labels is None:
+                raise RuntimeError("Section labels are required for chunked graph inference")
+            emb_cell = np.empty((adata.n_obs, self.params.embedding_size), dtype=np.float32)
+            emb_niche = np.empty_like(emb_cell)
+            graph_edge_count = 0
+            chunks = iter_section_inference_chunks(
+                coords,
+                section_labels,
+                graph_mode=self.params.graph_mode,
+                target_focal_spots=self.params.inference_chunk_size,
+                propagation_depth=self.params.K,
+            )
+            for chunk_number, chunk in enumerate(chunks, start=1):
+                context = chunk.context_global_indices
+                expression_array = torch.from_numpy(_dense_float32(adata[context, self.hvg].X))
+                expression_array_gcn, graph = propagate_spatial_features(
+                    expression=expression_array,
+                    coords=coords[context],
+                    stable_ids=stable_ids[context],
+                    params=self.params,
+                    gcov=self.gcov,
+                    section_labels=section_labels[context],
                 )
+                chunk_cell, chunk_niche = self._infer_tensor_rows(
+                    expression_array_gcn,
+                    expression_array,
+                    batch_code,
+                    chunk.focal_local_indices,
+                )
+                emb_cell[chunk.focal_global_indices] = chunk_cell
+                emb_niche[chunk.focal_global_indices] = chunk_niche
+                graph_edge_count += graph.edges.shape[0]
+                logger.info(
+                    "Inference chunk %d: %d focal spots, %d context spots, %d directed edges",
+                    chunk_number,
+                    chunk.focal_global_indices.size,
+                    context.size,
+                    graph.edges.shape[0],
+                )
+                del expression_array, expression_array_gcn, graph, chunk_cell, chunk_niche
 
-                emb_cell.append(embedding_samples[0].cpu().numpy())
-                emb_niche.append(embedding_samples[1].cpu().numpy())
+            logger.info(
+                "Processed %d spots for %s using section-aligned graph chunks "
+                "(%d chunk-local directed edges including halos).",
+                adata.n_obs,
+                st_name,
+                graph_edge_count,
+            )
+        else:
+            expression_array = torch.from_numpy(_dense_float32(adata[:, self.hvg].X))
+            expression_array_gcn, graph = propagate_spatial_features(
+                expression=expression_array,
+                coords=coords,
+                stable_ids=stable_ids,
+                params=self.params,
+                gcov=self.gcov,
+                section_labels=section_labels,
+            )
+            logger.info(
+                f"Graph for {st_name} has {graph.edges.shape[0]} directed edges, "
+                f"{adata.n_obs} cells."
+            )
+            emb_cell, emb_niche = self._infer_tensor_rows(
+                expression_array_gcn, expression_array, batch_code
+            )
 
-        # Concatenate results and store embeddings in adata
-        emb_cell = np.concatenate(emb_cell, axis=0)
-        emb_niche = np.concatenate(emb_niche, axis=0)
+        # if self.label_name is not None:
+        #     class_prob = pd.DataFrame(softmax(class_prob,axis=1), columns=self.label_name,index=adata.obs_names)
+        #     adata.obsm["class_prob"] = class_prob
 
         adata.obsm[self.params.latent_representation_cell] = emb_cell
         adata.obsm[self.params.latent_representation_niche] = emb_niche

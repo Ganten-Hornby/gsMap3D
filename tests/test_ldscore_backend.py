@@ -118,6 +118,36 @@ def test_chunk_source_can_defer_or_compute_cpu_ldscore():
     assert computed[2:] == (1, 3)
 
 
+def test_chunk_source_accumulates_existing_gene_blocks():
+    sparse_weight = sp.csr_matrix(
+        np.asarray([[1.0, 2.0, 0.0], [0.0, 3.0, 4.0]], dtype=np.float32)
+    )
+    marker_scores = np.arange(1, 13, dtype=np.float32).reshape(4, 3)
+
+    class Store:
+        def iter_spot_marker_blocks(self, start, end, marker_gene_indices):
+            selected = marker_scores[start:end, marker_gene_indices].T
+            yield np.asarray([0, 1]), selected[:2]
+            yield np.asarray([2]), selected[2:]
+
+    source = SpatialLDChunkSource(
+        mode="gene_block",
+        chunk_starts=[1],
+        chunk_size=2,
+        cell_end=3,
+        spot_indices=np.asarray([0, 1, 2]),
+        spot_names_filtered=np.asarray(["cell0", "cell1", "cell2"]),
+        marker_score_gene_indices=np.asarray([0, 1, 2]),
+        snp_gene_weight_sparse=sparse_weight,
+        marker_score_store=Store(),
+    )
+
+    actual = source.fetch_chunk(0, defer_ldscore_to_compute=False)
+    expected = sparse_weight @ marker_scores[1:3].T
+    np.testing.assert_allclose(actual[0], expected)
+    assert list(actual[1]) == ["cell1", "cell2"]
+
+
 def test_chunk_source_reads_noncontiguous_sample_rows_correctly():
     marker_scores = np.arange(15, dtype=np.float32).reshape(5, 3)
     marker_adata = type("MarkerAdata", (), {"X": marker_scores})()

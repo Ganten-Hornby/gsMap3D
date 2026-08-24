@@ -203,7 +203,7 @@ def test_training_data_scatter_is_invariant_to_interleaved_batches():
     np.testing.assert_allclose(original.expression_gcn_merge.numpy(), mapped_back)
 
 
-def test_training_batch_codes_follow_input_order_after_s10():
+def test_training_batch_codes_use_one_fitted_mapping_after_s10():
     batch_order = [
         "S10",
         "S2",
@@ -242,9 +242,7 @@ def test_training_batch_codes_follow_input_order_after_s10():
     training_data = TrainingData(params)
     training_data.prepare(adata, ["g0"])
 
-    expected_codes = np.asarray(
-        [int(batch_id[1:]) for batch_id in batch_order], dtype=np.float32
-    )
+    expected_codes = training_data.batch_label_encoder.transform(batch_order)
     np.testing.assert_array_equal(training_data.batch_merge.numpy(), expected_codes)
     assert training_data.batch_size == n_batches
 
