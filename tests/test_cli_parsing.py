@@ -100,7 +100,7 @@ def test_find_latent_exposes_section_aware_3d_graph_options(cli_runner_local):
 
     assert result.exit_code == 0
     assert "--graph-mode" in result.output
-    assert "--graph-section-key" in result.output
+    assert "--graph-section-key" not in result.output
     assert "--graph-z-scale" in result.output
 
 
@@ -109,7 +109,7 @@ def test_quick_mode_exposes_section_graph_options(cli_runner_local):
 
     assert result.exit_code == 0
     assert "--graph-mode" in result.output
-    assert "--graph-section-key" in result.output
+    assert "--graph-section-key" not in result.output
     assert "--graph-z-scale" in result.output
     assert "--inference-chunk-size" in result.output
 

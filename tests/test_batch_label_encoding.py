@@ -22,7 +22,6 @@ def _params(tmp_path):
         annotation=None,
         spatial_key="spatial",
         graph_mode="no_graph",
-        graph_section_key=None,
         graph_z_scale=1.0,
         graph_radius=None,
         graph_sigma=None,

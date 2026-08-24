@@ -318,9 +318,11 @@ def _nearest_target_indices(
 def order_sections_by_median_coordinate(
     coords: np.ndarray, section_labels: np.ndarray
 ) -> np.ndarray:
-    """Return section labels ordered by their median final coordinate."""
+    """Return section labels ordered by their median z coordinate."""
 
     coords = _validate_coordinates(coords)
+    if coords.shape[1] != 3:
+        raise ValueError("Physical section ordering requires XYZ coordinates with an explicit z")
     section_labels = np.asarray(section_labels).astype(str)
     if section_labels.shape != (coords.shape[0],):
         raise ValueError(
@@ -328,9 +330,22 @@ def order_sections_by_median_coordinate(
         )
     unique_sections = np.unique(section_labels)
     section_z = np.asarray(
-        [np.median(coords[section_labels == section, -1]) for section in unique_sections]
+        [np.median(coords[section_labels == section, 2]) for section in unique_sections]
     )
     return unique_sections[np.argsort(section_z, kind="stable")]
+
+
+def sectionwise_2d_slice_labels(coords: np.ndarray) -> np.ndarray:
+    """Resolve slice identity for a sectionwise 2D graph.
+
+    Every input H5AD represents one slice, independently of whether its stored
+    coordinates are XY or XYZ, so all rows receive the same local identity.
+    """
+
+    coords = _validate_coordinates(coords)
+    if coords.shape[1] not in {2, 3}:
+        raise ValueError("sectionwise 2D graphs require XY or XYZ coordinates")
+    return np.zeros(coords.shape[0], dtype=np.int8)
 
 
 def build_section_aware_3d_graph(
@@ -340,6 +355,7 @@ def build_section_aware_3d_graph(
     undirected: bool = True,
     stable_ids: np.ndarray | None = None,
     workers: int = -1,
+    section_order: np.ndarray | None = None,
 ) -> SpatialGraph:
     """Build a physical 3D graph using a within-section KNN scale.
 
@@ -354,8 +370,10 @@ def build_section_aware_3d_graph(
     large physical section gaps.
 
     Coordinates must already use a common physical scale, including a
-    calibrated z axis. Sections are ordered by their median final coordinate.
-    Self-loops are absent; the GCN normalization adds them separately.
+    calibrated z axis. ``section_order`` supplies the physical input-file
+    order when slice identity comes from an ordered H5AD list. Without it,
+    sections retain the legacy median-z ordering. Self-loops are absent; the
+    GCN normalization adds them separately.
     """
 
     coords = _validate_coordinates(coords)
@@ -375,7 +393,18 @@ def build_section_aware_3d_graph(
 
     canonical_coords, canonical_order = _canonicalize_nodes(coords, stable_ids)
     canonical_sections = section_labels[canonical_order]
-    ordered_sections = order_sections_by_median_coordinate(canonical_coords, canonical_sections)
+    if section_order is None:
+        ordered_sections = order_sections_by_median_coordinate(
+            canonical_coords, canonical_sections
+        )
+    else:
+        ordered_sections = np.asarray(section_order).astype(str)
+        observed_sections = np.unique(canonical_sections)
+        if (
+            ordered_sections.size != observed_sections.size
+            or set(ordered_sections) != set(observed_sections)
+        ):
+            raise ValueError("section_order must contain every section label exactly once")
 
     within_edges: list[np.ndarray] = []
     within_radii = np.zeros(coords.shape[0], dtype=np.float64)
@@ -486,11 +515,12 @@ def build_sectionwise_2d_graph(
     stable_ids: np.ndarray | None = None,
     workers: int = -1,
 ) -> SpatialGraph:
-    """Build independent within-section 2D KNN graphs in one H5AD.
+    """Build independent within-slice 2D KNN graphs.
 
     Each spot selects up to ``n_neighbors`` external neighbors from its own
-    physical section. No cross-section edge is created. Coordinates may contain
-    XY or XYZ columns; only XY participates in this graph. Self-loops remain a
+    physical slice. Slice identity is resolved before this function from one
+    H5AD file per slice. No cross-slice edge is
+    created, and only XY participates in neighbor search. Self-loops remain a
     separate GCN operation.
     """
 
@@ -544,6 +574,7 @@ def build_graph_for_mode(
     radius: float | None = None,
     sigma: float | None = None,
     section_labels: np.ndarray | None = None,
+    section_order: np.ndarray | None = None,
 ) -> SpatialGraph:
     """Dispatch graph construction for production and revision experiment arms."""
 
@@ -573,6 +604,7 @@ def build_graph_for_mode(
             section_labels,
             n_neighbors,
             stable_ids=stable_ids,
+            section_order=section_order,
         )
     if mode == "sectionwise_2d":
         if section_labels is None:

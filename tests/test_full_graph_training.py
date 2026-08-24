@@ -56,7 +56,6 @@ def _params(graph_mode: str) -> SimpleNamespace:
         annotation="spatial_domain",
         spatial_key="spatial",
         graph_mode=graph_mode,
-        graph_section_key="section",
         graph_z_scale=1.0,
         graph_radius=None,
         graph_sigma=None,
@@ -68,13 +67,17 @@ def _params(graph_mode: str) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize("graph_mode", ["sectionwise_2d", "section_aware_3d"])
-def test_sampled_training_rows_use_full_density_graph_context(monkeypatch, graph_mode):
+def test_sampled_training_rows_use_full_density_graph_context(tmp_path, monkeypatch, graph_mode):
     full_adata = _full_section_fixture()
     full_expression = full_adata.X.toarray()
-    monkeypatch.setattr(
-        "gsMap.find_latent.st_process.sc.read_h5ad",
-        lambda _path: full_adata.copy(),
-    )
+    sources = OrderedDict()
+    section_offsets = {}
+    for section_index, section_name in enumerate(full_adata.obs["section"].unique()):
+        section_adata = full_adata[full_adata.obs["section"] == section_name].copy()
+        section_path = tmp_path / f"{section_name}.h5ad"
+        section_adata.write_h5ad(section_path)
+        sources[section_name] = section_path
+        section_offsets[section_name] = section_index * section_adata.n_obs
 
     dense_row_counts = []
     original_toarray = sp.csr_matrix.toarray
@@ -85,9 +88,8 @@ def test_sampled_training_rows_use_full_density_graph_context(monkeypatch, graph
 
     monkeypatch.setattr(sp.csr_matrix, "toarray", record_toarray)
     params = _params(graph_mode)
-    sources = OrderedDict([("sample", "full.h5ad")])
     np.random.seed(2024)
-    sampled = create_subsampled_adata(sources, [12], params)
+    sampled = create_subsampled_adata(sources, [2] * len(sources), params)
 
     training = TrainingData(params)
     training.prepare(sampled, ["g0", "g1"], source_h5ad_dict=sources)
@@ -98,9 +100,21 @@ def test_sampled_training_rows_use_full_density_graph_context(monkeypatch, graph
         stable_ids=full_adata.obs_names.to_numpy(),
         params=params,
         gcov=GCN(params.K),
-        section_labels=full_adata.obs["section"].to_numpy(),
+        section_labels=(
+            np.repeat(np.arange(len(sources)), 3)
+        ),
+        section_order=np.arange(len(sources)) if graph_mode == "section_aware_3d" else None,
     )
-    source_rows = sampled.obs["_gsmap_source_obs_index"].to_numpy(dtype=np.int64)
+    source_rows = np.asarray(
+        [
+            section_offsets[sample_name] + source_row
+            for sample_name, source_row in zip(
+                sampled.obs["sample_name"],
+                sampled.obs["_gsmap_source_obs_index"],
+                strict=True,
+            )
+        ]
+    )
     torch.testing.assert_close(training.expression_gcn_merge, expected[source_rows])
 
     sampled_only, _ = propagate_spatial_features(
@@ -109,7 +123,10 @@ def test_sampled_training_rows_use_full_density_graph_context(monkeypatch, graph
         stable_ids=sampled.obs_names.to_numpy(),
         params=params,
         gcov=GCN(params.K),
-        section_labels=sampled.obs["section"].to_numpy(),
+        section_labels=sampled.obs["sample_name"].to_numpy(),
+        section_order=(
+            np.asarray(list(sources)) if graph_mode == "section_aware_3d" else None
+        ),
     )
     assert not torch.allclose(training.expression_gcn_merge, sampled_only)
     assert max(dense_row_counts) < full_adata.n_obs

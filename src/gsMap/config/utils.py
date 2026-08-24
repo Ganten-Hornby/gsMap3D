@@ -6,10 +6,31 @@ import logging
 from collections import OrderedDict
 from pathlib import Path
 
+import anndata as ad
 import h5py
+import numpy as np
 import yaml
 
 logger = logging.getLogger("gsMap.config")
+
+
+def _add_h5ad_path(sample_h5ad_dict: OrderedDict, h5ad_path: Path) -> None:
+    """Append an H5AD path without dropping files that share a basename."""
+
+    base_name = h5ad_path.stem
+    sample_name = base_name
+    duplicate_ordinal = 2
+    while sample_name in sample_h5ad_dict:
+        sample_name = f"{base_name}__{duplicate_ordinal}"
+        duplicate_ordinal += 1
+    if sample_name != base_name:
+        logger.warning(
+            "Duplicate H5AD sample name %r; preserving %s as %r",
+            base_name,
+            h5ad_path,
+            sample_name,
+        )
+    sample_h5ad_dict[sample_name] = h5ad_path
 
 
 def configure_jax_platform(use_accelerator: bool = True):
@@ -148,6 +169,41 @@ def inspect_h5ad_structure(filename):
     return structure
 
 
+def get_h5ad_obsm_shape(filename: str | Path, key: str) -> tuple[int, ...]:
+    """Return the shape of one ``obsm`` array through AnnData's backed API."""
+
+    adata = ad.read_h5ad(filename, backed="r")
+    try:
+        return tuple(adata.obsm[key].shape)
+    finally:
+        adata.file.close()
+
+
+def get_h5ad_obsm_unique_values(
+    filename: str | Path,
+    key: str,
+    column: int,
+    *,
+    stop_after: int,
+) -> set[float]:
+    """Read unique ``obsm`` values through AnnData's backed API, with an early cap."""
+
+    unique_values: set[float] = set()
+    adata = ad.read_h5ad(filename, backed="r")
+    try:
+        array = np.asarray(adata.obsm[key])
+        chunk_rows = 1_000_000
+        for start in range(0, array.shape[0], chunk_rows):
+            values = np.unique(array[start : start + chunk_rows, column])
+            for value in values:
+                unique_values.add(float(value))
+                if len(unique_values) > stop_after:
+                    return unique_values
+        return unique_values
+    finally:
+        adata.file.close()
+
+
 def validate_h5ad_structure(sample_h5ad_dict, required_fields, optional_fields=None):
     """
     Validate h5ad files have required structure.
@@ -269,10 +325,7 @@ def process_h5ad_inputs(config, input_options):
             logger.info(f"Using {option_name} with {len(field_value)} files")
             for h5ad_path in field_value:
                 h5ad_path = Path(h5ad_path)
-                sample_name = h5ad_path.stem
-                if sample_name in sample_h5ad_dict:
-                    logger.warning(f"Duplicate sample name: {sample_name}, will be overwritten")
-                sample_h5ad_dict[sample_name] = h5ad_path
+                _add_h5ad_path(sample_h5ad_dict, h5ad_path)
 
         elif processing_type == "file":
             logger.info(f"Using {option_name}: {field_value}")
@@ -286,12 +339,7 @@ def process_h5ad_inputs(config, input_options):
                         # Resolve relative paths relative to list file location
                         if not h5ad_path.is_absolute():
                             h5ad_path = list_file_parent_dir / h5ad_path
-                        sample_name = h5ad_path.stem
-                        if sample_name in sample_h5ad_dict:
-                            logger.warning(
-                                f"Duplicate sample name: {sample_name}, will be overwritten"
-                            )
-                        sample_h5ad_dict[sample_name] = h5ad_path
+                        _add_h5ad_path(sample_h5ad_dict, h5ad_path)
         break
 
     return sample_h5ad_dict

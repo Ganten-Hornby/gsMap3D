@@ -1,7 +1,6 @@
 import logging
 import os
 import random
-import re
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,6 @@ from torch.utils.data import (
 
 from gsMap.config import FindLatentRepresentationsConfig
 
-from .gnn.gcn import order_sections_by_median_coordinate
 from .gnn.st_model import StEmbeding
 from .gnn.train_step import ModelTrain
 from .st_process import (
@@ -102,13 +100,6 @@ def _serialize_label_names(label_name: Any) -> list[Any]:
     return list(label_name)
 
 
-def _safe_section_name(value: object) -> str:
-    """Return a filesystem-safe section label."""
-
-    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_.-")
-    return token or "section"
-
-
 def write_latent_representation_outputs(
     adata,
     *,
@@ -117,38 +108,10 @@ def write_latent_representation_outputs(
 ) -> OrderedDict[str, Path]:
     """Write one latent H5AD per downstream sample or physical section."""
 
-    section_modes = {"sectionwise_2d", "section_aware_3d"}
-    if config.graph_mode not in section_modes:
-        output_path = config.latent_dir / f"{sample_name}_add_latent.h5ad"
-        adata.write_h5ad(output_path)
-        logger.info("Saved latent representation to %s", output_path)
-        return OrderedDict({sample_name: output_path})
-
-    section_key = config.graph_section_key
-    if section_key is None:
-        raise RuntimeError("graph_section_key is required for section-aware output")
-    section_labels = adata.obs[section_key].to_numpy()
-    ordered_sections = order_sections_by_median_coordinate(
-        np.asarray(adata.obsm[config.spatial_key]),
-        section_labels,
-    )
-    outputs: OrderedDict[str, Path] = OrderedDict()
-    for ordinal, section in enumerate(ordered_sections):
-        output_name = f"{sample_name}__section_{ordinal:03d}_{_safe_section_name(section)}"
-        output_path = config.latent_dir / f"{output_name}_add_latent.h5ad"
-        section_mask = np.asarray(section_labels.astype(str) == str(section))
-        section_adata = adata[section_mask].copy()
-        section_adata.write_h5ad(output_path)
-        outputs[output_name] = output_path
-        logger.info(
-            "Saved physical section %s/%s (%s spots) to %s",
-            ordinal + 1,
-            len(ordered_sections),
-            section_adata.n_obs,
-            output_path,
-        )
-        del section_adata
-    return outputs
+    output_path = config.latent_dir / f"{sample_name}_add_latent.h5ad"
+    adata.write_h5ad(output_path)
+    logger.info("Saved latent representation to %s", output_path)
+    return OrderedDict({sample_name: output_path})
 
 
 def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> dict[str, Any]:
@@ -335,9 +298,15 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     training_adata.write_h5ad(training_adata_path)
     logger.info(f"Saved training adata to {training_adata_path}")
 
-    for sample_name, st_file in config.sample_h5ad_dict.items():
-        # Infer the embedding
-        adata = infer.infer_embedding_single(sample_name, st_file)
+    if config.graph_mode == "section_aware_3d":
+        inferred_adatas = infer.infer_embedding_sections(config.sample_h5ad_dict)
+    else:
+        inferred_adatas = (
+            (sample_name, infer.infer_embedding_single(sample_name, st_file))
+            for sample_name, st_file in config.sample_h5ad_dict.items()
+        )
+
+    for sample_name, adata in inferred_adatas:
 
         # Calculate module scores and apply QC for each annotation
         if config.high_quality_cell_qc and config.annotation is not None:

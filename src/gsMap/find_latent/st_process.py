@@ -21,6 +21,7 @@ from .gnn.gcn import (
     SpatialGraph,
     build_graph_for_mode,
     order_sections_by_median_coordinate,
+    sectionwise_2d_slice_labels,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,12 +48,84 @@ class SectionInferenceChunk:
     focal_local_indices: np.ndarray
 
 
+@dataclass(frozen=True)
+class OrderedSectionGraphData:
+    """Graph inputs loaded from an ordered one-H5AD-per-slice collection."""
+
+    sample_names: tuple[str, ...]
+    sample_paths: tuple[Path, ...]
+    expression: sp.csr_matrix
+    coords: np.ndarray
+    stable_ids: np.ndarray
+    section_labels: np.ndarray
+    offsets: np.ndarray
+
+
+def load_ordered_section_graph_data(
+    sample_h5ad_dict: Mapping[str, str | Path],
+    hvg: list[str],
+    params,
+) -> OrderedSectionGraphData:
+    """Load only graph features from an ordered one-file-per-slice input list."""
+
+    sample_items = list(sample_h5ad_dict.items())
+    if not sample_items:
+        raise ValueError("At least one H5AD slice file is required")
+
+    expression_blocks: list[sp.csr_matrix] = []
+    coordinate_blocks: list[np.ndarray] = []
+    section_blocks: list[np.ndarray] = []
+    offsets = [0]
+    sample_names: list[str] = []
+    sample_paths: list[Path] = []
+    for section_ordinal, (sample_name, source_path) in enumerate(sample_items):
+        adata = sc.read_h5ad(source_path)
+        adata.var_names_make_unique()
+        setup_data_layer(adata, params.data_layer)
+        coords = np.asarray(adata.obsm[params.spatial_key])
+        if coords.ndim != 2 or coords.shape[1] != 3:
+            raise ValueError(
+                "section_aware_3d requires one XYZ H5AD per slice; "
+                f"sample {sample_name!r} has coordinate shape {coords.shape}"
+            )
+
+        expression = adata[:, hvg].X
+        expression_blocks.append(
+            expression.tocsr(copy=True)
+            if sp.issparse(expression)
+            else sp.csr_matrix(np.asarray(expression))
+        )
+        coordinate_blocks.append(np.array(coords, dtype=np.float64, copy=True))
+        section_blocks.append(
+            np.full(adata.n_obs, section_ordinal, dtype=np.int32)
+        )
+        offsets.append(offsets[-1] + adata.n_obs)
+        sample_names.append(str(sample_name))
+        sample_paths.append(Path(source_path))
+        del adata, expression
+
+    expression_matrix = sp.vstack(expression_blocks, format="csr")
+    coords = np.concatenate(coordinate_blocks, axis=0)
+    section_labels = np.concatenate(section_blocks)
+    stable_ids = np.arange(coords.shape[0], dtype=np.int64)
+    return OrderedSectionGraphData(
+        sample_names=tuple(sample_names),
+        sample_paths=tuple(sample_paths),
+        expression=expression_matrix,
+        coords=coords,
+        stable_ids=stable_ids,
+        section_labels=section_labels,
+        offsets=np.asarray(offsets, dtype=np.int64),
+    )
+
+
 def iter_section_inference_chunks(
     coords: np.ndarray,
     section_labels: np.ndarray,
     graph_mode: str,
     target_focal_spots: int,
     propagation_depth: int,
+    section_order: np.ndarray | None = None,
 ) -> Iterator[SectionInferenceChunk]:
     """Yield complete-section focal chunks with enough context for exact K-hop GCN.
 
@@ -75,7 +148,16 @@ def iter_section_inference_chunks(
 
     mode = graph_mode.lower()
     if mode == "section_aware_3d":
-        ordered_sections = order_sections_by_median_coordinate(coords, section_labels)
+        if section_order is None:
+            ordered_sections = order_sections_by_median_coordinate(coords, section_labels)
+        else:
+            ordered_sections = np.asarray(section_order).astype(str)
+            observed_sections = np.unique(section_labels)
+            if (
+                ordered_sections.size != observed_sections.size
+                or set(ordered_sections) != set(observed_sections)
+            ):
+                raise ValueError("section_order must contain every section label exactly once")
         halo_sections = propagation_depth + 2
     elif mode == "sectionwise_2d":
         ordered_sections = np.unique(section_labels)
@@ -119,9 +201,15 @@ def iter_section_inference_chunks(
 def _section_labels_for_graph(adata, params) -> np.ndarray | None:
     """Extract section labels for graph modes that preserve section identity."""
 
-    if params.graph_mode.lower() not in {"section_aware_3d", "sectionwise_2d"}:
-        return None
-    return adata.obs[params.graph_section_key].to_numpy()
+    graph_mode = params.graph_mode.lower()
+    if graph_mode == "sectionwise_2d":
+        return sectionwise_2d_slice_labels(np.asarray(adata.obsm[params.spatial_key]))
+    if graph_mode == "section_aware_3d":
+        raise RuntimeError(
+            "section_aware_3d slice identity comes from the ordered H5AD file list; "
+            "use the ordered multi-file graph path"
+        )
+    return None
 
 
 def propagate_spatial_features(
@@ -131,6 +219,7 @@ def propagate_spatial_features(
     params,
     gcov: GCN,
     section_labels: np.ndarray | None = None,
+    section_order: np.ndarray | None = None,
     output_indices: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, SpatialGraph]:
     """Construct the configured graph and propagate one expression block."""
@@ -147,6 +236,7 @@ def propagate_spatial_features(
         radius=params.graph_radius,
         sigma=params.graph_sigma,
         section_labels=section_labels,
+        section_order=section_order,
     )
     if params.graph_mode.lower() == "no_graph":
         propagated = expression.repeat(1, params.K)
@@ -860,6 +950,102 @@ class TrainingData:
             raise RuntimeError("Sampled training rows fall outside the source AnnData")
         return source_rows
 
+    def _propagate_ordered_section_files(
+        self,
+        *,
+        concatenated_adata: AnnData,
+        hvg: list[str],
+        source_h5ad_dict: Mapping[str, str | Path],
+    ) -> torch.Tensor:
+        """Propagate training features across ordered H5AD slice boundaries."""
+
+        graph_data = load_ordered_section_graph_data(source_h5ad_dict, hvg, self.params)
+        training_row_for_source = np.full(
+            graph_data.expression.shape[0], -1, dtype=np.int64
+        )
+        sample_names = concatenated_adata.obs["sample_name"].astype(str).to_numpy()
+        for section_ordinal, sample_name in enumerate(graph_data.sample_names):
+            training_rows = np.flatnonzero(sample_names == sample_name)
+            batch_adata = concatenated_adata[training_rows]
+            source_start = graph_data.offsets[section_ordinal]
+            source_stop = graph_data.offsets[section_ordinal + 1]
+            source_rows = (
+                batch_adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(dtype=np.int64)
+                if _SOURCE_OBS_INDEX_KEY in batch_adata.obs
+                else None
+            )
+            if source_rows is None:
+                raise RuntimeError(
+                    "Training data is missing source-row provenance required for "
+                    "ordered section-aware propagation"
+                )
+            if source_rows.size and (
+                source_rows.min() < 0 or source_rows.max() >= source_stop - source_start
+            ):
+                raise RuntimeError(
+                    f"Training rows for {sample_name!r} fall outside their source H5AD"
+                )
+            global_source_rows = source_start + source_rows
+            if np.any(training_row_for_source[global_source_rows] >= 0):
+                raise RuntimeError("Sampled training rows contain duplicate source indices")
+            training_row_for_source[global_source_rows] = training_rows
+
+        propagated_training = torch.empty(
+            (concatenated_adata.n_obs, len(hvg) * self.params.K),
+            dtype=torch.float32,
+        )
+        completed = np.zeros(concatenated_adata.n_obs, dtype=bool)
+        section_order = np.arange(len(graph_data.sample_names), dtype=np.int32)
+        chunks = iter_section_inference_chunks(
+            graph_data.coords,
+            graph_data.section_labels,
+            graph_mode="section_aware_3d",
+            target_focal_spots=self.params.inference_chunk_size,
+            propagation_depth=self.params.K,
+            section_order=section_order,
+        )
+        for chunk_number, chunk in enumerate(chunks, start=1):
+            selected_training_rows = training_row_for_source[chunk.focal_global_indices]
+            selected_mask = selected_training_rows >= 0
+            if not np.any(selected_mask):
+                continue
+
+            context = chunk.context_global_indices
+            context_sections = np.unique(graph_data.section_labels[context])
+            expression = torch.from_numpy(
+                _dense_float32(graph_data.expression[context])
+            )
+            propagated, graph = propagate_spatial_features(
+                expression=expression,
+                coords=graph_data.coords[context],
+                stable_ids=graph_data.stable_ids[context],
+                params=self.params,
+                gcov=self.gcov,
+                section_labels=graph_data.section_labels[context],
+                section_order=context_sections,
+            )
+            selected_source_rows = chunk.focal_global_indices[selected_mask]
+            selected_local_rows = np.searchsorted(context, selected_source_rows)
+            target_rows = selected_training_rows[selected_mask]
+            propagated_training[target_rows] = propagated[selected_local_rows]
+            completed[target_rows] = True
+            logger.info(
+                "Training graph chunk %d: %d sampled focal spots, %d full-density "
+                "context spots, %d directed edges",
+                chunk_number,
+                target_rows.size,
+                context.size,
+                graph.edges.shape[0],
+            )
+            del expression, propagated, graph
+
+        if not np.all(completed):
+            raise RuntimeError(
+                "Ordered section-aware graph propagation missed "
+                f"{int((~completed).sum())} sampled focal rows"
+            )
+        return propagated_training
+
     def _propagate_sampled_rows_on_full_section_graph(
         self,
         *,
@@ -996,6 +1182,17 @@ class TrainingData:
         sample_items = list(source_h5ad_dict.items()) if source_h5ad_dict is not None else []
         section_modes = {"sectionwise_2d", "section_aware_3d"}
         graph_mode = self.params.graph_mode.lower()
+        if graph_mode == "section_aware_3d":
+            if not sample_items:
+                raise RuntimeError(
+                    "section_aware_3d requires an ordered H5AD file list"
+                )
+            expression_array_gcn = self._propagate_ordered_section_files(
+                concatenated_adata=concatenated_adata,
+                hvg=hvg,
+                source_h5ad_dict=dict(sample_items),
+            )
+            self.graph_context_mode = _FULL_SOURCE_GRAPH_SAMPLED_FOCAL
         use_full_graph_context = bool(
             getattr(self.params, "do_sampling", False)
             and sample_items
@@ -1010,6 +1207,8 @@ class TrainingData:
             )
 
         for batch_ordinal, batch_id in enumerate(concatenated_adata.obs["batch_id"].unique()):
+            if graph_mode == "section_aware_3d":
+                continue
             batch_mask = concatenated_adata.obs["batch_id"] == batch_id
             batch_adata = concatenated_adata[batch_mask]
             batch_indices = np.flatnonzero(batch_mask.to_numpy())
@@ -1134,7 +1333,7 @@ class InferenceData:
         self,
         expression_gcn: torch.Tensor,
         expression: torch.Tensor,
-        batch_code: int,
+        batch_code: int | np.ndarray,
         row_indices: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Run only bounded model batches for the selected tensor rows."""
@@ -1153,9 +1352,22 @@ class InferenceData:
                 batch_rows = torch.from_numpy(row_indices[output_start:output_stop])
                 expression_gcn_focal = expression_gcn[batch_rows].to(self.device)
                 expression_focal = expression[batch_rows].to(self.device)
-                batch_indices_focal = torch.full(
-                    (batch_rows.numel(),), batch_code, dtype=torch.long, device=self.device
-                )
+                if np.isscalar(batch_code):
+                    batch_indices_focal = torch.full(
+                        (batch_rows.numel(),),
+                        int(batch_code),
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                else:
+                    batch_codes = np.asarray(batch_code, dtype=np.int64)
+                    if batch_codes.shape != (expression.size(0),):
+                        raise ValueError(
+                            "Per-row batch codes must align with the expression rows"
+                        )
+                    batch_indices_focal = torch.from_numpy(
+                        batch_codes[row_indices[output_start:output_stop]]
+                    ).to(self.device)
                 mu_focal = self.model.encode(
                     [expression_focal, expression_gcn_focal], batch_indices_focal
                 )
@@ -1163,6 +1375,80 @@ class InferenceData:
                 emb_niche[output_start:output_stop] = mu_focal[1].cpu().numpy()
 
         return emb_cell, emb_niche
+
+    def infer_embedding_sections(
+        self,
+        sample_h5ad_dict: Mapping[str, str | Path],
+    ) -> Iterator[tuple[str, AnnData]]:
+        """Infer one ordered 3D graph across files and yield one output per file."""
+
+        if self.params.graph_mode.lower() != "section_aware_3d":
+            raise ValueError(
+                "infer_embedding_sections is only defined for section_aware_3d"
+            )
+        graph_data = load_ordered_section_graph_data(
+            sample_h5ad_dict, self.hvg, self.params
+        )
+        n_obs = graph_data.expression.shape[0]
+        emb_cell = np.empty((n_obs, self.params.embedding_size), dtype=np.float32)
+        emb_niche = np.empty_like(emb_cell)
+        section_batch_codes = np.asarray(
+            [self._encode_batch_label(name) for name in graph_data.sample_names],
+            dtype=np.int64,
+        )
+        batch_codes = section_batch_codes[graph_data.section_labels]
+        section_order = np.arange(len(graph_data.sample_names), dtype=np.int32)
+        chunks = iter_section_inference_chunks(
+            graph_data.coords,
+            graph_data.section_labels,
+            graph_mode="section_aware_3d",
+            target_focal_spots=self.params.inference_chunk_size,
+            propagation_depth=self.params.K,
+            section_order=section_order,
+        )
+        for chunk_number, chunk in enumerate(chunks, start=1):
+            context = chunk.context_global_indices
+            context_sections = np.unique(graph_data.section_labels[context])
+            expression = torch.from_numpy(
+                _dense_float32(graph_data.expression[context])
+            )
+            propagated, graph = propagate_spatial_features(
+                expression=expression,
+                coords=graph_data.coords[context],
+                stable_ids=graph_data.stable_ids[context],
+                params=self.params,
+                gcov=self.gcov,
+                section_labels=graph_data.section_labels[context],
+                section_order=context_sections,
+            )
+            chunk_cell, chunk_niche = self._infer_tensor_rows(
+                propagated,
+                expression,
+                batch_codes[context],
+                chunk.focal_local_indices,
+            )
+            emb_cell[chunk.focal_global_indices] = chunk_cell
+            emb_niche[chunk.focal_global_indices] = chunk_niche
+            logger.info(
+                "Inference chunk %d: %d focal spots, %d context spots, %d directed edges",
+                chunk_number,
+                chunk.focal_global_indices.size,
+                context.size,
+                graph.edges.shape[0],
+            )
+            del expression, propagated, graph, chunk_cell, chunk_niche
+
+        for section_ordinal, (sample_name, source_path) in enumerate(
+            zip(graph_data.sample_names, graph_data.sample_paths, strict=True)
+        ):
+            start = graph_data.offsets[section_ordinal]
+            stop = graph_data.offsets[section_ordinal + 1]
+            adata = sc.read_h5ad(source_path)
+            adata.var_names_make_unique()
+            setup_data_layer(adata, self.params.data_layer)
+            adata.obsm[self.params.latent_representation_cell] = emb_cell[start:stop]
+            adata.obsm[self.params.latent_representation_niche] = emb_niche[start:stop]
+            yield sample_name, adata
 
     def infer_embedding_single(self, batch_label, st_file) -> AnnData:
         st_name = (Path(st_file).name).split(".h5ad")[0]

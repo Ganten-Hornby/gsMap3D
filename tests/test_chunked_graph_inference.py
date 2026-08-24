@@ -158,9 +158,13 @@ def test_section_inference_never_densifies_the_full_expression_matrix(monkeypatc
     adata = anndata.AnnData(expression)
     adata.obs_names = stable_ids
     adata.var_names = [f"gene-{index}" for index in range(5)]
-    adata.obs["section"] = sections
     adata.obsm["spatial"] = coords
-    monkeypatch.setattr("gsMap.find_latent.st_process.sc.read_h5ad", lambda _path: adata.copy())
+    sample_h5ad_dict = {}
+    for section in np.unique(sections):
+        section_adata = adata[sections == section].copy()
+        section_path = tmp_path / f"{section}.h5ad"
+        section_adata.write_h5ad(section_path)
+        sample_h5ad_dict[section] = section_path
 
     dense_row_counts = []
     original_toarray = sp.csr_matrix.toarray
@@ -176,7 +180,6 @@ def test_section_inference_never_densifies_the_full_expression_matrix(monkeypatc
         graph_z_scale=1.0,
         graph_radius=None,
         graph_sigma=None,
-        graph_section_key="section",
         n_neighbors=2,
         inference_chunk_size=6,
         embedding_size=2,
@@ -189,16 +192,18 @@ def test_section_inference_never_densifies_the_full_expression_matrix(monkeypatc
 
     observed = InferenceData(
         adata.var_names.tolist(),
-        batch_size=1,
+        batch_size=len(sample_h5ad_dict),
         model=_IdentityEmbeddingModel(),
         label_name=None,
         params=params,
-        batch_label_encoder=LabelEncoder().fit(["fixture"]),
-    ).infer_embedding_single("fixture", tmp_path / "fixture.h5ad")
+        batch_label_encoder=LabelEncoder().fit(list(sample_h5ad_dict)),
+    )
+    observed = dict(observed.infer_embedding_sections(sample_h5ad_dict))
 
     assert dense_row_counts
     assert max(dense_row_counts) < adata.n_obs
-    assert observed.obsm["emb_cell"].shape == (adata.n_obs, 2)
-    assert observed.obsm["emb_niche"].shape == (adata.n_obs, 2)
-    assert np.isfinite(observed.obsm["emb_cell"]).all()
-    assert np.isfinite(observed.obsm["emb_niche"]).all()
+    assert sum(item.n_obs for item in observed.values()) == adata.n_obs
+    assert all(item.obsm["emb_cell"].shape == (item.n_obs, 2) for item in observed.values())
+    assert all(item.obsm["emb_niche"].shape == (item.n_obs, 2) for item in observed.values())
+    assert all(np.isfinite(item.obsm["emb_cell"]).all() for item in observed.values())
+    assert all(np.isfinite(item.obsm["emb_niche"]).all() for item in observed.values())
