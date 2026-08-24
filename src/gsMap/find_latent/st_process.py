@@ -542,6 +542,8 @@ def create_subsampled_adata(
         # Add batch information to obs
         adata.obs["batch_id"] = sample_name
         adata.obs["sample_name"] = sample_name
+        if params.graph_mode in {"sectionwise_2d", "section_aware_3d"}:
+            adata.obs["slice_id"] = np.full(adata.n_obs, st_id, dtype=np.int32)
 
         # Add label information to obs (ensure it's properly set)
         if params.annotation is not None:

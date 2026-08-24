@@ -12,7 +12,11 @@ from gsMap.find_latent.find_latent_representation import (
     write_latent_representation_outputs,
 )
 from gsMap.find_latent.gnn.gcn import GCN, sectionwise_2d_slice_labels
-from gsMap.find_latent.st_process import InferenceData, propagate_spatial_features
+from gsMap.find_latent.st_process import (
+    InferenceData,
+    create_subsampled_adata,
+    propagate_spatial_features,
+)
 
 
 def _write_slice(path, z_values):
@@ -103,6 +107,31 @@ def test_sectionwise_2d_preserves_files_with_duplicate_stems(tmp_path):
 
     assert list(config.sample_h5ad_dict) == ["slice", "slice__2"]
     assert list(config.sample_h5ad_dict.values()) == [first, second]
+
+
+def test_sectionwise_2d_training_slice_ids_follow_input_file_order(tmp_path):
+    first = tmp_path / "slice-01.h5ad"
+    second = tmp_path / "slice-02.h5ad"
+    first_adata = _write_slice(first, [305.0, 305.0])
+    second_adata = _write_slice(second, [310.0, 310.0])
+    first_adata.obs["slice_id"] = pd.Categorical([305.0, 305.0])
+    second_adata.obs["slice_id"] = pd.Categorical([310.0, 310.0])
+    first_adata.write_h5ad(first)
+    second_adata.write_h5ad(second)
+    params = SimpleNamespace(
+        annotation=None,
+        data_layer="X",
+        do_sampling=False,
+        graph_mode="sectionwise_2d",
+    )
+
+    observed = create_subsampled_adata(
+        {"slice-01": first, "slice-02": second}, [2, 2], params
+    )
+
+    np.testing.assert_array_equal(observed.obs["slice_id"], [0, 0, 1, 1])
+    assert observed.obs["slice_id"].dtype == np.dtype(np.int32)
+    observed.write_h5ad(tmp_path / "training_adata.h5ad")
 
 
 def test_sectionwise_2d_warns_when_xyz_has_no_z_values(tmp_path, monkeypatch):

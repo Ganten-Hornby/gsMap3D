@@ -306,7 +306,11 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             for sample_name, st_file in config.sample_h5ad_dict.items()
         )
 
-    for sample_name, adata in inferred_adatas:
+    for slice_ordinal, (sample_name, adata) in enumerate(inferred_adatas):
+        if config.graph_mode in {"sectionwise_2d", "section_aware_3d"}:
+            adata.obs["slice_id"] = np.full(
+                adata.n_obs, slice_ordinal, dtype=np.int32
+            )
 
         # Calculate module scores and apply QC for each annotation
         if config.high_quality_cell_qc and config.annotation is not None:
