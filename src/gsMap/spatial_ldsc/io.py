@@ -23,6 +23,7 @@ logger = logging.getLogger("gsMap.spatial_ldsc.io")
 
 _MARKER_CACHE_COPY_BUFFER_BYTES = 16 * 1024**2
 _MARKER_CACHE_MINIMUM_HEADROOM_BYTES = 5 * 1024**3
+_UNMAPPED_WEIGHT_COLUMN = "Unmapped"
 
 
 class MarkerScoreMemmapLease:
@@ -583,6 +584,57 @@ def log_memory_usage(message=""):
 # ============================================================================
 
 
+def construct_baseline_ld_from_snp_gene_weights(
+    snp_gene_weight_adata: ad.AnnData,
+) -> pd.DataFrame:
+    """Construct the ``base`` and ``all_gene`` baseline annotations.
+
+    The SNP-by-gene weight-matrix format stores mapped genes first and one
+    terminal ``Unmapped`` column last. ``base`` is the sum over every column,
+    while ``all_gene`` excludes the terminal column. Validate this layout
+    explicitly so that a malformed or reordered resource cannot silently make
+    the final mapped gene behave as the unmapped annotation.
+    """
+
+    if snp_gene_weight_adata.n_vars < 2:
+        raise ValueError(
+            "SNP-gene weight matrix must contain at least one mapped-gene column "
+            f"followed by {_UNMAPPED_WEIGHT_COLUMN!r}"
+        )
+
+    column_names = snp_gene_weight_adata.var_names.to_numpy(dtype=str)
+    unmapped_positions = np.flatnonzero(column_names == _UNMAPPED_WEIGHT_COLUMN)
+    if unmapped_positions.size != 1:
+        raise ValueError(
+            "SNP-gene weight matrix must contain exactly one column named "
+            f"{_UNMAPPED_WEIGHT_COLUMN!r}; found {unmapped_positions.size}"
+        )
+
+    unmapped_position = int(unmapped_positions[0])
+    expected_position = snp_gene_weight_adata.n_vars - 1
+    if unmapped_position != expected_position:
+        raise ValueError(
+            f"SNP-gene weight matrix column {_UNMAPPED_WEIGHT_COLUMN!r} must be last "
+            f"(position {expected_position}), but it is at position {unmapped_position}"
+        )
+
+    weights = snp_gene_weight_adata.X
+    base = np.asarray(weights.sum(axis=1)).reshape(-1)
+    unmapped = weights[:, unmapped_position]
+    if sp.issparse(unmapped):
+        unmapped = unmapped.toarray()
+    unmapped = np.asarray(unmapped).reshape(-1)
+    all_gene = base - unmapped
+
+    baseline_ld = pd.DataFrame(
+        np.column_stack((base, all_gene)),
+        columns=["base", "all_gene"],
+        index=snp_gene_weight_adata.obs_names,
+    )
+    baseline_ld.index.name = "SNP"
+    return baseline_ld
+
+
 def load_common_resources(
     config: SpatialLDSCConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, ad.AnnData]:
@@ -603,18 +655,7 @@ def load_common_resources(
     snp_gene_weight_adata = ad.read_h5ad(config.snp_gene_weight_adata_path)
 
     # 3. Construct baseline LD from snp_gene_weight_adata
-    X = snp_gene_weight_adata.X
-
-    # Compute base annotations
-    all_gene = X[:, :-1].sum(axis=1)
-    base = all_gene + X[:, -1]
-
-    baseline_ld = pd.DataFrame(
-        np.column_stack((base, all_gene)),
-        columns=["base", "all_gene"],
-        index=snp_gene_weight_adata.obs_names,
-    )
-    baseline_ld.index.name = "SNP"
+    baseline_ld = construct_baseline_ld_from_snp_gene_weights(snp_gene_weight_adata)
     logger.info(f"Constructed baseline LD from SNP-gene weights. Shape: {baseline_ld.shape}")
 
     # 4. Find common SNPs between baseline and weights
