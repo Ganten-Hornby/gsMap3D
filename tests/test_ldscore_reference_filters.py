@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse
 
 from gsMap.config.ldscore_config import LDScoreConfig
 from gsMap.ldscore.batch_construction import construct_batches, resolve_ld_window
-from gsMap.ldscore.compute import compute_batch_weights_sparse, compute_unbiased_l2_batch
+from gsMap.ldscore.compute import (
+    compute_batch_weights_and_ld_scores,
+    compute_batch_weights_sparse,
+    compute_unbiased_l2_batch,
+)
 from gsMap.ldscore.io import biallelic_snp_mask, calculate_variant_statistics
 from gsMap.ldscore.pipeline import exclude_mhc_regression_snps
 
@@ -104,9 +109,7 @@ def test_in_place_unbiased_l2_matches_reference_formula() -> None:
 def test_exact_ld_windows_make_results_batch_size_invariant() -> None:
     rng = np.random.default_rng(42)
     genotypes = rng.normal(size=(101, 20)).astype(np.float32)
-    genotypes = (
-        (genotypes - genotypes.mean(axis=0)) / genotypes.std(axis=0)
-    ).astype(np.float32)
+    genotypes = ((genotypes - genotypes.mean(axis=0)) / genotypes.std(axis=0)).astype(np.float32)
     bim = pd.DataFrame(
         {
             "CHR": 1,
@@ -124,9 +127,7 @@ def test_exact_ld_windows_make_results_batch_size_invariant() -> None:
         for batch in construct_batches(bim, hm3, batch_size, 0.25, "KB"):
             ref_slice = slice(batch.ref_start_idx, batch.ref_end_idx)
             mask = (
-                np.abs(
-                    coordinates[batch.hm3_indices, None] - coordinates[None, ref_slice]
-                )
+                np.abs(coordinates[batch.hm3_indices, None] - coordinates[None, ref_slice])
                 <= max_distance
             )
             results.append(
@@ -147,3 +148,54 @@ def test_exact_ld_windows_make_results_batch_size_invariant() -> None:
     assert np.count_nonzero(one_at_a_time[0, :1]) == 0
     assert np.count_nonzero(one_at_a_time[0, 1:6]) == 5
     assert np.count_nonzero(one_at_a_time[0, 6:]) == 0
+
+
+@pytest.mark.parametrize(
+    ("coordinates", "match"),
+    [
+        ([0.0, 0.0, 0.0], "do not define a genetic map"),
+        ([0.0, np.nan, 1.0], "not finite"),
+        ([0.0, 2.0, 1.0], "not sorted"),
+        ([-0.1, 0.0, 1.0], "negative"),
+    ],
+)
+def test_cm_windows_reject_invalid_maps(coordinates: list[float], match: str) -> None:
+    bim = pd.DataFrame(
+        {
+            "CHR": 1,
+            "SNP": [f"rs{i}" for i in range(len(coordinates))],
+            "CM": coordinates,
+            "BP": np.arange(len(coordinates)) * 100,
+        }
+    )
+    with pytest.raises(ValueError, match=match):
+        resolve_ld_window(bim, ld_wind=1, ld_unit="CM")
+
+
+def test_fused_annotation_and_weight_ld_share_exact_l2_block() -> None:
+    rng = np.random.default_rng(20260902)
+    genotypes = rng.normal(size=(101, 12)).astype(np.float32)
+    genotypes = ((genotypes - genotypes.mean(axis=0)) / genotypes.std(axis=0)).astype(np.float32)
+    target_indices = np.array([2, 6, 9])
+    mapping = scipy.sparse.csr_matrix(
+        rng.integers(0, 2, size=(12, 5), dtype=np.int8).astype(np.float32)
+    )
+    window_mask = np.abs(target_indices[:, None] - np.arange(12)[None, :]) <= 3
+    regression_mask = np.zeros(12, dtype=bool)
+    regression_mask[[1, 2, 6, 9, 10]] = True
+
+    observed_weights, observed_w_ld = compute_batch_weights_and_ld_scores(
+        genotypes[:, target_indices],
+        genotypes,
+        mapping,
+        ld_window_mask=window_mask,
+        ld_score_reference_mask=regression_mask,
+    )
+
+    expected_l2 = compute_unbiased_l2_batch(genotypes[:, target_indices], genotypes)
+    expected_l2 *= window_mask
+    expected_weights = expected_l2 @ mapping
+    expected_w_ld = np.sum(expected_l2[:, regression_mask], axis=1, dtype=np.float64)
+
+    np.testing.assert_allclose(observed_weights, expected_weights, rtol=2e-6, atol=2e-7)
+    np.testing.assert_allclose(observed_w_ld, expected_w_ld, rtol=2e-6, atol=2e-7)

@@ -37,9 +37,7 @@ def compute_unbiased_l2_batch(
     n_individuals = X_hm3.shape[0]
 
     if n_individuals <= LDSC_BIAS_CORRECTION_DF:
-        raise ValueError(
-            f"At least {LDSC_BIAS_CORRECTION_DF + 1} individuals are required"
-        )
+        raise ValueError(f"At least {LDSC_BIAS_CORRECTION_DF + 1} individuals are required")
 
     # Keep one working array throughout. Algebraically,
     #   r² - (1-r²)/(N-2) = r²*(N-1)/(N-2) - 1/(N-2).
@@ -138,3 +136,43 @@ def compute_batch_weights_sparse(
         weights = np.asarray(weights)
 
     return np.asarray(weights, dtype=np.float32)
+
+
+def compute_batch_weights_and_ld_scores(
+    X_hm3: np.ndarray,
+    X_ref_block: np.ndarray,
+    block_mapping_matrix: scipy.sparse.csr_matrix | np.ndarray,
+    ld_window_mask: np.ndarray,
+    ld_score_reference_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Compute annotation weights and optional weight-LD scores from one L2 block.
+
+    The expensive standardized-genotype matrix multiplication is shared.  The
+    annotation result uses every broad-reference column in the exact LD window,
+    while ``ld_score_reference_mask`` can restrict the LD-score sum to a second
+    universe, such as HM3 regression SNPs excluding the MHC.
+    """
+    l2_unbiased = compute_unbiased_l2_batch(X_hm3, X_ref_block)
+    if ld_window_mask.shape != l2_unbiased.shape:
+        raise ValueError("LD-window mask shape does not match the L2 matrix")
+    np.multiply(l2_unbiased, ld_window_mask, out=l2_unbiased)
+
+    if scipy.sparse.issparse(block_mapping_matrix):
+        weights = l2_unbiased @ block_mapping_matrix
+    else:
+        weights = np.matmul(l2_unbiased, block_mapping_matrix)
+    if scipy.sparse.issparse(weights):
+        weights = weights.toarray()
+    elif isinstance(weights, np.matrix):
+        weights = np.asarray(weights)
+
+    ld_scores = None
+    if ld_score_reference_mask is not None:
+        reference_mask = np.asarray(ld_score_reference_mask, dtype=bool)
+        if reference_mask.ndim != 1 or reference_mask.shape[0] != l2_unbiased.shape[1]:
+            raise ValueError("LD-score reference mask does not match the reference block")
+        if not np.any(reference_mask):
+            raise ValueError("LD-score reference mask contains no regression SNPs")
+        ld_scores = np.sum(l2_unbiased[:, reference_mask], axis=1, dtype=np.float64)
+
+    return np.asarray(weights, dtype=np.float32), ld_scores

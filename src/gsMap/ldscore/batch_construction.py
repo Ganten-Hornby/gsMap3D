@@ -51,13 +51,19 @@ def resolve_ld_window(
     if normalized_unit == "KB":
         return bim_df["BP"].to_numpy(), float(ld_wind * 1000)
     if normalized_unit == "CM":
-        coordinates = bim_df["CM"].to_numpy()
-        if np.all(coordinates == 0):
-            logger.warning(
-                "All CM values are 0 for chromosome %s. Fallback to 1MB window (BP).",
-                chromosome,
+        if "CM" not in bim_df.columns:
+            raise ValueError(f"CM coordinates are missing for chromosome {chromosome}")
+        coordinates = pd.to_numeric(bim_df["CM"], errors="coerce").to_numpy(dtype=np.float64)
+        if not np.all(np.isfinite(coordinates)):
+            raise ValueError(f"CM coordinates are not finite for chromosome {chromosome}")
+        if np.any(coordinates < 0):
+            raise ValueError(f"CM coordinates are negative for chromosome {chromosome}")
+        if np.any(coordinates[1:] < coordinates[:-1]):
+            raise ValueError(f"CM coordinates are not sorted for chromosome {chromosome}")
+        if len(coordinates) < 2 or np.all(coordinates == coordinates[0]):
+            raise ValueError(
+                f"CM coordinates do not define a genetic map for chromosome {chromosome}"
             )
-            return bim_df["BP"].to_numpy(), 1_000_000.0
         return coordinates, float(ld_wind)
     raise ValueError(f"Invalid ld_unit: {ld_unit}. Must be 'SNP', 'KB', or 'CM'.")
 
