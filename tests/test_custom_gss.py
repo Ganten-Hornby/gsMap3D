@@ -21,7 +21,7 @@ def synthetic_marker_scores_h5ad(tmp_path_factory, snp_gene_weight_path):
     weight_adata.file.close()
 
     # Use a subset of real gene names
-    n_genes = min(100, len(all_genes))
+    n_genes = min(256, len(all_genes))
     gene_names = all_genes[:n_genes]
     n_spots = 50
 

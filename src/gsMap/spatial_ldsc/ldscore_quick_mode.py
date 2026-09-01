@@ -32,6 +32,50 @@ from .trait_data import prepare_snp_data_for_blocks
 
 logger = logging.getLogger("gsMap.spatial_ldsc.engine")
 
+_MIN_COMMON_GENE_OVERLAP = 200
+_UNMAPPED_WEIGHT_COLUMN = "Unmapped"
+_FEATURE_NAME_EXAMPLE_LIMIT = 5
+
+
+def _align_marker_score_genes(
+    marker_gene_names,
+    weight_gene_names,
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """Align marker-score features to mapped SNP-weight genes.
+
+    Feature matching is intentionally exact and case-sensitive. More than 200
+    common genes are required before spatial LDSC proceeds to block-jackknife
+    estimation; a smaller overlap usually indicates incompatible feature-name
+    conventions rather than a usable biological gene set.
+    """
+
+    marker_gene_index = pd.Index(np.asarray(marker_gene_names, dtype=str))
+    weight_gene_index = pd.Index(np.asarray(weight_gene_names, dtype=str))
+    mapped_weight_gene_index = weight_gene_index[weight_gene_index != _UNMAPPED_WEIGHT_COLUMN]
+
+    common_genes_mask = marker_gene_index.isin(mapped_weight_gene_index)
+    common_genes = marker_gene_index[common_genes_mask].to_numpy(dtype=str)
+    if common_genes.size <= _MIN_COMMON_GENE_OVERLAP:
+        marker_only = marker_gene_index[~common_genes_mask][:_FEATURE_NAME_EXAMPLE_LIMIT].tolist()
+        weight_only = mapped_weight_gene_index[~mapped_weight_gene_index.isin(marker_gene_index)][
+            :_FEATURE_NAME_EXAMPLE_LIMIT
+        ].tolist()
+        raise ValueError(
+            "Insufficient feature-name overlap between the marker-score file and "
+            f"SNP-gene weight matrix: found {common_genes.size} exactly matching genes, "
+            f"but more than {_MIN_COMMON_GENE_OVERLAP} are required for spatial-LDSC "
+            "block-jackknife estimation. Feature matching is exact and case-sensitive; "
+            "check gene-symbol capitalization, identifier type, species conversion, and "
+            "Ensembl version suffixes. "
+            f"Marker-score features={marker_gene_index.size}, mapped weight-matrix "
+            f"features={mapped_weight_gene_index.size}. Example marker-only features: "
+            f"{marker_only or ['<none>']}. Example weight-only features: "
+            f"{weight_only or ['<none>']}."
+        )
+
+    weight_gene_indices = [weight_gene_index.get_loc(gene) for gene in common_genes]
+    return common_genes_mask, common_genes, weight_gene_indices
+
 
 class SpatialLDSCEngine:
     """Bounded spatial-LDSC source, compute, and output engine."""
@@ -101,22 +145,16 @@ class SpatialLDSCEngine:
                 f"Detected Marker scores shape: (n_spots={self.n_spots}, n_genes={self.marker_score_adata.n_vars})"
             )
 
-            # Find common genes and initialize indices
-            gene_names_from_adata = np.array(self.marker_score_adata.var_names)
-
             if self.snp_gene_weight_adata is None:
                 raise ValueError("snp_gene_weight_adata must be provided in weight-matrix mode")
 
-            marker_score_genes_series = pd.Series(gene_names_from_adata)
-            common_genes_mask = marker_score_genes_series.isin(
-                self.snp_gene_weight_adata.var.index
+            # Find common genes and initialize indices. Fail before allocating
+            # trait-specific matrices when the feature namespaces disagree.
+            common_genes_mask, common_genes, self.weight_gene_indices = _align_marker_score_genes(
+                self.marker_score_adata.var_names,
+                self.snp_gene_weight_adata.var_names,
             )
-            common_genes = gene_names_from_adata[common_genes_mask]
-
             self.marker_score_gene_indices = np.where(common_genes_mask)[0]
-            self.weight_gene_indices = [
-                self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes
-            ]
 
             logger.info(f"Found {len(common_genes)} common genes")
 

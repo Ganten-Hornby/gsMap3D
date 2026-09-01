@@ -20,7 +20,7 @@ from gsMap.cli import app
 # ---------------------------------------------------------------------------
 
 
-def _read_gene_names(snp_gene_weight_path, n_genes=100):
+def _read_gene_names(snp_gene_weight_path, n_genes=256):
     """Read up to n_genes gene names from the SNP-gene weight matrix."""
     w = anndata.read_h5ad(snp_gene_weight_path, backed="r")
     names = list(w.var_names[: min(n_genes, w.n_vars)])
