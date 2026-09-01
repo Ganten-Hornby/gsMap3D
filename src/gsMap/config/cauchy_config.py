@@ -81,9 +81,6 @@ def check_cauchy_done(config: CauchyCombinationConfig, trait_name: str) -> bool:
     """
     if not config.annotation_list:
         return False
-    ldsc_input = config.get_ldsc_result_file(trait_name)
-    if not ldsc_input.exists():
-        return False
 
     for annotation in config.annotation_list:
         anno_result = config.get_cauchy_result_file(
@@ -93,10 +90,5 @@ def check_cauchy_done(config: CauchyCombinationConfig, trait_name: str) -> bool:
             trait_name, annotation=annotation, all_samples=False
         )
         if not (anno_result.exists() and sample_result.exists()):
-            return False
-        if min(
-            anno_result.stat().st_mtime_ns,
-            sample_result.stat().st_mtime_ns,
-        ) < ldsc_input.stat().st_mtime_ns:
             return False
     return True

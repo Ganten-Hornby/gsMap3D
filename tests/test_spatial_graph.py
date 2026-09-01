@@ -315,9 +315,7 @@ def test_subsampling_preserves_source_ids_for_full_graph_alignment(tmp_path):
         obs=pd.DataFrame(index=[f"cell-{index}" for index in range(6)]),
         var=pd.DataFrame(index=["g0"]),
     )
-    adata.obsm["spatial"] = np.column_stack(
-        [np.arange(6, dtype=float), np.zeros(6, dtype=float)]
-    )
+    adata.obsm["spatial"] = np.column_stack([np.arange(6, dtype=float), np.zeros(6, dtype=float)])
     source_path = tmp_path / "source.h5ad"
     adata.write_h5ad(source_path)
     params = SimpleNamespace(

@@ -10,10 +10,6 @@ import anndata as ad
 import jax
 
 from gsMap.config import SpatialLDSCConfig
-from gsMap.latent2gene.gene_blocks import (
-    GeneBlockMarkerStore,
-    gene_block_store_is_read_compatible,
-)
 from gsMap.logging_config import logged_stage, stage_logging
 
 from .io import (
@@ -58,7 +54,6 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     marker_score_adata = None
-    marker_score_store = None
     trait_failures: list[tuple[str, Exception]] = []
 
     try:
@@ -81,10 +76,10 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             )
         else:
             # ── Weight-matrix mode ───────────────────────
-            if config.marker_score_format not in ["memmap", "gene_block", "h5ad", "feather"]:
+            if config.marker_score_format not in ["memmap", "h5ad", "feather"]:
                 raise NotImplementedError(
                     f"Marker score format '{config.marker_score_format}' is not supported. "
-                    "Only 'memmap', 'gene_block', 'h5ad', and 'feather' are supported."
+                    "Only 'memmap', 'h5ad', and 'feather' are supported."
                 )
 
             # Load marker scores once (format-agnostic)
@@ -92,24 +87,6 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
 
             if config.marker_score_format == "memmap":
                 marker_score_adata = load_marker_scores_memmap_format(config)
-
-            elif config.marker_score_format == "gene_block":
-                if not gene_block_store_is_read_compatible(
-                    config.marker_score_blocks_manifest_path,
-                    rank_memmap_path=config.rank_memmap_path,
-                    mean_frac_path=config.mean_frac_path,
-                    marker_metadata_path=config.concatenated_latent_adata_path,
-                ):
-                    raise RuntimeError("Gene-block marker scores are stale or incomplete")
-                marker_score_store = GeneBlockMarkerStore(
-                    config.marker_score_blocks_manifest_path
-                )
-                if config.memmap_tmp_dir is not None:
-                    marker_score_store.stage_blocks(config.memmap_tmp_dir)
-                marker_score_adata = ad.read_h5ad(
-                    config.concatenated_latent_adata_path,
-                    backed="r",
-                )
 
             elif config.marker_score_format == "feather":
                 feather_path = Path(config.marker_score_feather_path)
@@ -143,7 +120,6 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                 snp_gene_weight_adata=snp_gene_weight_adata,
                 baseline_ld=baseline_ld,
                 w_ld=w_ld,
-                marker_score_store=marker_score_store,
             )
 
         try:
@@ -215,14 +191,8 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                 ):
                     marker_score_adata.uns["memmap_manager"].close()
                 # If it's backed AnnData, close the file
-                if (
-                    config.marker_score_format in {"h5ad", "gene_block"}
-                    and isinstance(marker_score_adata, ad.AnnData)
-                    and marker_score_adata.isbacked
-                ):
+                if config.marker_score_format == "h5ad" and marker_score_adata.isbacked:
                     marker_score_adata.file.close()
-            if marker_score_store is not None:
-                marker_score_store.close()
 
     except Exception as error:
         logger.error(f"Spatial LDSC execution failed: {error}")

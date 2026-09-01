@@ -307,7 +307,6 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         )
 
     for sample_name, adata in inferred_adatas:
-
         # Calculate module scores and apply QC for each annotation
         if config.high_quality_cell_qc and config.annotation is not None:
             # Calculate module scores for this sample using the same DEGs from training

@@ -33,18 +33,6 @@ from .trait_data import prepare_snp_data_for_blocks
 logger = logging.getLogger("gsMap.spatial_ldsc.engine")
 
 
-def _align_gene_axes(
-    marker_genes: np.ndarray,
-    weight_genes: pd.Index,
-) -> tuple[np.ndarray, list[int]]:
-    """Return aligned marker and weight positions in marker-gene order."""
-    common_mask = pd.Series(marker_genes).isin(weight_genes).to_numpy()
-    common_genes = marker_genes[common_mask]
-    if not len(common_genes):
-        raise ValueError("Marker scores and SNP-gene weights have no genes in common")
-    return np.flatnonzero(common_mask), [weight_genes.get_loc(gene) for gene in common_genes]
-
-
 class SpatialLDSCEngine:
     """Bounded spatial-LDSC source, compute, and output engine."""
 
@@ -57,7 +45,6 @@ class SpatialLDSCEngine:
         baseline_ld: pd.DataFrame,
         w_ld: pd.DataFrame,
         ldscore_adata: ad.AnnData | None = None,
-        marker_score_store=None,
     ):
         """Initialize the spatial-LDSC engine.
 
@@ -85,7 +72,6 @@ class SpatialLDSCEngine:
         self.result_writer = None
         self.chunk_source = None
         self.defer_ldscore_to_compute = False
-        self.marker_score_store = marker_score_store
 
         if ldscore_adata is not None:
             # ── Direct ldscore mode ──────────────────────────────────────────
@@ -101,37 +87,6 @@ class SpatialLDSCEngine:
             logger.info(
                 f"Direct ldscore mode: {self.n_spots} cells, "
                 f"{ldscore_adata.n_obs} SNPs in ldscore h5ad"
-            )
-        elif marker_score_store is not None:
-            # Gene-block mode retains only observation/gene metadata in AnnData;
-            # dense scores are read one persisted gene block at a time.
-            self.mode = "gene_block"
-            self.ldscore_adata = None
-            self.marker_score_adata = marker_score_adata
-            self.snp_gene_weight_adata = snp_gene_weight_adata
-            if marker_score_adata is None:
-                raise ValueError("Marker-score metadata is required in gene-block mode")
-            if marker_score_store.shape != (
-                marker_score_adata.n_obs,
-                marker_score_adata.n_vars,
-            ):
-                raise ValueError(
-                    "Gene-block marker-score shape does not match marker metadata"
-                )
-            self.n_spots = marker_score_store.shape[0]
-            self.spot_names_all = np.asarray(marker_score_adata.obs_names)
-            gene_names_from_adata = np.asarray(marker_score_adata.var_names)
-            marker_score_store.validate_gene_names(gene_names_from_adata)
-            if snp_gene_weight_adata is None:
-                raise ValueError("snp_gene_weight_adata is required in gene-block mode")
-            self.marker_score_gene_indices, self.weight_gene_indices = _align_gene_axes(
-                gene_names_from_adata,
-                snp_gene_weight_adata.var.index,
-            )
-            logger.info(
-                "Gene-block marker scores: %s spots, %s common genes",
-                self.n_spots,
-                len(self.marker_score_gene_indices),
             )
         else:
             # ── Weight-matrix mode ──────────────────────────────────────────
@@ -152,12 +107,18 @@ class SpatialLDSCEngine:
             if self.snp_gene_weight_adata is None:
                 raise ValueError("snp_gene_weight_adata must be provided in weight-matrix mode")
 
-            self.marker_score_gene_indices, self.weight_gene_indices = _align_gene_axes(
-                gene_names_from_adata,
-                self.snp_gene_weight_adata.var.index,
+            marker_score_genes_series = pd.Series(gene_names_from_adata)
+            common_genes_mask = marker_score_genes_series.isin(
+                self.snp_gene_weight_adata.var.index
             )
+            common_genes = gene_names_from_adata[common_genes_mask]
 
-            logger.info(f"Found {len(self.marker_score_gene_indices)} common genes")
+            self.marker_score_gene_indices = np.where(common_genes_mask)[0]
+            self.weight_gene_indices = [
+                self.snp_gene_weight_adata.var.index.get_loc(g) for g in common_genes
+            ]
+
+            logger.info(f"Found {len(common_genes)} common genes")
 
         # Filter by sample if specified
         if self.mode == "direct_ldscore" and self.config.sample_filter:
@@ -284,7 +245,6 @@ class SpatialLDSCEngine:
             marker_score_adata=self.marker_score_adata,
             marker_score_gene_indices=self.marker_score_gene_indices,
             snp_gene_weight_sparse=getattr(self, "snp_gene_weight_sparse", None),
-            marker_score_store=self.marker_score_store,
         )
 
     def _fetch_ldscore_chunk(self, chunk_index: int) -> tuple[np.ndarray, pd.Index, int, int]:

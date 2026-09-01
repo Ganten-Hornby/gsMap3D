@@ -96,9 +96,7 @@ def load_ordered_section_graph_data(
             else sp.csr_matrix(np.asarray(expression))
         )
         coordinate_blocks.append(np.array(coords, dtype=np.float64, copy=True))
-        section_blocks.append(
-            np.full(adata.n_obs, section_ordinal, dtype=np.int32)
-        )
+        section_blocks.append(np.full(adata.n_obs, section_ordinal, dtype=np.int32))
         offsets.append(offsets[-1] + adata.n_obs)
         sample_names.append(str(sample_name))
         sample_paths.append(Path(source_path))
@@ -153,9 +151,8 @@ def iter_section_inference_chunks(
         else:
             ordered_sections = np.asarray(section_order).astype(str)
             observed_sections = np.unique(section_labels)
-            if (
-                ordered_sections.size != observed_sections.size
-                or set(ordered_sections) != set(observed_sections)
+            if ordered_sections.size != observed_sections.size or set(ordered_sections) != set(
+                observed_sections
             ):
                 raise ValueError("section_order must contain every section label exactly once")
         halo_sections = propagation_depth + 2
@@ -931,11 +928,11 @@ class TrainingData:
             source_index = pd.Index(source_adata.obs_names.astype(str))
             if not source_index.is_unique:
                 raise RuntimeError("Source observation names must be unique")
-            source_rows = source_index.get_indexer(
-                batch_adata.obs[SOURCE_OBS_NAME].astype(str)
-            )
+            source_rows = source_index.get_indexer(batch_adata.obs[SOURCE_OBS_NAME].astype(str))
             if np.any(source_rows < 0):
-                raise RuntimeError("Sampled focal observations are absent from their source AnnData")
+                raise RuntimeError(
+                    "Sampled focal observations are absent from their source AnnData"
+                )
         else:
             raise RuntimeError(
                 "Training data is missing source-row provenance required for "
@@ -944,9 +941,7 @@ class TrainingData:
 
         if np.unique(source_rows).size != source_rows.size:
             raise RuntimeError("Sampled training rows contain duplicate source indices")
-        if source_rows.size and (
-            source_rows.min() < 0 or source_rows.max() >= source_adata.n_obs
-        ):
+        if source_rows.size and (source_rows.min() < 0 or source_rows.max() >= source_adata.n_obs):
             raise RuntimeError("Sampled training rows fall outside the source AnnData")
         return source_rows
 
@@ -960,9 +955,7 @@ class TrainingData:
         """Propagate training features across ordered H5AD slice boundaries."""
 
         graph_data = load_ordered_section_graph_data(source_h5ad_dict, hvg, self.params)
-        training_row_for_source = np.full(
-            graph_data.expression.shape[0], -1, dtype=np.int64
-        )
+        training_row_for_source = np.full(graph_data.expression.shape[0], -1, dtype=np.int64)
         sample_names = concatenated_adata.obs["sample_name"].astype(str).to_numpy()
         for section_ordinal, sample_name in enumerate(graph_data.sample_names):
             training_rows = np.flatnonzero(sample_names == sample_name)
@@ -1012,9 +1005,7 @@ class TrainingData:
 
             context = chunk.context_global_indices
             context_sections = np.unique(graph_data.section_labels[context])
-            expression = torch.from_numpy(
-                _dense_float32(graph_data.expression[context])
-            )
+            expression = torch.from_numpy(_dense_float32(graph_data.expression[context]))
             propagated, graph = propagate_spatial_features(
                 expression=expression,
                 coords=graph_data.coords[context],
@@ -1184,9 +1175,7 @@ class TrainingData:
         graph_mode = self.params.graph_mode.lower()
         if graph_mode == "section_aware_3d":
             if not sample_items:
-                raise RuntimeError(
-                    "section_aware_3d requires an ordered H5AD file list"
-                )
+                raise RuntimeError("section_aware_3d requires an ordered H5AD file list")
             expression_array_gcn = self._propagate_ordered_section_files(
                 concatenated_adata=concatenated_adata,
                 hvg=hvg,
@@ -1235,12 +1224,10 @@ class TrainingData:
                     )
                     graph_description = "full-density section graph chunks"
                 else:
-                    batch_expression_gcn, edge_count = (
-                        self._propagate_sampled_rows_on_full_graph(
-                            batch_adata=batch_adata,
-                            hvg=hvg,
-                            source_path=source_path,
-                        )
+                    batch_expression_gcn, edge_count = self._propagate_sampled_rows_on_full_graph(
+                        batch_adata=batch_adata,
+                        hvg=hvg,
+                        source_path=source_path,
                     )
                     graph_description = f"full-density graph with {edge_count} directed edges"
             else:
@@ -1362,9 +1349,7 @@ class InferenceData:
                 else:
                     batch_codes = np.asarray(batch_code, dtype=np.int64)
                     if batch_codes.shape != (expression.size(0),):
-                        raise ValueError(
-                            "Per-row batch codes must align with the expression rows"
-                        )
+                        raise ValueError("Per-row batch codes must align with the expression rows")
                     batch_indices_focal = torch.from_numpy(
                         batch_codes[row_indices[output_start:output_stop]]
                     ).to(self.device)
@@ -1383,12 +1368,8 @@ class InferenceData:
         """Infer one ordered 3D graph across files and yield one output per file."""
 
         if self.params.graph_mode.lower() != "section_aware_3d":
-            raise ValueError(
-                "infer_embedding_sections is only defined for section_aware_3d"
-            )
-        graph_data = load_ordered_section_graph_data(
-            sample_h5ad_dict, self.hvg, self.params
-        )
+            raise ValueError("infer_embedding_sections is only defined for section_aware_3d")
+        graph_data = load_ordered_section_graph_data(sample_h5ad_dict, self.hvg, self.params)
         n_obs = graph_data.expression.shape[0]
         emb_cell = np.empty((n_obs, self.params.embedding_size), dtype=np.float32)
         emb_niche = np.empty_like(emb_cell)
@@ -1409,9 +1390,7 @@ class InferenceData:
         for chunk_number, chunk in enumerate(chunks, start=1):
             context = chunk.context_global_indices
             context_sections = np.unique(graph_data.section_labels[context])
-            expression = torch.from_numpy(
-                _dense_float32(graph_data.expression[context])
-            )
+            expression = torch.from_numpy(_dense_float32(graph_data.expression[context]))
             propagated, graph = propagate_spatial_features(
                 expression=expression,
                 coords=graph_data.coords[context],

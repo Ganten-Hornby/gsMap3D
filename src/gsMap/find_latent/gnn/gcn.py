@@ -400,9 +400,8 @@ def build_section_aware_3d_graph(
     else:
         ordered_sections = np.asarray(section_order).astype(str)
         observed_sections = np.unique(canonical_sections)
-        if (
-            ordered_sections.size != observed_sections.size
-            or set(ordered_sections) != set(observed_sections)
+        if ordered_sections.size != observed_sections.size or set(ordered_sections) != set(
+            observed_sections
         ):
             raise ValueError("section_order must contain every section label exactly once")
 

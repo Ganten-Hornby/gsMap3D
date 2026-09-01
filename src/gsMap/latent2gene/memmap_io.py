@@ -3,7 +3,6 @@ Memory-mapped I/O utilities for efficient large-scale data handling
 Replaces Zarr-backed storage with NumPy memory maps for better performance
 """
 
-import errno
 import json
 import logging
 import mmap
@@ -127,79 +126,51 @@ def _should_use_tmp_storage(
 
 
 def _prepare_memmap_data_file(data_path: Path, file_bytes: int) -> dict[str, object]:
-    """Create and fully allocate a backing file, with Lustre striping when available."""
+    """Create a large Lustre file with automatic striping, falling back portably."""
     data_path.unlink(missing_ok=True)
-    data_path.parent.mkdir(parents=True, exist_ok=True)
     filesystem_type = _filesystem_type(data_path)
     storage_layout: dict[str, object] = {
         "filesystem_type": filesystem_type or "unknown",
         "automatic_striping": False,
     }
-    if filesystem_type == "lustre":
-        lfs = shutil.which("lfs")
-        if lfs is None:
-            logger.warning(
-                "Lustre filesystem detected but lfs is unavailable; using default striping"
-            )
-        else:
-            stripe_count = _automatic_lustre_stripe_count(file_bytes)
-            command = [
-                lfs,
-                "setstripe",
-                "-c",
-                str(stripe_count),
-                "-S",
-                str(_LUSTRE_STRIPE_SIZE_BYTES),
-                str(data_path),
-            ]
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
-            if result.returncode != 0:
-                data_path.unlink(missing_ok=True)
-                detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
-                logger.warning(f"Could not configure Lustre striping; using defaults: {detail}")
-            else:
-                storage_layout.update(
-                    {
-                        "automatic_striping": True,
-                        "stripe_count": stripe_count,
-                        "stripe_size_bytes": _LUSTRE_STRIPE_SIZE_BYTES,
-                    }
-                )
+    if filesystem_type != "lustre":
+        return storage_layout
 
-    try:
-        mode = "r+b" if data_path.exists() else "w+b"
-        with data_path.open(mode) as handle:
-            try:
-                os.posix_fallocate(handle.fileno(), 0, file_bytes)
-            except AttributeError:
-                logger.warning(
-                    "os.posix_fallocate is unavailable; creating a sparse memmap backing file"
-                )
-                handle.truncate(file_bytes)
-            except OSError as error:
-                unsupported = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}
-                if error.errno not in unsupported:
-                    raise
-                logger.warning(
-                    "Filesystem does not support posix_fallocate; creating a sparse "
-                    "memmap backing file: %s",
-                    error,
-                )
-                handle.truncate(file_bytes)
-        if data_path.stat().st_size != file_bytes:
-            raise OSError(
-                f"Could not allocate {file_bytes} bytes for {data_path}; "
-                f"backing file size is {data_path.stat().st_size}"
-            )
-    except BaseException:
+    lfs = shutil.which("lfs")
+    if lfs is None:
+        logger.warning("Lustre filesystem detected but lfs is unavailable; using default striping")
+        return storage_layout
+
+    stripe_count = _automatic_lustre_stripe_count(file_bytes)
+    command = [
+        lfs,
+        "setstripe",
+        "-c",
+        str(stripe_count),
+        "-S",
+        str(_LUSTRE_STRIPE_SIZE_BYTES),
+        str(data_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
         data_path.unlink(missing_ok=True)
-        raise
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        logger.warning(f"Could not configure Lustre striping; using defaults: {detail}")
+        return storage_layout
 
-    if storage_layout["automatic_striping"]:
-        logger.info(
-            f"Created Lustre memmap with {storage_layout['stripe_count']} stripes of "
-            f"{_LUSTRE_STRIPE_SIZE_BYTES // 1024**2} MiB: {data_path}"
-        )
+    with data_path.open("r+b") as handle:
+        handle.truncate(file_bytes)
+    storage_layout.update(
+        {
+            "automatic_striping": True,
+            "stripe_count": stripe_count,
+            "stripe_size_bytes": _LUSTRE_STRIPE_SIZE_BYTES,
+        }
+    )
+    logger.info(
+        f"Created Lustre memmap with {stripe_count} stripes of "
+        f"{_LUSTRE_STRIPE_SIZE_BYTES // 1024**2} MiB: {data_path}"
+    )
     return storage_layout
 
 
@@ -450,10 +421,11 @@ class MemMapDense:
 
         file_bytes = int(np.prod(self.shape, dtype=np.int64)) * np.dtype(self.dtype).itemsize
         storage_layout = _prepare_memmap_data_file(self.data_path, file_bytes)
+        memmap_mode = "r+" if storage_layout["automatic_striping"] else "w+"
         self.memmap = np.memmap(
             self.data_path,
             dtype=self.dtype,
-            mode="r+",
+            mode=memmap_mode,
             shape=self.shape,
         )
 

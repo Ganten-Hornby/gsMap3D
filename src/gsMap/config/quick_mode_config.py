@@ -57,14 +57,14 @@ class QuickModeConfig(
         self._init_sumstats()
         self._init_annotation_list()
 
-        if self.start_step == "find_latent":
+        if self.is_both_latent_and_gene_running:
+            self.high_quality_neighbor_filter = self.high_quality_cell_qc
+
+            # Use dual embeddings if both steps are running
             if self.latent_representation_niche is None:
                 self.latent_representation_niche = "emb_niche"
             if self.latent_representation_cell is None:
                 self.latent_representation_cell = "emb_cell"
-
-        if self.is_both_latent_and_gene_running:
-            self.high_quality_neighbor_filter = self.high_quality_cell_qc
 
         # For scRNA, clear spatial_key and niche key so downstream steps (e.g. report)
         # skip spatial-coordinate-specific logic
@@ -137,30 +137,7 @@ def check_report_done(config: QuickModeConfig, verbose: bool = False) -> bool:
         if len(missing_files) > 10:
             logger.info(f"  ... and {len(missing_files) - 10} more")
 
-    if missing_files:
-        return False
-
-    report_sentinel = config.web_report_dir / "report_meta.json"
-    cauchy_outputs = [
-        config.get_cauchy_result_file(
-            trait,
-            annotation=annotation,
-            all_samples=all_samples,
-        )
-        for trait in config.trait_name_list
-        for annotation in config.annotation_list
-        for all_samples in (True, False)
-    ]
-    if cauchy_outputs and not all(path.exists() for path in cauchy_outputs):
-        return False
-    if cauchy_outputs:
-        newest_cauchy = max(path.stat().st_mtime_ns for path in cauchy_outputs)
-        if report_sentinel.stat().st_mtime_ns < newest_cauchy:
-            if verbose:
-                logger.info("Report predates Cauchy results and must be regenerated")
-            return False
-
-    return _report_visualization_config_matches(config, verbose)
+    return len(missing_files) == 0 and _report_visualization_config_matches(config, verbose)
 
 
 def _report_visualization_config_matches(config: QuickModeConfig, verbose: bool = False) -> bool:

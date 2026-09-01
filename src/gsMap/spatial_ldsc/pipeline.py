@@ -73,11 +73,11 @@ class SequentialIOThroughput:
 class LDScoreStream:
     """Bounded source pipeline for LD-score regression batches.
 
-    Marker memmaps and gene-block stores are consumed as large sequential
-    windows by one source thread. Small regression batches are derived from the
-    in-RAM window by a transform pool. Other input formats use one serial source
-    thread; the old design in which many threads independently issued tiny
-    storage reads is intentionally not retained.
+    Marker memmaps are consumed as large sequential windows by one source
+    thread. Small regression batches are derived from the in-RAM window by a
+    transform pool. Other input formats use one serial source thread; the old
+    design in which many threads independently issued tiny storage reads is
+    intentionally not retained.
     """
 
     def __init__(
@@ -153,7 +153,8 @@ class LDScoreStream:
             )
             source_worker.start()
             self.workers.append(source_worker)
-            row_mib = self.processor.chunk_source.marker_row_bytes() / 1024**2
+            marker_matrix = self.processor.chunk_source.marker_score_adata.X
+            row_mib = marker_matrix.shape[1] * marker_matrix.dtype.itemsize / 1024**2
             logger.info(
                 f"Started sequential marker reader with {self.window_chunks} chunks/window "
                 f"(~{self.window_chunks * self.processor.chunk_size * row_mib:.0f} MiB), "
@@ -482,10 +483,7 @@ class LDScoreComputePool:
         self.ldscore_backend = None
         self.ldscore_backend_lock = threading.Lock()
 
-        if (
-            self.processor.mode not in {"weight_matrix", "gene_block"}
-            or jax.default_backend() != "gpu"
-        ):
+        if self.processor.mode != "weight_matrix" or jax.default_backend() != "gpu":
             return
 
         sparse_weight = self.processor.snp_gene_weight_sparse

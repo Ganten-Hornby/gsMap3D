@@ -189,9 +189,7 @@ def test_section_aware_3d_inference_uses_cross_file_graph_context(tmp_path):
     combined_expression = torch.from_numpy(
         np.vstack((first_adata.X.toarray(), second_adata.X.toarray()))
     )
-    combined_coords = np.vstack(
-        (first_adata.obsm["spatial"], second_adata.obsm["spatial"])
-    )
+    combined_coords = np.vstack((first_adata.obsm["spatial"], second_adata.obsm["spatial"]))
     expected, _ = propagate_spatial_features(
         combined_expression,
         combined_coords,

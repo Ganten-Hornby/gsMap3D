@@ -1,12 +1,12 @@
 """Cell chunk sources for spatial LDSC."""
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-
-from gsMap.latent2gene.gene_blocks import accumulate_annotated_ldscore_blocks
 
 
 @dataclass(slots=True)
@@ -34,7 +34,6 @@ class SpatialLDChunkSource:
         marker_score_adata=None,
         marker_score_gene_indices=None,
         snp_gene_weight_sparse=None,
-        marker_score_store=None,
     ):
         self.mode = mode
         self.chunk_starts = chunk_starts
@@ -47,7 +46,6 @@ class SpatialLDChunkSource:
         self.marker_score_adata = marker_score_adata
         self.marker_score_gene_indices = marker_score_gene_indices
         self.snp_gene_weight_sparse = snp_gene_weight_sparse
-        self.marker_score_store = marker_score_store
         self._marker_read_fd: int | None = None
 
     def _chunk_selection(
@@ -85,9 +83,7 @@ class SpatialLDChunkSource:
                 row_selector.start,
                 row_selector.stop,
             )
-        elif self.mode == "gene_block":
-            ldscore_chunk = self._fetch_gene_block_ldscore_chunk(row_selector)
-        elif self.mode == "weight_matrix":
+        else:
             marker_score_chunk = self._fetch_marker_score_chunk(row_selector)
             if defer_ldscore_to_compute:
                 return (
@@ -98,8 +94,6 @@ class SpatialLDChunkSource:
                     marker_score_chunk,
                 )
             ldscore_chunk = self.compute_ldscore_from_marker_chunk(marker_score_chunk)
-        else:
-            raise ValueError(f"Unsupported spatial LD chunk mode: {self.mode}")
 
         return (
             ldscore_chunk.astype(np.float32, copy=False),
@@ -111,50 +105,34 @@ class SpatialLDChunkSource:
     def supports_sequential_marker_windows(self) -> bool:
         """Return whether marker rows can be read as large contiguous windows.
 
-        Standard row-major memmaps and complete gene-block stores support the
-        optimized path. Backed H5AD and Feather objects retain their existing
-        readers, while a non-contiguous sample filter retains exact fancy-index
+        The optimized path is intentionally limited to the row-major NumPy
+        memmap format. Backed H5AD and Feather objects retain their existing
+        readers, and a non-contiguous sample filter retains exact fancy-index
         semantics.
         """
-        if self.spot_indices.size == 0:
+        if self.mode != "weight_matrix" or self.marker_score_adata is None:
             return False
-        if self.mode == "gene_block":
-            if self.marker_score_store is None:
-                return False
-        elif self.mode == "weight_matrix" and self.marker_score_adata is not None:
-            marker_matrix = self.marker_score_adata.X
-            if (
-                not isinstance(marker_matrix, np.memmap)
-                or not marker_matrix.flags.c_contiguous
-            ):
-                return False
-        else:
+
+        marker_matrix = self.marker_score_adata.X
+        if (
+            not isinstance(marker_matrix, np.memmap)
+            or not marker_matrix.flags.c_contiguous
+            or self.spot_indices.size == 0
+        ):
             return False
 
         # spot_indices originates from arange/where and is therefore sorted and
         # unique. Equal span and size is sufficient to prove contiguity without
         # allocating another array for datasets containing millions of cells.
-        return (
-            int(self.spot_indices[-1]) - int(self.spot_indices[0]) + 1
-            == self.spot_indices.size
-        )
-
-    def marker_row_bytes(self) -> int:
-        """Return persisted bytes per complete marker-score row."""
-        if self.mode == "gene_block":
-            return (
-                int(self.marker_score_store.shape[1])
-                * self.marker_score_store.dtype.itemsize
-            )
-        marker_matrix = self.marker_score_adata.X
-        return int(marker_matrix.shape[1]) * marker_matrix.dtype.itemsize
+        return int(self.spot_indices[-1]) - int(self.spot_indices[0]) + 1 == self.spot_indices.size
 
     def recommended_marker_window_chunks(self, target_bytes: int = 32 * 1024**2) -> int:
         """Choose a bounded I/O window near ``target_bytes`` automatically."""
         if not self.supports_sequential_marker_windows():
             return 1
 
-        row_bytes = self.marker_row_bytes()
+        marker_matrix = self.marker_score_adata.X
+        row_bytes = int(marker_matrix.shape[1]) * marker_matrix.dtype.itemsize
         rows_per_window = max(self.chunk_size, target_bytes // max(1, row_bytes))
         # The upper bound keeps queue bookkeeping bounded for unusually narrow
         # matrices while the byte target controls memory for normal datasets.
@@ -164,9 +142,6 @@ class SpatialLDChunkSource:
         """Open the descriptor used for large positional marker reads."""
         if not self.supports_sequential_marker_windows():
             return False
-
-        if self.mode == "gene_block":
-            return self.marker_score_store.open_sequential_access()
 
         marker_matrix = self.marker_score_adata.X
         try:
@@ -188,14 +163,9 @@ class SpatialLDChunkSource:
         if self._marker_read_fd is not None:
             os.close(self._marker_read_fd)
             self._marker_read_fd = None
-        if self.mode == "gene_block" and self.marker_score_store is not None:
-            self.marker_score_store.close_sequential_access()
 
     def _read_contiguous_marker_rows(self, source_start: int, source_end: int) -> np.ndarray:
         """Read rows directly into RAM, bypassing synchronous mmap page faults."""
-        if self.mode == "gene_block":
-            return self.marker_score_store.read_spot_window(source_start, source_end)
-
         marker_matrix = self.marker_score_adata.X
         values = np.empty(
             (source_end - source_start, marker_matrix.shape[1]),
@@ -318,35 +288,6 @@ class SpatialLDChunkSource:
                 :, self.marker_score_gene_indices
             ]
         return marker_score_chunk.T.astype(np.float32)
-
-    def _fetch_gene_block_ldscore_chunk(
-        self,
-        row_selector: slice | np.ndarray,
-    ) -> np.ndarray:
-        """Accumulate annotated LD scores without materializing all marker genes."""
-        if (
-            self.marker_score_store is None
-            or self.marker_score_gene_indices is None
-            or self.snp_gene_weight_sparse is None
-        ):
-            raise RuntimeError("Gene-block chunk source is not initialized")
-
-        if isinstance(row_selector, slice):
-            marker_blocks = self.marker_score_store.iter_spot_marker_blocks(
-                int(row_selector.start),
-                int(row_selector.stop),
-                self.marker_score_gene_indices,
-            )
-            return accumulate_annotated_ldscore_blocks(
-                self.snp_gene_weight_sparse,
-                marker_blocks,
-            )
-
-        marker_scores = self.marker_score_store.read_subset(
-            row_selector,
-            self.marker_score_gene_indices,
-        )
-        return self.compute_ldscore_from_marker_chunk(marker_scores.T)
 
     def compute_ldscore_from_marker_chunk(self, marker_score_chunk: np.ndarray) -> np.ndarray:
         """Compute SNP x spot LD scores from a gene x spot marker-score chunk on CPU."""

@@ -327,13 +327,8 @@ class FindLatentRepresentationsConfig(
             n_input_slices = len(self.sample_h5ad_dict)
             for sample_name, h5ad_path in self.sample_h5ad_dict.items():
                 spatial_shape = get_h5ad_obsm_shape(h5ad_path, self.spatial_key)
-                allowed_coordinate_widths = (
-                    {2, 3} if self.graph_mode == "sectionwise_2d" else {3}
-                )
-                if (
-                    len(spatial_shape) != 2
-                    or spatial_shape[1] not in allowed_coordinate_widths
-                ):
+                allowed_coordinate_widths = {2, 3} if self.graph_mode == "sectionwise_2d" else {3}
+                if len(spatial_shape) != 2 or spatial_shape[1] not in allowed_coordinate_widths:
                     raise ValueError(
                         f"{self.graph_mode} requires "
                         f"{'an XY or XYZ' if self.graph_mode == 'sectionwise_2d' else 'an XYZ'} "

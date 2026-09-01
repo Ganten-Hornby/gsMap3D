@@ -1,5 +1,7 @@
 """Project-local logging for gsMap command and pipeline runs."""
 
+from __future__ import annotations
+
 import atexit
 import copy
 import json
@@ -15,7 +17,6 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -23,11 +24,16 @@ from enum import Enum
 from functools import wraps
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 import psutil
 from rich.console import Console
 from rich.logging import RichHandler
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from typing import Any
+
 
 LOGGER_NAME = "gsMap"
 FILE_LOG_MAX_BYTES = 256 * 1024**2

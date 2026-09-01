@@ -17,7 +17,6 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from importlib.metadata import version as package_version
 from pathlib import Path
 
 import anndata as ad
@@ -30,7 +29,6 @@ import scipy.sparse as sp
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.find_latent.st_process import setup_data_layer
-from gsMap.latent2gene.gene_blocks import GeneBlockMarkerStore
 from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
@@ -117,41 +115,6 @@ class _GssPccSample:
     annotations: pd.Series
 
 
-class _GeneBlockReportSource:
-    """Provide bounded marker-score subsets from an existing gene-block store."""
-
-    def __init__(self, report_config: QuickModeConfig):
-        self.store = GeneBlockMarkerStore(report_config.marker_score_blocks_manifest_path)
-        self.staging_dir = getattr(report_config, "memmap_tmp_dir", None)
-        metadata = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
-        try:
-            self.obs_names = metadata.obs_names.copy()
-            self.var_names = metadata.var_names.copy()
-        finally:
-            metadata.file.close()
-        if self.store.shape != (len(self.obs_names), len(self.var_names)):
-            raise ValueError(
-                "Gene-block marker-score shape does not match concatenated latent metadata"
-            )
-        self.store.validate_gene_names(self.var_names)
-
-    def read_subset(self, spot_names, gene_names) -> np.ndarray:
-        spot_indices = self.obs_names.get_indexer(spot_names)
-        gene_indices = self.var_names.get_indexer(gene_names)
-        if np.any(spot_indices < 0):
-            raise KeyError("Report requested spots absent from the gene-block marker store")
-        if np.any(gene_indices < 0):
-            raise KeyError("Report requested genes absent from the gene-block marker store")
-        return self.store.read_subset(
-            spot_indices,
-            gene_indices,
-            staging_dir=self.staging_dir,
-        )
-
-    def close(self) -> None:
-        self.store.close()
-
-
 class ReportDataManager:
     def __init__(self, report_config: QuickModeConfig):
         self.report_config = report_config
@@ -192,9 +155,7 @@ class ReportDataManager:
         """Release resources and close file handles."""
         if self.gss_adata is not None:
             logger.info("Closing GSS AnnData and memory maps...")
-            if isinstance(self.gss_adata, _GeneBlockReportSource):
-                self.gss_adata.close()
-            elif "memmap_manager" in self.gss_adata.uns:
+            if "memmap_manager" in self.gss_adata.uns:
                 self.gss_adata.uns["memmap_manager"].close()
             self.gss_adata = None
             gc.collect()
@@ -716,10 +677,7 @@ class ReportDataManager:
                 )
 
         self.umap_info = _prepare_umap_data(
-            self.report_config,
-            self.metadata,
-            self.report_data_dir,
-            self.web_report_dir,
+            self.report_config, self.metadata, self.report_data_dir
         )
         _export_umap_js(self.report_data_dir, self.js_data_dir, {"umap_info": self.umap_info})
 
@@ -978,8 +936,8 @@ def _calculate_umap_from_embeddings(
         )
 
     logger.info(f"Calculating UMAP for {embedding_key} with {adata.n_obs} spots using scanpy...")
-    sc.pp.neighbors(adata, use_rep=embedding_key, n_neighbors=15, random_state=0)
-    sc.tl.umap(adata, min_dist=0.5, spread=1.0, random_state=0)
+    sc.pp.neighbors(adata, use_rep=embedding_key)
+    sc.tl.umap(adata)
 
     coordinates = np.asarray(adata.obsm["X_umap"]).copy()
     if not np.isfinite(coordinates).all():
@@ -989,76 +947,8 @@ def _calculate_umap_from_embeddings(
     return coordinates
 
 
-def _render_scanpy_umap_panels(
-    adata: ad.AnnData,
-    coordinates: dict[str, np.ndarray],
-    traits: list[str],
-    annotations: list[str],
-    output_dir: Path,
-) -> tuple[dict, dict]:
-    """Render every UMAP panel with Scanpy and audit the stored PNGs."""
-    import matplotlib.pyplot as plt
-    from PIL import Image
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    panel_paths: dict[str, dict[str, dict[str, str]]] = {}
-    image_audit = {}
-
-    for embedding_name, embedding_coordinates in coordinates.items():
-        adata.obsm["X_umap"] = embedding_coordinates
-        embedding_panels = {"trait": {}, "annotation": {}}
-
-        for panel_kind, columns in (("trait", traits), ("annotation", annotations)):
-            for column in columns:
-                if column not in adata.obs.columns:
-                    continue
-                safe_column = "".join(c if c.isalnum() else "_" for c in column)
-                filename = f"umap_{embedding_name}_{panel_kind}_{safe_column}.png"
-                output_path = output_dir / filename
-                fig = sc.pl.umap(
-                    adata,
-                    color=column,
-                    show=False,
-                    return_fig=True,
-                    frameon=False,
-                    title=f"{embedding_name.title()} embedding — {column}",
-                )
-                fig.savefig(output_path, dpi=320, bbox_inches="tight")
-                plt.close(fig)
-
-                with Image.open(output_path) as image:
-                    stored_dpi = image.info.get("dpi", (0.0, 0.0))
-                    image_audit[filename] = {
-                        "observations": adata.n_obs,
-                        "pixel_width": image.width,
-                        "pixel_height": image.height,
-                        "stored_dpi_x": float(stored_dpi[0]),
-                        "stored_dpi_y": float(stored_dpi[1]),
-                    }
-                embedding_panels[panel_kind][column] = f"umap_scanpy/{filename}"
-
-        panel_paths[embedding_name] = embedding_panels
-
-    audit = {
-        "scanpy_version": package_version("scanpy"),
-        "observations": adata.n_obs,
-        "render_dpi": 320,
-        "coordinate_settings": {
-            "neighbors": {"n_neighbors": 15, "random_state": 0},
-            "umap": {"min_dist": 0.5, "spread": 1.0, "random_state": 0},
-        },
-        "images": image_audit,
-    }
-    with (output_dir / "umap_audit.json").open("w", encoding="utf-8") as handle:
-        json.dump(audit, handle, indent=2)
-    return panel_paths, audit
-
-
 def _prepare_umap_data(
-    report_config: QuickModeConfig,
-    metadata: pd.DataFrame,
-    report_dir: Path,
-    web_report_dir: Path,
+    report_config: QuickModeConfig, metadata: pd.DataFrame, report_dir: Path
 ) -> dict | None:
     """
     Prepare UMAP data from cell and niche embeddings.
@@ -1086,12 +976,12 @@ def _prepare_umap_data(
 
     has_niche = niche_emb_key is not None and niche_emb_key in adata.obsm
 
-    # Retain all observations unless an explicit report limit was supplied.
+    # Stratified subsampling
     n_subsample = report_config.downsampling_n_spots_umap
     spot_names = adata.obs_names.values
     sample_names = adata.obs["sample_name"]
 
-    if n_subsample is not None and len(spot_names) > n_subsample:
+    if len(spot_names) > n_subsample:
         logger.info(f"Stratified subsampling from {len(spot_names)} to {n_subsample} spots...")
         selected_spots = _stratified_subsample(spot_names, sample_names, n_subsample)
         adata_sub = adata[selected_spots].copy()
@@ -1102,7 +992,6 @@ def _prepare_umap_data(
     logger.info(f"Using {len(selected_spots)} spots for UMAP calculation")
 
     # Calculate UMAPs
-    cell_precomputed = "X_umap" in adata_sub.obsm
     umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key, umap_key="X_umap")
 
     # Estimate point size for UMAP cell
@@ -1111,14 +1000,10 @@ def _prepare_umap_data(
     umap_niche = None
     point_size_niche = None
     if has_niche:
-        niche_precomputed = "X_umap_niche" in adata_sub.obsm
         umap_niche = _calculate_umap_from_embeddings(
             adata_sub, niche_emb_key, umap_key="X_umap_niche"
         )
-        adata_sub.obsm["X_umap_niche"] = np.asarray(umap_niche).copy()
         _, point_size_niche = estimate_plotly_point_size(umap_niche, DEFAULT_PIXEL_WIDTH=600)
-    else:
-        niche_precomputed = False
 
     # Prepare metadata for the subsampled spots
     umap_metadata = pd.DataFrame(
@@ -1158,22 +1043,6 @@ def _prepare_umap_data(
                 )
             logger.info(f"Added trait {trait} to UMAP data with 1 decimal precision")
 
-    umap_metadata_indexed = umap_metadata.set_index("spot")
-    for column in [*available_traits, *report_config.annotation_list]:
-        if column in umap_metadata_indexed.columns:
-            adata_sub.obs[column] = umap_metadata_indexed.reindex(adata_sub.obs_names)[column].values
-
-    coordinate_sets = {"cell": np.asarray(umap_cell)}
-    if umap_niche is not None:
-        coordinate_sets["niche"] = np.asarray(umap_niche)
-    panel_paths, scanpy_audit = _render_scanpy_umap_panels(
-        adata_sub,
-        coordinate_sets,
-        available_traits,
-        [anno for anno in report_config.annotation_list if anno in adata_sub.obs.columns],
-        web_report_dir / "umap_scanpy",
-    )
-
     # Save to CSV
     _atomic_to_csv(umap_metadata, report_dir / "umap_data.csv", index=False)
     logger.info(f"UMAP data saved with {len(umap_metadata)} points")
@@ -1187,13 +1056,6 @@ def _prepare_umap_data(
         "point_size_cell": float(point_size_cell),
         "point_size_niche": float(point_size_niche) if point_size_niche is not None else None,
         "default_opacity": 0.7,
-        "render_mode": "scanpy_static",
-        "static_panels": panel_paths,
-        "scanpy_audit": scanpy_audit,
-        "coordinate_sources": {
-            "cell": "precomputed" if cell_precomputed else "computed",
-            "niche": "precomputed" if niche_precomputed else "computed",
-        },
     }
 
 
@@ -1512,17 +1374,14 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
 def _load_gss_for_report_plots(
     report_config: QuickModeConfig,
     ldsc_results: pd.DataFrame,
-) -> tuple[np.ndarray, ad.AnnData | _GeneBlockReportSource]:
+) -> tuple[np.ndarray, ad.AnnData]:
     """Load the full marker wrapper only when diagnostic plots require it."""
 
     logger.info("Loading the full GSS wrapper for diagnostic plots...")
-    if report_config.marker_score_format == "gene_block":
-        gss_adata = _GeneBlockReportSource(report_config)
-    else:
-        gss_adata = load_marker_scores_memmap_format(
-            report_config,
-            populate_cache=False,
-        )
+    gss_adata = load_marker_scores_memmap_format(
+        report_config,
+        populate_cache=False,
+    )
     common_spots = np.intersect1d(gss_adata.obs_names, ldsc_results.index)
     if len(common_spots) == 0:
         raise ValueError("No common spots found between GSS and LDSC results.")
@@ -1627,31 +1486,22 @@ def _load_gss_pcc_sample(
     """Load exactly one deterministic marker-score sample for report PCC."""
 
     started = time.perf_counter()
-    gene_block_mode = getattr(report_config, "marker_score_format", "memmap") == "gene_block"
     marker_path = Path(report_config.marker_scores_memmap_path)
-    marker_metadata = None
-    marker_store = None
-    if gene_block_mode:
-        marker_store = GeneBlockMarkerStore(report_config.marker_score_blocks_manifest_path)
-    else:
-        is_complete, marker_metadata = MemMapDense.check_complete(marker_path)
-        if not is_complete or marker_metadata is None:
-            raise ValueError(
-                f"Marker score at {marker_path} is incomplete or corrupted. Please recompute."
-            )
+    is_complete, marker_metadata = MemMapDense.check_complete(marker_path)
+    if not is_complete or marker_metadata is None:
+        raise ValueError(
+            f"Marker score at {marker_path} is incomplete or corrupted. Please recompute."
+        )
 
     source_adata = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
     row_order = None
     try:
         shape = (source_adata.n_obs, source_adata.n_vars)
-        marker_shape = marker_store.shape if marker_store is not None else marker_metadata["shape"]
-        if tuple(marker_shape) != shape:
+        if tuple(marker_metadata["shape"]) != shape:
             raise ValueError(
-                f"Marker score shape {tuple(marker_shape)} does not match "
+                f"Marker score shape {tuple(marker_metadata['shape'])} does not match "
                 f"AnnData shape {shape}"
             )
-        if marker_store is not None:
-            marker_store.validate_gene_names(source_adata.var_names)
 
         common_spots = np.intersect1d(source_adata.obs_names, ldsc_results.index)
         if len(common_spots) == 0:
@@ -1691,12 +1541,11 @@ def _load_gss_pcc_sample(
         if np.any(original_rows < 0):
             raise RuntimeError("A sampled report spot is absent from the source AnnData.")
 
-        if marker_store is None:
-            row_order = open_marker_obs_indices(
-                marker_path,
-                marker_metadata,
-                expected_obs=source_adata.n_obs,
-            )
+        row_order = open_marker_obs_indices(
+            marker_path,
+            marker_metadata,
+            expected_obs=source_adata.n_obs,
+        )
         if row_order is None:
             marker_rows = original_rows
         else:
@@ -1715,36 +1564,26 @@ def _load_gss_pcc_sample(
         if source_adata.isbacked:
             source_adata.file.close()
 
-    if marker_store is not None:
-        try:
-            marker_scores = marker_store.read_subset(
-                marker_rows,
-                gene_positions,
-                staging_dir=getattr(report_config, "memmap_tmp_dir", None),
-            )
-        finally:
-            marker_store.close()
-    else:
-        marker_lease = acquire_marker_scores_memmap(
-            report_config,
-            marker_metadata,
-            populate_cache=False,
+    marker_lease = acquire_marker_scores_memmap(
+        report_config,
+        marker_metadata,
+        populate_cache=False,
+    )
+    with marker_lease:
+        data_path = marker_lease.path.with_suffix(".dat")
+        n_workers = _report_worker_count(report_config, ceiling=32)
+        logger.info(
+            f"Reading the report marker sample with {n_workers} I/O workers from {data_path}; "
+            "the complete marker matrix will not be staged solely for PCC."
         )
-        with marker_lease:
-            data_path = marker_lease.path.with_suffix(".dat")
-            n_workers = _report_worker_count(report_config, ceiling=32)
-            logger.info(
-                f"Reading the report marker sample with {n_workers} I/O workers from {data_path}; "
-                "the complete marker matrix will not be staged solely for PCC."
-            )
-            marker_scores = _read_marker_score_rows(
-                data_path=data_path,
-                shape=shape,
-                dtype=np.dtype(marker_metadata["dtype"]),
-                marker_rows=marker_rows,
-                gene_positions=gene_positions,
-                n_workers=n_workers,
-            )
+        marker_scores = _read_marker_score_rows(
+            data_path=data_path,
+            shape=shape,
+            dtype=np.dtype(marker_metadata["dtype"]),
+            marker_rows=marker_rows,
+            gene_positions=gene_positions,
+            n_workers=n_workers,
+        )
     logger.info(f"Prepared the PCC marker sample in {time.perf_counter() - started:.2f}s")
     return _GssPccSample(
         common_spots=common_spots,
@@ -2157,7 +1996,7 @@ def _render_gene_diagnostic_plots_refactored(
     report_config: QuickModeConfig,
     metadata: pd.DataFrame,
     common_spots: np.ndarray,
-    gss_adata: ad.AnnData | _GeneBlockReportSource | None,
+    gss_adata: ad.AnnData | None,
     n_rows: int,
     n_cols: int,
     web_report_dir: Path,
@@ -2315,16 +2154,12 @@ def _render_gene_diagnostic_plots_refactored(
                 return
 
             adata_sample_exp = adata_rep[sample_spots, available_genes].copy()
-            if isinstance(gss_adata, _GeneBlockReportSource):
-                gss_matrix = gss_adata.read_subset(sample_spots, available_genes)
-                adata_sample_gss = None
-            else:
-                adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
-                gss_matrix = adata_sample_gss.X
+            adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
             del adata_rep
             gc.collect()
 
             exp_matrix = adata_sample_exp.X
+            gss_matrix = adata_sample_gss.X
             gene_positions = {gene: index for index, gene in enumerate(available_genes)}
 
             for request in sample_requests:
@@ -2871,7 +2706,7 @@ def _export_per_sample_spatial_js(
         traits=traits,
         annotations=annotations,
         js_data_dir=js_data_dir,
-        max_points=meta.get("downsampling_n_spots_2d"),
+        max_points=int(meta.get("downsampling_n_spots_2d", 100000)),
         coordinate_info=(meta.get("spatial_3d") or {}).get("coordinate_info"),
     )
 
@@ -3170,28 +3005,6 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
     """Export UMAP data as JS module."""
     umap_file = data_dir / "umap_data.csv"
     if umap_file.exists():
-        umap_info = meta.get("umap_info") or {}
-        if umap_info.get("render_mode") == "scanpy_static":
-            static_panels = umap_info.get("static_panels", {})
-            cell_panels = static_panels.get("cell", {})
-            data_struct = {
-                "render_mode": "scanpy_static",
-                "n_points": umap_info.get("n_points", 0),
-                "spot": [],
-                "has_niche": umap_info.get("has_niche", False),
-                "annotation_columns": list(cell_panels.get("annotation", {})),
-                "static_panels": static_panels,
-            }
-            js_content = (
-                f"window.GSMAP_UMAP = {json.dumps(data_struct, separators=(',', ':'))};"
-            )
-            _write_text_if_changed(js_data_dir / "umap_data.js", js_content)
-            logger.info(
-                "Exported compact Scanpy UMAP panel manifest with %s points",
-                data_struct["n_points"],
-            )
-            return
-
         df = pd.read_csv(umap_file)
 
         # Build efficient columnar structure for ScatterGL

@@ -29,31 +29,40 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     ] = 20000
 
     downsampling_n_spots_umap: Annotated[
-        int | None,
+        int,
         typer.Option(
-            help="Optional maximum spots for report UMAPs; omit to retain all spots",
+            help=(
+                "Maximum representative spots used to calculate and display each report UMAP. "
+                "Valid precomputed UMAP coordinates are sampled to the same limit."
+            ),
             min=1000,
-            max=10000000,
+            max=500000,
         ),
-    ] = None
+    ] = 50000
 
     downsampling_n_spots_3d: Annotated[
-        int | None,
+        int,
         typer.Option(
-            help="Optional maximum spots for 3D visualization; omit to retain all spots",
+            help=(
+                "Maximum representative spots rendered in the browser's 3D view. "
+                "Larger datasets use deterministic annotation-aware sampling."
+            ),
             min=1000,
-            max=10000000,
+            max=2000000,
         ),
-    ] = None
+    ] = 100000
 
     downsampling_n_spots_2d: Annotated[
-        int | None,
+        int,
         typer.Option(
-            help="Optional maximum spots per sample for 2D plots; omit to retain all spots",
+            help=(
+                "Maximum representative spots per sample in the browser's 2D view. "
+                "Larger samples use deterministic annotation-aware sampling."
+            ),
             min=10000,
-            max=10000000,
+            max=500000,
         ),
-    ] = None
+    ] = 100000
 
     top_corr_genes: Annotated[
         int, typer.Option(help="Number of top correlated genes to display", min=1, max=500)
@@ -61,22 +70,15 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
 
     # Advanced visualization parameters
     single_sample_multi_trait_max_cols: int = 5
-    subsample_n_points: Annotated[
-        int | None,
-        typer.Option(
-            help="Optional maximum spots for UMAP and static plots; omit to retain all spots",
-            min=1000,
-            max=10000000,
-        ),
-    ] = None
+    subsample_n_points: int | None = None
     single_sample_multi_trait_subplot_width_inches: float = 4.0
-    single_sample_multi_trait_dpi: int = 320
+    single_sample_multi_trait_dpi: int = 300
     enable_pdf_output: bool = True
     hover_text_list: list | None = None
     single_trait_multi_sample_max_cols: int = 8
     single_trait_multi_sample_subplot_width_inches: float = 4.0
     single_trait_multi_sample_scaling_factor: float = 1.0
-    single_trait_multi_sample_dpi: int = 320
+    single_trait_multi_sample_dpi: int = 300
     share_coords: bool = False
 
     # Generate both static overview matrices: traits across samples and samples across traits.
@@ -93,12 +95,8 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     # Legend marker size for categorical plots
     legend_marker_size: float = 10.0
 
-    force_report_re_run: Annotated[
-        bool,
-        typer.Option(
-            help="Force report regeneration and overwrite existing report visualizations"
-        ),
-    ] = False
+    # Force re-run of report generation even if results exist
+    force_report_re_run: bool = False
 
     # Compatibility properties for visualization paths
     @property

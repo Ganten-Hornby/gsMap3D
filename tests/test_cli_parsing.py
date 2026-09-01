@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from gsMap.cli import app
-from gsMap.config.report_config import ReportConfig
 
 # ---------------------------------------------------------------------------
 # Helpers for extracting CLI commands from markdown documentation
@@ -112,21 +111,6 @@ def test_quick_mode_exposes_section_graph_options(cli_runner_local):
     assert "--graph-section-key" not in result.output
     assert "--graph-z-scale" in result.output
     assert "--inference-chunk-size" in result.output
-
-
-def test_quick_mode_report_defaults_do_not_downsample_visualizations(cli_runner_local):
-    result = cli_runner_local.invoke(app, ["quick-mode", "--help"], env={"COLUMNS": "220"})
-
-    assert result.exit_code == 0
-    assert "--subsample-n-points" in result.output
-    assert "--downsampling-n-spots-2d" in result.output
-    assert "--downsampling-n-spots-3d" in result.output
-    assert "--force-report-re-run" in result.output
-    assert ReportConfig.__dataclass_fields__["subsample_n_points"].default is None
-    assert ReportConfig.__dataclass_fields__["downsampling_n_spots_2d"].default is None
-    assert ReportConfig.__dataclass_fields__["downsampling_n_spots_3d"].default is None
-    assert ReportConfig.__dataclass_fields__["single_sample_multi_trait_dpi"].default == 320
-    assert ReportConfig.__dataclass_fields__["single_trait_multi_sample_dpi"].default == 320
 
 
 @pytest.fixture

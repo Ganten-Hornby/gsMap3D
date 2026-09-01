@@ -21,9 +21,7 @@ def _full_section_fixture() -> anndata.AnnData:
     sections = []
     for section_index in range(20):
         xy = np.asarray([[0.0, 0.0], [1.0, 0.0], [0.5, 0.8]])
-        coordinates.append(
-            np.column_stack((xy, np.full(xy.shape[0], section_index * 0.25)))
-        )
+        coordinates.append(np.column_stack((xy, np.full(xy.shape[0], section_index * 0.25))))
         sections.extend([f"section-{section_index:02d}"] * xy.shape[0])
 
     n_obs = len(sections)
@@ -100,9 +98,7 @@ def test_sampled_training_rows_use_full_density_graph_context(tmp_path, monkeypa
         stable_ids=full_adata.obs_names.to_numpy(),
         params=params,
         gcov=GCN(params.K),
-        section_labels=(
-            np.repeat(np.arange(len(sources)), 3)
-        ),
+        section_labels=(np.repeat(np.arange(len(sources)), 3)),
         section_order=np.arange(len(sources)) if graph_mode == "section_aware_3d" else None,
     )
     source_rows = np.asarray(
@@ -124,9 +120,7 @@ def test_sampled_training_rows_use_full_density_graph_context(tmp_path, monkeypa
         params=params,
         gcov=GCN(params.K),
         section_labels=sampled.obs["sample_name"].to_numpy(),
-        section_order=(
-            np.asarray(list(sources)) if graph_mode == "section_aware_3d" else None
-        ),
+        section_order=(np.asarray(list(sources)) if graph_mode == "section_aware_3d" else None),
     )
     assert not torch.allclose(training.expression_gcn_merge, sampled_only)
     assert max(dense_row_counts) < full_adata.n_obs

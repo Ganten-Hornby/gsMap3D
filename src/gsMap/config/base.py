@@ -166,22 +166,6 @@ class ConfigWithAutoPaths(BaseConfig):
         return self.latent2gene_dir / "marker_scores.dat"
 
     @property
-    @ensure_path_exists
-    def marker_score_blocks_dir(self) -> Path:
-        """Directory containing independently allocated marker-score gene blocks."""
-        return self.latent2gene_dir / "marker_score_blocks"
-
-    @property
-    def marker_score_blocks_manifest_path(self) -> Path:
-        """Manifest describing marker-score gene blocks."""
-        return self.marker_score_blocks_dir / "manifest.json"
-
-    @property
-    def rank_row_min_path(self) -> Path:
-        """Full-gene row minima used by gene-block expression filtering."""
-        return self.latent2gene_dir / "rank_row_min.npy"
-
-    @property
     def latent2gene_metadata_path(self) -> Path:
         """Path to latent2gene metadata YAML"""
         return self.latent2gene_dir / "metadata.yaml"

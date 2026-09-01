@@ -38,7 +38,7 @@ dependencies = [
     "bitarray >=2.9.2, <3.0.0",
     "pyarrow",
     "numba >= 0.60",
-    "jax[cuda12] >=0.7.2, <1.0.0",
+    "jax >=0.7.2, <1.0.0",
     "pandas_plink",
     "xarray",
     "rich >= 14.1.0",
@@ -47,22 +47,32 @@ dependencies = [
     "statsmodels >= 0.13.0",
     "psutil >= 5.8.0",
     "pyvista >= 0.35.0",
-    "nest-asyncio2",
-    "trame >= 3.0.0",
-    "trame-vtk >= 2.8.0",
-    "trame-vuetify >= 3.0.0",
-    "ipython",
     "typer ~= 0.20.0",
     "einops",
     "distinctipy>=1.3.4",
 ]
 
 [project.optional-dependencies]
-# Compatibility alias. CUDA 12.8 is also the default so plain `uv run` and
-# `uv run --extra cuda128` resolve the same Torch/JAX runtime.
+# Acceleration backend — pick exactly one (cpu / cuda128 / cuda130 / tpu).
+# Each CUDA variant keeps torch and JAX on the same CUDA major so they share a
+# single set of nvidia-*-cuXX runtime wheels. torch is also a base dependency,
+# so a bare `pip install gsMap3D` still works (resolves torch from PyPI).
+cpu = [
+    "torch >=2.8, <3.0",
+]
+
 cuda128 = [
     "torch >=2.8, <3.0",
     "jax[cuda12] >=0.7.2, <1.0.0",
+]
+
+cuda130 = [
+    "torch >=2.8, <3.0",
+    "jax[cuda13] >=0.7.2, <1.0.0",
+]
+
+tpu = [
+    "jax[tpu] >=0.7.2, <1.0.0",
 ]
 
 [dependency-groups]
@@ -101,17 +111,37 @@ dev = [{ include-group = "tests" }]
 
 [tool.uv]
 default-groups = ["dev"]
+conflicts = [
+    [{ extra = "cpu" }, { extra = "cuda128" }, { extra = "cuda130" }, { extra = "tpu" }],
+]
 
-# PyTorch is fixed to CUDA 12.8 for every local uv invocation, including when
-# no extra is supplied. This prevents an ordinary `uv run` from silently
-# replacing the cluster-compatible runtime with PyPI's CUDA 13 build.
+# PyTorch index routing (dev/lockfile only — stripped when the wheel is published;
+# verify with `uv build --no-sources`). Selected by the acceleration extra:
+#   - --extra cpu:      CPU build
+#   - --extra cuda128:  CUDA 12.8 build (harmonized with jax[cuda12])
+#   - --extra cuda130:  CUDA 13.0 build (harmonized with jax[cuda13])
+#   - no extra:         torch resolved from PyPI (works for plain pip installs)
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "cuda128" },
+    { index = "pytorch-cu130", extra = "cuda130" },
+]
 
 [project.urls]
 Home = "https://github.com/Ganten-Hornby/gsMap3D"

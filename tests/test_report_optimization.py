@@ -44,10 +44,10 @@ from gsMap.report.visualize import (
 )
 
 
-def test_report_3d_display_default_keeps_all_spots():
+def test_report_3d_display_default_balances_density_and_interaction():
     field = ReportConfig.__dataclass_fields__["downsampling_n_spots_3d"]
 
-    assert field.default is None
+    assert field.default == 100_000
 
 
 def test_report_umap_and_2d_defaults_prioritize_visual_density():
