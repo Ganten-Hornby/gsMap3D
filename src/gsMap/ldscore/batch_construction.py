@@ -38,6 +38,30 @@ class BatchInfo:
     ref_end_idx: int
 
 
+def resolve_ld_window(
+    bim_df: pd.DataFrame,
+    ld_wind: float,
+    ld_unit: str,
+) -> tuple[np.ndarray, float]:
+    """Return sorted per-variant coordinates and the window in those units."""
+    chromosome = str(bim_df["CHR"].iloc[0])
+    normalized_unit = ld_unit.upper()
+    if normalized_unit == "SNP":
+        return np.arange(len(bim_df), dtype=np.int64), float(int(ld_wind))
+    if normalized_unit == "KB":
+        return bim_df["BP"].to_numpy(), float(ld_wind * 1000)
+    if normalized_unit == "CM":
+        coordinates = bim_df["CM"].to_numpy()
+        if np.all(coordinates == 0):
+            logger.warning(
+                "All CM values are 0 for chromosome %s. Fallback to 1MB window (BP).",
+                chromosome,
+            )
+            return bim_df["BP"].to_numpy(), 1_000_000.0
+        return coordinates, float(ld_wind)
+    raise ValueError(f"Invalid ld_unit: {ld_unit}. Must be 'SNP', 'KB', or 'CM'.")
+
+
 def construct_batches(
     bim_df: pd.DataFrame,
     hm3_snp_names: list[str],
@@ -69,29 +93,9 @@ def construct_batches(
         List of BatchInfo objects
     """
     chromosome = str(bim_df["CHR"].iloc[0])
-
-    # Pre-extract arrays for performance
-    _snp_values = bim_df["SNP"].values
-
-    # helper to get coordinates based on unit
-    if ld_unit == "SNP":
-        coords = np.arange(len(bim_df))
-        max_dist = int(ld_wind)
-    elif ld_unit == "KB":
-        coords = bim_df["BP"].values
-        max_dist = ld_wind * 1000
-    elif ld_unit == "CM":
-        coords = bim_df["CM"].values
-        max_dist = ld_wind
-        # Fallback if CM is all zero
-        if np.all(coords == 0):
-            logger.warning(
-                f"All CM values are 0 for chromosome {chromosome}. Fallback to 1MB window (BP)."
-            )
-            coords = bim_df["BP"].values
-            max_dist = 1_000_000
-    else:
-        raise ValueError(f"Invalid ld_unit: {ld_unit}. Must be 'SNP', 'KB', or 'CM'.")
+    coords, max_dist = resolve_ld_window(bim_df, ld_wind, ld_unit)
+    if np.any(coords[1:] < coords[:-1]):
+        raise ValueError(f"Variants on chromosome {chromosome} are not coordinate-sorted")
 
     # Find indices of HM3 SNPs in BIM
     hm3_set = set(hm3_snp_names)
@@ -136,15 +140,8 @@ def construct_batches(
     window_starts = min_coords - max_dist
     window_ends = max_coords + max_dist
 
-    if ld_unit == "SNP":
-        # For SNP unit, coordinates are indices, so we just clip
-        ref_starts = np.maximum(window_starts, 0).astype(int)
-        ref_ends = np.minimum(window_ends, len(coords)).astype(int)
-    else:
-        # Vectorized searchsorted
-        # Find insertion points for all window starts and ends at once
-        ref_starts = np.searchsorted(coords, window_starts, side="left")
-        ref_ends = np.searchsorted(coords, window_ends, side="right")
+    ref_starts = np.searchsorted(coords, window_starts, side="left")
+    ref_ends = np.searchsorted(coords, window_ends, side="right")
 
     # Construct BatchInfo objects
     batch_infos = []

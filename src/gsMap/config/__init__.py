@@ -1,64 +1,84 @@
-"""
-gsMap configuration module.
+"""Public configuration API with lazy imports.
 
-This module provides:
-- Configuration dataclasses for all gsMap commands
-- Base classes with automatic path generation
-- Decorators for CLI integration and resource tracking
+Importing one lightweight command configuration previously imported every
+gsMap configuration and their transitive scientific stacks. Lazy attribute
+resolution preserves the public API while avoiding that startup penalty.
 """
+
+from __future__ import annotations
 
 from collections import OrderedDict, namedtuple
+from importlib import import_module
+from typing import TYPE_CHECKING
 
-# Base classes and utilities
-from .base import BaseConfig, ConfigWithAutoPaths, ensure_path_exists
+if TYPE_CHECKING:
+    from typing import Any
 
-# Configuration dataclasses
-from .cauchy_config import CauchyCombinationConfig
-
-# Decorators
-from .decorators import dataclass_typer, show_banner, track_resource_usage
-
-# Migrated module configurations
-from .find_latent_config import FindLatentRepresentationsConfig
-from .format_sumstats_config import FormatSumstatsConfig
-from .latent2gene_config import (
-    CrossSliceSelectionMode,
-    DatasetType,
-    HomogeneousSelectionMode,
-    LatentToGeneConfig,
-    MarkerScoreCrossSliceStrategy,
-)
-from .ldscore_config import GenerateLDScoreConfig, LDScoreConfig
-from .quick_mode_config import QuickModeConfig
-from .report_config import ReportConfig
-from .spatial_ldsc_config import SpatialLDSCConfig
-
-# Create a legacy registry for backward compatibility with main.py
 cli_function_registry = OrderedDict()
 subcommand = namedtuple("subcommand", ["name", "func", "add_args_function", "description"])
 
+_LAZY_IMPORTS = {
+    "BaseConfig": (".base", "BaseConfig"),
+    "ConfigWithAutoPaths": (".base", "ConfigWithAutoPaths"),
+    "ensure_path_exists": (".base", "ensure_path_exists"),
+    "dataclass_typer": (".decorators", "dataclass_typer"),
+    "track_resource_usage": (".decorators", "track_resource_usage"),
+    "show_banner": (".decorators", "show_banner"),
+    "CauchyCombinationConfig": (".cauchy_config", "CauchyCombinationConfig"),
+    "FindLatentRepresentationsConfig": (
+        ".find_latent_config",
+        "FindLatentRepresentationsConfig",
+    ),
+    "FormatSumstatsConfig": (".format_sumstats_config", "FormatSumstatsConfig"),
+    "CrossSliceSelectionMode": (".latent2gene_config", "CrossSliceSelectionMode"),
+    "DatasetType": (".latent2gene_config", "DatasetType"),
+    "HomogeneousSelectionMode": (".latent2gene_config", "HomogeneousSelectionMode"),
+    "LatentToGeneConfig": (".latent2gene_config", "LatentToGeneConfig"),
+    "MarkerScoreCrossSliceStrategy": (
+        ".latent2gene_config",
+        "MarkerScoreCrossSliceStrategy",
+    ),
+    "GenerateLDScoreConfig": (".ldscore_config", "GenerateLDScoreConfig"),
+    "LDScoreConfig": (".ldscore_config", "LDScoreConfig"),
+    "QuickModeConfig": (".quick_mode_config", "QuickModeConfig"),
+    "ReportConfig": (".report_config", "ReportConfig"),
+    "SpatialLDSCConfig": (".spatial_ldsc_config", "SpatialLDSCConfig"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attribute_name = _LAZY_IMPORTS[name]
+    except KeyError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+    value = getattr(import_module(module_name, __name__), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_IMPORTS))
+
+
 __all__ = [
-    # Base classes
     "BaseConfig",
-    "ConfigWithAutoPaths",
-    "ensure_path_exists",
-    # Decorators
-    "dataclass_typer",
-    "track_resource_usage",
-    "show_banner",
-    # Legacy compatibility
-    "cli_function_registry",
-    # Configurations
-    "QuickModeConfig",
-    "FindLatentRepresentationsConfig",
-    "LatentToGeneConfig",
-    "DatasetType",
-    "CrossSliceSelectionMode",
-    "HomogeneousSelectionMode",
-    "MarkerScoreCrossSliceStrategy",
-    "SpatialLDSCConfig",
-    "ReportConfig",
-    "GenerateLDScoreConfig",
     "CauchyCombinationConfig",
+    "ConfigWithAutoPaths",
+    "CrossSliceSelectionMode",
+    "DatasetType",
+    "FindLatentRepresentationsConfig",
     "FormatSumstatsConfig",
+    "GenerateLDScoreConfig",
+    "HomogeneousSelectionMode",
+    "LDScoreConfig",
+    "LatentToGeneConfig",
+    "MarkerScoreCrossSliceStrategy",
+    "QuickModeConfig",
+    "ReportConfig",
+    "SpatialLDSCConfig",
+    "cli_function_registry",
+    "dataclass_typer",
+    "ensure_path_exists",
+    "show_banner",
+    "track_resource_usage",
 ]

@@ -248,12 +248,12 @@ def create_snp_feature_map(
     # We create a matrix of shape (M, F+1). The last column (index F) is for unmapped.
     # Any row_idx NOT present in row_indices gets a 1.0 in the last column.
 
-    mapped_rows_set = set(row_indices)
-    all_rows = set(range(m_ref))
-    unmapped_rows = list(all_rows - mapped_rows_set)
+    mapped_mask = np.zeros(m_ref, dtype=bool)
+    if len(row_indices) > 0:
+        mapped_mask[np.asarray(row_indices, dtype=np.intp)] = True
+    unmapped_rows = np.flatnonzero(~mapped_mask)
 
-    if unmapped_rows:
-        unmapped_rows = np.array(unmapped_rows, dtype=int)
+    if len(unmapped_rows) > 0:
         unmapped_cols = np.full(len(unmapped_rows), n_features, dtype=int)  # Last column index
         unmapped_data = np.ones(len(unmapped_rows), dtype=np.float32)
 

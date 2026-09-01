@@ -1,215 +1,244 @@
-"""
-I/O utilities for loading genomic data in the LD score framework.
+"""PLINK I/O and variant QC for LD-score calculations."""
 
-This module provides optimized readers for PLINK binary files and omics feature matrices,
-leveraging pandas-plink for efficient I/O and standardizing data with NumPy.
-"""
+from __future__ import annotations
 
 import logging
+import time
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 from pandas_plink import read_plink1_bin
 
 logger = logging.getLogger(__name__)
 
 
-class PlinkBEDReader:
+def biallelic_snp_mask(allele0: np.ndarray, allele1: np.ndarray) -> np.ndarray:
+    """Return a mask for distinct, single-nucleotide A/C/G/T allele pairs."""
+    allele0 = np.char.upper(np.asarray(allele0).astype(str))
+    allele1 = np.char.upper(np.asarray(allele1).astype(str))
+    if allele0.shape != allele1.shape:
+        raise ValueError("allele arrays must have identical shapes")
+    bases = np.array(["A", "C", "G", "T"])
+    return np.isin(allele0, bases) & np.isin(allele1, bases) & (allele0 != allele1)
+
+
+@dataclass(frozen=True)
+class VariantStatistics:
+    """Per-variant statistics calculated from hard-called diploid genotypes."""
+
+    called_samples: np.ndarray
+    mac: np.ndarray
+    maf: np.ndarray
+    means: np.ndarray
+    stds: np.ndarray
+
+
+def calculate_variant_statistics(genotypes: np.ndarray) -> VariantStatistics:
+    """Calculate called-sample count, MAC, MAF, mean, and population SD.
+
+    Missing genotypes must be represented by ``NaN``. MAC is calculated from
+    the number of observed alleles for each variant, rather than assuming every
+    individual was called.
     """
-    Optimized reader for PLINK binary files using pandas-plink and Xarray.
+    if genotypes.ndim != 2:
+        raise ValueError("genotypes must be a two-dimensional sample-by-variant matrix")
 
-    Loads genotypes lazily via Dask/Xarray, applies matrix-based MAF calculation
-    and filtering, and converts to standardized NumPy arrays.
+    called_samples = np.sum(~np.isnan(genotypes), axis=0, dtype=np.int64)
+    allele_sum = np.nansum(genotypes, axis=0, dtype=np.float64)
+    called_alleles = 2 * called_samples
 
-    Attributes
-    ----------
-    bfile : str
-        Base filename prefix for PLINK files
-    G : xr.DataArray
-        The underlying xarray DataArray (samples x variants) containing genotypes (0, 1, 2, nan)
-    bim : pd.DataFrame
-        BIM file data (SNP information, filtered)
-    fam : pd.DataFrame
-        FAM file data (individual information)
-    m : int
-        Number of SNPs (after filtering)
-    n : int
-        Number of individuals
-    genotypes : np.ndarray
-        Pre-loaded and standardized genotype matrix (n_individuals, m_snps)
-    maf : np.ndarray
-        Minor allele frequency for each SNP
+    minor_allele_count = np.minimum(allele_sum, called_alleles - allele_sum)
+    # PLINK BED stores hard calls, so rounding protects against floating-point
+    # summation noise without changing the definition of MAC.
+    mac = np.rint(np.maximum(minor_allele_count, 0)).astype(np.int64)
+
+    maf = np.zeros(genotypes.shape[1], dtype=np.float64)
+    np.divide(mac, called_alleles, out=maf, where=called_alleles > 0)
+
+    means = np.zeros(genotypes.shape[1], dtype=np.float32)
+    np.divide(
+        allele_sum,
+        called_samples,
+        out=means,
+        where=called_samples > 0,
+        casting="unsafe",
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Degrees of freedom <= 0 for slice")
+        stds = np.nanstd(genotypes, axis=0).astype(np.float32, copy=False)
+
+    return VariantStatistics(
+        called_samples=called_samples,
+        mac=mac,
+        maf=maf,
+        means=means,
+        stds=stds,
+    )
+
+
+class PlinkBEDReader:
+    """Load, QC, and standardize one chromosome from PLINK 1 binary files.
+
+    The BED payload is materialized exactly once. The previous implementation
+    decoded it repeatedly for MAF, basic QC, and standardization; on network
+    storage those redundant passes dominated chromosome runtime.
     """
 
     def __init__(
         self,
         bfile_prefix: str,
+        snps_only: bool = True,
+        mac_min: int | None = 5,
         maf_min: float | None = None,
         keep_snps: list[str] | None = None,
         preload: bool = True,
     ):
-        """
-        Initialize PlinkBEDReader with optional filtering.
+        """Initialize the reader.
 
         Parameters
         ----------
-        bfile_prefix : str
-            PLINK file prefix (without .bed/.bim/.fam extension)
-        maf_min : float, optional
-            Minimum MAF threshold for SNP filtering (default: None, no filtering)
-        keep_snps : list[str], optional
-            List of SNP IDs to keep (default: None, keep all)
-        preload : bool, optional
-            Whether to pre-load and standardize genotypes into memory (default: True)
+        bfile_prefix
+            PLINK prefix without ``.bed/.bim/.fam``.
+        snps_only
+            Retain only biallelic single-nucleotide A/C/G/T variants.
+        mac_min
+            Retain variants with MAC strictly greater than this value. The
+            default therefore implements ``MAC > 5``. ``None`` disables it.
+        maf_min
+            Optional inclusive MAF threshold. Disabled by default.
+        keep_snps
+            Optional SNP-ID allow-list, applied before reading the BED payload.
+        preload
+            Store the standardized genotype matrix on ``self.genotypes``.
+            Metadata and QC still require one eager BED read when false.
         """
-        self.bfile = bfile_prefix
+        if mac_min is not None and mac_min < 0:
+            raise ValueError("mac_min must be non-negative or None")
+        if maf_min is not None and not 0 <= maf_min <= 0.5:
+            raise ValueError("maf_min must be between 0 and 0.5 or None")
 
-        # Construct paths
+        self.bfile = bfile_prefix
         bed_path = f"{bfile_prefix}.bed"
         bim_path = f"{bfile_prefix}.bim"
         fam_path = f"{bfile_prefix}.fam"
-
-        # Validate existence
-        if not (Path(bed_path).exists() and Path(bim_path).exists() and Path(fam_path).exists()):
+        if not all(Path(path).is_file() for path in (bed_path, bim_path, fam_path)):
             raise FileNotFoundError(f"One or more PLINK files missing for prefix: {bfile_prefix}")
 
-        logger.info(f"Loading PLINK files from: {bfile_prefix}")
-
-        # Load using pandas-plink
-        # This returns an xarray DataArray with dask backing (lazy loading)
-        # Shape is (sample, variant)
-        # Suppress FutureWarning about delim_whitespace deprecation (from pandas-plink internals)
+        reader_started = time.perf_counter()
+        logger.info("Loading PLINK files from: %s", bfile_prefix)
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", message=".*delim_whitespace.*", category=FutureWarning
             )
             self.G = read_plink1_bin(bed_path, bim_path, fam_path, verbose=False)
 
-        # Initial dimensions
         self.n_original = self.G.sizes["sample"]
         self.m_original = self.G.sizes["variant"]
         self.snp_ids_original = pd.Index(self.G.snp.values)
+        logger.info("Loaded metadata: %d SNPs × %d individuals", self.m_original, self.n_original)
 
-        logger.info(f"Loaded metadata: {self.m_original} SNPs × {self.n_original} individuals")
+        metadata_mask = np.ones(self.m_original, dtype=bool)
+        if snps_only:
+            snp_mask = biallelic_snp_mask(self.G.a0.values, self.G.a1.values)
+            metadata_mask &= snp_mask
+            logger.info(
+                "SNP-only filter before BED decoding: retained %d; removed %d indels/non-SNPs",
+                int(snp_mask.sum()),
+                int((~snp_mask).sum()),
+            )
+        if keep_snps is not None:
+            allow_mask = self.snp_ids_original.isin(set(keep_snps))
+            metadata_mask &= allow_mask
+            logger.info(
+                "SNP allow-list before BED decoding: matched %d of %d variants",
+                int(allow_mask.sum()),
+                self.m_original,
+            )
+        if not np.all(metadata_mask):
+            self.G = self.G.isel(variant=metadata_mask)
+        if self.G.sizes["variant"] == 0:
+            raise ValueError("No variants remain after SNP-only/allow-list filtering")
 
-        # Calculate MAF using matrix operations (lazy execution via dask)
-        logger.info("Calculating MAF ...")
-        self.maf = self._calculate_maf()
+        logger.info(
+            "Reading genotype matrix once for QC and standardization: %d SNPs",
+            self.G.sizes["variant"],
+        )
+        decode_started = time.perf_counter()
+        raw_genotypes = np.asarray(self.G.values, dtype=np.float32)
+        decode_seconds = time.perf_counter() - decode_started
+        statistics_started = time.perf_counter()
+        statistics = calculate_variant_statistics(raw_genotypes)
+        statistics_seconds = time.perf_counter() - statistics_started
 
-        # Apply filters to the xarray DataArray
-        self._apply_filters(maf_min=maf_min, keep_snps=keep_snps)
+        valid = (statistics.called_samples > 0) & np.isfinite(statistics.stds)
+        valid &= statistics.stds > 0
+        basic_qc_removed = int((~valid).sum())
 
-        # Apply Basic QC (Filter Monomorphic and All-Missing)
-        # This must happen before _sync_metadata so BIM reflects valid SNPs only
-        self._apply_basic_qc()
+        if mac_min is not None:
+            mac_pass = statistics.mac > mac_min
+            logger.info(
+                "MAC > %d: retained %d; removed %d",
+                mac_min,
+                int(mac_pass.sum()),
+                int((~mac_pass).sum()),
+            )
+            valid &= mac_pass
 
-        # Update dimensions after filtering
+        if maf_min is not None:
+            maf_pass = statistics.maf >= maf_min
+            logger.info(
+                "MAF >= %.6g: retained %d; removed %d",
+                maf_min,
+                int(maf_pass.sum()),
+                int((~maf_pass).sum()),
+            )
+            valid &= maf_pass
+
+        if basic_qc_removed:
+            logger.info("Basic QC removed %d monomorphic/all-missing variants", basic_qc_removed)
+        if not np.any(valid):
+            raise ValueError("No variants remain after MAC/MAF/basic-QC filtering")
+
+        if np.all(valid):
+            filtered_genotypes = raw_genotypes
+        else:
+            filtered_genotypes = np.ascontiguousarray(raw_genotypes[:, valid])
+        self.G = self.G.isel(variant=valid)
+        self.maf = statistics.maf[valid]
+        self.mac = statistics.mac[valid]
+        self.called_samples = statistics.called_samples[valid]
         self.n = self.G.sizes["sample"]
         self.m = self.G.sizes["variant"]
-
-        # Extract metadata DataFrames from xarray coordinates for compatibility
         self._sync_metadata()
 
-        # Pre-load genotypes if requested
-        self.genotypes = None
+        self.genotypes: np.ndarray | None = None
+        standardize_started = time.perf_counter()
         if preload:
-            logger.info(f"Pre-loading and standardizing {self.m} SNPs...")
-            self.genotypes = self._load_and_standardize_all()
-            logger.info(f"✓ Genotypes ready: {self.genotypes.shape}")
+            means = statistics.means[valid]
+            stds = statistics.stds[valid]
+            missing = np.isnan(filtered_genotypes)
+            if np.any(missing):
+                np.copyto(filtered_genotypes, means[None, :], where=missing)
+            filtered_genotypes -= means
+            filtered_genotypes /= stds
+            self.genotypes = np.ascontiguousarray(filtered_genotypes, dtype=np.float32)
+        standardize_seconds = time.perf_counter() - standardize_started
 
-        logger.info(f"PlinkBEDReader initialized: {self.m} SNPs × {self.n} individuals")
+        logger.info(
+            "PlinkBEDReader initialized: %d SNPs × %d individuals in %.2fs "
+            "(BED decode %.2fs; statistics %.2fs; standardize %.2fs)",
+            self.m,
+            self.n,
+            time.perf_counter() - reader_started,
+            decode_seconds,
+            statistics_seconds,
+            standardize_seconds,
+        )
 
-    def _calculate_maf(self) -> xr.DataArray:
-        """
-        Calculate Minor Allele Frequency using matrix operations on the DataArray.
-        """
-        # Calculate mean across samples (axis 0), ignoring NaNs
-        # The result 'freq_a1' represents the frequency of the A1 allele (coded as 2)
-        freq_a1 = self.G.mean(dim="sample", skipna=True) / 2.0
-
-        # Calculate MAF: min(f, 1-f)
-        maf = xr.ufuncs.minimum(freq_a1, 1.0 - freq_a1)
-
-        return maf.compute()
-
-    def _apply_filters(
-        self, maf_min: float | None = None, keep_snps: list[str] | None = None
-    ) -> None:
-        """
-        Apply SNP filters directly to the xarray DataArray.
-        """
-        # 1. Create a boolean mask for variants
-        variant_ids = self.G.variant.values
-        mask = np.ones(len(variant_ids), dtype=bool)
-
-        # 2. Apply MAF filter
-        if maf_min is not None and maf_min > 0:
-            maf_mask = (self.maf >= maf_min).values
-            mask &= maf_mask
-
-            n_removed_maf = np.sum(~maf_mask)
-            if n_removed_maf > 0:
-                logger.info(f"Filtered {n_removed_maf} SNPs with MAF < {maf_min}")
-
-        # 3. Apply Keep List filter
-        if keep_snps is not None:
-            current_snps = self.G.snp.values
-            keep_set = set(keep_snps)
-            snp_mask = np.isin(current_snps, list(keep_set))
-
-            mask &= snp_mask
-            n_removed_snp = np.sum(~snp_mask)
-            if n_removed_snp > 0:
-                logger.info(f"Filtered {n_removed_snp} SNPs not in keep list")
-
-        # 4. Filter the main DataArray
-        n_before = self.G.sizes["variant"]
-        self.G = self.G.isel(variant=mask)
-        self.maf = self.maf[mask]
-
-        n_after = self.G.sizes["variant"]
-        if n_before != n_after:
-            logger.info(f"Total SNPs filtered: {n_before - n_after}/{n_before}")
-
-    def _apply_basic_qc(self) -> None:
-        """
-        Filter out monomorphic variants (std=0) and variants with all missing values.
-        """
-        logger.info("Applying basic QC (removing monomorphic and all-missing variants)...")
-
-        # Calculate stats lazily via dask
-        # 1. Standard Deviation (skipna=True handles missing)
-        stds = self.G.std(dim="sample", skipna=True)
-
-        # 2. Count of non-missing values
-        counts = self.G.count(dim="sample")
-
-        # Compute to get numpy arrays for boolean masking
-        stds_val = stds.values
-        counts_val = counts.values
-
-        # Create masks
-        # Monomorphic: std == 0 (or very close to 0)
-        # All missing: count == 0
-        mask_polymorphic = stds_val > 0
-        mask_not_empty = counts_val > 0
-
-        mask = mask_polymorphic & mask_not_empty
-
-        n_removed = np.sum(~mask)
-        if n_removed > 0:
-            logger.info(f"QC: Filtered {n_removed} variants (monomorphic or all-missing)")
-
-            # Apply filter
-            self.G = self.G.isel(variant=mask)
-            self.maf = self.maf[mask]
-        else:
-            logger.info("QC: No monomorphic or all-missing variants found.")
-
-    def _sync_metadata(self):
+    def _sync_metadata(self) -> None:
         self.bim = pd.DataFrame(
             {
                 "CHR": self.G.chrom.values,
@@ -219,11 +248,11 @@ class PlinkBEDReader:
                 "A1": self.G.a1.values,
                 "A2": self.G.a0.values,
                 "i": np.arange(self.m),
+                "MAF": self.maf,
+                "MAC": self.mac,
+                "N_CALLED": self.called_samples,
             }
         )
-        self.bim["MAF"] = self.maf.values
-
-        # pandas-plink stores FAM info in coordinates
         self.fam = pd.DataFrame(
             {
                 "fid": self.G.fid.values,
@@ -234,36 +263,3 @@ class PlinkBEDReader:
                 "trait": self.G.trait.values,
             }
         )
-
-    def _load_and_standardize_all(self) -> np.ndarray:
-        """
-        Load genotypes from Dask into memory, convert to NumPy, and standardize.
-
-        We assume basic QC (monomorphic/all-missing removal) has already run.
-
-        Returns
-        -------
-        np.ndarray
-            Standardized genotype matrix of shape (n_individuals, m_snps)
-        """
-        logger.info("Reading filtered genotype matrix into memory...")
-        X = self.G.values.astype(np.float32)
-
-        # Compute stats (ignoring NaNs)
-        means = np.nanmean(X, axis=0)
-        stds = np.nanstd(X, axis=0)
-
-        # Impute missing values with column means
-        nan_mask = np.isnan(X)
-
-        # Broadcasting means: (m,) -> (1, m) to match (n, m) for X which is (n, m)
-        # Note: In X, rows=individuals, cols=snps. means shape is (m_snps,).
-        # We need to broadcast properly.
-        # X is (n, m), means is (m,). numpy broadcasts (m,) to (n, m) automatically on last dim.
-        X = np.where(nan_mask, means, X)
-
-        # Standardize: (X - mean) / std
-        # Standard broadcasting rules apply: (n, m) - (m,) -> (n, m)
-        X_std = (X - means) / stds
-
-        return X_std

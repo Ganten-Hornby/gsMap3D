@@ -92,7 +92,60 @@ class LDScoreConfig(BaseConfig):
 
     ld_unit: Annotated[str, typer.Option(help="LD unit: 'SNP', 'KB', 'CM'")] = "CM"
 
-    maf_min: Annotated[float, typer.Option(help="Minimum MAF filter")] = 0.01
+    snps_only: Annotated[
+        bool,
+        typer.Option(
+            help=(
+                "Restrict the broad reference set to biallelic single-nucleotide "
+                "A/C/G/T variants before decoding the BED payload."
+            )
+        ),
+    ] = True
+
+    mac_min: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Minimum minor-allele count for the broad reference SNP set. "
+                "Variants are retained when MAC is strictly greater than this value; "
+                "the default therefore implements MAC > 5."
+            ),
+            min=0,
+        ),
+    ] = 5
+
+    maf_min: Annotated[
+        float | None,
+        typer.Option(
+            help=(
+                "Optional minimum MAF filter for the broad reference SNP set. "
+                "Disabled by default because MAC > 5 is the default QC rule."
+            ),
+            min=0.0,
+            max=0.5,
+        ),
+    ] = None
+
+    exclude_mhc_from_regression: Annotated[
+        bool,
+        typer.Option(
+            help=(
+                "Exclude extended-MHC SNPs from HM3 regression targets and the "
+                "HM3-only weight-LD universe. MHC variants remain in the broad "
+                "reference SNP set used in annotation LD-score sums."
+            )
+        ),
+    ] = True
+
+    mhc_start_bp: Annotated[
+        int,
+        typer.Option(help="GRCh38 extended-MHC start coordinate (inclusive)"),
+    ] = 28_510_120
+
+    mhc_end_bp: Annotated[
+        int,
+        typer.Option(help="GRCh38 extended-MHC end coordinate (inclusive)"),
+    ] = 33_480_577
 
     # Computation
     chromosomes: Annotated[
@@ -116,6 +169,13 @@ class LDScoreConfig(BaseConfig):
         2. Fix PLINK file template.
         3. Validate file existence.
         """
+        if self.mac_min < 0:
+            raise ValueError("mac_min must be non-negative")
+        if self.maf_min is not None and not 0 <= self.maf_min <= 0.5:
+            raise ValueError("maf_min must be between 0 and 0.5 or None")
+        if self.mhc_start_bp < 0 or self.mhc_end_bp <= self.mhc_start_bp:
+            raise ValueError("MHC coordinates must satisfy 0 <= start < end")
+
         # Parse output_dir if provided
         if self.output_dir is not None:
             self.output_dir = Path(self.output_dir)

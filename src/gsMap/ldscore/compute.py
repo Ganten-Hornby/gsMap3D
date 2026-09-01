@@ -36,16 +36,21 @@ def compute_unbiased_l2_batch(
     """
     n_individuals = X_hm3.shape[0]
 
-    # Compute correlation matrix: r = (1/N) * X_hm3^T @ X_ref_block
-    # shape: (n_hm3_snps, n_ref_snps)
-    r = np.dot(X_hm3.T, X_ref_block) / n_individuals
+    if n_individuals <= LDSC_BIAS_CORRECTION_DF:
+        raise ValueError(
+            f"At least {LDSC_BIAS_CORRECTION_DF + 1} individuals are required"
+        )
 
-    # Compute r^2
-    r_squared = r**2
-
-    # Apply bias correction
-    bias_correction = (1.0 - r_squared) / (n_individuals - LDSC_BIAS_CORRECTION_DF)
-    l2_unbiased = r_squared - bias_correction
+    # Keep one working array throughout. Algebraically,
+    #   r² - (1-r²)/(N-2) = r²*(N-1)/(N-2) - 1/(N-2).
+    # The in-place formulation avoids allocating separate r², correction, and
+    # corrected-L2 matrices for every HM3 batch.
+    l2_unbiased = np.matmul(X_hm3.T, X_ref_block)
+    l2_unbiased *= 1.0 / n_individuals
+    np.square(l2_unbiased, out=l2_unbiased)
+    denominator = n_individuals - LDSC_BIAS_CORRECTION_DF
+    l2_unbiased *= (n_individuals - 1) / denominator
+    l2_unbiased -= 1.0 / denominator
 
     return l2_unbiased
 
@@ -53,6 +58,7 @@ def compute_unbiased_l2_batch(
 def compute_ld_scores(
     X_hm3: np.ndarray,
     X_ref_block: np.ndarray,
+    ld_window_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Compute LD scores by summing unbiased L2 over reference SNPs.
@@ -71,6 +77,10 @@ def compute_ld_scores(
     """
     # Compute unbiased L2 matrix
     l2_unbiased = compute_unbiased_l2_batch(X_hm3, X_ref_block)
+    if ld_window_mask is not None:
+        if ld_window_mask.shape != l2_unbiased.shape:
+            raise ValueError("LD-window mask shape does not match the L2 matrix")
+        np.multiply(l2_unbiased, ld_window_mask, out=l2_unbiased)
 
     # Sum over reference SNPs (axis=1)
     ld_scores = np.sum(l2_unbiased, axis=1)
@@ -82,6 +92,7 @@ def compute_batch_weights_sparse(
     X_hm3: np.ndarray,
     X_ref_block: np.ndarray,
     block_mapping_matrix: scipy.sparse.csr_matrix | np.ndarray,
+    ld_window_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Compute LD score weight matrix using matrix multiplication.
@@ -106,6 +117,10 @@ def compute_batch_weights_sparse(
     """
     # 1. Compute unbiased L2 matrix: (n_hm3_snps, n_ref_snps)
     l2_unbiased = compute_unbiased_l2_batch(X_hm3, X_ref_block)
+    if ld_window_mask is not None:
+        if ld_window_mask.shape != l2_unbiased.shape:
+            raise ValueError("LD-window mask shape does not match the L2 matrix")
+        np.multiply(l2_unbiased, ld_window_mask, out=l2_unbiased)
 
     # 2. Compute Weights: W = L2 @ M
     # (n_hm3, n_ref) @ (n_ref, n_features) -> (n_hm3, n_features)
@@ -114,7 +129,7 @@ def compute_batch_weights_sparse(
     if scipy.sparse.issparse(block_mapping_matrix):
         weights = l2_unbiased @ block_mapping_matrix
     else:
-        weights = np.dot(l2_unbiased, block_mapping_matrix)
+        weights = np.matmul(l2_unbiased, block_mapping_matrix)
 
     # Ensure output is a dense numpy array
     if scipy.sparse.issparse(weights):
@@ -122,4 +137,4 @@ def compute_batch_weights_sparse(
     elif isinstance(weights, np.matrix):
         weights = np.asarray(weights)
 
-    return weights
+    return np.asarray(weights, dtype=np.float32)

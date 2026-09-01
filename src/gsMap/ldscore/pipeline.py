@@ -29,9 +29,9 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from gsMap.config import LDScoreConfig
+from gsMap.config.ldscore_config import LDScoreConfig
 
-from .batch_construction import construct_batches
+from .batch_construction import construct_batches, resolve_ld_window
 from .compute import (
     compute_batch_weights_sparse,
     compute_ld_scores,
@@ -40,6 +40,31 @@ from .io import PlinkBEDReader
 from .mapping import create_snp_feature_map
 
 logger = logging.getLogger(__name__)
+
+MHC_CHROMOSOME = 6
+
+
+def exclude_mhc_regression_snps(
+    hm3_snps: list[str],
+    bim_df: pd.DataFrame,
+    chromosome: int,
+    mhc_start_bp: int,
+    mhc_end_bp: int,
+) -> tuple[list[str], int, int]:
+    """Remove extended-MHC SNPs from targets without changing reference SNPs.
+
+    Returns the retained HM3 IDs, the number of matched HM3 target IDs removed,
+    and the number of broad-reference variants retained inside the MHC interval.
+    ``bim_df`` itself is never filtered, which preserves MHC variants in the
+    annotation LD-score sum.
+    """
+    if chromosome != MHC_CHROMOSOME:
+        return hm3_snps, 0, 0
+
+    mhc_mask = bim_df["BP"].between(mhc_start_bp, mhc_end_bp, inclusive="both")
+    mhc_reference_snps = set(bim_df.loc[mhc_mask, "SNP"].astype(str))
+    retained = [snp for snp in hm3_snps if str(snp) not in mhc_reference_snps]
+    return retained, len(hm3_snps) - len(retained), int(mhc_mask.sum())
 
 
 @dataclass
@@ -82,7 +107,15 @@ class LDScorePipeline:
         logger.info(f"HM3 directory: {config.hm3_snp_dir}")
         logger.info(f"Batch size (HM3): {config.batch_size_hm3}")
         logger.info(f"LD window: {config.ld_wind} {config.ld_unit}")
-        logger.info(f"MAF filter: {config.maf_min}")
+        logger.info(f"Broad-reference SNP-only filter: {config.snps_only}")
+        logger.info(f"Broad-reference MAC filter: MAC > {config.mac_min}")
+        logger.info(f"Optional broad-reference MAF filter: {config.maf_min}")
+        logger.info(
+            "Exclude MHC from HM3 regression/weight targets: %s (chr6:%d-%d)",
+            config.exclude_mhc_from_regression,
+            config.mhc_start_bp,
+            config.mhc_end_bp,
+        )
         logger.info(f"Chromosomes: {config.chromosomes}")
         logger.info(f"Output Directory: {config.output_dir}")
         logger.info(f"Output Filename: {config.output_filename}")
@@ -232,6 +265,8 @@ class LDScorePipeline:
         try:
             reader = PlinkBEDReader(
                 bfile_prefix,
+                snps_only=self.config.snps_only,
+                mac_min=self.config.mac_min,
                 maf_min=self.config.maf_min,
                 preload=True,
             )
@@ -257,6 +292,22 @@ class LDScorePipeline:
         reader = self._load_plink_reader(chromosome)
         if not reader:
             return None
+
+        if self.config.exclude_mhc_from_regression:
+            target_hm3_snps, n_removed, n_reference_mhc = exclude_mhc_regression_snps(
+                hm3_snps=target_hm3_snps,
+                bim_df=reader.bim,
+                chromosome=chromosome,
+                mhc_start_bp=self.config.mhc_start_bp,
+                mhc_end_bp=self.config.mhc_end_bp,
+            )
+            if chromosome == MHC_CHROMOSOME:
+                logger.info(
+                    "MHC handling: retained %d broad-reference MHC variants; "
+                    "excluded %d matched HM3 MHC regression targets",
+                    n_reference_mhc,
+                    n_removed,
+                )
 
         logger.info(f"Creating SNP-feature mapping for chromosome {chromosome}...")
         # create_snp_feature_map now returns (matrix, names, df)
@@ -311,6 +362,23 @@ class LDScorePipeline:
         reader = self._load_plink_reader(chromosome)
         if not reader:
             return None
+
+
+        if self.config.exclude_mhc_from_regression:
+            target_hm3_snps, n_removed, n_reference_mhc = exclude_mhc_regression_snps(
+                hm3_snps=target_hm3_snps,
+                bim_df=reader.bim,
+                chromosome=chromosome,
+                mhc_start_bp=self.config.mhc_start_bp,
+                mhc_end_bp=self.config.mhc_end_bp,
+            )
+            if chromosome == MHC_CHROMOSOME:
+                logger.info(
+                    "MHC handling: retained %d broad-reference MHC variants; "
+                    "excluded %d matched HM3 MHC regression targets",
+                    n_reference_mhc,
+                    n_removed,
+                )
 
         # Load Annotation File
         try:
@@ -410,10 +478,16 @@ class LDScorePipeline:
         total_snps = sum(len(b.hm3_indices) for b in batch_infos)
         logger.info(f"Actual HM3 SNPs found in BIM: {total_snps}")
 
-        batch_weight_data = []
-        all_hm3_snp_names = []
-        all_hm3_snp_chr = []
-        all_hm3_snp_bp = []
+        if reader.genotypes is None:
+            raise RuntimeError("LD-score computation requires preloaded genotypes")
+
+        batch_weights: list[scipy.sparse.csr_matrix | np.ndarray] = []
+        ordered_hm3_indices: list[np.ndarray] = []
+        ld_coordinates, max_ld_distance = resolve_ld_window(
+            reader.bim,
+            self.config.ld_wind,
+            self.config.ld_unit,
+        )
 
         with Progress(
             SpinnerColumn(),
@@ -425,74 +499,45 @@ class LDScorePipeline:
         ) as progress:
             task = progress.add_task(f"[cyan]Chr {chromosome}", total=total_snps)
 
-            for i, batch_info in enumerate(batch_infos):
-                # Genotypes
+            for batch_info in batch_infos:
                 X_hm3 = reader.genotypes[:, batch_info.hm3_indices]
-
-                ref_indices = np.arange(batch_info.ref_start_idx, batch_info.ref_end_idx)
-                ref_indices = ref_indices[ref_indices < reader.m]
-                X_ref_block = reader.genotypes[:, ref_indices]
-
-                # Metadata
-                batch_bim = reader.bim.iloc[batch_info.hm3_indices]
-                batch_snp_names = batch_bim["SNP"].tolist()
-                all_hm3_snp_names.extend(batch_snp_names)
-                all_hm3_snp_chr.extend(batch_bim["CHR"].tolist())
-                all_hm3_snp_bp.extend(batch_bim["BP"].tolist())
-
-                # Slice Mapping
-                block_mapping = mapping_matrix[ref_indices, :]
-
-                # Compute
-                weights = compute_batch_weights_sparse(X_hm3, X_ref_block, block_mapping)
-
-                batch_weight_data.append(
-                    {
-                        "weights": weights,
-                        "hm3_start_idx": len(all_hm3_snp_names) - len(batch_snp_names),
-                        "n_hm3": len(batch_snp_names),
-                    }
+                ref_slice = slice(batch_info.ref_start_idx, batch_info.ref_end_idx)
+                X_ref_block = reader.genotypes[:, ref_slice]
+                block_mapping = mapping_matrix[ref_slice, :]
+                target_coordinates = ld_coordinates[batch_info.hm3_indices]
+                reference_coordinates = ld_coordinates[ref_slice]
+                ld_window_mask = (
+                    np.abs(target_coordinates[:, None] - reference_coordinates[None, :])
+                    <= max_ld_distance
                 )
-                progress.update(task, advance=len(batch_snp_names))
+                weights = compute_batch_weights_sparse(
+                    X_hm3,
+                    X_ref_block,
+                    block_mapping,
+                    ld_window_mask=ld_window_mask,
+                )
+                if output_format == "sparse":
+                    batch_weights.append(scipy.sparse.csr_matrix(weights))
+                else:
+                    batch_weights.append(weights)
+                ordered_hm3_indices.append(batch_info.hm3_indices)
+                progress.update(task, advance=len(batch_info.hm3_indices))
 
-        # Aggregate
-        n_hm3_total = len(all_hm3_snp_names)
-        n_features = len(feature_names)
-
+        all_hm3_indices = np.concatenate(ordered_hm3_indices)
+        all_hm3_bim = reader.bim.iloc[all_hm3_indices]
         if output_format == "sparse":
-            weights_out = self._create_sparse_matrix_from_batches(
-                batch_weight_data, n_hm3_total, n_features
-            )
+            weights_out = scipy.sparse.vstack(batch_weights, format="csr")
         else:
-            weights_out = self._create_dense_matrix_from_batches(
-                batch_weight_data, n_hm3_total, n_features
-            )
+            weights_out = np.vstack(batch_weights)
 
         return ChromosomeResult(
-            hm3_snp_names=all_hm3_snp_names,
-            hm3_snp_chr=all_hm3_snp_chr,
-            hm3_snp_bp=all_hm3_snp_bp,
+            hm3_snp_names=all_hm3_bim["SNP"].tolist(),
+            hm3_snp_chr=all_hm3_bim["CHR"].tolist(),
+            hm3_snp_bp=all_hm3_bim["BP"].tolist(),
             weights=weights_out,
             feature_names=feature_names,
             mapping_df=mapping_df,
         )
-
-    def _create_sparse_matrix_from_batches(
-        self, batch_data: list[dict], n_rows: int, n_cols: int
-    ) -> scipy.sparse.csr_matrix:
-        """Helper to stack batch results into sparse CSR."""
-        if not batch_data:
-            return scipy.sparse.csr_matrix((n_rows, n_cols), dtype=np.float32)
-        matrices = [scipy.sparse.csr_matrix(b["weights"]) for b in batch_data]
-        return scipy.sparse.vstack(matrices, format="csr")
-
-    def _create_dense_matrix_from_batches(
-        self, batch_data: list[dict], n_rows: int, n_cols: int
-    ) -> np.ndarray:
-        """Helper to stack batch results into dense numpy array."""
-        if not batch_data:
-            return np.zeros((n_rows, n_cols), dtype=np.float32)
-        return np.vstack([b["weights"] for b in batch_data])
 
     def _compute_w_ld(self, chromosome: int, hm3_snps: list[str]):
         """
@@ -507,6 +552,8 @@ class LDScorePipeline:
             # We filter for HM3 SNPs specifically
             reader = PlinkBEDReader(
                 bfile_prefix,
+                snps_only=self.config.snps_only,
+                mac_min=self.config.mac_min,
                 maf_min=self.config.maf_min,
                 keep_snps=hm3_snps,
                 preload=True,
@@ -532,6 +579,11 @@ class LDScorePipeline:
 
         w_ld_values = []
         w_ld_snps = []
+        ld_coordinates, max_ld_distance = resolve_ld_window(
+            reader.bim,
+            self.config.ld_wind,
+            self.config.ld_unit,
+        )
 
         with Progress(
             SpinnerColumn(),
@@ -548,13 +600,21 @@ class LDScorePipeline:
                 X_hm3 = reader.genotypes[:, batch.hm3_indices]
 
                 # Reference block is also from the filtered reader (so it's HM3 only)
-                ref_indices = np.arange(batch.ref_start_idx, batch.ref_end_idx)
-                # Clip to valid range (should be handled by construct_batches but safe to double check)
-                ref_indices = ref_indices[ref_indices < reader.m]
-                X_ref = reader.genotypes[:, ref_indices]
+                ref_slice = slice(batch.ref_start_idx, batch.ref_end_idx)
+                X_ref = reader.genotypes[:, ref_slice]
+                target_coordinates = ld_coordinates[batch.hm3_indices]
+                reference_coordinates = ld_coordinates[ref_slice]
+                ld_window_mask = (
+                    np.abs(target_coordinates[:, None] - reference_coordinates[None, :])
+                    <= max_ld_distance
+                )
 
                 # Compute LD Scores (L2 sum)
-                ld_scores_batch = compute_ld_scores(X_hm3, X_ref)
+                ld_scores_batch = compute_ld_scores(
+                    X_hm3,
+                    X_ref,
+                    ld_window_mask=ld_window_mask,
+                )
 
                 w_ld_values.append(ld_scores_batch)
 
