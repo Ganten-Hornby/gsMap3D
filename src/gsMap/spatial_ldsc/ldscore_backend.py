@@ -81,6 +81,7 @@ class TorchLDScoreBackend(LDScoreBackend):
                 size=sparse_weight.shape,
                 dtype=torch.float32,
                 device=self.device,
+                check_invariants=True,
             )
             torch.cuda.synchronize()
         except Exception:

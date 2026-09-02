@@ -4,10 +4,12 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.sparse as sp
 
 from gsMap.spatial_ldsc.ldscore_quick_mode import (
     SpatialLDSCEngine,
     _align_marker_score_genes,
+    _canonicalize_sparse_weight_matrix,
 )
 
 
@@ -53,6 +55,21 @@ def test_gene_alignment_excludes_unmapped_from_gene_overlap():
 
     with pytest.raises(ValueError, match="found 200 exactly matching genes"):
         _align_marker_score_genes(marker_genes, weight_genes)
+
+
+def test_sparse_weight_is_canonical_after_gene_column_reordering():
+    original = sp.csr_matrix(
+        np.array([[1, 2, 3], [4, 0, 6]], dtype=np.float32)
+    )
+    reordered = original[:, [2, 0, 1]].tocsr()
+    assert not reordered.has_canonical_format
+
+    observed = _canonicalize_sparse_weight_matrix(reordered)
+
+    assert sp.isspmatrix_csr(observed)
+    assert observed.has_sorted_indices
+    assert observed.has_canonical_format
+    np.testing.assert_array_equal(observed.toarray(), original.toarray()[:, [2, 0, 1]])
 
 
 def test_spatial_ldsc_engine_enforces_gene_overlap_threshold(tmp_path):

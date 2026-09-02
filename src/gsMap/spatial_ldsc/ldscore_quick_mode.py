@@ -77,6 +77,24 @@ def _align_marker_score_genes(
     return common_genes_mask, common_genes, weight_gene_indices
 
 
+def _canonicalize_sparse_weight_matrix(matrix):
+    """Return canonical CSR required by unchecked PyTorch sparse kernels.
+
+    Reordering the gene columns to marker-score order generally leaves SciPy's
+    CSR column indices unsorted.  SciPy accepts that representation, but a
+    ``torch.sparse_csr_tensor`` constructed with invariant checks disabled can
+    segfault during GPU multiplication.  Canonicalize once per trait before
+    handing the matrix to either backend.
+    """
+
+    if not hasattr(matrix, "tocsr"):
+        return matrix
+    matrix = matrix.tocsr()
+    matrix.sum_duplicates()
+    matrix.sort_indices()
+    return matrix
+
+
 class SpatialLDSCEngine:
     """Bounded spatial-LDSC source, compute, and output engine."""
 
@@ -257,8 +275,9 @@ class SpatialLDSCEngine:
                 :, self.weight_gene_indices
             ]
 
-            if hasattr(self.snp_gene_weight_sparse, "tocsr"):
-                self.snp_gene_weight_sparse = self.snp_gene_weight_sparse.tocsr()
+            self.snp_gene_weight_sparse = _canonicalize_sparse_weight_matrix(
+                self.snp_gene_weight_sparse
+            )
 
             logger.info(f"SNP-gene weight matrix shape: {self.snp_gene_weight_sparse.shape}")
 
