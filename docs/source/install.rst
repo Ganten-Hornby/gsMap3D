@@ -3,172 +3,190 @@
 Installation
 ============
 
-**gsMap3D** requires Python 3.12 or later. We recommend using **uv** for fast and reliable package management, but Conda is also supported.
+**gsMap3D** requires Python 3.12 or later and is currently supported on Linux.
+Windows compatibility has not been verified, so Windows installation instructions are
+not provided.
 
-gsMap3D builds on both **PyTorch** (GNN representation learning) and **JAX** (LD score
-regression). Each ships separate CPU / CUDA / TPU wheels, so the install command you choose
-decides which compute backend you get. The key rule: **keep PyTorch and JAX on the same
-CUDA major version** so they share a single set of NVIDIA runtime libraries.
+gsMap3D uses both **PyTorch** and **JAX**. Select exactly one optional dependency for the
+compute backend so that both libraries use compatible runtimes. Do not combine backend
+extras or use ``--all-extras``.
 
-Method 1: Use uv (Recommended)
-------------------------------
+Choose a compute backend
+------------------------
 
-`uv <https://github.com/astral-sh/uv>`_ is an extremely fast Python package installer and resolver.
+.. list-table:: Backend selection
+   :header-rows: 1
+   :widths: 18 24 24 34
 
-1. **Install uv**:
+   * - Extra
+     - PyTorch backend
+     - JAX backend
+     - Use case
+   * - ``cpu``
+     - CPU
+     - CPU
+     - CPU-only installations and continuous integration.
+   * - ``cuda126``
+     - CUDA 12.6
+     - CUDA 12
+     - Compatibility profile for CUDA 12 deployments.
+   * - ``cuda128``
+     - CUDA 12.8
+     - CUDA 12
+     - Newer CUDA 12 profile.
+   * - ``cuda130``
+     - CUDA 13.0
+     - CUDA 13
+     - CUDA 13 profile for compatible systems.
+   * - ``tpu``
+     - CPU
+     - TPU
+     - JAX runs on TPU while PyTorch remains on CPU.
 
-   .. code-block:: bash
+The CUDA extra names identify the PyTorch wheel channel. Check the
+`PyTorch CUDA support matrix
+<https://github.com/pytorch/pytorch/blob/main/RELEASE.md#pytorch-cuda-support-matrix>`_
+and the `JAX installation guide
+<https://docs.jax.dev/en/latest/installation.html>`_ when selecting a backend for a
+particular system.
 
-      # On Linux/macOS
-      curl -LsSf https://astral.sh/uv/install.sh | sh
+Install from PyPI
+-----------------
 
-      # On Windows
-      powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+The following commands create a virtual environment and download the released package
+from PyPI. We recommend ``uv`` because ``--torch-backend`` selects the matching official
+PyTorch wheel index.
 
-      # Or via pip
-      pip install uv
-
-2. **Install gsMap3D (CPU)**:
-
-   .. code-block:: bash
-
-      # Create and activate a virtual environment
-      uv venv
-      source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-      # CPU-only install (works on any machine)
-      uv pip install gsMap3D --torch-backend=cpu
-
-   This installs CPU builds of both PyTorch and JAX. For GPU acceleration, see
-   `GPU Support (Optional)`_ below.
-
-   **CLI-only install (optional)**
-
-   If you only need the ``gsmap`` command-line tool and not the Python library:
-
-   .. code-block:: bash
-
-      uv tool install gsMap3D
-
-Method 2: Use Conda
--------------------
-
-You can also use Conda to manage your environment.
+Install ``uv`` and create the environment:
 
 .. code-block:: bash
 
-    # Create a new environment with Python >= 3.12
-    conda create -n gsMap3D python=3.12
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   uv venv --python 3.13
+   source .venv/bin/activate
 
-    # Activate the environment
-    conda activate gsMap3D
+Install exactly one backend:
 
-    # Install gsMap3D (CPU) via pip
-    pip install gsMap3D
+.. code-block:: bash
 
-For GPU support inside a Conda environment, install ``uv`` (``pip install uv``) and follow
-`GPU Support (Optional)`_, or install the matching PyTorch build manually from the
-`PyTorch index <https://download.pytorch.org/whl/>`_.
+   # Choose exactly one command.
+   uv pip install "gsMap3D[cpu]" --torch-backend=cpu
+   uv pip install "gsMap3D[cuda126]" --torch-backend=cu126
+   uv pip install "gsMap3D[cuda128]" --torch-backend=cu128
+   uv pip install "gsMap3D[cuda130]" --torch-backend=cu130
+   uv pip install "gsMap3D[tpu]" --torch-backend=cpu
 
-Install from Source (Developers)
+``--torch-backend`` is an ``uv pip`` option. It ensures that PyTorch comes from the
+selected wheel channel while gsMap3D and JAX are installed from PyPI.
+
+Create an environment with Conda
 --------------------------------
 
-When you install from a clone, the repository's ``pyproject.toml`` routes PyTorch to the
-matching wheel index for you, so a single ``--extra`` selects a fully harmonized
-PyTorch + JAX stack:
+Conda can manage the Python environment while ``uv`` installs the released package and
+selects its binary backend:
 
 .. code-block:: bash
 
-    git clone https://github.com/Ganten-Hornby/gsMap3D.git
-    cd gsMap3D
+   conda create --name gsmap3d python=3.13 pip
+   conda activate gsmap3d
+   python -m pip install uv
 
-    uv sync --extra cpu        # CPU PyTorch + CPU JAX (use this for CI)
-    uv sync --extra cuda128    # PyTorch cu128 + jax[cuda12]  (CUDA 12.8)
-    uv sync --extra cuda130    # PyTorch cu130 + jax[cuda13]  (CUDA 13.0)
-    uv sync --extra tpu        # JAX TPU
+   # Choose exactly one command.
+   uv pip install "gsMap3D[cpu]" --torch-backend=cpu
+   uv pip install "gsMap3D[cuda126]" --torch-backend=cu126
+   uv pip install "gsMap3D[cuda128]" --torch-backend=cu128
+   uv pip install "gsMap3D[cuda130]" --torch-backend=cu130
+   uv pip install "gsMap3D[tpu]" --torch-backend=cpu
 
-Pick exactly **one** backend extra — they are declared mutually exclusive. Test and docs
-toolchains are dependency groups: ``uv sync --extra cpu`` already includes ``tests``; add
-``--group doc`` for the documentation build.
+This approach uses Conda only to isolate Python. Installing the project with ``uv`` keeps
+the backend selection identical to the direct PyPI instructions.
 
-Verification
-------------
+Install from source
+-------------------
 
-Verify the installation by checking the version:
+For development, clone the repository and use ``uv sync``. The repository lockfile and
+conditional package indexes make each backend reproducible:
 
 .. code-block:: bash
 
-    gsmap --version
+   git clone https://github.com/Ganten-Hornby/gsMap3D.git
+   cd gsMap3D
 
-GPU Support (Optional)
-----------------------
+   # Choose exactly one command.
+   uv sync --python 3.13 --extra cpu
+   uv sync --python 3.13 --extra cuda126
+   uv sync --python 3.13 --extra cuda128
+   uv sync --python 3.13 --extra cuda130
+   uv sync --python 3.13 --extra tpu
 
-**gsMap3D** uses GPU acceleration through JAX and PyTorch for significantly faster
-computation.
+``uv sync`` creates ``.venv``, installs gsMap3D in editable mode, and applies ``uv.lock``.
+The default development group includes the test dependencies. Add ``--no-dev`` for a
+runtime-only environment or ``--group doc`` when building the documentation.
 
-1. **Check your CUDA / driver version**:
+An exact sync removes packages that are not part of the selected project environment. Use
+a dedicated environment if unrelated software stacks must be retained. To sync an already
+activated environment instead of ``.venv``, use ``--active``:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-       nvidia-smi      # top-right shows the maximum CUDA version your driver supports
-       nvcc --version  # if the CUDA toolkit is installed
+   source /path/to/environment/bin/activate
+   uv sync --active --extra cuda126
 
-   CUDA 13 wheels require a recent NVIDIA driver. If unsure, choose the CUDA 12 option.
+Verify the installation
+-----------------------
 
-2. **Install with a matched PyTorch + JAX backend**:
+Run accelerator checks inside a session that has access to the selected device:
 
-   The ``cudaXXX`` extra selects JAX's CUDA build; ``--torch-backend`` selects the matching
-   PyTorch wheel. Keep both on the same CUDA major.
+.. code-block:: bash
 
-   **CUDA 12.x:**
+   python -c "import torch; print(torch.__version__, torch.version.cuda); print('CUDA available:', torch.cuda.is_available())"
+   python -c "import jax; print(jax.__version__, jax.devices())"
+   gsmap --version
 
-   .. code-block:: bash
+For a CUDA installation, also run a small operation in each framework:
 
-       uv pip install "gsMap3D[cuda128]" --torch-backend=cu128
+.. code-block:: bash
 
-   **CUDA 13.x:**
+   python -c "import torch; print(torch.ones(1, device='cuda'))"
+   python -c "import jax.numpy as jnp; print(jnp.ones(1).block_until_ready())"
 
-   .. code-block:: bash
+Troubleshooting
+---------------
 
-       uv pip install "gsMap3D[cuda130]" --torch-backend=cu130
+CUDA kernel compatibility errors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   **Auto-detect PyTorch** (uv picks the Torch CUDA build matching your driver — choose the
-   JAX extra for the same CUDA major):
+If PyTorch reports ``no kernel image is available for execution on the device``, the
+installed wheel does not include kernels for the available GPU architecture. Select a
+compatible backend using the upstream support matrix. The CUDA 12.6 compatibility profile
+can be installed from a source checkout with:
 
-   .. code-block:: bash
+.. code-block:: bash
 
-       uv pip install "gsMap3D[cuda130]" --torch-backend=auto
+   uv sync --extra cuda126
 
-   .. note::
+Compiler path errors while building ``pandas-plink``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-       - ``--torch-backend`` is a ``uv pip`` feature (uv >= 0.5.3) that selects the PyTorch
-         wheel index. It is **not** used by ``uv sync`` or plain ``pip`` — installing from a
-         clone with ``uv sync --extra cuda130`` already routes PyTorch for you.
-       - With plain ``pip``, install gsMap3D and then the matching Torch build explicitly,
-         e.g. ``pip install "gsMap3D[cuda130]"`` followed by
-         ``pip install torch --index-url https://download.pytorch.org/whl/cu130``.
-       - The JAX team recommends migrating to CUDA 13 wheels for future compatibility. See the
-         `JAX Installation Guide <https://docs.jax.dev/en/latest/installation.html>`_.
+If ``CC`` or ``CXX`` points to a compiler that no longer exists, clear the stale overrides
+for the sync so the system compiler is used:
 
-3. **Verify GPU support**:
+.. code-block:: bash
 
-   After installation, verify that both JAX and PyTorch detect your GPU and report the same
-   CUDA major version:
+   env -u CC -u CXX uv sync --extra cuda126
 
-   **Verify JAX GPU:**
+Timeout while downloading a large PyTorch wheel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   .. code-block:: bash
+CUDA-enabled PyTorch wheels are large. On a slow connection, increase uv's HTTP timeout:
 
-       python -c "import jax; print('JAX devices:', jax.devices())"
+.. code-block:: bash
 
-   Expected output should show your GPU device(s), e.g., ``[CudaDevice(id=0)]``.
+   UV_HTTP_TIMEOUT=600 uv sync --extra cuda126
 
-   **Verify PyTorch GPU:**
+JAX cannot initialize CUDA
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   .. code-block:: bash
-
-       python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('torch CUDA:', torch.version.cuda); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
-
-   Expected output should show ``CUDA available: True``, a ``torch CUDA`` version matching your
-   JAX build's CUDA major (e.g. ``12.8`` with ``cuda128``, ``13.0`` with ``cuda130``), and your
-   GPU name.
+Confirm that the installed NVIDIA driver supports the selected CUDA backend using the JAX
+installation guide linked above. Also check that ``LD_LIBRARY_PATH`` is not overriding the
+CUDA and cuDNN libraries installed by the wheels.
