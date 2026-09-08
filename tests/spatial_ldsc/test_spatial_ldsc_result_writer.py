@@ -1,5 +1,4 @@
 import threading
-import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -95,7 +94,7 @@ def test_result_writer_does_not_publish_incomplete_output(tmp_path):
     assert not list(tmp_path.glob("*.partial.csv.gz"))
 
 
-def test_result_writer_backpressures_late_chunks_without_blocking_gap(tmp_path):
+def test_result_writer_backpressures_late_chunks_without_blocking_gap(tmp_path, monkeypatch):
     writer = ResultWriter(
         config=_config(),
         trait_name="trait",
@@ -116,18 +115,32 @@ def test_result_writer_backpressures_late_chunks_without_blocking_gap(tmp_path):
         late_finished.set()
 
     late_thread = threading.Thread(target=add_late_chunk)
-    late_thread.start()
-    time.sleep(0.05)
-    assert not late_finished.is_set()
-    assert len(writer.pending) == writer.max_pending_chunks
+    waiting = threading.Event()
+    original_wait = writer.condition.wait
 
-    # The missing chunk bypasses the full-buffer wait and drains the gap.
-    _add(writer, 0, [1.0], 0)
-    late_thread.join(timeout=2)
-    assert late_finished.is_set()
+    def tracked_wait(timeout=None):
+        if threading.current_thread() is late_thread:
+            waiting.set()
+        return original_wait(timeout)
 
-    result = pd.read_csv(writer.finalize())
-    assert result["spot"].tolist() == ["cell0", "cell1", "cell2", "cell3"]
+    monkeypatch.setattr(writer.condition, "wait", tracked_wait)
+    try:
+        late_thread.start()
+        assert waiting.wait(3), "Late chunk never reached the backpressure wait"
+        assert not late_finished.is_set()
+        assert len(writer.pending) == writer.max_pending_chunks
+
+        # The missing chunk bypasses the full-buffer wait and drains the gap.
+        _add(writer, 0, [1.0], 0)
+        late_thread.join(timeout=3)
+        assert not late_thread.is_alive()
+        assert late_finished.is_set()
+
+        result = pd.read_csv(writer.finalize())
+        assert result["spot"].tolist() == ["cell0", "cell1", "cell2", "cell3"]
+    finally:
+        writer.abort()
+        late_thread.join(timeout=3)
 
 
 def test_duplicate_chunk_is_rechecked_after_backpressure_wait(tmp_path, monkeypatch):

@@ -1,22 +1,18 @@
 """The displayed CLI and Python recipes must specify equivalent analysis settings."""
 
-import ast
 import json
 import re
 import shlex
 import shutil
-from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urljoin
 
 import pytest
 import yaml
-from click import Context
 from scripts.docs.audit_commands import blocks
 from scripts.docs.generate_downloads import render, render_catalog
 from scripts.docs.test_download_tutorial import download_blocks
 from scripts.docs.validate_examples import TUTORIALS, tutorial_code
-from typer.main import get_command
 from typer.testing import CliRunner
 
 import gsMap.config
@@ -26,42 +22,8 @@ import gsMap.pipeline.quick_mode
 from gsMap.cli import app
 from gsMap.config.spatial_ldsc_config import GWASSumstatsConfig
 from gsMap.config.utils import process_h5ad_inputs
-
-REPO = Path(__file__).resolve().parents[1]
-
-
-def cli_settings(code):
-    steps = []
-    for line in code.replace("\\\n", " ").splitlines():
-        if not line.startswith("gsmap "):
-            continue
-        argv = shlex.split(line)
-        command = get_command(app).commands[argv[1]]
-        options = {
-            flag: (option, flag in option.opts)
-            for option in command.get_params(Context(command))
-            for flag in [*option.opts, *option.secondary_opts]
-        }
-        values = {}
-        index = 2
-        while index < len(argv):
-            option, positive = options[argv[index]]
-            if option.is_flag:
-                value = positive
-                index += 1
-            else:
-                token = argv[index + 1]
-                try:
-                    value = ast.literal_eval(token)
-                except (ValueError, SyntaxError):
-                    value = token
-                index += 2
-            if option.multiple:
-                values.setdefault(option.name, []).append(value)
-            else:
-                values[option.name] = value
-        steps.append((argv[1], values))
-    return steps
+from tests.docs.helpers import cli_settings
+from tests.paths import REPO_ROOT as REPO
 
 
 @pytest.mark.parametrize("example", TUTORIALS)

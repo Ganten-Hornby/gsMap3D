@@ -1,7 +1,24 @@
+import logging
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
+
+
+@pytest.fixture(autouse=True)
+def isolate_gsmap_logging():
+    """Do not let CLI/logging tests change subsequent caplog capture behavior."""
+    from gsMap.logging_config import _reset_logging_for_tests
+
+    logger = logging.getLogger("gsMap")
+    level, propagate, disabled = logger.level, logger.propagate, logger.disabled
+    handlers = logger.handlers[:]
+    yield
+    _reset_logging_for_tests()
+    logger.handlers[:] = handlers
+    logger.setLevel(level)
+    logger.propagate = propagate
+    logger.disabled = disabled
 
 
 def pytest_addoption(parser):
@@ -52,10 +69,10 @@ def test_data_dir(request):
     """Root test data directory."""
     test_dir = request.config.getoption("--test-data")
     if not test_dir:
-        pytest.skip("--test-data not provided")
+        pytest.fail("Pass --test-data when enabling real-data tests", pytrace=False)
     test_dir = Path(test_dir)
     if not test_dir.exists():
-        pytest.skip(f"Test data directory does not exist: {test_dir}")
+        pytest.fail(f"Test data directory does not exist: {test_dir}", pytrace=False)
     return test_dir
 
 
@@ -64,7 +81,7 @@ def example_data_dir(test_data_dir):
     """gsMap_example_data/ directory."""
     d = test_data_dir / "gsMap_example_data"
     if not d.exists():
-        pytest.skip(f"Example data directory not found: {d}")
+        pytest.fail(f"Example data directory not found: {d}", pytrace=False)
     return d
 
 
@@ -73,7 +90,7 @@ def ldscore_data_dir(test_data_dir):
     """gsMap_ldscore_weight_matrix_example_data/ directory."""
     d = test_data_dir / "gsMap_ldscore_weight_matrix_example_data"
     if not d.exists():
-        pytest.skip(f"LDScore data directory not found: {d}")
+        pytest.fail(f"LDScore data directory not found: {d}", pytrace=False)
     return d
 
 
@@ -82,7 +99,7 @@ def quick_mode_resource_dir(test_data_dir):
     """gsMap_quick_mode_resource/ directory."""
     d = test_data_dir / "gsMap_quick_mode_resource"
     if not d.exists():
-        pytest.skip(f"Quick mode resource directory not found: {d}")
+        pytest.fail(f"Quick mode resource directory not found: {d}", pytrace=False)
     return d
 
 
@@ -94,7 +111,7 @@ def h5ad_file_2d(example_data_dir):
     """2D spatial h5ad file (E16.5_E1S1)."""
     p = example_data_dir / "ST" / "E16.5_E1S1.MOSTA_subsampled.h5ad"
     if not p.exists():
-        pytest.skip(f"h5ad file not found: {p}")
+        pytest.fail(f"h5ad file not found: {p}", pytrace=False)
     return p
 
 
@@ -109,7 +126,7 @@ def h5ad_file_3d_slice2(example_data_dir):
     """3D pipeline slice 2 (E16.5_E2S11)."""
     p = example_data_dir / "ST" / "E16.5_E2S11.MOSTA_subsampled.h5ad"
     if not p.exists():
-        pytest.skip(f"h5ad file not found: {p}")
+        pytest.fail(f"h5ad file not found: {p}", pytrace=False)
     return p
 
 
@@ -118,7 +135,7 @@ def sumstats_file(example_data_dir):
     """GWAS summary statistics file."""
     p = example_data_dir / "GWAS" / "filtered_IQ_NG_2018.sumstats.gz"
     if not p.exists():
-        pytest.skip(f"Summary statistics file not found: {p}")
+        pytest.fail(f"Summary statistics file not found: {p}", pytrace=False)
     return p
 
 
@@ -127,7 +144,7 @@ def homolog_file(test_data_dir):
     """Mouse-to-human homolog file."""
     p = test_data_dir / "gsMap_homologs" / "mouse_human_homologs.txt"
     if not p.exists():
-        pytest.skip(f"Homolog file not found: {p}")
+        pytest.fail(f"Homolog file not found: {p}", pytrace=False)
     return p
 
 
@@ -136,7 +153,7 @@ def w_ld_dir(quick_mode_resource_dir):
     """Weights directory (HM3 no HLA)."""
     d = quick_mode_resource_dir / "weights_hm3_no_hla"
     if not d.exists():
-        pytest.skip(f"Weights directory not found: {d}")
+        pytest.fail(f"Weights directory not found: {d}", pytrace=False)
     return d
 
 
@@ -145,7 +162,7 @@ def snp_gene_weight_path(quick_mode_resource_dir):
     """SNP-gene weight matrix h5ad."""
     p = quick_mode_resource_dir / "1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad"
     if not p.exists():
-        pytest.skip(f"SNP-gene weight matrix not found: {p}")
+        pytest.fail(f"SNP-gene weight matrix not found: {p}", pytrace=False)
     return p
 
 
@@ -158,7 +175,7 @@ def ld_ref_panel_prefix(ldscore_data_dir):
     prefix = (ldscore_data_dir / "LD_Reference_Panel_subset" / "1000G.EUR.QC.subset").as_posix()
     # Verify at least chr22 exists
     if not Path(f"{prefix}.22.bed").exists():
-        pytest.skip(f"LD reference panel not found at {prefix}")
+        pytest.fail(f"LD reference panel not found at {prefix}", pytrace=False)
     return prefix
 
 
@@ -167,7 +184,7 @@ def hapmap3_snps_dir(ldscore_data_dir):
     """HapMap3 SNPs directory."""
     d = ldscore_data_dir / "hapmap3_snps"
     if not d.exists():
-        pytest.skip(f"HapMap3 SNPs directory not found: {d}")
+        pytest.fail(f"HapMap3 SNPs directory not found: {d}", pytrace=False)
     return d
 
 
@@ -176,7 +193,7 @@ def gencode_bed(ldscore_data_dir):
     """Gencode protein-coding BED file."""
     p = ldscore_data_dir / "genome_annotation" / "gencode" / "gencode_v46lift37_protein_coding.bed"
     if not p.exists():
-        pytest.skip(f"Gencode BED file not found: {p}")
+        pytest.fail(f"Gencode BED file not found: {p}", pytrace=False)
     return p
 
 

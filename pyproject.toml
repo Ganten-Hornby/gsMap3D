@@ -183,6 +183,10 @@ include = [
 ]
 
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
 [tool.ruff]
 src = ["src"]
 line-length = 99

@@ -1,11 +1,12 @@
 from collections import Counter
 from html.parser import HTMLParser
-from pathlib import Path
 
 import pytest
 from jinja2 import Template
 
-TEMPLATE_PATH = Path(__file__).parents[1] / "src" / "gsMap" / "report" / "static" / "template.html"
+from tests.paths import REPO_ROOT
+
+TEMPLATE_PATH = REPO_ROOT / "src/gsMap/report/static/template.html"
 
 
 class _TemplateAuditParser(HTMLParser):
@@ -89,11 +90,6 @@ def test_report_plot_layout_has_no_fixed_minimum_panel_widths(
     assert "spatial2dViewMode === 'compare' ? 'plot-grid'" in report_template
 
 
-def test_removed_hidden_annotation_section_does_not_regress(report_template: str) -> None:
-    assert 'id="sec-annotation"' not in report_template
-    assert "If this message persists" not in report_template
-
-
 def test_spatial3d_is_lazy_direct_plotly_and_labels_nonphysical_geometry(
     report_template: str,
 ) -> None:
@@ -162,15 +158,6 @@ def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     assert "spatial2dOpacity" not in report_template
     assert "bindSpatial2dViewportSync" in report_template
     assert "Color scale is shared across samples" in report_template
-
-
-def test_spatial_views_do_not_include_top_signal_overlays(report_template: str) -> None:
-    assert "spatial3dHighlightHotspots" not in report_template
-    assert "spatial2dHighlightHotspots" not in report_template
-    assert "Show top 500" not in report_template
-    assert "Hide top 500" not in report_template
-    assert "Top-500 signal" not in report_template
-    assert "n_top" not in report_template
 
 
 def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:

@@ -1,13 +1,10 @@
+import numpy as np
+import pandas as pd
 import pytest
 
 from gsMap.cli import app
 
-PROJECT_NAME = "test_step_by_step"
-
-
-@pytest.fixture(scope="session")
-def step_project_dir(work_dir):
-    return work_dir / PROJECT_NAME
+PROJECT_NAME = "test_2d"
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +21,6 @@ def full_pipeline_result(
     sumstats_file,
     w_ld_dir,
     snp_gene_weight_path,
-    step_project_dir,
 ):
     """Run the full quick-mode pipeline once and return the project directory."""
     result = cli_runner.invoke(
@@ -59,7 +55,7 @@ def full_pipeline_result(
         ],
     )
     assert result.exit_code == 0, f"quick-mode pipeline failed:\n{result.output}"
-    return step_project_dir
+    return work_dir / PROJECT_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +79,7 @@ def test_latent_to_gene(full_pipeline_result):
     """Verify latent-to-gene produced the expected outputs."""
     l2g_dir = full_pipeline_result / "latent_to_gene"
     assert l2g_dir.is_dir()
-    assert (l2g_dir / "marker_scores.dat").exists() or any(l2g_dir.glob("*.parquet"))
+    assert (l2g_dir / "marker_scores.dat").is_file()
 
 
 @pytest.mark.real_data
@@ -92,7 +88,13 @@ def test_spatial_ldsc(full_pipeline_result):
     ldsc_dir = full_pipeline_result / "spatial_ldsc"
     assert ldsc_dir.is_dir()
     result_files = list(ldsc_dir.glob("*_IQ.csv.gz"))
-    assert len(result_files) > 0, "No LDSC result files found"
+    assert len(result_files) == 1, "Expected one IQ LDSC result"
+    result = pd.read_csv(result_files[0])
+    assert len(result) > 0
+    assert result["spot"].is_unique
+    assert np.isfinite(result[["beta", "se", "p"]].to_numpy()).all()
+    assert result["p"].between(0, 1).all()
+    assert result["se"].ge(0).all()
 
 
 @pytest.mark.real_data
@@ -104,3 +106,11 @@ def test_cauchy_combination(full_pipeline_result):
         cauchy_dir.glob("*.sample_cauchy.csv")
     )
     assert len(result_files) > 0, "No Cauchy result files found"
+
+
+@pytest.mark.real_data
+def test_report(full_pipeline_result):
+    """Verify quick mode produced a complete, linked report entry point."""
+    report_dir = full_pipeline_result / "gsmap_web_report"
+    for filename in ("index.html", "report_meta.json", "js_data/report_meta.js"):
+        assert (report_dir / filename).is_file(), filename

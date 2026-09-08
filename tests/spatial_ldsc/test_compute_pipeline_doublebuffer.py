@@ -12,7 +12,6 @@ guard here (without real JAX):
 
 import queue
 import threading
-import time
 
 from gsMap.spatial_ldsc.pipeline import LDScoreComputePool
 
@@ -69,14 +68,22 @@ def test_trailing_chunks_drained_when_queue_runs_dry():
     n = 5
     for i in range(n):
         c.compute_queue.put({"idx": i, "success": True})
+    drained = threading.Event()
+    finalize = c._finalize_chunk
+
+    def finalize_and_notify(pending):
+        finalize(pending)
+        if len(c.finalized) == n:
+            drained.set()
+
+    c._finalize_chunk = finalize_and_notify
     t = threading.Thread(target=c._compute_worker_pipelined, args=(0,), daemon=True)
     t.start()
-    # Give the worker time to consume the queue and drain in-flight on Empty.
-    deadline = time.time() + 5.0
-    while len(c.finalized) < n and time.time() < deadline:
-        time.sleep(0.02)
-    c.stop_workers.set()
-    t.join(2.0)
+    try:
+        assert drained.wait(5), "Worker did not drain its in-flight chunks"
+    finally:
+        c.stop_workers.set()
+        t.join(2)
     assert not t.is_alive()
     assert c.finalized == list(range(n))
 

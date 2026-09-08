@@ -3,11 +3,12 @@
 import json
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-TEMPLATE = Path(__file__).parents[1] / "src/gsMap/report/static/template.html"
+from tests.paths import REPO_ROOT
+
+TEMPLATE = REPO_ROOT / "src/gsMap/report/static/template.html"
 
 
 @pytest.fixture

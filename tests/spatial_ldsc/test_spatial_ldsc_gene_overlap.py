@@ -58,9 +58,7 @@ def test_gene_alignment_excludes_unmapped_from_gene_overlap():
 
 
 def test_sparse_weight_is_canonical_after_gene_column_reordering():
-    original = sp.csr_matrix(
-        np.array([[1, 2, 3], [4, 0, 6]], dtype=np.float32)
-    )
+    original = sp.csr_matrix(np.array([[1, 2, 3], [4, 0, 6]], dtype=np.float32))
     reordered = original[:, [2, 0, 1]].tocsr()
     assert not reordered.has_canonical_format
 

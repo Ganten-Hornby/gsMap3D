@@ -97,7 +97,7 @@ jobs:
           # hard-code :0 — that points at a nonexistent server and hangs VTK.
           COLUMNS: 120
         run: |
-          python -m pytest --cov=src \
+          python -m pytest tests --cov=src \
               --junitxml=junit.xml -o junit_family=legacy \
               --cov-report=term-missing \
               --cov-report=xml \

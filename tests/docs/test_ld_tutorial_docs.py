@@ -5,12 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 from scripts.docs.test_ld_tutorial import ld_tutorial_blocks
-from tests.test_direct_tutorials import cli_settings
 
 import gsMap.config
 import gsMap.ldscore.pipeline
-
-REPO = Path(__file__).resolve().parents[1]
+from tests.docs.helpers import cli_settings
+from tests.paths import REPO_ROOT as REPO
 
 
 @pytest.mark.parametrize(("number", "strategy", "window"), [(0, "tss", 50000), (1, "center", 0)])

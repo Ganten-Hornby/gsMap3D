@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pytest
 from click import Context
+from scripts.docs.validate_examples import tutorial_code
 from typer.main import get_command
 
 from gsMap.cli import app
+from tests.docs.helpers import cli_settings
+from tests.paths import REPO_ROOT as REPO
 
-REPO = Path(__file__).resolve().parents[1]
 SOURCE = REPO / "docs/source"
 
 
@@ -165,7 +167,6 @@ def test_key_concepts_keeps_practical_inputs_and_current_flags():
 
 
 def test_key_concepts_placeholder_usage_matches_cli_python(tmp_path, monkeypatch):
-    from tests.test_direct_tutorials import cli_settings
     from typer.testing import CliRunner
 
     import gsMap.pipeline
@@ -277,7 +278,6 @@ def normalize(value):
 
 
 def test_e16_full_cli_python_recipes(example_workspace, monkeypatch):
-    from tests.test_direct_tutorials import cli_settings, tutorial_code
     from typer.testing import CliRunner
 
     import gsMap.pipeline
@@ -344,7 +344,6 @@ def test_e16_full_cli_python_recipes(example_workspace, monkeypatch):
 
 def test_tuning_snippets_match_cli_options(example_workspace, monkeypatch):
     """Run the short Python edits and corresponding CLI overrides on a real config."""
-    from tests.test_direct_tutorials import cli_settings
     from typer.testing import CliRunner
 
     import gsMap.config

@@ -49,9 +49,7 @@ def test_find_common_hvg_accepts_gene_named_var_index(tmp_path, monkeypatch):
     genes = [f"gene_{i}" for i in range(400)]
     sample_paths = {}
     for sample_index in range(2):
-        adata = anndata.AnnData(
-            X=sp.csr_matrix(np.ones((4, len(genes)), dtype=np.float32))
-        )
+        adata = anndata.AnnData(X=sp.csr_matrix(np.ones((4, len(genes)), dtype=np.float32)))
         adata.var_names = genes
         adata.var.index.name = "gene"
         sample_path = tmp_path / f"sample_{sample_index}.h5ad"
