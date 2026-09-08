@@ -16,7 +16,7 @@ import os
 import shutil
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +26,8 @@ import pandas as pd
 import plotly
 import scanpy as sc
 import scipy.sparse as sp
+from joblib.externals.loky import ProcessPoolExecutor
+from joblib.externals.loky.backend.context import get_context
 
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
@@ -1706,7 +1708,7 @@ def _calculate_gene_annotation_stats(
     """Assign each gene to the annotation with the largest median GSS."""
 
     gss_frame = pd.DataFrame(marker_scores, index=analysis_spots, columns=gene_names)
-    grouped_gss = gss_frame.groupby(annotations).median()
+    grouped_gss = gss_frame.groupby(annotations, observed=True).median()
     gene_stats = pd.DataFrame(
         {
             "gene": grouped_gss.columns,
@@ -2095,6 +2097,27 @@ def _materialize_plot_alias(source: Path, target: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _diagnostic_plot_pool(max_workers: int) -> ProcessPoolExecutor:
+    """Start isolated plotting processes without forking the live JAX runtime.
+
+    Loky also supports interactive Python callers without re-running their main
+    module. Each plot is single-threaded inside its separately budgeted worker.
+    """
+    return ProcessPoolExecutor(
+        max_workers=max_workers,
+        context=get_context("loky"),
+        env={
+            "JAX_PLATFORMS": "cpu",
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "BLIS_NUM_THREADS": "1",
+            "NUMBA_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        },
+    )
+
+
 def _render_gene_diagnostic_plots_refactored(
     report_config: QuickModeConfig,
     metadata: pd.DataFrame,
@@ -2215,7 +2238,7 @@ def _render_gene_diagnostic_plots_refactored(
     task_semaphore = threading.Semaphore(max_pending_tasks)
     max_loading_threads = min(4, len(sample_names_sorted))
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with _diagnostic_plot_pool(max_workers) as executor:
 
         def process_sample(sample_name):
             sample_requests = requests_by_sample.get(sample_name, [])
