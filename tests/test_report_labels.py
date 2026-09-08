@@ -102,6 +102,76 @@ def test_umap_numeric_annotations_remain_categorical(tmp_path):
     assert isinstance(payload["color_maps"]["IQ"], list)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "source",
+        "annotations",
+        "style",
+        "missing_output",
+        "edited_output",
+        "corrupt_manifest",
+        "missing_manifest",
+        "version",
+        "force",
+    ],
+)
+def test_umap_export_cache_validates_source_settings_and_output(tmp_path, monkeypatch, change):
+    from gsMap.report import report_data
+
+    csv = tmp_path / "umap_data.csv"
+    frame = pd.DataFrame(
+        {
+            "spot": ["01", "02"],
+            "sample_name": ["001", "001"],
+            "domain": ["01", "02"],
+            "umap_cell_x": [0, 1],
+            "umap_cell_y": [1, 0],
+        }
+    )
+    frame.to_csv(csv, index=False)
+    js = tmp_path / "js"
+    meta = {"annotations": ["domain"]}
+    _export_umap_js(tmp_path, js, meta)
+    output = js / "umap_data.js"
+    manifest_file = js / "umap_export_manifest.json"
+    before = output.read_bytes()
+    original_read = report_data._read_report_csv
+    reads = []
+
+    def read(*args, **kwargs):
+        reads.append(args[0])
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(report_data, "_read_report_csv", read)
+    if change == "source":
+        frame.loc[0, "umap_cell_x"] = 100
+        frame.to_csv(csv, index=False)
+    elif change == "annotations":
+        meta["annotations"] = []
+    elif change == "style":
+        meta["umap_info"] = {"point_size_cell": 7}
+    elif change == "missing_output":
+        output.unlink()
+    elif change == "edited_output":
+        output.write_text("truncated")
+    elif change == "corrupt_manifest":
+        manifest_file.write_text("{")
+    elif change == "missing_manifest":
+        manifest_file.unlink()
+    elif change == "version":
+        manifest = json.loads(manifest_file.read_text())
+        manifest["inputs"]["version"] = -1
+        manifest_file.write_text(json.dumps(manifest))
+    _export_umap_js(tmp_path, js, meta, force=change == "force")
+    assert len(reads) == (0 if change == "none" else 1)
+    if change not in {"source", "annotations", "style"}:
+        assert output.read_bytes() == before
+    else:
+        assert output.read_bytes() != before
+
+
 def test_empty_cauchy_collection_exports_valid_empty_index(tmp_path):
     config = SimpleNamespace(
         annotation_list=["domain"],

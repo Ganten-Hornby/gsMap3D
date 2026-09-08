@@ -887,7 +887,7 @@
                             <label>
                                 <span class="control-label flex justify-between gap-3">
                                     <span>Point size</span>
-                                    <span x-text="((Number(currentSampleData?.point_size || 1.5) * Number(spatial2dPointScale))).toFixed(1) + ' px'"></span>
+                                    <span x-text="Number(spatial2dPointSizePixels).toFixed(1) + ' px'"></span>
                                 </span>
                                 <input type="range" min="0.5" max="12" step="0.25" x-model.number="spatial2dPointScale"
                                     @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
@@ -1458,7 +1458,7 @@
                     </div>
 
                     <!-- Cauchy Heatmap -->
-                    <div x-show="cauchyActivated && !loadingCauchyData" class="border-t border-gray-200">
+                    <div x-show="cauchyActivated && (!loadingCauchyData || cauchyHeatmapSelectionMatches)" class="border-t border-gray-200">
                         <div
                             class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap justify-between items-center gap-4">
                             <div>
@@ -1710,7 +1710,7 @@
                 spatial3dAnnotationCache: {},
                 _spatial3dTraitCacheOrder: [],
                 _spatial3dAnnotationCacheOrder: [],
-                spatial3dViewMode: 'trait',
+                spatial3dViewMode: 'compare',
                 spatial3dAspectMode: 'physical',
                 spatial3dPointSize: 1.2,
                 spatial3dOpacity: 0.72,
@@ -1725,11 +1725,12 @@
                 spatial2dPlotTraitInitialized: false,
                 spatial2dPlotAnnotationInitialized: false,
                 spatial2dActivated: false,
-                spatial2dViewMode: 'trait',
+                spatial2dViewMode: 'compare',
                 spatial2dPointScale: 1.0,
+                spatial2dPointSizePixels: 1.5,
                 spatial2dError: '',
                 spatial2dAssociationMinLogP: 0,
-                spatial2dAssociationOpacityStrength: 0.65,
+                spatial2dAssociationOpacityStrength: 0,
                 allSampleTraitOverviewOpen: false,
                 singleSampleTraitOverviewOpen: false,
                 multiSamplePlotStatus: 'idle',
@@ -1985,6 +1986,8 @@
                 _geneFilterKey: '',
                 _cauchyFilterCache: null,
                 _cauchyFilterKey: '',
+                _cauchyHeatmapSelectionKey: '',
+                _cauchyRequestSerial: 0,
 
                 // Performance optimization caches
                 _umapTraitColorCache: null,      // { values, order, cmax }
@@ -2314,7 +2317,8 @@
                         this.umapAnnotationColumns = this.umapData.annotation_columns || [];
                         this.selectedUmapAnnotation = this.umapAnnotationColumns[0] || '';
                         this.umapActivated = true;
-                        this.$nextTick(() => this.renderUmapPlots());
+                        await this.waitForLayoutPaint();
+                        this.renderUmapPlots();
                         return this.umapData;
                     } catch (error) {
                         console.error('Failed to load UMAP data:', error);
@@ -2445,12 +2449,18 @@
                     }
                 },
 
+                get cauchyHeatmapSelectionMatches() {
+                    return this._cauchyHeatmapSelectionKey ===
+                        JSON.stringify([this.cauchyViewMode, this.selectedAnnotationCategory]);
+                },
+
                 async loadActiveCauchyData() {
                     if (!this.cauchyIndex) return;
                     const mode = this.cauchyViewMode;
                     const trait = this.selectedTrait;
                     const annotation = this.selectedAnnotationCategory;
-                    const requestKey = `${mode}\u001f${trait}\u001f${annotation}`;
+                    // A sequence also distinguishes A -> B -> A while shards load.
+                    const requestKey = ++this._cauchyRequestSerial;
                     this._cauchyRequestKey = requestKey;
                     this.cauchyError = '';
                     this.loadingCauchyData = true;
@@ -2472,15 +2482,25 @@
                             )
                         ]);
                         if (requestKey !== this._cauchyRequestKey) return;
+                        const selectionKey = JSON.stringify([mode, annotation]);
+                        // The heatmap contains every trait. Changing the table's
+                        // selected trait must not recluster or redraw this same matrix.
+                        const heatmapUnchanged = this._cauchyHeatmapSelectionKey === selectionKey &&
+                            this.cauchyHeatmapData === heatmapRows &&
+                            document.getElementById('cauchyHeatmap')?.data?.length > 0;
                         this.cauchyData = tableRows;
                         this.cauchyHeatmapData = heatmapRows;
+                        this._cauchyHeatmapSelectionKey = selectionKey;
                         this._cauchyFilterCache = null;
                         this._cauchyFilterKey = '';
-                        this.$nextTick(() => this.renderCauchyHeatmap());
+                        if (!heatmapUnchanged) this.$nextTick(() => {
+                            if (requestKey === this._cauchyRequestKey) this.renderCauchyHeatmap();
+                        });
                     } catch (error) {
                         if (requestKey === this._cauchyRequestKey) {
                             this.cauchyData = [];
                             this.cauchyHeatmapData = [];
+                            this._cauchyHeatmapSelectionKey = '';
                             this._cauchyFilterCache = null;
                             this._cauchyFilterKey = '';
                             this.cauchyError = error?.message || 'Could not load enrichment data.';
@@ -2796,9 +2816,9 @@
                     try {
                         await Promise.all(plots.map(plot => Promise.resolve(Plotly.Plots.resize(plot))));
                         if (center) {
-                            const origin = { x: 0, y: 0, z: 0 };
+                            const camera = this.fittedSpatial3dCamera(plots[0]._fullLayout?.scene?.camera);
                             await Promise.all(plots.map(plot => Promise.resolve(
-                                Plotly.relayout(plot, { 'scene.camera.center': origin })
+                                Plotly.relayout(plot, { 'scene.camera': camera })
                             )));
                         }
                     } finally {
@@ -3222,9 +3242,10 @@
                     };
                 },
 
-                spatial3dLayout() {
+                spatial3dLayout(plot = null) {
+                    const camera = plot?._fullLayout?.scene?.camera || this.fittedSpatial3dCamera();
                     return {
-                        scene: this.spatial3dScene(),
+                        scene: { ...this.spatial3dScene(), camera: JSON.parse(JSON.stringify(camera)) },
                         margin: { l: 0, r: 0, t: 8, b: 0 },
                         paper_bgcolor: '#ffffff',
                         plot_bgcolor: '#ffffff',
@@ -3276,7 +3297,7 @@
                     const rendered = Plotly.react(
                         plot,
                         traces,
-                        this.spatial3dLayout(),
+                        this.spatial3dLayout(plot),
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
@@ -3348,7 +3369,7 @@
                     const rendered = Plotly.react(
                         plot,
                         traces,
-                        this.spatial3dLayout(),
+                        this.spatial3dLayout(plot),
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
@@ -3357,11 +3378,11 @@
                     return rendered;
                 },
 
-                async renderSpatial3dViews() {
+                async renderSpatial3dViews({ traitOnly = false } = {}) {
                     if (!this.spatial3dBase) return;
                     const renders = [];
                     if (this.spatial3dViewMode !== 'annotation') renders.push(this.renderSpatial3dTrait());
-                    if (this.spatial3dViewMode !== 'trait') renders.push(this.renderSpatial3dAnnotation());
+                    if (!traitOnly && this.spatial3dViewMode !== 'trait') renders.push(this.renderSpatial3dAnnotation());
                     await Promise.all(renders.filter(Boolean).map(render => Promise.resolve(render)));
                 },
 
@@ -3379,12 +3400,23 @@
                     });
                 },
 
-                resetSpatial3dCamera() {
-                    const camera = {
-                        eye: { x: 1.25, y: 1.25, z: 1.25 },
+                fittedSpatial3dCamera(current = null) {
+                    const distance = this.spatial3dViewMode === 'compare' ? 1.8 : 1.25;
+                    const eye = current?.eye || { x: 1.25, y: 1.25, z: 1.25 };
+                    const radius = Math.hypot(eye.x, eye.y, eye.z);
+                    const scale = radius > 0 ? Math.max(1, Math.sqrt(3) * distance / radius) : 1;
+                    return {
                         up: { x: 0, y: 0, z: 1 },
+                        ...current,
+                        eye: radius > 0
+                            ? { x: eye.x * scale, y: eye.y * scale, z: eye.z * scale }
+                            : { x: distance, y: distance, z: distance },
                         center: { x: 0, y: 0, z: 0 }
                     };
+                },
+
+                resetSpatial3dCamera() {
+                    const camera = this.fittedSpatial3dCamera();
                     for (const id of ['spatial3dPlotTrait', 'spatial3dPlotAnnotation']) {
                         const plot = document.getElementById(id);
                         if (plot?.data) Plotly.relayout(plot, { 'scene.camera': camera });
@@ -3569,9 +3601,10 @@
                         if (this.manhattanActivated) this.loadManhattanData().catch(e => console.error('Manhattan load:', e));
                         if (this.umapActivated) try { this.renderUmapPlotTrait(); } catch(e) { console.error('UMAP trait render:', e); }
                         if (sampleName === this.selectedSample && this.spatial2dViewMode !== 'annotation') {
-                            try { this.renderSpatial2DPlot(); } catch(e) { console.error('2D trait render:', e); }
+                            try { this.renderSpatial2DPlot({ traitOnly: true }); } catch(e) { console.error('2D trait render:', e); }
                         }
-                        try { this.renderSpatial3dViews(); } catch(e) { console.error('3D trait render:', e); }
+                        this.renderSpatial3dViews({ traitOnly: true })
+                            .catch(e => console.error('3D trait render:', e));
                         this.loadingSpatial2dTraitData = false;
                     });
                     if (this.cauchyActivated) {
@@ -4456,6 +4489,7 @@
                         automargin: false
                     };
                     return {
+                        autosize: true,
                         xaxis: { ...axis, scaleanchor: 'y', scaleratio: 1 },
                         yaxis: { ...axis },
                         hovermode: 'closest',
@@ -4466,6 +4500,17 @@
                         showlegend: false,
                         uirevision: `umap-${divId}`
                     };
+                },
+
+                async fitUmapToContainer(plot) {
+                    // A plot first mounted in a hidden panel can retain Plotly's
+                    // 700-pixel fallback width after its real panel becomes visible.
+                    if (plot?.data && plot._fullLayout && plot.clientWidth > 0 && plot.clientHeight > 0 && (
+                        Math.abs(plot._fullLayout.width - plot.clientWidth) > 1 ||
+                        Math.abs(plot._fullLayout.height - plot.clientHeight) > 1
+                    )) {
+                        await Plotly.Plots.resize(plot);
+                    }
                 },
 
                 colorChannels(color) {
@@ -4738,7 +4783,8 @@
 
                     Promise.resolve(
                         Plotly.react(plotDiv, [trace], this.umapLayout(divId, 64), this.getPlotlyConfig())
-                    ).then(() => this.bindPointHoverTooltip(plotDiv));
+                    ).then(() => this.fitUmapToContainer(plotDiv))
+                        .then(() => this.bindPointHoverTooltip(plotDiv));
                 },
 
                 // Optimized: render discrete (annotation) UMAP with cached trace indices
@@ -4790,7 +4836,8 @@
 
                     Promise.resolve(
                         Plotly.react(plotDiv, traces, this.umapLayout(divId), this.getPlotlyConfig())
-                    ).then(() => this.bindPointHoverTooltip(plotDiv));
+                    ).then(() => this.fitUmapToContainer(plotDiv))
+                        .then(() => this.bindPointHoverTooltip(plotDiv));
                 },
 
                 // Legacy method for backward compatibility (used in init)
@@ -4830,13 +4877,13 @@
                 },
 
                 // Render only the visible 2D views; comparison mode keeps both viewports synchronized.
-                renderSpatial2DPlot() {
+                renderSpatial2DPlot({ traitOnly = false } = {}) {
                     if (!this.plotlyReady || !this.currentSampleData) return;
                     this.spatial2dError = '';
                     if (this.spatial2dViewMode !== 'annotation') {
                         this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
                     }
-                    if (this.spatial2dViewMode !== 'trait') {
+                    if (!traitOnly && this.spatial2dViewMode !== 'trait') {
                         this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
                     }
                 },
@@ -4879,9 +4926,7 @@
                         return;
                     }
 
-                    // Use pre-computed point size if available, otherwise calculate
-                    const pointSize = (data.point_size || this.estimateSpatialPointSize(x, y))
-                        * Number(this.spatial2dPointScale);
+                    const pointSize = this.resolveSpatial2dPointSize(data, plotDiv, plotType);
                     const opacity = 0.9;
 
                     let traces = [];
@@ -5054,6 +5099,8 @@
 
                     try {
                         Promise.resolve(Plotly.react(plotDiv, traces, layout, config)).then(() => {
+                            this.bindSpatial2dPointSizing(plotDiv, data, plotType);
+                            this.updateSpatial2dPointSize(plotDiv);
                             this.bindPointHoverTooltip(plotDiv);
                             if (this.spatial2dViewMode === 'compare') {
                                 const targetId = plotType === 'trait'
@@ -5090,9 +5137,66 @@
                     });
                 },
 
-                // Helper function to estimate point size for spatial plot
+                resolveSpatial2dPointSize(data, plot, plotType = 'trait') {
+                    const diameter = Number(data.point_geometry?.diameter);
+                    let baseSize = Number(data.point_size) || this.estimateSpatialPointSize(data.sx, data.sy);
+                    if (Number.isFinite(diameter) && diameter > 0) {
+                        const axes = plot?._fullLayout;
+                        const scales = ['xaxis', 'yaxis'].map(name => {
+                            const axis = axes?.[name];
+                            const span = Math.abs(Number(axis?.range?.[1]) - Number(axis?.range?.[0]));
+                            return span > 0 ? Number(axis?._length) / span : NaN;
+                        }).filter(value => Number.isFinite(value) && value > 0);
+                        if (scales.length) {
+                            baseSize = diameter * Math.min(...scales);
+                        } else {
+                            const ranges = data.coordinate_ranges || [];
+                            const width = Math.max(1, (plot?.clientWidth || 560) - (plotType === 'trait' ? 74 : 24));
+                            const height = Math.max(1, (plot?.clientHeight || 560) - 20);
+                            const scale = Math.min(
+                                ranges[0] > 0 ? width / ranges[0] : Infinity,
+                                ranges[1] > 0 ? height / ranges[1] : Infinity
+                            );
+                            if (Number.isFinite(scale)) baseSize = diameter * scale * 0.9;
+                        }
+                    }
+                    const multiplier = Number(this.spatial2dPointScale);
+                    return Math.min(96, Math.max(1.25, baseSize) *
+                        (Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1));
+                },
+
+                updateSpatial2dPointSize(plot, refinements = 2) {
+                    const context = plot?.__gsMapPointSizing;
+                    if (!context || !plot.data?.length || context.data !== this.currentSampleData) return;
+                    const size = this.resolveSpatial2dPointSize(context.data, plot, context.plotType);
+                    if (context.plotType === 'trait' || this.spatial2dViewMode === 'annotation') {
+                        this.spatial2dPointSizePixels = size;
+                    }
+                    // Restyle only the glyph, never coordinates, color limits or opacity.
+                    // Plotly may slightly change autorange padding after a restyle.
+                    // Allow at most two refinements, never an unbounded redraw loop.
+                    if (Math.abs(Number(plot.data[0]?.marker?.size) - size) > 0.03) {
+                        Promise.resolve(Plotly.restyle(plot, {'marker.size': size}))
+                            .then(() => {
+                                if (refinements > 0 && plot.__gsMapPointSizing === context) {
+                                    this.updateSpatial2dPointSize(plot, refinements - 1);
+                                }
+                            }).catch(error => {
+                                console.warn('Unable to resize 2D markers:', error);
+                            });
+                    }
+                },
+
+                bindSpatial2dPointSizing(plot, data, plotType) {
+                    plot.__gsMapPointSizing = {data, plotType};
+                    if (!plot.on || plot.__gsMapPointSizingBound) return;
+                    plot.__gsMapPointSizingBound = true;
+                    plot.on('plotly_relayout', () => this.updateSpatial2dPointSize(plot));
+                },
+
+                // Fallback for payloads without coordinate-space sizing metadata.
                 estimateSpatialPointSize(x, y) {
-                    if (x.length === 0) return 5;
+                    if (!x?.length || !y?.length) return 5;
 
                     // Calculate data range using reduce to avoid stack overflow on large arrays
                     // Note: Math.min(...arr) fails when arr.length > ~100k elements

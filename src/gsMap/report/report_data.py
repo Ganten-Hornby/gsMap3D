@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import math
+import mmap
 import os
 import shutil
 import threading
@@ -46,10 +47,12 @@ from gsMap.spatial_ldsc.io import (
     acquire_marker_scores_memmap,
     load_marker_scores_memmap_format,
 )
+from gsMap.utils.h5ad import read_h5ad_metadata, read_obsm_rows
 
 logger = logging.getLogger(__name__)
 
 CAUCHY_PAYLOAD_VERSION = 3
+UMAP_PAYLOAD_VERSION = 1
 CAUCHY_TABLE_CONSTANT_COLUMNS = {"trait", "annotation_name", "type"}
 CAUCHY_HEATMAP_METRICS = (
     "mlog10_p_cauchy",
@@ -98,7 +101,7 @@ def _cauchy_collection_signature(config, traits) -> dict:
                         "annotation": annotation,
                         "all_samples": all_samples,
                         "path": str(path),
-                        "signature": _cauchy_source_signature(path) if path.is_file() else None,
+                        "signature": _report_file_signature(path) if path.is_file() else None,
                     }
                 )
     return {"version": CAUCHY_PAYLOAD_VERSION, "sources": sources}
@@ -666,7 +669,7 @@ class ReportDataManager:
                 data_are_current = (
                     isinstance(manifest, dict)
                     and manifest.get("inputs") == source_signature
-                    and manifest.get("output") == _cauchy_source_signature(cauchy_file)
+                    and manifest.get("output") == _report_file_signature(cauchy_file)
                 )
             except (OSError, ValueError) as error:
                 logger.warning(
@@ -678,7 +681,7 @@ class ReportDataManager:
             _atomic_write_text(
                 manifest_path,
                 json.dumps(
-                    {"inputs": source_signature, "output": _cauchy_source_signature(cauchy_file)}
+                    {"inputs": source_signature, "output": _report_file_signature(cauchy_file)}
                 ),
             )
 
@@ -689,49 +692,55 @@ class ReportDataManager:
             logger.info("Compact lazy Cauchy payloads are current. Skipping export.")
 
     def prepare_umap_data(self):
-        """Prepare UMAP data from embeddings."""
+        """Reuse UMAP data only when embeddings, settings and trait values match."""
         umap_file = self.report_data_dir / "umap_data.csv"
         umap_js = self.js_data_dir / "umap_data.js"
-        requested_limit = self.report_config.downsampling_n_spots_umap
-        if self._is_step_complete([umap_file, umap_js]):
-            report_meta_path = self.web_report_dir / "report_meta.json"
-            if report_meta_path.is_file():
-                try:
-                    with report_meta_path.open() as handle:
-                        self.umap_info = json.load(handle).get("umap_info")
-                except (OSError, ValueError) as error:
-                    logger.warning(f"Could not restore cached UMAP metadata: {error}")
-            cached_limit = (
-                self.umap_info.get("downsampling_n_spots_umap") if self.umap_info else None
-            )
-            if self.umap_info and cached_limit == requested_limit:
-                logger.info("UMAP data already exists. Skipping.")
-                _export_umap_js(
-                    self.report_data_dir,
-                    self.js_data_dir,
-                    {
-                        "umap_info": self.umap_info,
-                        "annotations": self.report_config.annotation_list,
-                    },
-                )
-                return
-            if self.umap_info:
-                logger.info(
-                    "Cached UMAP limit differs from the requested limit "
-                    f"({cached_limit} != {requested_limit}); regenerating the UMAP export."
-                )
-            else:
-                logger.warning(
-                    "Cached UMAP data are missing their metadata; regenerating the UMAP export."
-                )
+        manifest_path = self.report_data_dir / "umap_coordinates_manifest.json"
+        signature = _umap_input_signature(self.report_config, self.metadata)
+        self.umap_info = None
+        if self._is_step_complete([umap_file, manifest_path]):
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                if (
+                    isinstance(manifest, dict)
+                    and manifest.get("inputs") == signature
+                    and manifest.get("output") == _report_file_signature(umap_file)
+                    and isinstance(manifest.get("umap_info"), dict)
+                ):
+                    self.umap_info = manifest["umap_info"]
+                    logger.info("UMAP coordinates and trait values are current.")
+            except (OSError, ValueError) as error:
+                logger.debug(f"Rebuilding UMAP data after an unreadable manifest: {error}")
 
-        self.umap_info = _prepare_umap_data(
-            self.report_config, self.metadata, self.report_data_dir
-        )
+        if self.umap_info is None:
+            self.umap_info = _prepare_umap_data(
+                self.report_config, self.metadata, self.report_data_dir
+            )
+            if self.umap_info is None:
+                # A removed embedding/source must not resurrect an old browser payload.
+                for path in (
+                    umap_file,
+                    umap_js,
+                    manifest_path,
+                    self.js_data_dir / "umap_export_manifest.json",
+                ):
+                    path.unlink(missing_ok=True)
+                return
+            _atomic_write_text(
+                manifest_path,
+                json.dumps(
+                    {
+                        "inputs": signature,
+                        "output": _report_file_signature(umap_file),
+                        "umap_info": self.umap_info,
+                    }
+                ),
+            )
         _export_umap_js(
             self.report_data_dir,
             self.js_data_dir,
             {"umap_info": self.umap_info, "annotations": self.report_config.annotation_list},
+            force=self.force_re_run,
         )
 
     def prepare_3d_visualization(self):
@@ -1016,18 +1025,14 @@ def _prepare_umap_data(
         logger.warning(f"Concatenated adata not found at {adata_path}")
         return None
 
-    adata = ad.read_h5ad(adata_path)
-
     # Get embedding keys from config
     cell_emb_key = getattr(report_config, "latent_representation_cell", "emb_cell")
     niche_emb_key = getattr(report_config, "latent_representation_niche", None)
-
-    # Check if embeddings exist
-    if cell_emb_key not in adata.obsm:
-        logger.warning(f"Cell embedding '{cell_emb_key}' not found in adata.obsm")
-        return None
-
-    has_niche = niche_emb_key is not None and niche_emb_key in adata.obsm
+    adata = read_h5ad_metadata(
+        adata_path,
+        obs_columns=["sample_name", *report_config.annotation_list],
+        include_var=False,
+    )
 
     # Stratified subsampling
     n_subsample = report_config.downsampling_n_spots_umap
@@ -1043,6 +1048,19 @@ def _prepare_umap_data(
         selected_spots = spot_names
 
     logger.info(f"Using {len(selected_spots)} spots for UMAP calculation")
+    original_rows = adata.obs_names.get_indexer(selected_spots)
+    adata_sub.obsm.update(
+        read_obsm_rows(
+            adata_path,
+            [cell_emb_key, niche_emb_key, "X_umap", "X_umap_niche"],
+            original_rows,
+        )
+    )
+    del adata
+    if cell_emb_key not in adata_sub.obsm:
+        logger.warning(f"Cell embedding '{cell_emb_key}' not found in adata.obsm")
+        return None
+    has_niche = niche_emb_key is not None and niche_emb_key in adata_sub.obsm
 
     # Calculate UMAPs
     umap_cell = _calculate_umap_from_embeddings(adata_sub, cell_emb_key, umap_key="X_umap")
@@ -1267,7 +1285,12 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
 
     logger.info(f"Loading coordinates from {report_config.concatenated_latent_adata_path}")
 
-    adata_concat = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
+    adata_concat = read_h5ad_metadata(
+        report_config.concatenated_latent_adata_path,
+        obs_columns=["sample_name"],
+        obsm_keys=[report_config.spatial_key],
+        include_var=False,
+    )
     sample_info = adata_concat.obs[["sample_name"]]
 
     # For scRNA-seq, spatial_key is None — no spatial coordinates available
@@ -1531,6 +1554,30 @@ def _read_marker_score_rows(
     return output
 
 
+def _read_diagnostic_marker_values(gss_adata, spots, genes):
+    """Gather diagnostic genes in caller order with sequential source-row I/O.
+
+    Report spots can be lexicographically ordered, which makes direct mmap
+    gathers fault through the same section repeatedly on network filesystems.
+    The wrapper's observation order already matches its marker-file row order.
+    """
+    matrix = gss_adata.X
+    if (
+        isinstance(matrix, np.memmap)
+        and isinstance(matrix.base, mmap.mmap)
+        and matrix.offset == 0
+        and matrix.flags.c_contiguous
+    ):
+        rows = gss_adata.obs_names.get_indexer(spots)
+        columns = gss_adata.var_names.get_indexer(genes)
+        if np.any(rows < 0) or np.any(columns < 0):
+            raise KeyError("Diagnostic spots or genes are absent from the marker matrix")
+        return _read_marker_score_rows(
+            Path(matrix.filename), matrix.shape, matrix.dtype, rows, columns, n_workers=1
+        )
+    return gss_adata[spots, genes].X
+
+
 def _load_gss_pcc_sample(
     report_config: QuickModeConfig,
     ldsc_results: pd.DataFrame,
@@ -1546,7 +1593,10 @@ def _load_gss_pcc_sample(
             f"Marker score at {marker_path} is incomplete or corrupted. Please recompute."
         )
 
-    source_adata = ad.read_h5ad(report_config.concatenated_latent_adata_path, backed="r")
+    source_adata = read_h5ad_metadata(
+        report_config.concatenated_latent_adata_path,
+        obs_columns=["sample_name", *report_config.annotation_list],
+    )
     row_order = None
     try:
         shape = (source_adata.n_obs, source_adata.n_vars)
@@ -2172,6 +2222,8 @@ def _render_gene_diagnostic_plots_refactored(
             if not sample_requests:
                 return
 
+            sample_started = time.perf_counter()
+
             h5ad_path = report_config.sample_h5ad_dict[sample_name]
             sample_metadata = metadata_common[metadata_common["sample_name"] == sample_name]
             if sample_metadata.empty:
@@ -2207,12 +2259,13 @@ def _render_gene_diagnostic_plots_refactored(
                 return
 
             adata_sample_exp = adata_rep[sample_spots, available_genes].copy()
-            adata_sample_gss = gss_adata[sample_spots, available_genes].to_memory()
+            expression_ready = time.perf_counter()
+            gss_matrix = _read_diagnostic_marker_values(gss_adata, sample_spots, available_genes)
+            markers_ready = time.perf_counter()
             del adata_rep
             gc.collect()
 
             exp_matrix = adata_sample_exp.X
-            gss_matrix = adata_sample_gss.X
             gene_positions = {gene: index for index, gene in enumerate(available_genes)}
 
             for request in sample_requests:
@@ -2258,7 +2311,14 @@ def _render_gene_diagnostic_plots_refactored(
                     task_semaphore.release()
                     raise
 
-            del adata_sample_exp, adata_sample_gss
+            logger.info(
+                f"Diagnostic sample queued: {sample_name}; {len(sample_spots):,} spots, "
+                f"{len(available_genes)} genes; expression/metadata="
+                f"{expression_ready - sample_started:.2f}s, "
+                f"marker read={markers_ready - expression_ready:.2f}s, "
+                f"render enqueue={time.perf_counter() - markers_ready:.2f}s"
+            )
+            del adata_sample_exp, gss_matrix
             gc.collect()
 
         with ThreadPoolExecutor(max_workers=max_loading_threads) as loader:
@@ -2783,11 +2843,33 @@ def _export_per_sample_spatial_js(
     )
 
 
-def _cauchy_source_signature(cauchy_file: Path) -> dict[str, int]:
-    stat = cauchy_file.stat()
+def _report_file_signature(path: Path) -> dict[str, int]:
+    stat = path.stat()
     return {
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _umap_input_signature(config, metadata: pd.DataFrame) -> dict:
+    """Fingerprint the inputs to the coordinate/annotation/trait CSV, not just its size."""
+    source = Path(config.concatenated_latent_adata_path)
+    traits = list(config.trait_name_list)
+    available_traits = [trait for trait in traits if trait in metadata.columns]
+    trait_rows = pd.util.hash_pandas_object(
+        metadata[["spot", *available_traits]], index=False
+    ).to_numpy()
+    return {
+        "version": UMAP_PAYLOAD_VERSION,
+        "source_path": str(source.resolve()),
+        "source": _report_file_signature(source) if source.is_file() else None,
+        "cell_embedding": getattr(config, "latent_representation_cell", "emb_cell"),
+        "niche_embedding": getattr(config, "latent_representation_niche", None),
+        "annotations": list(config.annotation_list),
+        "traits": traits,
+        "available_traits": available_traits,
+        "trait_values": hashlib.sha256(trait_rows.tobytes()).hexdigest(),
+        "downsampling_n_spots_umap": config.downsampling_n_spots_umap,
     }
 
 
@@ -2814,7 +2896,7 @@ def _cauchy_payloads_current(cauchy_file: Path, js_data_dir: Path) -> bool:
         return False
     if manifest.get("version") != CAUCHY_PAYLOAD_VERSION:
         return False
-    if manifest.get("source") != _cauchy_source_signature(cauchy_file):
+    if manifest.get("source") != _report_file_signature(cauchy_file):
         return False
     outputs = manifest.get("outputs", [])
     return bool(outputs) and all(
@@ -2976,7 +3058,7 @@ def _export_cauchy_js(data_dir: Path, js_data_dir: Path) -> None:
 
     manifest = {
         "version": CAUCHY_PAYLOAD_VERSION,
-        "source": _cauchy_source_signature(cauchy_file),
+        "source": _report_file_signature(cauchy_file),
         "outputs": sorted(output_files),
     }
     _atomic_write_text(
@@ -3050,11 +3132,37 @@ def _export_report_meta_js(data_dir: Path, js_data_dir: Path, meta: dict):
         _write_text_if_changed(js_data_dir / "report_meta.js", js_content)
 
 
-def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
-    """Export UMAP data as JS module."""
+def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict, *, force: bool = False):
+    """Export UMAP CSV to JS; reuse only a matching source, settings and output."""
     umap_file = data_dir / "umap_data.csv"
     if umap_file.exists():
         annotations = meta.get("annotations", [])
+        umap_info = meta.get("umap_info") or {}
+        signature = {
+            "version": UMAP_PAYLOAD_VERSION,
+            "source_path": str(umap_file.resolve()),
+            "source": _report_file_signature(umap_file),
+            "annotations": annotations,
+            "point_size_cell": umap_info.get("point_size_cell", 4),
+            "point_size_niche": umap_info.get("point_size_niche", 4),
+            "default_opacity": umap_info.get("default_opacity", 0.8),
+        }
+        js_file = js_data_dir / "umap_data.js"
+        manifest_file = js_data_dir / "umap_export_manifest.json"
+        if not force and manifest_file.is_file() and js_file.is_file():
+            try:
+                manifest = json.loads(manifest_file.read_text())
+                if (
+                    isinstance(manifest, dict)
+                    and manifest.get("inputs") == signature
+                    and manifest.get("output") == _report_file_signature(js_file)
+                    and js_file.stat().st_size > 0
+                ):
+                    logger.info("UMAP browser payload is current. Skipping CSV-to-JS export.")
+                    return
+            except (OSError, ValueError) as error:
+                logger.debug(f"Rebuilding UMAP export after an unreadable manifest: {error}")
+
         df = _read_report_csv(umap_file, labels=["spot", "sample_name", *annotations])
 
         # Build efficient columnar structure for ScatterGL
@@ -3063,15 +3171,15 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
             "sample_name": df["sample_name"].tolist(),
             "umap_cell_x": df["umap_cell_x"].tolist(),
             "umap_cell_y": df["umap_cell_y"].tolist(),
-            "point_size_cell": meta.get("umap_info", {}).get("point_size_cell", 4),
-            "default_opacity": meta.get("umap_info", {}).get("default_opacity", 0.8),
+            "point_size_cell": signature["point_size_cell"],
+            "default_opacity": signature["default_opacity"],
         }
 
         # Add niche UMAP if available
         if "umap_niche_x" in df.columns:
             data_struct["umap_niche_x"] = df["umap_niche_x"].tolist()
             data_struct["umap_niche_y"] = df["umap_niche_y"].tolist()
-            data_struct["point_size_niche"] = meta.get("umap_info", {}).get("point_size_niche", 4)
+            data_struct["point_size_niche"] = signature["point_size_niche"]
             data_struct["has_niche"] = True
         else:
             data_struct["has_niche"] = False
@@ -3115,5 +3223,10 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
         data_struct["color_maps"] = color_maps
 
         js_content = f"window.GSMAP_UMAP = {json.dumps(data_struct, separators=(',', ':'))};"
-        _atomic_write_text(js_data_dir / "umap_data.js", js_content)
+        _atomic_write_text(js_file, js_content)
+        # Commit the manifest last: interrupted or changed exports cannot appear current.
+        _atomic_write_text(
+            manifest_file,
+            json.dumps({"inputs": signature, "output": _report_file_signature(js_file)}),
+        )
         logger.info(f"Exported UMAP data with {len(df)} points")

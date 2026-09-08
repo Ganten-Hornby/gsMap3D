@@ -15,6 +15,7 @@ from gsMap.report.report_data import (
 )
 from gsMap.report.spatial_payload import (
     SPATIAL_PAYLOAD_VERSION,
+    _point_geometry_2d,
     _point_size_2d,
     _stratified_positions,
     decode_typed_array,
@@ -144,6 +145,52 @@ def test_2d_point_size_has_visible_density_aware_bounds():
 
     assert 1.25 <= dense_size <= 6.0
     assert dense_size < sparse_size <= 6.0
+
+
+def test_2d_geometry_recognizes_rotated_square_and_hexagonal_lattices():
+    x, y = np.meshgrid(np.arange(40), np.arange(40))
+    square = np.column_stack((x.ravel(), y.ravel())).astype(float)
+    angle = 0.37
+    rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    result = _point_geometry_2d(square @ rotation)
+    assert result["lattice"] == "square"
+    assert result["spacing"] == pytest.approx(1)
+    assert result["diameter"] == pytest.approx(np.sqrt(2))
+    # Visium-like hexagonal centers need less overlap than square bins.
+    hexagonal = np.column_stack(((x + (y % 2) / 2).ravel(), (y * np.sqrt(3) / 2).ravel()))
+    result = _point_geometry_2d(hexagonal)
+    assert result["lattice"] == "hexagonal"
+    assert result["diameter"] == pytest.approx(1.15)
+    assert result["point_size"] > 6  # No sparse-spot 6-pixel ceiling.
+
+
+def test_2d_geometry_is_robust_to_duplicates_invalid_rows_and_coordinate_units():
+    x, y = np.meshgrid(np.arange(40), np.arange(40))
+    xy = np.column_stack((x.ravel(), y.ravel())).astype(float)
+    original = _point_geometry_2d(xy)
+    repeated = np.vstack((xy, xy, [[np.nan, 0], [1, np.inf]]))
+    assert _point_geometry_2d(repeated) == original
+    scaled = _point_geometry_2d(xy * 100 + 350)
+    assert scaled["diameter"] == pytest.approx(original["diameter"] * 100)
+    assert scaled["point_size"] == original["point_size"]
+    assert _point_geometry_2d(xy[::-1]) == original
+
+
+@pytest.mark.parametrize("xy", [np.empty((0, 2)), np.zeros((10, 2)), np.full((4, 2), np.nan)])
+def test_2d_geometry_has_finite_degenerate_fallback(xy):
+    assert _point_geometry_2d(xy) == {
+        "spacing": 0.0,
+        "diameter": 0.0,
+        "lattice": "degenerate",
+        "point_size": 6.0,
+    }
+
+
+def test_2d_geometry_does_not_fill_irregular_cell_cloud_as_a_grid():
+    xy = np.random.default_rng(42).uniform(0, 100, (10_000, 2))
+    result = _point_geometry_2d(xy)
+    assert result["lattice"] == "irregular"
+    assert result["diameter"] == pytest.approx(result["spacing"] * 1.15)
 
 
 def test_spatial_3d_export_uses_shared_geometry_and_lazy_features(tmp_path):

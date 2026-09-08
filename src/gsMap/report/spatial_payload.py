@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SPATIAL_PAYLOAD_VERSION = 9
+SPATIAL_PAYLOAD_VERSION = 10
 P_VALUE_COLORS = [
     "#313695",
     "#4575b4",
@@ -341,19 +341,49 @@ def _point_size_3d(n_points: int) -> float:
     return round(float(np.clip(520.0 / np.sqrt(max(1, n_points)), 1.0, 4.0)), 2)
 
 
+def _point_geometry_2d(coordinates: np.ndarray) -> dict:
+    """Measure robust display spacing, without making the browser build a KNN tree.
+
+    Circular glyphs need a larger diameter on a square lattice than on a hexagonal
+    lattice to cover the space between centers. These are display glyph sizes, not
+    estimates of biological cell/spot diameters. Query at most 8192 positions against
+    the full unique coordinate set; duplicates and invalid rows do not bias spacing.
+    """
+    from scipy.spatial import cKDTree
+
+    xy = np.asarray(coordinates, dtype=np.float64)
+    if xy.ndim != 2 or xy.shape[1] != 2:
+        raise ValueError("2D point sizing requires an (n, 2) coordinate array")
+    xy = np.unique(xy[np.isfinite(xy).all(axis=1)], axis=0)
+    if len(xy) < 2:
+        return {"spacing": 0.0, "diameter": 0.0, "lattice": "degenerate", "point_size": 6.0}
+    rows = np.linspace(0, len(xy) - 1, min(len(xy), 8192), dtype=np.int64)
+    distances, _ = cKDTree(xy).query(xy[rows], k=min(7, len(xy)), workers=1)
+    q10, spacing, q90 = np.quantile(distances[:, 1], [0.1, 0.5, 0.9])
+    lattice, coverage = "irregular", 1.15
+    if len(xy) >= 32 and q10 > 0 and q90 / q10 < 1.2:
+        # Six equidistant neighbors identify a hexagonal lattice; four identify
+        # a square lattice. Sparse borders do not dominate these median ratios.
+        neighbor_ratios = np.median(distances[:, 1:], axis=0) / spacing
+        if neighbor_ratios[5] < 1.2:
+            lattice, coverage = "hexagonal", 1.15
+        elif neighbor_ratios[3] < 1.2:
+            lattice, coverage = "square", float(np.sqrt(2))
+    diameter = float(spacing * coverage)
+    extent = float(np.ptp(xy, axis=0).max())
+    # Fallback for consumers without a measured viewport. The browser uses the
+    # data-unit diameter with its actual equal-aspect axes, including after zoom.
+    pixels = diameter * 560 / extent if extent > 0 else 6.0
+    return {
+        "spacing": float(spacing),
+        "diameter": diameter,
+        "lattice": lattice,
+        "point_size": round(float(np.clip(pixels, 1.25, 32.0)), 2),
+    }
+
+
 def _point_size_2d(coordinates: np.ndarray) -> float:
-    """Choose a visible full-extent marker size without hiding tissue structure."""
-
-    n_points = len(coordinates)
-    if n_points <= 1:
-        return 6.0
-
-    from gsMap.report.visualize import estimate_plotly_point_size
-
-    _, geometric_size = estimate_plotly_point_size(coordinates, 560)
-    density_size = 420.0 / np.sqrt(n_points)
-    point_size = max(float(geometric_size) * 1.25, float(density_size))
-    return round(float(np.clip(point_size, 1.25, 6.0)), 2)
+    return _point_geometry_2d(coordinates)["point_size"]
 
 
 def _outputs_exist(root: Path, outputs: list[str]) -> bool:
@@ -630,10 +660,12 @@ def export_sample_spatial_payloads(
         if has_spatial_coordinates:
             sx = sx_all[positions]
             sy = sy_all[positions]
-            point_size = _point_size_2d(np.column_stack((sx, sy)))
+            point_geometry = _point_geometry_2d(np.column_stack((sx, sy)))
+            point_size = point_geometry["point_size"]
         else:
             sx = sy = None
             point_size = 5.0
+            point_geometry = None
 
         annotation_payloads = {}
         for annotation, (categories, colors) in annotation_schemas.items():
@@ -650,6 +682,7 @@ def export_sample_spatial_payloads(
             "n_points": int(len(positions)),
             "n_points_original": n_original,
             "point_size": round(float(point_size), 2),
+            "point_geometry": point_geometry,
             "coordinate_ranges": [
                 _finite_range(sx_all[all_positions]) if sx_all is not None else 0.0,
                 _finite_range(sy_all[all_positions]) if sy_all is not None else 0.0,

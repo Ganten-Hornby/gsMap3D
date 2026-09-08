@@ -116,7 +116,8 @@ def test_spatial3d_compare_waits_for_layout_then_resizes_and_recenters(
     assert "await this.waitForLayoutPaint()" in report_template
     assert "await this.resizeSpatial3dViews({ center: mode === 'compare' })" in report_template
     assert "Plotly.Plots.resize(plot)" in report_template
-    assert "'scene.camera.center': origin" in report_template
+    assert "'scene.camera': camera" in report_template
+    assert "this.fittedSpatial3dCamera" in report_template
 
 
 def test_large_secondary_datasets_are_loaded_near_their_sections(
@@ -151,7 +152,8 @@ def test_sample_selector_supports_fuzzy_keyboard_search(report_template: str) ->
 def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
     report_template: str,
 ) -> None:
-    assert "spatial2dViewMode: 'trait'" in report_template
+    assert "spatial2dViewMode: 'compare'" in report_template
+    assert "spatial3dViewMode: 'compare'" in report_template
     assert "setSpatial2dViewMode('compare')" in report_template
     assert "setSpatial2dViewMode('annotation')" in report_template
     assert 'aria-label="2D point-size multiplier"' in report_template
@@ -279,7 +281,7 @@ def test_spatial_association_views_have_independent_q95_opacity_controls(
     assert "spatial3dAssociationMinLogP: 0" in report_template
     assert "spatial2dAssociationMinLogP: 0" in report_template
     assert "spatial3dAssociationOpacityStrength: 0.65" in report_template
-    assert "spatial2dAssociationOpacityStrength: 0.65" in report_template
+    assert "spatial2dAssociationOpacityStrength: 0," in report_template
     assert report_template.count('aria-label="Association opacity gradient strength"') == 1
     assert report_template.count('aria-label="2D association opacity gradient strength"') == 1
     assert "filterAssociationPlotPoints(points, values, thresholdValue = 0)" in report_template
@@ -296,17 +298,17 @@ def test_report_exposes_lazy_all_sample_trait_overview(report_template: str) -> 
     assert "multiSampleTraitPlotUrl" in report_template
     assert "singleSampleMultiTraitPlotUrl" in report_template
     assert (
-        '<template x-if="allSampleTraitOverviewOpen && '
-        "multiSamplePlotStatus !== 'error'\">"
+        "<template x-if=\"allSampleTraitOverviewOpen && multiSamplePlotStatus !== 'error'\">"
     ) in report_template
     assert (
-        '<template x-if="singleSampleTraitOverviewOpen && '
-        "singleSamplePlotStatus !== 'error'\">"
+        "<template x-if=\"singleSampleTraitOverviewOpen && singleSamplePlotStatus !== 'error'\">"
     ) in report_template
     assert ':src="multiSampleTraitPlotUrl"' in report_template
     assert ':src="singleSampleMultiTraitPlotUrl"' in report_template
     assert "allSampleTraitOverviewOpen ? multiSampleTraitPlotUrl : ''" not in report_template
-    assert "singleSampleTraitOverviewOpen ? singleSampleMultiTraitPlotUrl : ''" not in report_template
+    assert (
+        "singleSampleTraitOverviewOpen ? singleSampleMultiTraitPlotUrl : ''" not in report_template
+    )
     assert "multiSamplePlotStatus === 'error'" in report_template
     assert "singleSamplePlotStatus === 'error'" in report_template
     assert 'decoding="async"' in report_template
