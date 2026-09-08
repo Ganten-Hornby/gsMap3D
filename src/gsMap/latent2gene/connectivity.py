@@ -388,6 +388,9 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
     """
     Find homogeneous neighbors with soft-priority or historical hard filtering.
 
+    Only valid candidates with positive thresholded cell similarity are ranked.
+    Slots without an eligible candidate have index -1 and zero similarities.
+
     Returns:
         homogeneous_neighbors_array: Indices of selected neighbors (batch, homogeneous_neighbors)
         selected_cell_sims: Cell similarity scores for selected neighbors (batch, homogeneous_neighbors)
@@ -407,6 +410,11 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
     # Apply cell threshold: values below threshold become 0.0
     cell_sims = jnp.where(raw_cell_sims >= cell_embedding_similarity_threshold, raw_cell_sims, 0.0)
 
+    # High-quality and annotation restrictions are already applied to the spatial
+    # candidate pool. Enforce positive weight before niche prioritization: a
+    # zero-weight niche match must not displace a usable soft-priority fallback.
+    eligible_neighbor_mask = (spatial_neighbors >= 0) & (cell_sims > 0)
+
     # 2b. Niche (Spatial) Similarity
     niche_sims = jnp.einsum("bd,bkd->bk", emb_niche_batch_norm, spatial_emb_niche_norm)
 
@@ -421,10 +429,9 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
     else:
         ranking_score = cell_sims + jnp.where(pass_spatial_mask, BONUS, 0.0)
 
-    # Step 4: Mask Invalid Neighbors in Ranking
-    # Force padding indices (original -1s) to the bottom of the list
-    valid_neighbor_mask = spatial_neighbors >= 0
-    ranking_score = jnp.where(valid_neighbor_mask, ranking_score, -100.0)
+    # Step 4: Rank only eligible neighbors; padding and zero-weight candidates
+    # must sort after every eligible candidate, regardless of niche similarity.
+    ranking_score = jnp.where(eligible_neighbor_mask, ranking_score, -jnp.inf)
 
     # Step 5: Sort and Select
     # Get indices of top scores
@@ -443,11 +450,10 @@ def _find_homogeneous_spot_dual_embedding_batch_jit(
             0.0,
         )
 
-    # Step 6: Final Masking
-    # If the selected neighbor is invalid (which happens if k1 < homogeneous_neighbors
-    # or all valid neighbors were exhausted), ensure returned similarities are 0.0.
-    final_valid_mask = homogeneous_neighbors_array >= 0
-
+    # Step 6: Keep the fixed-size output, but represent exhausted/ineligible
+    # slots explicitly as missing. Downstream rank reads handle -1 with weight 0.
+    final_valid_mask = eligible_neighbor_mask[batch_idx, top_homo_idx]
+    homogeneous_neighbors_array = jnp.where(final_valid_mask, homogeneous_neighbors_array, -1)
     selected_cell_sims = jnp.where(final_valid_mask, selected_cell_sims, 0.0)
     selected_niche_sims = jnp.where(final_valid_mask, selected_niche_sims, 0.0)
 
