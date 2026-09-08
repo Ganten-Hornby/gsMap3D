@@ -156,7 +156,6 @@ def test_exact_ld_windows_make_results_batch_size_invariant() -> None:
         ([0.0, 0.0, 0.0], "do not define a genetic map"),
         ([0.0, np.nan, 1.0], "not finite"),
         ([0.0, 2.0, 1.0], "not sorted"),
-        ([-0.1, 0.0, 1.0], "negative"),
     ],
 )
 def test_cm_windows_reject_invalid_maps(coordinates: list[float], match: str) -> None:
@@ -170,6 +169,25 @@ def test_cm_windows_reject_invalid_maps(coordinates: list[float], match: str) ->
     )
     with pytest.raises(ValueError, match=match):
         resolve_ld_window(bim, ld_wind=1, ld_unit="CM")
+
+
+def test_cm_window_is_invariant_to_map_origin() -> None:
+    bim = pd.DataFrame(
+        {
+            "CHR": 22,
+            "SNP": [f"rs{i}" for i in range(5)],
+            "CM": [-0.1, 0.0, 0.5, 1.0, 2.0],
+            "BP": np.arange(5) * 100,
+        }
+    )
+    before = construct_batches(bim, bim.SNP.tolist(), 2, ld_wind=1, ld_unit="CM")
+    shifted = bim.assign(CM=bim.CM + 100.0)
+    after = construct_batches(shifted, shifted.SNP.tolist(), 2, ld_wind=1, ld_unit="CM")
+    assert [(b.ref_start_idx, b.ref_end_idx) for b in before] == [
+        (b.ref_start_idx, b.ref_end_idx) for b in after
+    ]
+    for left, right in zip(before, after, strict=True):
+        np.testing.assert_array_equal(left.hm3_indices, right.hm3_indices)
 
 
 def test_fused_annotation_and_weight_ld_share_exact_l2_block() -> None:

@@ -56,8 +56,8 @@ def resolve_ld_window(
         coordinates = pd.to_numeric(bim_df["CM"], errors="coerce").to_numpy(dtype=np.float64)
         if not np.all(np.isfinite(coordinates)):
             raise ValueError(f"CM coordinates are not finite for chromosome {chromosome}")
-        if np.any(coordinates < 0):
-            raise ValueError(f"CM coordinates are negative for chromosome {chromosome}")
+        # Genetic-map origins are arbitrary. Legacy interpolated maps can start
+        # below zero; only coordinate differences define the LD window.
         if np.any(coordinates[1:] < coordinates[:-1]):
             raise ValueError(f"CM coordinates are not sorted for chromosome {chromosome}")
         if len(coordinates) < 2 or np.all(coordinates == coordinates[0]):
