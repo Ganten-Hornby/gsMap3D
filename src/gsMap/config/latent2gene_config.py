@@ -272,7 +272,7 @@ class LatentToGeneCoreConfig:
             min=0,
             max=100,
         ),
-    ] = 1
+    ] = 2
 
     cross_slice_selection_mode: Annotated[
         CrossSliceSelectionMode,

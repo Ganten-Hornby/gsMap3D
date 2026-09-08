@@ -36,6 +36,7 @@ class FindLatentModelConfig:
     n_neighbors: Annotated[
         int,
         typer.Option(help="Number of external neighbors for corrected LGCN graphs", min=1, max=50),
+        {"__display_in_quick_mode_cli__": True},
     ] = 10
 
     graph_mode: Annotated[
@@ -54,11 +55,13 @@ class FindLatentModelConfig:
     graph_radius: Annotated[
         float | None,
         typer.Option(help="Physical radius for radius graph modes", min=0.0),
+        {"__display_in_quick_mode_cli__": True},
     ] = None
 
     graph_sigma: Annotated[
         float | None,
         typer.Option(help="Gaussian sigma for weighted-radius edges", min=0.0),
+        {"__display_in_quick_mode_cli__": True},
     ] = None
 
     graph_z_scale: Annotated[

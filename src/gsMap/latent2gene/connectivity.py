@@ -46,7 +46,7 @@ def find_spatial_neighbors_with_slices(
     high_quality_cell_mask: np.ndarray = None,
     k_central: int = 101,
     k_adjacent: int = 50,
-    n_adjacent_slices: int = 1,
+    n_adjacent_slices: int = 2,
     cross_slice_selection_mode: CrossSliceSelectionMode | str = (CrossSliceSelectionMode.ORDINAL),
     cross_slice_max_distance: float | None = None,
     cross_slice_z_coordinate: int = -1,
@@ -103,6 +103,12 @@ def find_spatial_neighbors_with_slices(
     neighbor_pool_mask = query_cell_mask & high_quality_cell_mask
     neighbor_pool_indices = np.where(neighbor_pool_mask)[0]
 
+    total_neighbors_per_cell = k_central + (
+        2 * n_adjacent_slices * k_adjacent if slice_ids is not None else 0
+    )
+    if n_query_cells == 0 or len(neighbor_pool_indices) == 0:
+        return np.full((n_query_cells, total_neighbors_per_cell), -1, dtype=np.int32), {}
+
     # If no slice_ids provided, perform standard 2D KNN
     if slice_ids is None:
         logger.info(f"No slice IDs provided, performing standard 2D KNN with k={k_central}")
@@ -111,11 +117,13 @@ def find_spatial_neighbors_with_slices(
         # Query for all query cells (including non-HQ ones)
         _, neighbor_local_indices = kdtree.query(
             coords[query_cell_mask],
-            k=min(k_central, len(neighbor_pool_indices)),
+            k=list(range(1, k_central + 1)),
             workers=-1,  # Use all available cores
         )
         # Convert local indices to global indices
-        spatial_neighbors = neighbor_pool_indices[neighbor_local_indices]
+        spatial_neighbors = np.full(neighbor_local_indices.shape, -1, dtype=np.int32)
+        valid = neighbor_local_indices < len(neighbor_pool_indices)
+        spatial_neighbors[valid] = neighbor_pool_indices[neighbor_local_indices[valid]]
         return spatial_neighbors, {}
 
     # Slice-aware neighbor search with fixed-size arrays
@@ -300,7 +308,7 @@ def find_spatial_neighbors_with_slices(
             # Central slice neighbors (fixed k_central)
             central_kdtree, central_neighbor_pool_global_indices = slice_kdtrees[slice_id]
             _, central_neighbor_local_indices = central_kdtree.query(
-                query_coords, k=k_central, workers=-1
+                query_coords, k=list(range(1, k_central + 1)), workers=-1
             )
 
             # Handle invalid indices returned by KDTree when k > number of points in tree
@@ -328,7 +336,7 @@ def find_spatial_neighbors_with_slices(
 
             # We need to fill exactly 2*n_adjacent_slices slots in the output array
             # The array structure is: [offset=1,dir=-1], [offset=1,dir=+1], [offset=2,dir=-1], [offset=2,dir=+1], ...
-            for slot_idx in range(2 * n_adjacent_slices):
+            for slot_idx in range(2 * n_adjacent_slices if k_adjacent > 0 else 0):
                 if slot_idx < len(adjacent_slices_to_search):
                     # We have a slice to search for this slot
                     adjacent_slice_id, _, _ = adjacent_slices_to_search[slot_idx]
@@ -337,7 +345,7 @@ def find_spatial_neighbors_with_slices(
                         adjacent_slice_id
                     ]
                     _, adjacent_neighbor_local_indices = adjacent_kdtree.query(
-                        query_coords, k=k_adjacent, workers=-1
+                        query_coords, k=list(range(1, k_adjacent + 1)), workers=-1
                     )
 
                     # Handle invalid indices for adjacent slices
@@ -779,7 +787,7 @@ class ConnectivityMatrixBuilder:
         slice_ids: np.ndarray | None = None,
         k_central: int = 101,
         k_adjacent: int = 50,
-        n_adjacent_slices: int = 1,
+        n_adjacent_slices: int = 2,
         cross_slice_selection_mode: CrossSliceSelectionMode | str = (
             CrossSliceSelectionMode.ORDINAL
         ),
