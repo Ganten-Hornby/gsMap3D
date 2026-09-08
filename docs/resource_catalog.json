@@ -24,7 +24,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/ld_weights/1000g-hc-grch38-v50-afr/r1/bundle.tar.gz",
       "sha256": "eebbc64d2a6bc0461a40b19b3e97b95cecd1ab78fc92a437b456ba950cc82679",
       "bytes": 116921720,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "1000g-hc-grch38-v50-amr",
@@ -48,7 +48,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/ld_weights/1000g-hc-grch38-v50-amr/r1/bundle.tar.gz",
       "sha256": "cad43a1fdfb272272d7c285cb0023a236f9118271f85845355b02b9128fe1e48",
       "bytes": 106932802,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "1000g-hc-grch38-v50-eas",
@@ -72,7 +72,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/ld_weights/1000g-hc-grch38-v50-eas/r1/bundle.tar.gz",
       "sha256": "230b69e568bf8e78d6c834368021ce5597514b1a8f8174dab64183f6cfcf4a29",
       "bytes": 88061130,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "1000g-hc-grch38-v50-eur",
@@ -96,7 +96,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/ld_weights/1000g-hc-grch38-v50-eur/r1/bundle.tar.gz",
       "sha256": "8cdbc210cc0a5fe67d2d68905d0bb655016f87d2bd00333e5ad4beec777a1e9c",
       "bytes": 96557937,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "1000g-hc-grch38-v50-sas",
@@ -120,7 +120,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/ld_weights/1000g-hc-grch38-v50-sas/r1/bundle.tar.gz",
       "sha256": "e45dba156d80de89d17da8917ae26652b1dfe881bdc80503249147e0128beada",
       "bytes": 97418877,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "1000g-grch37-v46-eur",
@@ -138,7 +138,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/ld_weights/1000g-grch37-v46-eur/r1/bundle.tar.gz",
       "sha256": "c64ed1edb9f3b073a9e72ec3d0500313a7e86155a9a1361b21a083bcfa7523cc",
       "bytes": 95673094,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "mouse-e16-mosta",
@@ -154,7 +154,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/2d/mouse-e16-mosta/r1/bundle.tar.gz",
       "sha256": "6bfded4459e6ebc852f22aa7ef2da0ee24e884e6206c2b762a36e2008e8730dc",
       "bytes": 1414470220,
-      "status": "validated_local_not_published",
+      "status": "published_verified",
       "display": {
         "description": "Single E1S1 section with anatomical annotations.",
         "n_spots": 121767,
@@ -188,7 +188,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/2d/mouse-visium/r1/bundle.tar.gz",
       "sha256": "34b4a620ef4a30c27c24fd5cca491cf6b8062e3710697a5a31908286c5bb8b2e",
       "bytes": 207235178,
-      "status": "validated_local_not_published",
+      "status": "published_verified",
       "display": {
         "description": "Adult brain (coronal and sagittal) and kidney; three Visium sections.",
         "n_spots": 7628,
@@ -237,7 +237,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/human-gastrulation/r1/bundle.tar.gz",
       "sha256": "4aa861162bd142a53351099a87a3ef9e086dd31666a7ae8d794598d7167451fa",
       "bytes": 162464045,
-      "status": "validated_local_not_published",
+      "status": "published_verified",
       "display": {
         "description": "62 registered sections with spatial annotations.",
         "n_spots": 38562,
@@ -264,7 +264,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/homologs/homologs/r1/bundle.tar.gz",
       "sha256": "72f8af4884bc959c209c1b174b449000c9b9095d84826c023fde750a35ca1866",
       "bytes": 236412,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "additional-annotations",
@@ -275,7 +275,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/annotations/additional-annotations/r1/bundle.tar.gz",
       "sha256": "8c3833820559555ee233c8b50ded9184f8104af487384f4a2614691adc13ac6c",
       "bytes": 150207921,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "ldscore-tutorial",
@@ -286,7 +286,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reference/ld_panels/ldscore-tutorial/r1/bundle.tar.gz",
       "sha256": "8876fcbd7bedb8f11432123e017e29b29c9bc2c0d83a6dabe1460970232825a3",
       "bytes": 578143551,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "ci-test-data",
@@ -297,7 +297,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/tutorials/ci-test-data/r1/bundle.tar.gz",
       "sha256": "1d3c2a0495a084d368e0dad9a8d45990e02e9266af998d64e04a696a934b1a59",
       "bytes": 586759483,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "example-traits",
@@ -316,7 +316,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/gwas/example-traits/r1/bundle.tar.gz",
       "sha256": "d7c6f67abedf681037038290bbed619be1a4c89984256698fd855977dfa4be16",
       "bytes": 244132275,
-      "status": "validated_local_not_published"
+      "status": "published_verified"
     },
     {
       "id": "mouse-e11",
@@ -333,7 +333,7 @@
       "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/mouse-e11/r2/bundle.tar.gz",
       "sha256": "cfaf7769957fad0b99126ae9a0c6930c6e5cd2b5874da4d9aac4026cd572fadf",
       "bytes": 5698181755,
-      "status": "validated_local_not_published",
+      "status": "published_verified",
       "display": {
         "description": "84 serial sections; raw counts in X, spatial domains and manual cell-type annotations.",
         "n_spots": 6993667,
