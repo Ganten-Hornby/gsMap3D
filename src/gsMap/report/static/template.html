@@ -1376,6 +1376,10 @@
                     </div>
 
                     <!-- Cauchy Table -->
+                    <div x-show="cauchyError" role="alert" class="m-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                        <p x-text="cauchyError"></p>
+                        <button type="button" class="mt-2 underline" @click="loadCauchyData().catch(() => {})">Retry enrichment</button>
+                    </div>
                     <div x-show="cauchyActivated && !loadingCauchyData" class="overflow-x-auto custom-scrollbar max-h-[400px]">
                         <table class="min-w-full divide-y divide-gray-200">
                             <thead class="bg-gray-50 sticky top-0">
@@ -1463,6 +1467,7 @@
                                     cauchyHeatmapMetric === 'mlog10_p_median' ? 'Median P-Value' : 'Q95'
                                 ) + ')'"></h3>
                                 <p class="text-xs text-gray-500 mt-1" x-text="
+                                    cauchyViewMode === 'sample' ? 'Median across per-sample results; not a pooled Cauchy test.' :
                                     cauchyHeatmapMetric === 'mlog10_p_cauchy' ? 'Aggregated significance across all spots.' :
                                     cauchyHeatmapMetric === 'mlog10_p_median' ? 'Median spot significance in the annotation.' :
                                     'The 95th percentile of significance (-log10p) across spots.'
@@ -1515,6 +1520,12 @@
                                 ">Auto</button>
                         </div>
                         <div id="cauchyHeatmap" class="w-full"></div>
+                        <p x-show="!cauchyHeatmapData?.length && !cauchyError" class="p-4 text-sm text-gray-500">
+                            No enrichment heatmap data for this selection.
+                        </p>
+                        <p x-show="cauchyHeatmapData?.length" class="px-4 pb-3 text-xs text-gray-500">
+                            Blank cells indicate missing results. Normalization changes colors only; hover values retain the original scale.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -1994,6 +2005,7 @@
                 cauchyViewMode: 'all',
                 cauchyActivated: false,
                 loadingCauchyData: false,
+                cauchyError: '',
                 cauchySortKey: 'mlog10_p_median',
                 cauchySortAsc: false,
                 cauchyHeatmapMetric: 'mlog10_p_cauchy',
@@ -2314,6 +2326,7 @@
 
                 async loadCauchyData() {
                     this.loadingCauchyData = true;
+                    this.cauchyError = '';
                     try {
                         if (!this.cauchyIndex) {
                             await this.loadScript('js_data/cauchy_index.js');
@@ -2324,6 +2337,7 @@
                         await this.loadActiveCauchyData();
                         return this.cauchyData;
                     } catch (error) {
+                        this.cauchyError = error?.message || 'Could not load enrichment data.';
                         console.error('Failed to load enrichment data:', error);
                         throw error;
                     } finally {
@@ -2438,6 +2452,7 @@
                     const annotation = this.selectedAnnotationCategory;
                     const requestKey = `${mode}\u001f${trait}\u001f${annotation}`;
                     this._cauchyRequestKey = requestKey;
+                    this.cauchyError = '';
                     this.loadingCauchyData = true;
                     this.cauchyTablePage = 0;
                     try {
@@ -2462,6 +2477,16 @@
                         this._cauchyFilterCache = null;
                         this._cauchyFilterKey = '';
                         this.$nextTick(() => this.renderCauchyHeatmap());
+                    } catch (error) {
+                        if (requestKey === this._cauchyRequestKey) {
+                            this.cauchyData = [];
+                            this.cauchyHeatmapData = [];
+                            this._cauchyFilterCache = null;
+                            this._cauchyFilterKey = '';
+                            this.cauchyError = error?.message || 'Could not load enrichment data.';
+                            this.renderCauchyHeatmap();
+                        }
+                        throw error;
                     } finally {
                         if (requestKey === this._cauchyRequestKey) {
                             this.loadingCauchyData = false;
@@ -3158,10 +3183,10 @@
                     if (!colors?.length) return [[0, '#94a3b8'], [1, '#94a3b8']];
                     if (colors.length === 1) return [[0, colors[0]], [1, colors[0]]];
                     const scale = [];
-                    const denominator = colors.length - 1;
+                    const denominator = colors.length;
                     colors.forEach((color, index) => {
-                        scale.push([Math.max(0, (index - 0.5) / denominator), color]);
-                        scale.push([Math.min(1, (index + 0.5) / denominator), color]);
+                        scale.push([index / denominator, color]);
+                        scale.push([(index + 1) / denominator, color]);
                     });
                     return scale;
                 },
@@ -3995,25 +4020,29 @@
                 // Cauchy Heatmap
                 renderCauchyHeatmap() {
                     const plotDiv = document.getElementById('cauchyHeatmap');
-                    if (!plotDiv || !this.cauchyHeatmapData || this.cauchyHeatmapData.length === 0) return;
+                    if (!plotDiv) return;
 
-                    const data = this.cauchyHeatmapData;
+                    const data = (this.cauchyHeatmapData || []).filter(row =>
+                        row.annotation != null && row.trait != null
+                    );
                     if (data.length === 0) {
                         Plotly.purge(plotDiv);
+                        plotDiv.replaceChildren();
                         return;
                     }
 
                     const metric = this.cauchyHeatmapMetric;
-                    const annotationValues = [...new Set(data.map(r => r.annotation))].sort();
-                    const traitValues = [...new Set(data.map(r => r.trait))].sort();
+                    const annotationValues = [...new Set(data.map(r => String(r.annotation)))].sort();
+                    const traitValues = [...new Set(data.map(r => String(r.trait)))].sort();
 
                     const rowByKey = new Map(data.map(row => [
-                        `${row.annotation}\u001f${row.trait}`,
+                        JSON.stringify([String(row.annotation), String(row.trait)]),
                         row
                     ]));
                     let zData = annotationValues.map(anno => traitValues.map(trait => {
-                        const match = rowByKey.get(`${anno}\u001f${trait}`);
-                        return match && match[metric] != null ? match[metric] : 0;
+                        const match = rowByKey.get(JSON.stringify([anno, trait]));
+                        const value = match?.[metric];
+                        return value != null && Number.isFinite(Number(value)) ? Number(value) : null;
                     }));
 
                     // Deep copy for hover labels
@@ -4022,11 +4051,13 @@
                     // Normalize column-wise (trait-wise)
                     if (this.cauchyHeatmapNormalize) {
                         for (let j = 0; j < traitValues.length; j++) {
-                            const colValues = zData.map(row => row[j]);
+                            const colValues = zData.map(row => row[j]).filter(value => value != null);
+                            if (!colValues.length) continue;
                             const minVal = Math.min(...colValues);
                             const maxVal = Math.max(...colValues);
                             const range = maxVal - minVal;
                             for (let i = 0; i < annotationValues.length; i++) {
+                                if (zData[i][j] == null) continue;
                                 if (range > 0) {
                                     zData[i][j] = (zData[i][j] - minVal) / range;
                                 } else {
@@ -4044,7 +4075,7 @@
                     if (traitValues.length === 1) {
                         // Single trait: sort ascending so highest value is last → appears at top
                         const indices = annotationValues.map((_, i) => i);
-                        indices.sort((a, b) => zData[a][0] - zData[b][0]);
+                        indices.sort((a, b) => (zData[a][0] ?? -Infinity) - (zData[b][0] ?? -Infinity));
                         zData = indices.map(i => zData[i]);
                         hoverZData = indices.map(i => hoverZData[i]);
                         finalAnnotations = indices.map(i => annotationValues[i]);
@@ -4052,13 +4083,21 @@
                         // Multiple traits with clustering enabled
                         try {
                             // Cluster rows (Annotations)
-                            const rowOrder = this.clusterData(zData);
+                            // Missing cells stay blank. Mean imputation is only for
+                            // the distance calculation, never the displayed values.
+                            const means = traitValues.map((_, j) => {
+                                const values = zData.map(row => row[j]).filter(value => value != null);
+                                return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+                            });
+                            let clusteringData = zData.map(row => row.map((value, j) => value ?? means[j]));
+                            const rowOrder = this.clusterData(clusteringData);
+                            clusteringData = rowOrder.map(i => clusteringData[i]);
                             zData = rowOrder.map(i => zData[i]);
                             hoverZData = rowOrder.map(i => hoverZData[i]);
                             finalAnnotations = rowOrder.map(i => annotationValues[i]);
 
                             // Cluster columns (Traits)
-                            const transposed = traitValues.map((_, j) => zData.map(row => row[j]));
+                            const transposed = traitValues.map((_, j) => clusteringData.map(row => row[j]));
                             const colOrder = this.clusterData(transposed);
                             zData = zData.map(row => colOrder.map(j => row[j]));
                             hoverZData = hoverZData.map(row => colOrder.map(j => row[j]));
@@ -4070,8 +4109,12 @@
                         // Multiple traits, no clustering: sort ascending by mean so highest at top
                         const indices = annotationValues.map((_, i) => i);
                         indices.sort((a, b) => {
-                            const meanA = zData[a].reduce((s, v) => s + v, 0) / zData[a].length;
-                            const meanB = zData[b].reduce((s, v) => s + v, 0) / zData[b].length;
+                            const finiteMean = row => {
+                                const values = row.filter(value => value != null);
+                                return values.length ? values.reduce((s, v) => s + v, 0) / values.length : -Infinity;
+                            };
+                            const meanA = finiteMean(zData[a]);
+                            const meanB = finiteMean(zData[b]);
                             return meanA - meanB;
                         });
                         zData = indices.map(i => zData[i]);
@@ -4089,7 +4132,7 @@
 
                     const nAnnotations = finalAnnotations.length;
                     const nTraits = finalTraits.length;
-                    const autoHeight = Math.max(450, nAnnotations * 28 + 230);
+                    const autoHeight = Math.min(3000, Math.max(450, nAnnotations * 28 + 230));
                     const tickFontSize = Math.min(12, Math.max(8, Math.round(300 / nAnnotations)));
 
                     // Use user-specified height if set, otherwise auto-calculate
@@ -4112,10 +4155,14 @@
                         type: 'heatmap',
                         colorscale: colorscale.map((c, i) => [i / (colorscale.length - 1), c]),
                         reversescale: false,
+                        zmin: 0,
+                        zmax: this.cauchyHeatmapNormalize ? 1 : undefined,
+                        hoverongaps: false,
+                        connectgaps: false,
                         customdata: hoverZData,
                         hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{customdata:.2f}<extra></extra>`,
                         colorbar: {
-                            title: { text: metricLabel, side: 'top', font: { size: 11 } },
+                            title: { text: this.cauchyHeatmapNormalize ? 'Within-trait scale (0–1)' : metricLabel, side: 'top', font: { size: 11 } },
                             thickness: 14,
                             len: 0.62,
                             x: 1.035,
@@ -4134,8 +4181,8 @@
                         xaxis: 'x2',
                         yaxis: 'y',
                         colorscale: this.discreteColorScale(annotationColors),
-                        cmin: -0.5,
-                        cmax: Math.max(0.5, finalAnnotations.length - 0.5),
+                        zmin: -0.5,
+                        zmax: Math.max(0.5, finalAnnotations.length - 0.5),
                         showscale: false,
                         hovertemplate: '<b>%{y}</b><br>Same color as spatial and UMAP views<extra></extra>'
                     };
@@ -4147,23 +4194,35 @@
                         heatmapTrace.textfont = { size: Math.min(11, Math.max(7, Math.round(200 / Math.max(nAnnotations, nTraits)))) };
                     }
 
-                    Plotly.react(plotDiv, [heatmapTrace, annotationColorTrace], {
+                    return Promise.resolve(Plotly.react(plotDiv, [heatmapTrace, annotationColorTrace], {
                         title: { text: `Cauchy Enrichment Heatmap: ${metricLabel}`, font: { size: 16 } },
-                        xaxis: { title: 'Trait', tickangle: 45, automargin: true, domain: [0, 0.925] },
+                        xaxis: {
+                            title: 'Trait', type: 'category', categoryorder: 'array', categoryarray: finalTraits,
+                            tickangle: 45, automargin: true, domain: [0, 0.925]
+                        },
                         xaxis2: {
                             domain: [0.95, 0.975],
+                            type: 'category',
                             anchor: 'y',
                             showgrid: false,
                             zeroline: false,
                             showticklabels: false,
                             fixedrange: true
                         },
-                        yaxis: { title: 'Annotation', automargin: true, tickfont: { size: tickFontSize } },
+                        yaxis: {
+                            title: 'Annotation', type: 'category', categoryorder: 'array', categoryarray: finalAnnotations,
+                            automargin: true, tickfont: { size: tickFontSize }
+                        },
                         margin: { l: 150, r: 90, t: 80, b: 150 },
                         height: plotHeight,
                         paper_bgcolor: '#ffffff',
                         plot_bgcolor: '#ffffff'
-                    }, this.getPlotlyConfig());
+                    }, this.getPlotlyConfig())).catch(error => {
+                        Plotly.purge(plotDiv);
+                        plotDiv.replaceChildren();
+                        this.cauchyError = error?.message || 'Could not draw the enrichment heatmap.';
+                        console.error('Enrichment heatmap failed:', error);
+                    });
                 },
 
                 // Hierarchical clustering (UPGMA / average linkage). A heap avoids
