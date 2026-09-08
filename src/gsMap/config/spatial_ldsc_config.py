@@ -45,8 +45,8 @@ class SpatialLDSCComputeConfig:
     ldsc_read_workers: Annotated[
         int,
         typer.Option(
-            help="Number of parallel marker-to-LD-score transform workers. Marker memmap I/O "
-            "uses one bounded sequential source stream.",
+            help="CPU sparse-transform threads, or GPU marker-transform workers. CPU threads "
+            "cooperate on one LD-score batch; marker memmap I/O uses one bounded sequential stream.",
             min=1,
         ),
     ] = 10

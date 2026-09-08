@@ -172,6 +172,13 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     )
                     trait_failures.append((trait_name, error))
                     continue  # Move on to the next trait even if this one fails
+                finally:
+                    # Setup/compute-pool initialization can fail before the
+                    # engine's processing try/finally. Do not leave an output
+                    # thread or partial stream behind when moving to a trait.
+                    writer = getattr(processor, "result_writer", None)
+                    if writer is not None and not writer.closed:
+                        writer.abort()
 
             if trait_failures:
                 failed_traits = ", ".join(name for name, _ in trait_failures)

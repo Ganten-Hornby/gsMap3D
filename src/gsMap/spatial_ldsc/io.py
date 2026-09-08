@@ -18,6 +18,7 @@ from statsmodels.stats.multitest import multipletests
 from gsMap.config import SpatialLDSCConfig
 from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
+from gsMap.utils.h5ad import read_h5ad_metadata
 
 logger = logging.getLogger("gsMap.spatial_ldsc.io")
 
@@ -865,7 +866,14 @@ def load_marker_scores_memmap_format(
         raise ValueError(f"Marker score metadata could not be loaded: {memmap_path}")
 
     logger.info(f"Loading metadata from {metadata_path}")
-    src_adata = ad.read_h5ad(metadata_path, backed="r")
+    # Backed AnnData still eagerly loads obsm, including enormous neighbor arrays.
+    # The marker wrapper needs only metadata and its optional spatial coordinates.
+    src_adata = read_h5ad_metadata(
+        metadata_path,
+        obsm_keys=[getattr(config, "spatial_key", None)],
+        include_uns=True,
+        include_varm=True,
+    )
     row_order = None
     mm = None
     marker_lease = None
@@ -929,13 +937,6 @@ def load_marker_scores_memmap_format(
 
         if obsm_keys:
             logger.info(f"Loaded aligned spatial coordinates from obsm[{spatial_key!r}]")
-        omitted_obsm = len(src_adata.obsm) - len(obsm_keys)
-        if omitted_obsm:
-            logger.info(
-                f"Left {omitted_obsm} non-spatial obsm arrays in the source H5AD "
-                "to bound marker-loader memory"
-            )
-
         logger.info("Constructing AnnData wrapper...")
         adata = ad.AnnData(
             X=mm.memmap,

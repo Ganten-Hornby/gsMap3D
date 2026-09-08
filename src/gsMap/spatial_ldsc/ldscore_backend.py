@@ -99,7 +99,10 @@ class TorchLDScoreBackend(LDScoreBackend):
             device=self.device,
         )
         ldscore_gpu = self.torch.sparse.mm(self.sparse_weight, marker_score_gpu)
-        self.torch.cuda.synchronize()
+        # The DLPack object protocol passes JAX's consumer stream to PyTorch,
+        # which inserts an event dependency on its producer stream. A device-
+        # wide barrier here needlessly waits for the previous JAX regression.
+        # Do not replace this with a raw capsule: that loses stream negotiation.
         self._last_output = ldscore_gpu
         return jax.dlpack.from_dlpack(ldscore_gpu)
 

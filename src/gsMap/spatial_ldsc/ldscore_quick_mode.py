@@ -24,6 +24,7 @@ from rich.progress import (
 from gsMap.config import SpatialLDSCConfig
 
 from .chunk_source import SpatialLDChunkSource
+from .cpu_sparse import available_cpu_count
 from .io import prepare_trait_data
 from .pipeline import LDScoreComputePool, LDScoreStream
 from .regression_kernel import process_spatial_ldsc_batch
@@ -327,22 +328,12 @@ class SpatialLDSCEngine:
     def _resolve_compute_workers(self, backend: str) -> int:
         """Decide how many compute (regression) worker threads to run.
 
-        Each compute worker dispatches a jitted regression and then blocks in
-        ``block_until_ready()``. JAX/XLA already parallelizes a *single* regression
-        across cores (CPU intra-op pool) or on-device (GPU), so the workers buy
-        throughput only by overlapping Python-side overhead (host<->device array
-        conversion, the lock-guarded result accumulation) with JAX compute — not by
-        parallelizing the math itself. The right count is therefore backend- and
-        core-dependent:
-
-        * **GPU** — a single on-device queue already saturates the device; extra
-          workers add cuSolver handle-pool races and device-memory pressure. Pin to 1.
-        * **CPU** — extra workers help on many-core hosts, but each one occupies a
-          core while blocked. If the worker count approaches/exceeds the available
-          cores, XLA's bounded intra-op pool is starved and the pipeline deadlocks
-          (observed on 2-core CI). So cap at ``cpu_count // 2`` (>=1), which leaves
-          headroom for the intra-op pool and source/transform threads, and naturally collapses
-          to 1 on a 2-core box.
+        JAX parallelizes each regression internally. CPU workers allow concurrent
+        batches, but share cores and memory bandwidth with JAX and sparse transforms;
+        a blocked Python worker does not reserve a dedicated core. Cap dispatch
+        concurrency at half the affinity/allocation budget (at least one), retaining
+        the low-core safeguard tested in CI. GPU uses one asynchronous dispatcher
+        to avoid cuSolver handle contention and excess device-memory pressure.
 
         ``GSMAP_LDSC_FORCE_COMPUTE_WORKERS`` overrides the heuristic for power users
         and benchmarking (use with care — it can reintroduce the deadlock on few-core
@@ -362,11 +353,7 @@ class SpatialLDSCEngine:
         if backend == "gpu":
             cap = 1
         else:
-            try:
-                n_cores = len(os.sched_getaffinity(0))
-            except AttributeError:  # not available on all platforms
-                n_cores = os.cpu_count() or 1
-            cap = max(1, n_cores // 2)
+            cap = max(1, available_cpu_count() // 2)
 
         effective = min(configured, cap)
         if effective != configured:
@@ -378,6 +365,16 @@ class SpatialLDSCEngine:
         return effective
 
     def process_all_chunks(self) -> Path:
+        """Run a trait and discard partial output on any initialization/worker failure."""
+        if self.result_writer is None or self.chunk_source is None:
+            raise RuntimeError("Trait is not initialized; call setup_trait first")
+        try:
+            return self._process_all_chunks()
+        except BaseException:
+            self.result_writer.abort()
+            raise
+
+    def _process_all_chunks(self) -> Path:
         """Process all chunks through the production streaming pipeline.
 
         Returns:
@@ -396,13 +393,9 @@ class SpatialLDSCEngine:
         backend = _jax.default_backend()
         effective_compute_workers = self._resolve_compute_workers(backend)
 
-        # On GPU a single stream already saturates the device and extra compute
-        # threads only add cuSolver-handle contention, so instead of more workers
-        # we double-buffer: one worker dispatches `pipeline_depth` chunks ahead and
-        # blocks lazily, overlapping the (large) host->device LD-score upload and
-        # result copy-back with on-device compute. Benchmarked ~1.25x over the
-        # block-after-dispatch path. CPU keeps the multi-worker threads (depth 0),
-        # which win there by running concurrent regressions across idle cores.
+        # GPU dispatches ahead without a per-batch device barrier. In the normal
+        # sparse-GPU path only marker batches are uploaded; LD scores stay on the
+        # device through DLPack. CPU runs concurrent blocking regression workers.
         pipeline_depth = 0
         if backend == "gpu":
             pipeline_depth = max(0, int(os.environ.get("GSMAP_LDSC_GPU_PIPELINE_DEPTH", "2")))
@@ -473,6 +466,7 @@ class SpatialLDSCEngine:
                     # Check for errors
                     source_stream.check_errors()
                     computer.check_errors()
+                    self.result_writer.check_errors()
 
                     # Get current stats from computer
                     n_cells_processed, n_chunks_processed = computer.get_stats()
@@ -547,27 +541,18 @@ class SpatialLDSCEngine:
                     if n_chunks_processed > last_chunks_processed:
                         last_chunks_processed = n_chunks_processed
 
-                        # This would block all threads, so we avoid it
-                        # # Periodic memory check
-                        # if n_chunks_processed % 100 == 0:
-                        #     gc.collect()
                     # Small sleep to prevent busy waiting
                     time.sleep(0.5)
 
         except BaseException:
-            if self.result_writer is not None:
-                self.result_writer.abort()
+            # Unblock compute producers before joining their worker threads.
+            self.result_writer.abort()
             raise
         finally:
             # Clean up resources
             source_stream.close()
             computer.close()
 
-            # Log overall speed
-            total_elapsed = time.time() - start_time
-            n_cells_total, _ = computer.get_stats()
-            overall_speed = n_cells_total / total_elapsed if total_elapsed > 0 else 0
-            logger.info(f"Processing complete. Overall speed: {overall_speed:,.0f} cells/s")
             if source_stream.uses_sequential_windows:
                 io_stats = source_stream.sequential_io_throughput
                 logger.info(
@@ -597,7 +582,14 @@ class SpatialLDSCEngine:
             )
 
         # Validate completeness and atomically publish the streamed result.
-        return self._validate_merge_and_save()
+        output_path = self._validate_merge_and_save()
+        total_elapsed = time.time() - start_time
+        overall_speed = self.total_cells_to_process / total_elapsed if total_elapsed > 0 else 0
+        logger.info(
+            f"Processing complete: {self.total_cells_to_process:,} cells in "
+            f"{total_elapsed:.2f}s ({overall_speed:,.0f} cells/s, including output finalization)"
+        )
+        return output_path
 
     def _add_chunk_result(
         self,

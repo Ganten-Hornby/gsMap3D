@@ -409,9 +409,22 @@ def _source_adata(path):
     return source
 
 
-def test_loader_aligns_marker_rows_with_original_annotations_and_coordinates(tmp_path):
+def test_loader_aligns_marker_rows_with_original_annotations_and_coordinates(
+    tmp_path, monkeypatch
+):
+    from gsMap.utils import h5ad
+
     source_path = tmp_path / "concatenated_latent_adata.h5ad"
     source = _source_adata(source_path)
+    source.obsm["homogeneous_neighbors"] = np.zeros((source.n_obs, 200), dtype=np.int32)
+    source.write_h5ad(source_path)
+    read_elem = h5ad.read_elem
+
+    def selective_read(node):
+        assert node.name not in {"/X", "/obsm", "/obsm/homogeneous_neighbors"}
+        return read_elem(node)
+
+    monkeypatch.setattr(h5ad, "read_elem", selective_read)
     marker_path = tmp_path / "marker_scores.dat"
     marker_values = np.asarray(
         [

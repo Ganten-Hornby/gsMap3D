@@ -1,6 +1,7 @@
 import queue
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,54 @@ class _FakeTorchBackend:
 
     def __init__(self, sparse_weight):
         self.sparse_weight = sparse_weight
+
+
+def test_torch_compute_uses_dlpack_object_without_device_barrier(monkeypatch):
+    source = np.ones((2, 3), dtype=np.float32)
+    producer_output = object()
+    backend = ldscore_backend.TorchLDScoreBackend.__new__(ldscore_backend.TorchLDScoreBackend)
+    backend.device = "cuda:0"
+    backend.sparse_weight = object()
+    # No cuda.synchronize method: compute must rely on the DLPack object protocol.
+    backend.torch = SimpleNamespace(
+        float32=np.float32,
+        as_tensor=lambda array, **kwargs: array,
+        sparse=SimpleNamespace(mm=lambda matrix, dense: producer_output),
+    )
+    imported = []
+    monkeypatch.setattr(
+        ldscore_backend.jax.dlpack,
+        "from_dlpack",
+        lambda tensor: imported.append(tensor) or "jax-result",
+    )
+    assert backend.compute(source) == "jax-result"
+    assert imported == [producer_output]
+
+
+def test_torch_dlpack_gpu_stream_dependency_and_lifetime():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available() or ldscore_backend.jax.default_backend() != "gpu":
+        pytest.skip("Requires a CUDA allocation with both Torch and JAX GPU backends")
+    rng = np.random.default_rng(42)
+    weight = sp.random(500, 64, density=0.1, format="csr", random_state=rng, dtype=np.float32)
+    backend = ldscore_backend.TorchLDScoreBackend(weight)
+    stream = torch.cuda.Stream()
+    results = []
+    try:
+        with torch.cuda.stream(stream):
+            for i in range(24):
+                marker = rng.random((64, 17 + i % 3), dtype=np.float32)
+                # Delay the producer without blocking the host. Consumers must
+                # wait on its stream, including after _last_output is replaced.
+                torch.cuda._sleep(100_000)
+                results.append((backend.compute(marker), weight @ marker))
+        for actual, expected in results:
+            np.testing.assert_allclose(np.asarray(actual), expected, rtol=2e-6, atol=2e-6)
+        backend.close()
+        for actual, expected in results:
+            np.testing.assert_allclose(np.asarray(actual), expected, rtol=2e-6, atol=2e-6)
+    finally:
+        backend.close()
 
 
 def test_select_gpu_ldscore_backend_respects_disable_env(monkeypatch):

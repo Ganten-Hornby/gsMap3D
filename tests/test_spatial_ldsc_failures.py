@@ -10,6 +10,14 @@ from gsMap.spatial_ldsc import spatial_ldsc_jax
 
 def test_failed_trait_does_not_turn_the_multi_trait_run_into_success(tmp_path, monkeypatch):
     processed = []
+    aborted = []
+
+    class FakeWriter:
+        closed = False
+
+        def abort(self):
+            self.closed = True
+            aborted.append(True)
 
     class FakeProcessor:
         def __init__(self, **kwargs):
@@ -17,11 +25,13 @@ def test_failed_trait_does_not_turn_the_multi_trait_run_into_success(tmp_path, m
 
         def setup_trait(self, trait_name, sumstats_file):
             del sumstats_file
+            self.result_writer = FakeWriter()
             if trait_name == "bad":
                 raise RuntimeError("synthetic setup failure")
 
         def process_all_chunks(self):
             processed.append("good")
+            self.result_writer.closed = True
 
     config = SimpleNamespace(
         sumstats_config_dict={"bad": "bad.sumstats", "good": "good.sumstats"},
@@ -53,3 +63,4 @@ def test_failed_trait_does_not_turn_the_multi_trait_run_into_success(tmp_path, m
         spatial_ldsc_jax.run_spatial_ldsc_jax.__wrapped__(config)
 
     assert processed == ["good"]
+    assert aborted == [True]

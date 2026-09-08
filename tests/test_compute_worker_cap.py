@@ -15,6 +15,11 @@ import pytest
 from gsMap.spatial_ldsc.ldscore_quick_mode import SpatialLDSCEngine
 
 
+@pytest.fixture(autouse=True)
+def isolate_task_budget(monkeypatch):
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+
+
 def _stub(configured):
     """Minimal object exposing only what the resolver reads."""
     s = types.SimpleNamespace()
@@ -45,6 +50,14 @@ def test_cpu_two_cores_collapses_to_one(monkeypatch):
     monkeypatch.delenv("GSMAP_LDSC_FORCE_COMPUTE_WORKERS", raising=False)
     monkeypatch.setattr("os.sched_getaffinity", lambda _pid: {0, 1})
     assert _resolve(_stub(10), "cpu") == 1
+
+
+def test_cpu_caps_dispatch_by_slurm_when_ssh_affinity_exposes_whole_node(monkeypatch):
+    monkeypatch.delenv("GSMAP_LDSC_FORCE_COMPUTE_WORKERS", raising=False)
+    monkeypatch.setattr("os.sched_getaffinity", lambda _pid: set(range(128)))
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "15")
+    assert _resolve(_stub(10), "cpu") == 7
+    assert _resolve(_stub(2), "cpu") == 2
 
 
 def test_force_env_overrides_cap(monkeypatch):

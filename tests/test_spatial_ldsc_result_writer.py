@@ -128,3 +128,199 @@ def test_result_writer_backpressures_late_chunks_without_blocking_gap(tmp_path):
 
     result = pd.read_csv(writer.finalize())
     assert result["spot"].tolist() == ["cell0", "cell1", "cell2", "cell3"]
+
+
+def test_duplicate_chunk_is_rechecked_after_backpressure_wait(tmp_path, monkeypatch):
+    writer = ResultWriter(_config(), "trait", tmp_path, 3, 3, 3, max_pending_chunks=1)
+    _add(writer, 1, [1], 1)
+    waiting = set()
+    both_waiting = threading.Event()
+    original_wait = writer.condition.wait
+    errors = []
+
+    def tracked_wait(timeout=None):
+        waiting.add(threading.get_ident())
+        if len(waiting) == 2:
+            both_waiting.set()
+        return original_wait(timeout)
+
+    def produce():
+        try:
+            _add(writer, 2, [2], 2)
+        except ValueError as error:
+            errors.append(error)
+
+    monkeypatch.setattr(writer.condition, "wait", tracked_wait)
+    threads = [threading.Thread(target=produce) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        assert both_waiting.wait(3)
+        _add(writer, 0, [0], 0)
+        for thread in threads:
+            thread.join(3)
+        assert not any(thread.is_alive() for thread in threads)
+        assert len(errors) == 1
+        assert isinstance(errors[0], ValueError)
+        assert "Duplicate result chunk 2" in str(errors[0])
+        assert pd.read_csv(writer.finalize()).spot.tolist() == ["cell0", "cell1", "cell2"]
+    finally:
+        writer.abort()
+        for thread in threads:
+            thread.join(3)
+
+
+def test_slow_output_is_bounded_and_does_not_block_initial_dispatch(tmp_path, monkeypatch):
+    entered, release, finished = (threading.Event() for _ in range(3))
+    original = ResultWriter._write_batch
+
+    def slow_write(self, results):
+        entered.set()
+        assert release.wait(5)
+        original(self, results)
+
+    monkeypatch.setattr(ResultWriter, "_write_batch", slow_write)
+    writer = ResultWriter(_config(), "trait", tmp_path, 5, 5, 5, output_batch_rows=1)
+    producer_errors = []
+
+    def produce():
+        try:
+            _add(writer, 3, [4], 3)
+            _add(writer, 4, [5], 4)
+            finished.set()
+        except BaseException as error:  # noqa: BLE001 - assert background failures in the main test
+            producer_errors.append(error)
+
+    thread = threading.Thread(target=produce)
+    try:
+        _add(writer, 0, [1], 0)
+        assert entered.wait(2)
+        # One in-flight batch and exactly two queued batches, not unlimited RAM.
+        _add(writer, 1, [2], 1)
+        _add(writer, 2, [3], 2)
+        assert writer._output_queue.qsize() == writer._output_queue.maxsize == 2
+        thread.start()
+        assert not finished.wait(0.1)
+        assert not (tmp_path / "project_trait.csv.gz").exists()
+    finally:
+        release.set()
+        if thread.ident is not None:
+            thread.join(3)
+    assert not thread.is_alive()
+    assert not producer_errors
+    result = pd.read_csv(writer.finalize())
+    assert result.spot.tolist() == [f"cell{i}" for i in range(5)]
+    np.testing.assert_array_equal(result.beta, [1, 2, 3, 4, 5])
+    assert writer.finalize() == writer.final_path
+    assert not writer._writer_thread.is_alive()
+
+
+def test_async_output_owns_inputs_and_flushes_final_tail(tmp_path):
+    writer = ResultWriter(_config(), "trait", tmp_path, 2, 1, 2, output_batch_rows=100)
+    betas, ses = np.array([1.0, 2.0]), np.ones(2)
+    names = pd.Index(["a", "b"])
+    writer.add_chunk_result(0, betas, ses, names, 0, 2)
+    betas[:] = 999
+    ses[:] = 999
+    names.values[:] = "changed"
+    result = pd.read_csv(writer.finalize())
+    assert result.spot.tolist() == ["a", "b"]
+    np.testing.assert_array_equal(result.beta, [1, 2])
+    np.testing.assert_array_equal(result.se, [1, 1])
+
+
+@pytest.mark.parametrize("failure", ["write", "close"])
+def test_async_io_errors_never_publish_output(tmp_path, monkeypatch, failure):
+    original = ResultWriter._write_batch
+
+    class FailingClose:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def close(self):
+            self.handle.close()
+            raise OSError("injected close error")
+
+    def fail(self, results):
+        if failure == "write":
+            raise OSError("injected write error")
+        original(self, results)
+        self.handle = FailingClose(self.handle)
+
+    monkeypatch.setattr(ResultWriter, "_write_batch", fail)
+    writer = ResultWriter(_config(), "trait", tmp_path, 1, 1, 1, output_batch_rows=100)
+    _add(writer, 0, [1], 0)
+    with pytest.raises(RuntimeError, match=f"injected {failure} error"):
+        writer.finalize()
+    assert not writer._writer_thread.is_alive()
+    assert not list(tmp_path.iterdir())
+
+
+def test_abort_unblocks_backpressured_output_producer(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_write(self, results):
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(ResultWriter, "_write_batch", blocked_write)
+    writer = ResultWriter(_config(), "trait", tmp_path, 4, 4, 4, output_batch_rows=1)
+    errors = []
+
+    def produce():
+        try:
+            _add(writer, 3, [4], 3)
+        except RuntimeError as error:
+            errors.append(error)
+
+    _add(writer, 0, [1], 0)
+    assert entered.wait(2)
+    _add(writer, 1, [2], 1)
+    _add(writer, 2, [3], 2)
+    producer = threading.Thread(target=produce)
+    aborter = threading.Thread(target=writer.abort)
+    producer.start()
+    try:
+        aborter.start()
+        producer.join(2)
+        assert not producer.is_alive()
+        assert errors
+    finally:
+        release.set()
+        aborter.join(2)
+        producer.join(2)
+    assert not aborter.is_alive()
+    assert not writer._writer_thread.is_alive()
+    assert not list(tmp_path.iterdir())
+
+
+def test_concurrent_out_of_order_producers_with_output_backpressure(tmp_path):
+    n = 120
+    writer = ResultWriter(
+        _config(), "trait", tmp_path, n, n, n, output_batch_rows=1, max_pending_chunks=n
+    )
+    errors = []
+
+    def produce(indices):
+        try:
+            for i in indices:
+                _add(writer, i, [i], i)
+        except BaseException as error:  # noqa: BLE001 - assert background failures in the main test
+            errors.append(error)
+
+    indices = np.random.default_rng(42).permutation(n)
+    threads = [
+        threading.Thread(target=produce, args=(part,)) for part in np.array_split(indices, 4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    try:
+        assert not any(thread.is_alive() for thread in threads)
+        assert not errors
+        frame = pd.read_csv(writer.finalize())
+        assert frame.spot.tolist() == [f"cell{i}" for i in range(n)]
+        np.testing.assert_array_equal(frame.beta, np.arange(n))
+    finally:
+        writer.abort()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import logging
 import os
+import queue
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -40,9 +41,12 @@ class ResultWriter:
 
     Compute workers may finish out of order. Results are held only until the
     next consecutive chunk is available, then coalesced into a moderate output
-    batch and written to a temporary gzip stream. The completed file is
-    atomically published only after every expected chunk and row is validated.
+    batch and sent to a bounded writer thread, so CSV formatting/compression
+    does not block GPU dispatch. The completed file is atomically published only
+    after every expected chunk and row is validated.
     """
+
+    compression_level = 1
 
     def __init__(
         self,
@@ -90,6 +94,15 @@ class ResultWriter:
         self.header_written = False
         self.final_path: Path | None = None
         self.closed = False
+        self._closing = False
+        self._writer_error: BaseException | None = None
+        self._stop_writer = threading.Event()
+        self._output_queue: queue.Queue = queue.Queue(maxsize=2)
+        self._finalize_lock = threading.Lock()
+        self._writer_thread = threading.Thread(
+            target=self._write_worker, name="ldsc-result-writer", daemon=True
+        )
+        self._writer_thread.start()
 
     def add_chunk_result(
         self,
@@ -110,7 +123,8 @@ class ResultWriter:
             )
 
         with self.condition:
-            if self.closed:
+            self.check_errors()
+            if self.closed or self._closing:
                 raise RuntimeError("Cannot add a result after the LDSC writer was closed")
             if not 0 <= chunk_idx < self.total_chunks:
                 raise ValueError(
@@ -123,19 +137,25 @@ class ResultWriter:
                 len(self.pending) >= self.max_pending_chunks
                 and chunk_idx != self.next_chunk
                 and not self.closed
+                and not self._closing
             ):
                 self.condition.wait(timeout=0.1)
-            if self.closed:
+                self.check_errors()
+            if self.closed or self._closing:
                 raise RuntimeError("Cannot add a result after the LDSC writer was closed")
+            # Another producer may have submitted the same chunk while this
+            # producer released the condition lock to wait for buffer space.
+            if self.seen_chunks[chunk_idx]:
+                raise ValueError(f"Duplicate result chunk {chunk_idx}")
 
             self.seen_chunks[chunk_idx] = True
             self.min_spot_start = min(self.min_spot_start, abs_start)
             self.max_spot_end = max(self.max_spot_end, abs_end)
             self.pending[chunk_idx] = ChunkResult(
                 chunk_idx=chunk_idx,
-                betas=betas,
-                ses=ses,
-                spot_names=spot_names,
+                betas=betas.copy(),
+                ses=ses.copy(),
+                spot_names=spot_names.copy(deep=True),
                 abs_start=abs_start,
                 abs_end=abs_end,
             )
@@ -154,13 +174,67 @@ class ResultWriter:
     def _flush_ready(self) -> None:
         if not self.ready:
             return
+        self._enqueue_output(self.ready)
+        self.ready = []
+        self.ready_rows = 0
 
-        betas = np.concatenate([result.betas for result in self.ready]).astype(
-            np.float64, copy=False
-        )
-        ses = np.concatenate([result.ses for result in self.ready]).astype(np.float64, copy=False)
+    def check_errors(self) -> None:
+        """Surface asynchronous output failures to producers and the monitor."""
+        if self._writer_error is not None:
+            raise RuntimeError(
+                f"LDSC result writer failed: {self._writer_error}"
+            ) from self._writer_error
+
+    def _enqueue_output(self, batch: list[ChunkResult] | None) -> None:
+        """Keep publication ordered while waiting for bounded output space."""
+        while True:
+            self.check_errors()
+            if self.closed or self._stop_writer.is_set():
+                raise RuntimeError("LDSC result writer was aborted")
+            try:
+                self._output_queue.put(batch, timeout=0.05)
+                return
+            except queue.Full:
+                # The consumer never takes condition. Retain it here so another
+                # producer cannot overtake or mutate the batch being published.
+                # Abort sets its event before acquiring condition to unblock us.
+                continue
+
+    def _write_worker(self) -> None:
+        try:
+            while not self._stop_writer.is_set():
+                try:
+                    batch = self._output_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                try:
+                    if batch is None:
+                        break
+                    if not self._stop_writer.is_set():
+                        self._write_batch(batch)
+                finally:
+                    self._output_queue.task_done()
+        except BaseException as error:  # noqa: BLE001 - relay worker failures to the caller
+            self._writer_error = error
+        finally:
+            # Only this thread owns the compression stream. Abort/finalize wait
+            # for it before removing or publishing the temporary file.
+            if self.handle is not None:
+                try:
+                    self.handle.close()
+                except BaseException as error:  # noqa: BLE001 - close failures also invalidate output
+                    if self._writer_error is None:
+                        self._writer_error = error
+                finally:
+                    self.handle = None
+
+    def _write_batch(self, results: list[ChunkResult]) -> None:
+        """Format/write a consecutive batch; exclusively owned by the writer."""
+
+        betas = np.concatenate([result.betas for result in results]).astype(np.float64, copy=False)
+        ses = np.concatenate([result.ses for result in results]).astype(np.float64, copy=False)
         spot_names = np.concatenate(
-            [np.asarray(result.spot_names, dtype=object) for result in self.ready]
+            [np.asarray(result.spot_names, dtype=object) for result in results]
         )
 
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -195,64 +269,74 @@ class ResultWriter:
             }
         )
         if self.handle is None:
-            self.handle = gzip.open(self.temporary_path, mode="wt", newline="")
+            self.handle = gzip.open(
+                self.temporary_path, mode="wt", newline="", compresslevel=self.compression_level
+            )
         frame.to_csv(self.handle, index=False, header=not self.header_written)
         self.header_written = True
-        self.ready.clear()
-        self.ready_rows = 0
 
     def finalize(self) -> Path:
         """Validate completeness and atomically publish the final result."""
-        with self.condition:
-            if self.closed:
-                if self.final_path is None:
-                    raise RuntimeError("LDSC result writer was aborted")
-                return self.final_path
-
+        with self._finalize_lock:
             try:
-                self._drain_consecutive()
-                self._flush_ready()
-                if self.next_chunk != self.total_chunks:
-                    missing = np.flatnonzero(~self.seen_chunks)
-                    preview = ", ".join(map(str, missing[:10]))
-                    raise RuntimeError(
-                        f"Missing {missing.size:,}/{self.total_chunks:,} LDSC chunks"
-                        f" (first: {preview})"
-                    )
-                if self.rows_written != self.expected_cells:
-                    raise RuntimeError(
-                        f"LDSC result row mismatch: wrote {self.rows_written:,}, "
-                        f"expected {self.expected_cells:,}"
-                    )
-                if self.handle is None:
-                    raise RuntimeError("No LDSC results were written")
-
-                self.handle.close()
-                self.handle = None
-                output_path = self.output_dir / self._generate_output_filename()
-                os.replace(self.temporary_path, output_path)
-                self.final_path = output_path
-                self.closed = True
-                self.condition.notify_all()
+                with self.condition:
+                    self.check_errors()
+                    if self.closed:
+                        if self.final_path is None:
+                            raise RuntimeError("LDSC result writer was aborted")
+                        return self.final_path
+                    self._closing = True
+                    self._drain_consecutive()
+                    if self.next_chunk != self.total_chunks:
+                        missing = np.flatnonzero(~self.seen_chunks)
+                        preview = ", ".join(map(str, missing[:10]))
+                        raise RuntimeError(
+                            f"Missing {missing.size:,}/{self.total_chunks:,} LDSC chunks"
+                            f" (first: {preview})"
+                        )
+                    self._flush_ready()
+                    self._enqueue_output(None)
+                self._writer_thread.join()
+                with self.condition:
+                    self.check_errors()
+                    if self.closed:
+                        raise RuntimeError("LDSC result writer was aborted")
+                    if self.rows_written != self.expected_cells:
+                        raise RuntimeError(
+                            f"LDSC result row mismatch: wrote {self.rows_written:,}, "
+                            f"expected {self.expected_cells:,}"
+                        )
+                    if not self.header_written:
+                        raise RuntimeError("No LDSC results were written")
+                    output_path = self.output_dir / self._generate_output_filename()
+                    os.replace(self.temporary_path, output_path)
+                    self.final_path = output_path
+                    self.closed = True
+                    self.condition.notify_all()
                 self._log_statistics(output_path)
                 return output_path
             except BaseException:
-                self._abort_locked()
+                self.abort()
                 raise
 
     def abort(self) -> None:
         """Discard an incomplete stream; no final-looking output is retained."""
+        self._stop_writer.set()
         with self.condition:
-            self._abort_locked()
-
-    def _abort_locked(self) -> None:
-        """Abort while holding ``condition`` and release blocked producers."""
-        if self.handle is not None:
-            self.handle.close()
-            self.handle = None
+            self.closed = True
+            self.condition.notify_all()
+        self._writer_thread.join()
         self.temporary_path.unlink(missing_ok=True)
-        self.closed = True
-        self.condition.notify_all()
+        with self.condition:
+            self.pending.clear()
+            self.ready.clear()
+            self.ready_rows = 0
+            while True:
+                try:
+                    self._output_queue.get_nowait()
+                    self._output_queue.task_done()
+                except queue.Empty:
+                    break
 
     def _generate_output_filename(self) -> str:
         base_name = f"{self.config.project_name}_{self.trait_name}"

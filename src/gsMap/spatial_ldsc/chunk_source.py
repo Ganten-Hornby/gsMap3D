@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .cpu_sparse import CPUSparseLDScore
+
 
 @dataclass(slots=True)
 class MarkerScoreWindow:
@@ -46,6 +48,11 @@ class SpatialLDChunkSource:
         self.marker_score_adata = marker_score_adata
         self.marker_score_gene_indices = marker_score_gene_indices
         self.snp_gene_weight_sparse = snp_gene_weight_sparse
+        self.cpu_ldscore_backend = (
+            CPUSparseLDScore(snp_gene_weight_sparse)
+            if snp_gene_weight_sparse is not None
+            else None
+        )
         self._marker_read_fd: int | None = None
 
     def _chunk_selection(
@@ -291,10 +298,7 @@ class SpatialLDChunkSource:
 
     def compute_ldscore_from_marker_chunk(self, marker_score_chunk: np.ndarray) -> np.ndarray:
         """Compute SNP x spot LD scores from a gene x spot marker-score chunk on CPU."""
-        if self.snp_gene_weight_sparse is None:
+        if self.cpu_ldscore_backend is None:
             raise RuntimeError("SNP-gene sparse weight matrix is not initialized")
 
-        ldscore_chunk = self.snp_gene_weight_sparse @ marker_score_chunk
-        if hasattr(ldscore_chunk, "toarray"):
-            ldscore_chunk = ldscore_chunk.toarray()
-        return ldscore_chunk.astype(np.float32, copy=False)
+        return self.cpu_ldscore_backend.compute(marker_score_chunk)

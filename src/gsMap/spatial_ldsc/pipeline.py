@@ -74,10 +74,9 @@ class LDScoreStream:
     """Bounded source pipeline for LD-score regression batches.
 
     Marker memmaps are consumed as large sequential windows by one source
-    thread. Small regression batches are derived from the in-RAM window by a
-    transform pool. Other input formats use one serial source thread; the old
-    design in which many threads independently issued tiny storage reads is
-    intentionally not retained.
+    thread. GPU marker batches use a transform pool; the native CPU path uses
+    one transform worker whose threads cooperate on independent SNP rows.
+    Other input formats use one serial source thread.
     """
 
     def __init__(
@@ -88,10 +87,24 @@ class LDScoreStream:
     ):
         self.processor = processor
         self.num_workers = num_workers
+        self.cpu_sparse_threads = 0
+        chunk_source = getattr(self.processor, "chunk_source", None)
+        cpu_backend = getattr(chunk_source, "cpu_ldscore_backend", None)
+        if (
+            cpu_backend is not None
+            and cpu_backend.use_native
+            and not getattr(processor, "defer_ldscore_to_compute", False)
+            and jax.default_backend() == "cpu"
+        ):
+            self.cpu_sparse_threads = cpu_backend.configure_threads(num_workers)
+            # Cooperate on the rows of one LD-score batch instead of building
+            # num_workers separate SNP-by-cell arrays at once. The resulting
+            # queue has depth two, independent of the number of CPU threads.
+            self.num_workers = 1
         self.result_queue = (
             output_queue
             if output_queue is not None
-            else queue.Queue(maxsize=max(2, num_workers * 2))
+            else queue.Queue(maxsize=max(2, self.num_workers * 2))
         )
         self.throughput = ComponentThroughput()
         self.throughput_lock = threading.Lock()
@@ -101,7 +114,6 @@ class LDScoreStream:
         self.workers = []
         self.stop_workers = threading.Event()
         self.started = False
-        chunk_source = getattr(self.processor, "chunk_source", None)
         self.total_chunks = int(
             getattr(
                 self.processor,
@@ -134,6 +146,11 @@ class LDScoreStream:
         if self.started:
             raise RuntimeError("LD-score stream has already been started")
         self.started = True
+        if self.cpu_sparse_threads:
+            logger.info(
+                f"CPU LD-score construction: {self.cpu_sparse_threads} row-parallel threads, "
+                "one transform batch at a time, up to two ready batches"
+            )
 
         if self.uses_sequential_windows:
             direct_reads = self.processor.chunk_source.advise_sequential_marker_access()
@@ -508,7 +525,7 @@ class LDScoreComputePool:
                     if self.ldscore_backend is backend:
                         logger.warning(
                             "GPU LD-score construction failed because GPU memory is insufficient. "
-                            "Falling back to CPU/SciPy LD-score construction for remaining chunks "
+                            "Falling back to CPU sparse LD-score construction for remaining chunks "
                             "while keeping the shared --use-gpu JAX regression path. Reduce "
                             "--spots-per-chunk-quick-mode, set GSMAP_DISABLE_GPU_LDSCORE=1, "
                             "or use --no-gpu if regression also runs out of memory."
