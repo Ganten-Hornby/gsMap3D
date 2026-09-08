@@ -21,7 +21,7 @@ The default suite does not download resources or submit scheduler jobs.
 | `spatial_ldsc/` | CPU/GPU backends, regression, pipeline concurrency, and output |
 | `report/` | Metadata I/O, UMAP caching, payloads, labels, and JavaScript behavior |
 | `docs/` | Direct tutorial/API equivalence, documented flags, and reference accuracy |
-| `resources/` | Resource preparation, catalogs, archive safety, and publication checks |
+| `resources/` | Verified test-data downloads and archive safety |
 | `integration/` | End-to-end 2D, 3D, single-cell, and custom-input workflows |
 | `logging/` | Log layout, context, progress, and handler cleanup |
 
@@ -39,7 +39,7 @@ than assuming that all real-data cases live in `integration/`.
 Download and extract the CI test bundle using the resource downloader, then run:
 
 ```bash
-python scripts/resources/fetch_resources.py ci-test-data --destination .test-data
+python tests/tools/fetch_resources.py ci-test-data --destination .test-data
 JAX_PLATFORMS=cpu python -m pytest tests -m real_data --run-real-data \
   --test-data .test-data/ci-test-data \
   --work-dir .test-results
@@ -56,6 +56,10 @@ GPU-specific cases need a compatible CUDA environment and an allocated GPU.
 - `paths.py` locates the repository independently of the test module's depth.
 - `docs/helpers.py` inspects CLI options without executing an analysis or validating
   installation-specific data paths. Real execution is tested separately.
+- `helpers/` contains generic tutorial extraction, execution and browser checks.
+  Run them as modules, for example `python -m tests.helpers.audit_commands --help`.
+- `tools/fetch_resources.py` verifies downloaded test data. Resource preparation
+  and server publication are not dependencies of the public test suite.
 - Report runtime tests execute JavaScript with Node.js test doubles; these are
   not substitutes for a browser visual inspection.
 

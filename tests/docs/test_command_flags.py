@@ -1,9 +1,9 @@
 """Check every documented CLI option without running commands on local data."""
 
 import pytest
-from scripts.docs.audit_commands import blocks
 
 from tests.docs.helpers import cli_settings
+from tests.helpers.audit_commands import blocks
 from tests.paths import REPO_ROOT
 
 

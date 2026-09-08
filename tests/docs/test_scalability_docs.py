@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 from click import Context
-from scripts.docs.validate_examples import tutorial_code
 from typer.main import get_command
 
 from gsMap.cli import app
 from tests.docs.helpers import cli_settings
+from tests.helpers.validate_examples import tutorial_code
 from tests.paths import REPO_ROOT as REPO
 
 SOURCE = REPO / "docs/source"

@@ -9,10 +9,7 @@ from urllib.parse import urljoin
 
 import pytest
 import yaml
-from scripts.docs.audit_commands import blocks
-from scripts.docs.generate_downloads import render, render_catalog
-from scripts.docs.test_download_tutorial import download_blocks
-from scripts.docs.validate_examples import TUTORIALS, tutorial_code
+from docs.tools.generate_downloads import render, render_catalog
 from typer.testing import CliRunner
 
 import gsMap.config
@@ -23,6 +20,9 @@ from gsMap.cli import app
 from gsMap.config.spatial_ldsc_config import GWASSumstatsConfig
 from gsMap.config.utils import process_h5ad_inputs
 from tests.docs.helpers import cli_settings
+from tests.helpers.audit_commands import blocks
+from tests.helpers.test_download_tutorial import download_blocks
+from tests.helpers.validate_examples import TUTORIALS, tutorial_code
 from tests.paths import REPO_ROOT as REPO
 
 
@@ -73,7 +73,7 @@ def test_gastrulation_packaged_inputs_survive_moving_workspace(tmp_path, monkeyp
     data.mkdir(parents=True)
     for index in range(1, 63):
         (data / f"human_gastrulation_slice_{index}.h5ad").touch()
-    templates = REPO / "scripts/resources/tutorial_inputs/human-gastrulation"
+    templates = REPO / "tests/fixtures/tutorial_inputs/human-gastrulation"
     for name in ("sample_paths.txt", "gwas.yaml"):
         shutil.copyfile(templates / name, dataset / name)
     gwas = workspace / "example_data/example-traits"
@@ -112,7 +112,7 @@ def test_3d_tutorials_use_dataset_local_inputs_without_setup_code(example):
         assert settings["h5ad_list_file"] == f"example_data/{dataset}/sample_paths.txt"
         if "sumstats_config_file" in settings:
             assert settings["sumstats_config_file"] == f"example_data/{dataset}/gwas.yaml"
-    packaged = REPO / "scripts/resources/tutorial_inputs" / dataset / "gwas.yaml"
+    packaged = REPO / "tests/fixtures/tutorial_inputs" / dataset / "gwas.yaml"
     traits = ["IQ", "AF", "LDL"] if dataset == "mouse-e11" else ["IQ", "Height", "MCHC"]
     assert yaml.safe_load(packaged.read_text()) == {
         trait: f"../example-traits/{trait}.sumstats.gz" for trait in traits
@@ -179,7 +179,7 @@ def test_downloads_is_single_generated_setup_page():
 
 
 def test_ci_and_downloader_use_the_documented_public_catalog():
-    from scripts.resources.fetch_resources import DEFAULT_CATALOG
+    from tests.tools.fetch_resources import DEFAULT_CATALOG
 
     catalog = json.loads((REPO / "docs/resource_catalog.json").read_text())
     expected = f"{catalog['base_url'].rstrip('/')}/catalog.json"
@@ -378,7 +378,7 @@ def test_e11_quick_mode_initializes_documented_settings(tmp_path, monkeypatch, i
     dataset.mkdir(parents=True)
     (dataset / "sample_paths.txt").write_text("ST/Mouse_E11.5_embryo_S00.h5ad\n")
     shutil.copyfile(
-        REPO / "scripts/resources/tutorial_inputs/mouse-e11/gwas.yaml",
+        REPO / "tests/fixtures/tutorial_inputs/mouse-e11/gwas.yaml",
         dataset / "gwas.yaml",
     )
     gwas = tmp_path / "example_data/example-traits"

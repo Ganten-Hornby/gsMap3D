@@ -4,11 +4,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from scripts.docs.test_ld_tutorial import ld_tutorial_blocks
 
 import gsMap.config
 import gsMap.ldscore.pipeline
 from tests.docs.helpers import cli_settings
+from tests.helpers.test_ld_tutorial import ld_tutorial_blocks
 from tests.paths import REPO_ROOT as REPO
 
 

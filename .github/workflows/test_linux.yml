@@ -86,7 +86,7 @@ jobs:
 
       - name: Download and extract test data
         run: |
-          python scripts/resources/fetch_resources.py \
+          python tests/tools/fetch_resources.py \
               --catalog "$TEST_DATA_CATALOG" \
               --destination resources ci-test-data
 

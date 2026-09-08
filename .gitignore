@@ -252,3 +252,8 @@ cython_debug/
 # vscode
 .vscode
 run_gsmap3d.py
+
+# Local execution output and installation-specific settings
+/logs/
+/slurm-logs/
+/config.local.toml

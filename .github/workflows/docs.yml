@@ -7,8 +7,6 @@ on:
       - revision/graph-3d-20260807
     paths:
       - "docs/**"
-      - "scripts/resources/**"
-      - "scripts/docs/**"
       - "src/gsMap/config/**"
       - "src/gsMap/cli.py"
       - "pyproject.toml"
@@ -46,8 +44,8 @@ jobs:
 
       - name: Build documentation
         run: |
-          python scripts/docs/generate_cli_reference.py
-          python scripts/docs/generate_downloads.py --catalog docs/resource_catalog.json
+          python docs/tools/generate_cli_reference.py
+          python docs/tools/generate_downloads.py --catalog docs/resource_catalog.json
           git diff --exit-code -- docs/source/cli_reference.md
           git diff --exit-code -- docs/source/downloads.md
           sphinx-build -W --keep-going -b html docs/source docs/build/html
