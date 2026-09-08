@@ -2,6 +2,7 @@
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from gsMap.spatial_ldsc.regression_kernel import process_spatial_ldsc_batch
 
@@ -123,3 +124,27 @@ def test_production_kernel_scales_focal_ld_by_per_snp_sample_size():
 
     np.testing.assert_allclose(np.asarray(beta), expected_beta, rtol=2e-3, atol=1e-9)
     assert np.max(np.asarray(se)) < 1e-8
+
+
+@pytest.mark.parametrize(
+    ("n_spots", "n_baseline", "response_scale"),
+    [(1, 1, 2), (7, 3, 2), (100, 3, 2), (7, 4, 2), (7, 5, 2), (7, 8, 2), (3, 3, 0.5), (3, 3, 50)],
+)
+def test_block_equations_match_float64_with_partial_blocks(n_spots, n_baseline, response_scale):
+    """Cover both contraction paths, small batches, h2 clipping and tail SNPs."""
+    rng = np.random.default_rng(82)
+    n_snps, n_blocks = 403, 4
+    spatial = rng.uniform(0.2, 2, (n_snps, n_spots)).astype(np.float32)
+    baseline_sum = rng.uniform(0.2, 1.2, n_snps).astype(np.float32)
+    chisq = rng.uniform(0.8, 1.2, n_snps).astype(np.float32) * response_scale
+    sample_size = rng.uniform(50_000, 150_000, n_snps).astype(np.float32)
+    baseline = np.column_stack(
+        [rng.uniform(0.1, 1, (n_snps, n_baseline - 1)), np.ones(n_snps)]
+    ).astype(np.float32)
+    weights = rng.uniform(0.5, 2, n_snps).astype(np.float32)
+    arrays = (spatial, baseline_sum, chisq, sample_size, baseline, weights)
+    nbar = float(sample_size.mean())
+    expected = _direct_per_spot_reference(n_blocks, *[x.astype(np.float64) for x in arrays], nbar)
+    observed = process_spatial_ldsc_batch(n_blocks, *map(jnp.asarray, arrays), nbar)
+    for result, reference in zip(observed, expected, strict=True):
+        np.testing.assert_allclose(np.asarray(result), reference, rtol=5e-4, atol=1e-9)
