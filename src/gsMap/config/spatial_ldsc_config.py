@@ -57,7 +57,7 @@ class SpatialLDSCComputeConfig:
 
     spots_per_chunk_quick_mode: Annotated[
         int, typer.Option(help="Number of spots per chunk in quick mode", min=1)
-    ] = 50
+    ] = 100
 
 
 @dataclass
