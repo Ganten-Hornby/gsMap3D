@@ -424,8 +424,8 @@ def test_e11_quick_mode_initializes_documented_settings(tmp_path, monkeypatch, i
     assert config.random_seed == 2024
     assert config.latent_representation_cell == "emb_cell"
     assert config.latent_representation_niche == "emb_niche"
-    assert config.high_quality_cell_qc is True
-    assert config.high_quality_neighbor_filter is True
+    assert config.high_quality_cell_qc is False
+    assert config.high_quality_neighbor_filter is False
     assert config.cross_slice_marker_score_strategy == "hierarchical_pool"
     assert config.homogeneous_selection_mode == "soft_priority"
     assert config.cell_embedding_similarity_threshold == 0.0

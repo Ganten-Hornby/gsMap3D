@@ -246,9 +246,9 @@ class FindLatentCoreConfig:
         bool,
         typer.Option(
             "--high-quality-cell-qc/--no-high-quality-cell-qc",
-            help="Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.",
+            help="Opt in to annotation module-score QC (not sequencing-quality QC). Computes DEGs and module scores; disabled by default.",
         ),
-    ] = True
+    ] = False
 
 
 @dataclass

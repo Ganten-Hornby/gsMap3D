@@ -38,7 +38,7 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--species TEXT` | Species-symbol column in the homolog file (for example MOUSE_GENE_SYM) |
 | `--latent-representation-niche TEXT` | Key for spatial niche embedding in obsm |
 | `--latent-representation-cell TEXT` | Key for cell identity embedding in obsm  \[default: emb_cell] |
-| `--high-quality-cell-qc / --no-high-quality-cell-qc` | Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.  \[default: high-quality-cell-qc] |
+| `--high-quality-cell-qc / --no-high-quality-cell-qc` | Opt in to annotation module-score QC (not sequencing-quality QC). Computes DEGs and module scores; disabled by default.  \[default: no-high-quality-cell-qc] |
 | `--n-neighbors INTEGER RANGE` | Number of external neighbors for corrected LGCN graphs  \[default: 10; 1<=x<=50] |
 | `--graph-mode TEXT` | Spatial graph mode: symmetric_knn (default), radius, weighted_radius, sectionwise_2d, section_aware_3d, no_graph, or revision-only legacy_bug/legacy_symmetric  \[default: symmetric_knn] |
 | `--graph-radius FLOAT RANGE` | Physical radius for radius graph modes  \[x>=0.0] |
@@ -122,7 +122,7 @@ This step:
 | `--species TEXT` | Species-symbol column in the homolog file (for example MOUSE_GENE_SYM) |
 | `--latent-representation-niche TEXT` | Key for spatial niche embedding in obsm  \[default: emb_niche] |
 | `--latent-representation-cell TEXT` | Key for cell identity embedding in obsm  \[default: emb_cell] |
-| `--high-quality-cell-qc / --no-high-quality-cell-qc` | Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.  \[default: high-quality-cell-qc] |
+| `--high-quality-cell-qc / --no-high-quality-cell-qc` | Opt in to annotation module-score QC (not sequencing-quality QC). Computes DEGs and module scores; disabled by default.  \[default: no-high-quality-cell-qc] |
 | `--feat-cell INTEGER RANGE` | Number of top variable features to retain  \[default: 2000; 100<=x<=10000] |
 | `--n-neighbors INTEGER RANGE` | Number of external neighbors for corrected LGCN graphs  \[default: 10; 1<=x<=50] |
 | `--graph-mode TEXT` | Spatial graph mode: symmetric_knn (default), radius, weighted_radius, sectionwise_2d, section_aware_3d, no_graph, or revision-only legacy_bug/legacy_symmetric  \[default: symmetric_knn] |
