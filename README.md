@@ -9,7 +9,10 @@ ______________________________________________________________________
 ```text
 - Support for 3D ST data mapping
 - Dual-embedding strategy for more accurate gene specificity scoring
-- Full GPU acceleration across all analysis steps
+- GPU-accelerated embedding, marker-score and LDSC computation
+- Symmetric graphs with an exact external-neighbor count and radius alternatives
+- Ordinal or calibrated physical-z cross-section matching
+- Paired ancestry-specific V50 LD resources and executable tutorials
 ```
 
 ______________________________________________________________________
@@ -57,7 +60,14 @@ ______________________________________________________________________
 
 ## 📚 Documentation
 
-Please see our [Documentation](https://yanglab.westlake.edu.cn/gsmap3d-portal/docs) and [Website](https://yanglab.westlake.edu.cn/gsmap3d-portal).
+Please see our [Documentation](https://yanglab.westlake.edu.cn/data/gsMap3D/docs/r1/) and [Website](https://yanglab.westlake.edu.cn/gsmap3d-portal).
+
+Start with [Downloads](docs/source/downloads.md) to install shared resources once,
+then follow the direct CLI/Python [tutorials](docs/source/2d_tutorial/10x.md).
+Each tutorial shows its required input files. The
+[Customization Guide](docs/source/advanced_usage.md) explains how to select your
+own data, reference weights, embeddings and analysis settings. Download/report
+links marked staged are not yet public.
 
 ______________________________________________________________________
 

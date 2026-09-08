@@ -71,6 +71,7 @@ SUBCOMMANDS = [
     "cauchy-combination",
     "ldscore-weight-matrix",
     "format-sumstats",
+    "report-view",
 ]
 
 
@@ -131,7 +132,7 @@ def test_docs_commands_parseable(cli_runner_local, tutorial_files):
     # File-not-found, directory-not-found, and missing required options are expected
     # because docs use placeholder paths and partial command examples.
     parsing_error_patterns = re.compile(
-        r"No such option|Got unexpected extra argument",
+        r"No such command|No such option|Got unexpected extra argument",
         re.IGNORECASE,
     )
 

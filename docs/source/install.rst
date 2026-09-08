@@ -53,9 +53,10 @@ particular system.
 Install from PyPI
 -----------------
 
-The following commands create a virtual environment and download the released package
-from PyPI. We recommend ``uv`` because ``--torch-backend`` selects the matching official
-PyTorch wheel index.
+Install a released package with one compute backend. ``uv``'s
+``--torch-backend`` selects the matching official PyTorch wheel index. For an
+editable installation or the dataset-preparation utilities supplied with the
+repository, use **Install from source**.
 
 Install ``uv`` and create the environment:
 
@@ -104,22 +105,30 @@ the backend selection identical to the direct PyPI instructions.
 Install from source
 -------------------
 
-For development, clone the repository and use ``uv sync``. The repository lockfile and
+Clone the repository and use ``uv sync``. The repository lockfile and
 conditional package indexes make each backend reproducible:
 
 .. code-block:: bash
 
    git clone https://github.com/Ganten-Hornby/gsMap3D.git
    cd gsMap3D
+   git rev-parse HEAD
 
    # Choose exactly one command.
-   uv sync --python 3.13 --extra cpu
-   uv sync --python 3.13 --extra cuda126
-   uv sync --python 3.13 --extra cuda128
-   uv sync --python 3.13 --extra cuda130
-   uv sync --python 3.13 --extra tpu
+   uv sync --locked --python 3.13 --extra cpu
+   uv sync --locked --python 3.13 --extra cuda126
+   uv sync --locked --python 3.13 --extra cuda128
+   uv sync --locked --python 3.13 --extra cuda130
+   uv sync --locked --python 3.13 --extra tpu
 
 ``uv sync`` creates ``.venv``, installs gsMap3D in editable mode, and applies ``uv.lock``.
+``--locked`` checks that the lockfile matches project metadata, without silently
+updating it; see the `uv sync documentation
+<https://docs.astral.sh/uv/concepts/projects/sync/>`_. Activate ``.venv`` before
+running tutorials. Run the displayed ``gsmap`` commands or Python API calls
+from your own analysis directory. Tutorial dataset archives include the required
+input lists and GWAS configuration files; preparation scripts are for maintainers.
+Verify the selected accelerator on the machine where you will run the analysis.
 The default development group includes the test dependencies. Add ``--no-dev`` for a
 runtime-only environment or ``--group doc`` when building the documentation.
 

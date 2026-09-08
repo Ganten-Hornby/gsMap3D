@@ -1,28 +1,15 @@
-# `gsmap`
+# CLI reference
+
+Generated from the current `gsMap.cli` application; do not edit by hand.
+
+## `gsmap`
 
 gsMap: genetically informed spatial mapping of cells for complex traits
 
-**Usage**:
-
-```console
-$ gsmap [OPTIONS] COMMAND [ARGS]...
-```
-
-**Options**:
-
-* `-v, --version`: Show version and exit
-* `--help`: Show this message and exit.
-
-**Commands**:
-
-* `quick-mode`: Run the complete gsMap pipeline with all...
-* `find-latent`: Find latent representations of each spot...
-* `latent-to-gene`: Estimate gene marker scores for each spot...
-* `spatial-ldsc`: Run spatial LDSC analysis for genetic...
-* `cauchy-combination`: Run Cauchy combination test to combine...
-* `ldscore-weight-matrix`: Compute LD score weight matrices for...
-* `format-sumstats`: Format GWAS summary statistics for gsMap...
-* `report-view`: Launch a local web server to view the...
+| Option | Description |
+|---|---|
+| `-v, --version` | Show version and exit |
+| `--help` | Show this message and exit. |
 
 ## `gsmap quick-mode`
 
@@ -37,78 +24,79 @@ This command runs the gsMap analysis pipeline including:
 
 Requires pre-generated SNP-gene weight matrix and LD weights.
 
-**Usage**:
-
-```console
-$ gsmap quick-mode [OPTIONS]
-```
-
-**Options**:
-
-* `--workdir DIRECTORY`: Path to the working directory  [required]
-* `--project-name TEXT`: Name of the project  [required]
-* `--h5ad-path PATH`: Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.
-* `--h5ad-yaml FILE`: YAML file with sample names and h5ad paths
-* `--h5ad-list-file FILE`: Each row is a h5ad file path, sample name is the file name without suffix
-* `--data-layer TEXT`: Gene expression raw counts data layer in h5ad layers, e.g., &#x27;count&#x27;, &#x27;counts&#x27;. Other wise use &#x27;X&#x27; for adata.X  [default: X]
-* `--spatial-key TEXT`: Spatial key in adata.obsm  [default: spatial]
-* `--annotation TEXT`: Name of the annotation in adata.obs to use
-* `--homolog-file FILE`: Path to homologous gene conversion file
-* `--species TEXT`: Species-symbol column in the homolog file (for example MOUSE_GENE_SYM)
-* `--latent-representation-niche TEXT`: Key for spatial niche embedding in obsm
-* `--latent-representation-cell TEXT`: Key for cell identity embedding in obsm  [default: emb_cell]
-* `--high-quality-cell-qc / --no-high-quality-cell-qc`: Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.  [default: high-quality-cell-qc]
-* `--two-stage / --single-stage`: Tune the cell embeddings based on the provided annotation  [default: single-stage]
-* `--n-cell-training INTEGER RANGE`: Number of cells used for training  [default: 100000; 1000&lt;=x&lt;=1000000]
-* `--dataset-type [scrna|spatial2d|spatial3d]`: Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)  [default: spatial2D]
-* `--spatial-neighbors INTEGER RANGE`: k1: Number of spatial neighbors in it&#x27;s own slice for spatial dataset  [default: 301; 10&lt;=x&lt;=5000]
-* `--homogeneous-neighbors INTEGER RANGE`: k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)  [default: 21; 1&lt;=x&lt;=200]
-* `--cell-embedding-similarity-threshold FLOAT RANGE`: Minimum similarity threshold for cell embedding.  [default: 0.0; 0.0&lt;=x&lt;=1.0]
-* `--spatial-domain-similarity-threshold FLOAT RANGE`: Minimum similarity threshold for spatial domain embedding.  [default: 0.6; 0.0&lt;=x&lt;=1.0]
-* `--homogeneous-selection-mode [soft_priority|hard_niche_filter]`: How niche similarity is used: soft_priority ranks passing neighbors first and fills remaining slots; hard_niche_filter reproduces the historical rule by assigning zero marker-score weight below the niche threshold.  [default: soft_priority]
-* `--no-expression-fraction`: Skip expression fraction filtering
-* `--adjacent-slice-spatial-neighbors INTEGER RANGE`: Number of spatial neighbors to find on each adjacent slice for 3D data  [default: 200; 10&lt;=x&lt;=2000]
-* `--n-adjacent-slices INTEGER RANGE`: For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.  [default: 1; 0&lt;=x&lt;=100]
-* `--cross-slice-selection-mode [ordinal|physical_window]`: How cross-section candidates are chosen: by ordinal input order (legacy) or by a measured physical z-distance window.  [default: ordinal]
-* `--cross-slice-max-distance FLOAT RANGE`: Maximum absolute physical z distance for physical-window section selection. Required when cross_slice_selection_mode=physical_window.  [x&gt;=0.0]
-* `--cross-slice-z-coordinate INTEGER`: Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.  [default: -1]
-* `--cross-slice-z-scale FLOAT RANGE`: Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.  [default: 1.0; x&gt;=0.0]
-* `--cross-slice-marker-score-strategy [global_pool|per_slice_pool|hierarchical_pool]`: Strategy for computing marker scores across slices in spatial3D datasets. &#x27;global_pool&#x27;: Select the top K most similar neighbors globally across all slices combined. &#x27;per_slice_pool&#x27;: Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. &#x27;hierarchical_pool&#x27;: Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.  [default: hierarchical_pool]
-* `--high-quality-neighbor-filter / --no-high-quality-filter`: Only find neighbors within high quality cells (requires High_quality column in obs)  [default: no-high-quality-filter]
-* `--use-gpu / --no-gpu`: Use GPU for JAX-accelerated spatial LDSC implementation  [default: use-gpu]
-* `--memmap-tmp-dir DIRECTORY`: Optional fast scratch directory for memory-mapped files. A file is staged only when the full logical memmap plus safety headroom fits; otherwise gsMap uses the project storage directly.
-* `--mkscore-batch-size INTEGER RANGE`: Cells per marker-score batch; 0 selects automatically  [default: 0; 0&lt;=x&lt;=1000]
-* `--rank-read-workers INTEGER RANGE`: Threads used to materialize distinct rank rows for each cache window  [default: 120; 1&lt;=x&lt;=128]
-* `--mkscore-compute-workers INTEGER RANGE`: Marker-score compute workers  [default: 4; 1&lt;=x&lt;=16]
-* `--mkscore-write-workers INTEGER RANGE`: Marker-score and rank write workers  [default: 2; 1&lt;=x&lt;=50]
-* `--compute-input-queue-size INTEGER RANGE`: Maximum pending marker-score batches per compute worker  [default: 1; 1&lt;=x&lt;=10]
-* `--writer-queue-size INTEGER RANGE`: Writer-input queue capacity  [default: 20; 10&lt;=x&lt;=500]
-* `--ldsc-read-workers INTEGER RANGE`: Number of read workers  [default: 10; x&gt;=1]
-* `--ldsc-compute-workers INTEGER RANGE`: Number of compute workers for LDSC regression  [default: 10; x&gt;=1]
-* `--spots-per-chunk-quick-mode INTEGER RANGE`: Number of spots per chunk in quick mode  [default: 50; x&gt;=1]
-* `--trait-name TEXT`: Name of the trait for GWAS analysis
-* `--sumstats-file FILE`: Path to GWAS summary statistics file
-* `--sumstats-config-file FILE`: Path to sumstats config file
-* `--w-ld-dir DIRECTORY`: Directory containing the weights files (w_ld)
-* `--additional-baseline-h5ad-path-list FILE`: List of additional baseline h5ad paths
-* `--chisq-max INTEGER`: Maximum chi-square value
-* `--cell-indices-range <INTEGER INTEGER>...`: 0-based range [start, end) of cell indices to process
-* `--sample-filter TEXT`: Filter processing to a specific sample
-* `--n-blocks INTEGER RANGE`: Number of jackknife blocks  [default: 200; x&gt;=2]
-* `--snp-gene-weight-adata-path FILE`: Path to the SNP-gene weight matrix (H5AD format)
-* `--ldscore-h5ad-path FILE`: Path to a pre-computed SNP × Cell LD score h5ad file (obs=SNPs, var=cells). When provided, skips on-the-fly LD score computation from the SNP-gene weight matrix. additional_baseline_h5ad_path_list must also be provided to supply all baseline annotations.
-* `--marker-score-feather-path FILE`: Path to marker score feather file
-* `--marker-score-h5ad-path FILE`: Path to marker score h5ad file
-* `--marker-score-format [memmap|feather|h5ad]`: Format of marker scores
-* `--cauchy-annotations TEXT`: List of annotations in adata.obs to use
-* `--downsampling-n-spots-pcc INTEGER RANGE`: Number of spots to downsample for PCC calculation if n_spots &gt; this value  [default: 20000; 1000&lt;=x&lt;=100000]
-* `--downsampling-n-spots-3d INTEGER RANGE`: Number of spots to downsample for 3D visualization if n_spots &gt; this value  [default: 1000000; 1000&lt;=x&lt;=2000000]
-* `--downsampling-n-spots-2d INTEGER RANGE`: Max spots per sample for 2D distribution plots. Samples with more spots will be randomly downsampled.  [default: 250000; 10000&lt;=x&lt;=500000]
-* `--top-corr-genes INTEGER RANGE`: Number of top correlated genes to display  [default: 50; 1&lt;=x&lt;=500]
-* `--plot-origin TEXT`: Plot origin for spatial plots (&#x27;upper&#x27; or &#x27;lower&#x27;). &#x27;upper&#x27; will flip the y-axis (standard for images).  [default: upper]
-* `--start-step TEXT`: Step to start execution from (find_latent, latent2gene, spatial_ldsc, cauchy, report)  [default: find_latent]
-* `--stop-step TEXT`: Step to stop execution at (inclusive)
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `--workdir DIRECTORY` | Path to the working directory  \[required] |
+| `--project-name TEXT` | Name of the project  \[required] |
+| `--h5ad-path PATH` | Space-separated list of h5ad file paths. Sample names are derived from file names without suffix. |
+| `--h5ad-yaml FILE` | YAML file with sample names and h5ad paths |
+| `--h5ad-list-file FILE` | Each row is a h5ad file path, sample name is the file name without suffix |
+| `--data-layer TEXT` | Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X  \[default: X] |
+| `--spatial-key TEXT` | Spatial key in adata.obsm  \[default: spatial] |
+| `--annotation TEXT` | Name of the annotation in adata.obs to use |
+| `--homolog-file FILE` | Path to homologous gene conversion file |
+| `--species TEXT` | Species-symbol column in the homolog file (for example MOUSE_GENE_SYM) |
+| `--latent-representation-niche TEXT` | Key for spatial niche embedding in obsm |
+| `--latent-representation-cell TEXT` | Key for cell identity embedding in obsm  \[default: emb_cell] |
+| `--high-quality-cell-qc / --no-high-quality-cell-qc` | Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.  \[default: high-quality-cell-qc] |
+| `--n-neighbors INTEGER RANGE` | Number of external neighbors for corrected LGCN graphs  \[default: 10; 1<=x<=50] |
+| `--graph-mode TEXT` | Spatial graph mode: symmetric_knn (default), radius, weighted_radius, sectionwise_2d, section_aware_3d, no_graph, or revision-only legacy_bug/legacy_symmetric  \[default: symmetric_knn] |
+| `--graph-radius FLOAT RANGE` | Physical radius for radius graph modes  \[x>=0.0] |
+| `--graph-sigma FLOAT RANGE` | Gaussian sigma for weighted-radius edges  \[x>=0.0] |
+| `--graph-z-scale FLOAT RANGE` | Multiplier converting the stored z coordinate to the physical XY units for section_aware_3d graphs  \[default: 1.0; x>=0.0] |
+| `--inference-chunk-size INTEGER RANGE` | Target number of focal spots per section-aligned inference chunk. Physical sections remain intact, all spots are retained, and section-aware chunks include graph halos.  \[default: 250000; x>=1] |
+| `--two-stage / --single-stage` | Tune the cell embeddings based on the provided annotation  \[default: single-stage] |
+| `--n-cell-training INTEGER RANGE` | Number of cells used for training  \[default: 100000; 1000<=x<=1000000] |
+| `--dataset-type [scrna\|spatial2d\|spatial3d]` | Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)  \[default: spatial2D] |
+| `--spatial-neighbors INTEGER RANGE` | k1: Number of spatial neighbors in it's own slice for spatial dataset  \[default: 301; 10<=x<=5000] |
+| `--homogeneous-neighbors INTEGER RANGE` | k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)  \[default: 21; 1<=x<=200] |
+| `--cell-embedding-similarity-threshold FLOAT RANGE` | Minimum similarity threshold for cell embedding.  \[default: 0.0; 0.0<=x<=1.0] |
+| `--spatial-domain-similarity-threshold FLOAT RANGE` | Minimum similarity threshold for spatial domain embedding.  \[default: 0.6; 0.0<=x<=1.0] |
+| `--homogeneous-selection-mode [soft_priority\|hard_niche_filter]` | How niche similarity is used: soft_priority ranks passing neighbors first and fills remaining slots; hard_niche_filter reproduces the historical rule by assigning zero marker-score weight below the niche threshold.  \[default: soft_priority] |
+| `--no-expression-fraction` | Skip expression fraction filtering |
+| `--adjacent-slice-spatial-neighbors INTEGER RANGE` | Number of spatial neighbors to find on each adjacent slice for 3D data  \[default: 200; 10<=x<=2000] |
+| `--n-adjacent-slices INTEGER RANGE` | For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.  \[default: 2; 0<=x<=100] |
+| `--cross-slice-selection-mode [ordinal\|physical_window]` | How cross-section candidates are chosen: by ordinal input order (legacy) or by a measured physical z-distance window.  \[default: ordinal] |
+| `--cross-slice-max-distance FLOAT RANGE` | Maximum absolute physical z distance for physical-window section selection. Required when cross_slice_selection_mode=physical_window.  \[x>=0.0] |
+| `--cross-slice-z-coordinate INTEGER` | Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.  \[default: -1] |
+| `--cross-slice-z-scale FLOAT RANGE` | Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.  \[default: 1.0; x>=0.0] |
+| `--cross-slice-marker-score-strategy [global_pool\|per_slice_pool\|hierarchical_pool]` | Strategy for computing marker scores across slices in spatial3D datasets. 'global_pool': Select the top K most similar neighbors globally across all slices combined. 'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. 'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.  \[default: hierarchical_pool] |
+| `--high-quality-neighbor-filter / --no-high-quality-filter` | Only find neighbors within high quality cells (requires High_quality column in obs)  \[default: no-high-quality-filter] |
+| `--use-gpu / --no-gpu` | Use GPU for JAX-accelerated spatial LDSC implementation  \[default: use-gpu] |
+| `--memmap-tmp-dir DIRECTORY` | Optional fast scratch directory. Concurrent spatial-LDSC processes stage and reuse one content-addressed, read-only marker cache per directory/node. If it does not fit, gsMap streams directly from project storage. |
+| `--mkscore-batch-size INTEGER RANGE` | Cells per marker-score batch; 0 selects automatically  \[default: 0; 0<=x<=1000] |
+| `--rank-read-workers INTEGER RANGE` | Threads used to materialize distinct rank rows for each cache window  \[default: 120; 1<=x<=128] |
+| `--mkscore-compute-workers INTEGER RANGE` | Marker-score compute workers  \[default: 4; 1<=x<=16] |
+| `--mkscore-write-workers INTEGER RANGE` | Marker-score and rank write workers  \[default: 2; 1<=x<=50] |
+| `--compute-input-queue-size INTEGER RANGE` | Maximum pending marker-score batches per compute worker  \[default: 1; 1<=x<=10] |
+| `--writer-queue-size INTEGER RANGE` | Writer-input queue capacity  \[default: 20; 10<=x<=500] |
+| `--ldsc-read-workers INTEGER RANGE` | CPU sparse-transform threads, or GPU marker-transform workers. CPU threads cooperate on one LD-score batch; marker memmap I/O uses one bounded sequential stream.  \[default: 10; x>=1] |
+| `--ldsc-compute-workers INTEGER RANGE` | Number of compute workers for LDSC regression  \[default: 10; x>=1] |
+| `--spots-per-chunk-quick-mode INTEGER RANGE` | Number of spots per chunk in quick mode  \[default: 100; x>=1] |
+| `--trait-name TEXT` | Name of the trait for GWAS analysis |
+| `--sumstats-file FILE` | Path to GWAS summary statistics file |
+| `--sumstats-config-file FILE` | Path to sumstats config file |
+| `--w-ld-dir DIRECTORY` | Directory containing the weights files (w_ld) |
+| `--additional-baseline-h5ad-path-list FILE` | List of additional baseline h5ad paths |
+| `--chisq-max INTEGER` | Maximum chi-square value |
+| `--cell-indices-range <INTEGER INTEGER>...` | 0-based range [start, end) of cell indices to process |
+| `--sample-filter TEXT` | Filter processing to a specific sample |
+| `--n-blocks INTEGER RANGE` | Number of jackknife blocks  \[default: 200; x>=2] |
+| `--snp-gene-weight-adata-path FILE` | Path to the SNP-gene weight matrix (H5AD format) |
+| `--ldscore-h5ad-path FILE` | Path to a pre-computed SNP × Cell LD score h5ad file (obs=SNPs, var=cells). When provided, skips on-the-fly LD score computation from the SNP-gene weight matrix. additional_baseline_h5ad_path_list must also be provided to supply all baseline annotations. |
+| `--marker-score-feather-path FILE` | Path to marker score feather file |
+| `--marker-score-h5ad-path FILE` | Path to marker score h5ad file |
+| `--marker-score-format [memmap\|feather\|h5ad]` | Format of marker scores |
+| `--cauchy-annotations TEXT` | List of annotations in adata.obs to use |
+| `--downsampling-n-spots-pcc INTEGER RANGE` | Number of spots to downsample for PCC calculation if n_spots > this value  \[default: 20000; 1000<=x<=100000] |
+| `--downsampling-n-spots-umap INTEGER RANGE` | Maximum representative spots used to calculate and display each report UMAP. Valid precomputed UMAP coordinates are sampled to the same limit.  \[default: 50000; 1000<=x<=500000] |
+| `--downsampling-n-spots-3d INTEGER RANGE` | Maximum representative spots rendered in the browser's 3D view. Larger datasets use deterministic annotation-aware sampling.  \[default: 100000; 1000<=x<=2000000] |
+| `--downsampling-n-spots-2d INTEGER RANGE` | Maximum representative spots per sample in the browser's 2D view. Larger samples use deterministic annotation-aware sampling.  \[default: 100000; 10000<=x<=500000] |
+| `--top-corr-genes INTEGER RANGE` | Number of top correlated genes to display  \[default: 50; 1<=x<=500] |
+| `--plot-origin TEXT` | Plot origin for spatial plots ('upper' or 'lower'). 'upper' will flip the y-axis (standard for images).  \[default: upper] |
+| `--start-step TEXT` | Step to start execution from (find_latent, latent2gene, spatial_ldsc, cauchy, report)  \[default: find_latent] |
+| `--stop-step TEXT` | Step to stop execution at (inclusive) |
+| `--help` | Show this message and exit. |
 
 ## `gsmap find-latent`
 
@@ -120,50 +108,46 @@ This step:
 - Learns latent representations using GNN
 - Saves the model and embeddings
 
-**Usage**:
-
-```console
-$ gsmap find-latent [OPTIONS]
-```
-
-**Options**:
-
-* `--workdir DIRECTORY`: Path to the working directory  [required]
-* `--project-name TEXT`: Name of the project  [required]
-* `--h5ad-path PATH`: Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.
-* `--h5ad-yaml FILE`: YAML file with sample names and h5ad paths
-* `--h5ad-list-file FILE`: Each row is a h5ad file path, sample name is the file name without suffix
-* `--data-layer TEXT`: Gene expression raw counts data layer in h5ad layers, e.g., &#x27;count&#x27;, &#x27;counts&#x27;. Other wise use &#x27;X&#x27; for adata.X  [default: X]
-* `--spatial-key TEXT`: Spatial key in adata.obsm storing spatial coordinates  [default: spatial]
-* `--annotation TEXT`: Annotation of cell type in adata.obs to use
-* `--homolog-file FILE`: Path to homologous gene conversion file
-* `--species TEXT`: Species-symbol column in the homolog file (for example MOUSE_GENE_SYM)
-* `--latent-representation-niche TEXT`: Key for spatial niche embedding in obsm  [default: emb_niche]
-* `--latent-representation-cell TEXT`: Key for cell identity embedding in obsm  [default: emb_cell]
-* `--high-quality-cell-qc / --no-high-quality-cell-qc`: Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.  [default: high-quality-cell-qc]
-* `--feat-cell INTEGER RANGE`: Number of top variable features to retain  [default: 2000; 100&lt;=x&lt;=10000]
-* `--n-neighbors INTEGER RANGE`: Number of external neighbors for corrected LGCN graphs  [default: 10; 1&lt;=x&lt;=50]
-* `--graph-mode TEXT`: Spatial graph mode: symmetric_knn (default), radius, weighted_radius, no_graph, or revision-only legacy_bug/legacy_symmetric  [default: symmetric_knn]
-* `--graph-radius FLOAT RANGE`: Physical radius for radius graph modes  [x&gt;=0.0]
-* `--graph-sigma FLOAT RANGE`: Gaussian sigma for weighted-radius edges  [x&gt;=0.0]
-* `--k INTEGER RANGE`: Graph convolution depth for LGCN  [default: 3; 1&lt;=x&lt;=10]
-* `--hidden-size INTEGER RANGE`: Units in the first hidden layer  [default: 128; 32&lt;=x&lt;=512]
-* `--embedding-size INTEGER RANGE`: Size of the latent embedding layer  [default: 32; 8&lt;=x&lt;=128]
-* `--use-tf`: Enable transformer module
-* `--module-dim INTEGER RANGE`: Dimensionality of transformer modules  [default: 30; 10&lt;=x&lt;=100]
-* `--hidden-gmf INTEGER RANGE`: Hidden units for global mean feature extractor  [default: 128; 32&lt;=x&lt;=512]
-* `--n-modules INTEGER RANGE`: Number of transformer modules  [default: 16; 4&lt;=x&lt;=64]
-* `--nhead INTEGER RANGE`: Number of attention heads in transformer  [default: 4; 1&lt;=x&lt;=16]
-* `--n-enc-layer INTEGER RANGE`: Number of transformer encoder layers  [default: 2; 1&lt;=x&lt;=8]
-* `--distribution TEXT`: Distribution type for loss calculation  [default: nb]
-* `--batch-size INTEGER RANGE`: Batch size for training  [default: 1024; 32&lt;=x&lt;=4096]
-* `--itermax INTEGER RANGE`: Maximum number of training iterations  [default: 100; 10&lt;=x&lt;=1000]
-* `--patience INTEGER RANGE`: Early stopping patience  [default: 10; 1&lt;=x&lt;=50]
-* `--random-seed INTEGER RANGE`: Random seed for training and sampling  [default: 2024; x&gt;=0]
-* `--two-stage / --single-stage`: Tune the cell embeddings based on the provided annotation  [default: single-stage]
-* `--do-sampling / --no-sampling`: Down-sampling cells in training  [default: do-sampling]
-* `--n-cell-training INTEGER RANGE`: Number of cells used for training  [default: 100000; 1000&lt;=x&lt;=1000000]
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `--workdir DIRECTORY` | Path to the working directory  \[required] |
+| `--project-name TEXT` | Name of the project  \[required] |
+| `--h5ad-path PATH` | Space-separated list of h5ad file paths. Sample names are derived from file names without suffix. |
+| `--h5ad-yaml FILE` | YAML file with sample names and h5ad paths |
+| `--h5ad-list-file FILE` | Each row is a h5ad file path, sample name is the file name without suffix |
+| `--data-layer TEXT` | Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X  \[default: X] |
+| `--spatial-key TEXT` | Spatial key in adata.obsm storing spatial coordinates  \[default: spatial] |
+| `--annotation TEXT` | Annotation of cell type in adata.obs to use |
+| `--homolog-file FILE` | Path to homologous gene conversion file |
+| `--species TEXT` | Species-symbol column in the homolog file (for example MOUSE_GENE_SYM) |
+| `--latent-representation-niche TEXT` | Key for spatial niche embedding in obsm  \[default: emb_niche] |
+| `--latent-representation-cell TEXT` | Key for cell identity embedding in obsm  \[default: emb_cell] |
+| `--high-quality-cell-qc / --no-high-quality-cell-qc` | Enable/disable high quality cell QC based on module scores. If enabled, it will compute DEG and module scores.  \[default: high-quality-cell-qc] |
+| `--feat-cell INTEGER RANGE` | Number of top variable features to retain  \[default: 2000; 100<=x<=10000] |
+| `--n-neighbors INTEGER RANGE` | Number of external neighbors for corrected LGCN graphs  \[default: 10; 1<=x<=50] |
+| `--graph-mode TEXT` | Spatial graph mode: symmetric_knn (default), radius, weighted_radius, sectionwise_2d, section_aware_3d, no_graph, or revision-only legacy_bug/legacy_symmetric  \[default: symmetric_knn] |
+| `--graph-radius FLOAT RANGE` | Physical radius for radius graph modes  \[x>=0.0] |
+| `--graph-sigma FLOAT RANGE` | Gaussian sigma for weighted-radius edges  \[x>=0.0] |
+| `--graph-z-scale FLOAT RANGE` | Multiplier converting the stored z coordinate to the physical XY units for section_aware_3d graphs  \[default: 1.0; x>=0.0] |
+| `--k INTEGER RANGE` | Graph convolution depth for LGCN  \[default: 3; 1<=x<=10] |
+| `--inference-chunk-size INTEGER RANGE` | Target number of focal spots per section-aligned inference chunk. Physical sections remain intact, all spots are retained, and section-aware chunks include graph halos.  \[default: 250000; x>=1] |
+| `--hidden-size INTEGER RANGE` | Units in the first hidden layer  \[default: 128; 32<=x<=512] |
+| `--embedding-size INTEGER RANGE` | Size of the latent embedding layer  \[default: 32; 8<=x<=128] |
+| `--use-tf` | Enable transformer module |
+| `--module-dim INTEGER RANGE` | Dimensionality of transformer modules  \[default: 30; 10<=x<=100] |
+| `--hidden-gmf INTEGER RANGE` | Hidden units for global mean feature extractor  \[default: 128; 32<=x<=512] |
+| `--n-modules INTEGER RANGE` | Number of transformer modules  \[default: 16; 4<=x<=64] |
+| `--nhead INTEGER RANGE` | Number of attention heads in transformer  \[default: 4; 1<=x<=16] |
+| `--n-enc-layer INTEGER RANGE` | Number of transformer encoder layers  \[default: 2; 1<=x<=8] |
+| `--distribution TEXT` | Distribution type for loss calculation  \[default: nb] |
+| `--batch-size INTEGER RANGE` | Batch size for training  \[default: 1024; 32<=x<=4096] |
+| `--itermax INTEGER RANGE` | Maximum number of training iterations  \[default: 100; 10<=x<=1000] |
+| `--patience INTEGER RANGE` | Early stopping patience  \[default: 10; 1<=x<=50] |
+| `--random-seed INTEGER RANGE` | Random seed for training and sampling  \[default: 2024; x>=0] |
+| `--two-stage / --single-stage` | Tune the cell embeddings based on the provided annotation  \[default: single-stage] |
+| `--do-sampling / --no-sampling` | Down-sample cells used by the training loss; spatial features are still propagated on each complete section graph  \[default: do-sampling] |
+| `--n-cell-training INTEGER RANGE` | Number of cells used for training  \[default: 100000; 1000<=x<=1000000] |
+| `--help` | Show this message and exit. |
 
 ## `gsmap latent-to-gene`
 
@@ -175,48 +159,42 @@ This step:
 - Performs spatial smoothing
 - Saves marker scores for LDSC
 
-**Usage**:
-
-```console
-$ gsmap latent-to-gene [OPTIONS]
-```
-
-**Options**:
-
-* `--workdir DIRECTORY`: Path to the working directory  [required]
-* `--project-name TEXT`: Name of the project  [required]
-* `--dataset-type [scrna|spatial2d|spatial3d]`: Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)  [default: spatial2D]
-* `--h5ad-path PATH`: Space-separated list of h5ad file paths. Sample names are derived from file names without suffix.
-* `--h5ad-yaml FILE`: YAML file with sample names and h5ad paths
-* `--h5ad-list-file FILE`: Each row is a h5ad file path, sample name is the file name without suffix
-* `--annotation TEXT`: Cell type annotation in adata.obs to use. This would constrain finding homogeneous spots within each cell type
-* `--data-layer TEXT`: Gene expression raw counts data layer in h5ad layers, e.g., &#x27;count&#x27;, &#x27;counts&#x27;. Other wise use &#x27;X&#x27; for adata.X  [default: X]
-* `--latent-representation-niche TEXT`: Key for spatial niche embedding in obsm
-* `--latent-representation-cell TEXT`: Key for cell identity embedding in obsm  [default: emb_cell]
-* `--spatial-key TEXT`: Spatial key in adata.obsm  [default: spatial]
-* `--spatial-neighbors INTEGER RANGE`: k1: Number of spatial neighbors in it&#x27;s own slice for spatial dataset  [default: 301; 10&lt;=x&lt;=5000]
-* `--homogeneous-neighbors INTEGER RANGE`: k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)  [default: 21; 1&lt;=x&lt;=200]
-* `--cell-embedding-similarity-threshold FLOAT RANGE`: Minimum similarity threshold for cell embedding.  [default: 0.0; 0.0&lt;=x&lt;=1.0]
-* `--spatial-domain-similarity-threshold FLOAT RANGE`: Minimum similarity threshold for spatial domain embedding.  [default: 0.6; 0.0&lt;=x&lt;=1.0]
-* `--homogeneous-selection-mode [soft_priority|hard_niche_filter]`: How niche similarity is used: soft_priority ranks passing neighbors first and fills remaining slots; hard_niche_filter reproduces the historical rule by assigning zero marker-score weight below the niche threshold.  [default: soft_priority]
-* `--no-expression-fraction`: Skip expression fraction filtering
-* `--adjacent-slice-spatial-neighbors INTEGER RANGE`: Number of spatial neighbors to find on each adjacent slice for 3D data  [default: 200; 10&lt;=x&lt;=2000]
-* `--n-adjacent-slices INTEGER RANGE`: For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.  [default: 1; 0&lt;=x&lt;=100]
-* `--cross-slice-selection-mode [ordinal|physical_window]`: How cross-section candidates are chosen: by ordinal input order (legacy) or by a measured physical z-distance window.  [default: ordinal]
-* `--cross-slice-max-distance FLOAT RANGE`: Maximum absolute physical z distance for physical-window section selection. Required when cross_slice_selection_mode=physical_window.  [x&gt;=0.0]
-* `--cross-slice-z-coordinate INTEGER`: Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.  [default: -1]
-* `--cross-slice-z-scale FLOAT RANGE`: Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.  [default: 1.0; x&gt;=0.0]
-* `--cross-slice-marker-score-strategy [global_pool|per_slice_pool|hierarchical_pool]`: Strategy for computing marker scores across slices in spatial3D datasets. &#x27;global_pool&#x27;: Select the top K most similar neighbors globally across all slices combined. &#x27;per_slice_pool&#x27;: Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. &#x27;hierarchical_pool&#x27;: Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.  [default: hierarchical_pool]
-* `--high-quality-neighbor-filter / --no-high-quality-filter`: Only find neighbors within high quality cells (requires High_quality column in obs)  [default: no-high-quality-filter]
-* `--use-gpu / --no-gpu`: Use GPU for JAX computations (requires sufficient GPU memory)  [default: use-gpu]
-* `--memmap-tmp-dir DIRECTORY`: Optional fast scratch directory for memory-mapped files. A file is staged only when the full logical memmap plus safety headroom fits; otherwise gsMap uses the project storage directly.
-* `--mkscore-batch-size INTEGER RANGE`: Cells per marker-score batch; 0 selects automatically  [default: 0; 0&lt;=x&lt;=1000]
-* `--rank-read-workers INTEGER RANGE`: Threads used to materialize distinct rank rows for each cache window  [default: 120; 1&lt;=x&lt;=128]
-* `--mkscore-compute-workers INTEGER RANGE`: Marker-score compute workers  [default: 4; 1&lt;=x&lt;=16]
-* `--mkscore-write-workers INTEGER RANGE`: Marker-score and rank write workers  [default: 2; 1&lt;=x&lt;=50]
-* `--compute-input-queue-size INTEGER RANGE`: Maximum pending marker-score batches per compute worker  [default: 1; 1&lt;=x&lt;=10]
-* `--writer-queue-size INTEGER RANGE`: Writer-input queue capacity  [default: 20; 10&lt;=x&lt;=500]
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `--workdir DIRECTORY` | Path to the working directory  \[required] |
+| `--project-name TEXT` | Name of the project  \[required] |
+| `--dataset-type [scrna\|spatial2d\|spatial3d]` | Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)  \[default: spatial2D] |
+| `--h5ad-path PATH` | Space-separated list of h5ad file paths. Sample names are derived from file names without suffix. |
+| `--h5ad-yaml FILE` | YAML file with sample names and h5ad paths |
+| `--h5ad-list-file FILE` | Each row is a h5ad file path, sample name is the file name without suffix |
+| `--annotation TEXT` | Cell type annotation in adata.obs to use. This would constrain finding homogeneous spots within each cell type |
+| `--data-layer TEXT` | Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X  \[default: X] |
+| `--latent-representation-niche TEXT` | Key for spatial niche embedding in obsm |
+| `--latent-representation-cell TEXT` | Key for cell identity embedding in obsm  \[default: emb_cell] |
+| `--spatial-key TEXT` | Spatial key in adata.obsm  \[default: spatial] |
+| `--spatial-neighbors INTEGER RANGE` | k1: Number of spatial neighbors in it's own slice for spatial dataset  \[default: 301; 10<=x<=5000] |
+| `--homogeneous-neighbors INTEGER RANGE` | k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)  \[default: 21; 1<=x<=200] |
+| `--cell-embedding-similarity-threshold FLOAT RANGE` | Minimum similarity threshold for cell embedding.  \[default: 0.0; 0.0<=x<=1.0] |
+| `--spatial-domain-similarity-threshold FLOAT RANGE` | Minimum similarity threshold for spatial domain embedding.  \[default: 0.6; 0.0<=x<=1.0] |
+| `--homogeneous-selection-mode [soft_priority\|hard_niche_filter]` | How niche similarity is used: soft_priority ranks passing neighbors first and fills remaining slots; hard_niche_filter reproduces the historical rule by assigning zero marker-score weight below the niche threshold.  \[default: soft_priority] |
+| `--no-expression-fraction` | Skip expression fraction filtering |
+| `--adjacent-slice-spatial-neighbors INTEGER RANGE` | Number of spatial neighbors to find on each adjacent slice for 3D data  \[default: 200; 10<=x<=2000] |
+| `--n-adjacent-slices INTEGER RANGE` | For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.  \[default: 2; 0<=x<=100] |
+| `--cross-slice-selection-mode [ordinal\|physical_window]` | How cross-section candidates are chosen: by ordinal input order (legacy) or by a measured physical z-distance window.  \[default: ordinal] |
+| `--cross-slice-max-distance FLOAT RANGE` | Maximum absolute physical z distance for physical-window section selection. Required when cross_slice_selection_mode=physical_window.  \[x>=0.0] |
+| `--cross-slice-z-coordinate INTEGER` | Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.  \[default: -1] |
+| `--cross-slice-z-scale FLOAT RANGE` | Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.  \[default: 1.0; x>=0.0] |
+| `--cross-slice-marker-score-strategy [global_pool\|per_slice_pool\|hierarchical_pool]` | Strategy for computing marker scores across slices in spatial3D datasets. 'global_pool': Select the top K most similar neighbors globally across all slices combined. 'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. 'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.  \[default: hierarchical_pool] |
+| `--high-quality-neighbor-filter / --no-high-quality-filter` | Only find neighbors within high quality cells (requires High_quality column in obs)  \[default: no-high-quality-filter] |
+| `--use-gpu / --no-gpu` | Use GPU for JAX computations (requires sufficient GPU memory)  \[default: use-gpu] |
+| `--memmap-tmp-dir DIRECTORY` | Optional fast scratch directory for memory-mapped files. A file is staged only when the full logical memmap plus safety headroom fits; otherwise gsMap uses the project storage directly. |
+| `--mkscore-batch-size INTEGER RANGE` | Cells per marker-score batch; 0 selects automatically  \[default: 0; 0<=x<=1000] |
+| `--rank-read-workers INTEGER RANGE` | Threads used to materialize distinct rank rows for each cache window  \[default: 120; 1<=x<=128] |
+| `--mkscore-compute-workers INTEGER RANGE` | Marker-score compute workers  \[default: 4; 1<=x<=16] |
+| `--mkscore-write-workers INTEGER RANGE` | Marker-score and rank write workers  \[default: 2; 1<=x<=50] |
+| `--compute-input-queue-size INTEGER RANGE` | Maximum pending marker-score batches per compute worker  \[default: 1; 1<=x<=10] |
+| `--writer-queue-size INTEGER RANGE` | Writer-input queue capacity  \[default: 20; 10<=x<=500] |
+| `--help` | Show this message and exit. |
 
 ## `gsmap spatial-ldsc`
 
@@ -228,36 +206,30 @@ This step:
 - Computes enrichment statistics
 - Saves results for downstream analysis
 
-**Usage**:
-
-```console
-$ gsmap spatial-ldsc [OPTIONS]
-```
-
-**Options**:
-
-* `--workdir DIRECTORY`: Path to the working directory  [required]
-* `--project-name TEXT`: Name of the project  [required]
-* `--use-gpu / --no-gpu`: Use GPU for JAX-accelerated spatial LDSC implementation  [default: use-gpu]
-* `--memmap-tmp-dir DIRECTORY`: Optional fast scratch directory for memory-mapped files. A file is staged only when the full logical memmap plus safety headroom fits; otherwise gsMap uses the project storage directly.
-* `--ldsc-read-workers INTEGER RANGE`: Number of read workers  [default: 10; x&gt;=1]
-* `--ldsc-compute-workers INTEGER RANGE`: Number of compute workers for LDSC regression  [default: 10; x&gt;=1]
-* `--spots-per-chunk-quick-mode INTEGER RANGE`: Number of spots per chunk in quick mode  [default: 50; x&gt;=1]
-* `--trait-name TEXT`: Name of the trait for GWAS analysis
-* `--sumstats-file FILE`: Path to GWAS summary statistics file
-* `--sumstats-config-file FILE`: Path to sumstats config file
-* `--w-ld-dir DIRECTORY`: Directory containing the weights files (w_ld)
-* `--additional-baseline-h5ad-path-list FILE`: List of additional baseline h5ad paths
-* `--chisq-max INTEGER`: Maximum chi-square value
-* `--cell-indices-range <INTEGER INTEGER>...`: 0-based range [start, end) of cell indices to process
-* `--sample-filter TEXT`: Filter processing to a specific sample
-* `--n-blocks INTEGER RANGE`: Number of jackknife blocks  [default: 200; x&gt;=2]
-* `--snp-gene-weight-adata-path FILE`: Path to the SNP-gene weight matrix (H5AD format)
-* `--ldscore-h5ad-path FILE`: Path to a pre-computed SNP × Cell LD score h5ad file (obs=SNPs, var=cells). When provided, skips on-the-fly LD score computation from the SNP-gene weight matrix. additional_baseline_h5ad_path_list must also be provided to supply all baseline annotations.
-* `--marker-score-feather-path FILE`: Path to marker score feather file
-* `--marker-score-h5ad-path FILE`: Path to marker score h5ad file
-* `--marker-score-format [memmap|feather|h5ad]`: Format of marker scores
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `--workdir DIRECTORY` | Path to the working directory  \[required] |
+| `--project-name TEXT` | Name of the project  \[required] |
+| `--use-gpu / --no-gpu` | Use GPU for JAX-accelerated spatial LDSC implementation  \[default: use-gpu] |
+| `--memmap-tmp-dir DIRECTORY` | Optional fast scratch directory. Concurrent spatial-LDSC processes stage and reuse one content-addressed, read-only marker cache per directory/node. If it does not fit, gsMap streams directly from project storage. |
+| `--ldsc-read-workers INTEGER RANGE` | CPU sparse-transform threads, or GPU marker-transform workers. CPU threads cooperate on one LD-score batch; marker memmap I/O uses one bounded sequential stream.  \[default: 10; x>=1] |
+| `--ldsc-compute-workers INTEGER RANGE` | Number of compute workers for LDSC regression  \[default: 10; x>=1] |
+| `--spots-per-chunk-quick-mode INTEGER RANGE` | Number of spots per chunk in quick mode  \[default: 100; x>=1] |
+| `--trait-name TEXT` | Name of the trait for GWAS analysis |
+| `--sumstats-file FILE` | Path to GWAS summary statistics file |
+| `--sumstats-config-file FILE` | Path to sumstats config file |
+| `--w-ld-dir DIRECTORY` | Directory containing the weights files (w_ld) |
+| `--additional-baseline-h5ad-path-list FILE` | List of additional baseline h5ad paths |
+| `--chisq-max INTEGER` | Maximum chi-square value |
+| `--cell-indices-range <INTEGER INTEGER>...` | 0-based range [start, end) of cell indices to process |
+| `--sample-filter TEXT` | Filter processing to a specific sample |
+| `--n-blocks INTEGER RANGE` | Number of jackknife blocks  \[default: 200; x>=2] |
+| `--snp-gene-weight-adata-path FILE` | Path to the SNP-gene weight matrix (H5AD format) |
+| `--ldscore-h5ad-path FILE` | Path to a pre-computed SNP × Cell LD score h5ad file (obs=SNPs, var=cells). When provided, skips on-the-fly LD score computation from the SNP-gene weight matrix. additional_baseline_h5ad_path_list must also be provided to supply all baseline annotations. |
+| `--marker-score-feather-path FILE` | Path to marker score feather file |
+| `--marker-score-h5ad-path FILE` | Path to marker score h5ad file |
+| `--marker-score-format [memmap\|feather\|h5ad]` | Format of marker scores |
+| `--help` | Show this message and exit. |
 
 ## `gsmap cauchy-combination`
 
@@ -267,24 +239,18 @@ This step:
 - Loads spatial LDSC results for a trait
 - Removes outliers
 - Performs Cauchy combination test for each annotation
-- Computes Fisher&#x27;s exact test for enrichment
+- Computes Fisher's exact test for enrichment
 
-**Usage**:
-
-```console
-$ gsmap cauchy-combination [OPTIONS]
-```
-
-**Options**:
-
-* `--workdir DIRECTORY`: Path to the working directory  [required]
-* `--project-name TEXT`: Name of the project  [required]
-* `--trait-name TEXT`: Name of the trait for GWAS analysis
-* `--sumstats-file FILE`: Path to GWAS summary statistics file
-* `--sumstats-config-file FILE`: Path to sumstats config file
-* `--annotation TEXT`: Name of the annotation in adata.obs to use
-* `--cauchy-annotations TEXT`: List of annotations in adata.obs to use
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `--workdir DIRECTORY` | Path to the working directory  \[required] |
+| `--project-name TEXT` | Name of the project  \[required] |
+| `--trait-name TEXT` | Name of the trait for GWAS analysis |
+| `--sumstats-file FILE` | Path to GWAS summary statistics file |
+| `--sumstats-config-file FILE` | Path to sumstats config file |
+| `--annotation TEXT` | Name of the annotation in adata.obs to use |
+| `--cauchy-annotations TEXT` | List of annotations in adata.obs to use |
+| `--help` | Show this message and exit. |
 
 ## `gsmap ldscore-weight-matrix`
 
@@ -296,32 +262,31 @@ This command runs the LDScorePipeline to:
 - Compute LD-based weights between SNPs and Features
 - Save results as AnnData (.h5ad)
 
-**Usage**:
-
-```console
-$ gsmap ldscore-weight-matrix [OPTIONS]
-```
-
-**Options**:
-
-* `--bfile-root TEXT`: Reference panel prefix template (e.g., &#x27;data/1000G.{chr}&#x27;)  [required]
-* `--hm3-snp-dir DIRECTORY`: Directory containing per-chromosome HM3 SNP lists (e.g., hm.{chr}.snp). Typically set to &#x27;&lt;ldscore_data_dir&gt;/hapmap3_snps&#x27;.  [required]
-* `--output-dir PATH`: Output directory. If None, uses {workdir}/{project_name}/generate_ldscore
-* `--output-filename TEXT`: Prefix for output files  [default: ld_score_weights]
-* `--omics-h5ad-path FILE`: Path to omics H5AD file
-* `--mapping-type TEXT`: Mapping type: &#x27;bed&#x27; or &#x27;dict&#x27;  [default: bed]
-* `--mapping-file FILE`: Path to mapping file
-* `--annot-file TEXT`: Template for annotation files (e.g., &#x27;baseline.{chr}.annot.gz&#x27;)
-* `--feature-window-size INTEGER`: bp window for mapping (e.g. TSS window)  [default: 0]
-* `--strategy TEXT`: Strategy: &#x27;score&#x27;, &#x27;tss&#x27;, &#x27;center&#x27;, &#x27;allow_repeat&#x27;  [default: score]
-* `--ld-wind FLOAT`: LD window size  [default: 1.0]
-* `--ld-unit TEXT`: LD unit: &#x27;SNP&#x27;, &#x27;KB&#x27;, &#x27;CM&#x27;  [default: CM]
-* `--maf-min FLOAT`: Minimum MAF filter  [default: 0.01]
-* `--chromosomes TEXT`: Chromosomes to process. &#x27;all&#x27; uses 1-22 autosomes, or provide a comma-separated list of chromosomes (e.g., &#x27;1,2,3&#x27;)  [default: all]
-* `--batch-size-hm3 INTEGER`: Batch size for HM3 SNPs  [default: 50]
-* `--calculate-w-ld / --no-calculate-w-ld`: Whether to calculate w_ld  [default: no-calculate-w-ld]
-* `--w-ld-dir PATH`: Directory for w_ld outputs
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `--bfile-root TEXT` | Reference panel prefix template (e.g., 'data/1000G.{chr}')  \[required] |
+| `--hm3-snp-dir DIRECTORY` | Directory containing per-chromosome HM3 SNP lists (e.g., hm.{chr}.snp). Typically set to '<ldscore_data_dir>/hapmap3_snps'.  \[required] |
+| `--output-dir PATH` | Output directory. If None, uses {workdir}/{project_name}/generate_ldscore |
+| `--output-filename TEXT` | Prefix for output files  \[default: ld_score_weights] |
+| `--omics-h5ad-path FILE` | Path to omics H5AD file |
+| `--mapping-type TEXT` | Mapping type: 'bed' or 'dict'  \[default: bed] |
+| `--mapping-file FILE` | Path to mapping file |
+| `--annot-file TEXT` | Template for annotation files (e.g., 'baseline.{chr}.annot.gz') |
+| `--feature-window-size INTEGER` | bp window for mapping (e.g. TSS window)  \[default: 0] |
+| `--strategy TEXT` | Strategy: 'score', 'tss', 'center', 'allow_repeat'  \[default: score] |
+| `--ld-wind FLOAT` | LD window size  \[default: 1.0] |
+| `--ld-unit TEXT` | LD unit: 'SNP', 'KB', 'CM'  \[default: CM] |
+| `--snps-only / --no-snps-only` | Restrict the broad reference set to biallelic single-nucleotide A/C/G/T variants before decoding the BED payload.  \[default: snps-only] |
+| `--mac-min INTEGER RANGE` | Minimum minor-allele count for the broad reference SNP set. Variants are retained when MAC is strictly greater than this value; the default therefore implements MAC > 5.  \[default: 5; x>=0] |
+| `--maf-min FLOAT RANGE` | Optional minimum MAF filter for the broad reference SNP set. Disabled by default because MAC > 5 is the default QC rule.  [0.0<=x<=0.5] |
+| `--exclude-mhc-from-regression / --no-exclude-mhc-from-regression` | Exclude extended-MHC SNPs from HM3 regression targets and the HM3-only weight-LD universe. MHC variants remain in the broad reference SNP set used in annotation LD-score sums.  \[default: exclude-mhc-from-regression] |
+| `--mhc-start-bp INTEGER` | GRCh38 extended-MHC start coordinate (inclusive)  \[default: 28510120] |
+| `--mhc-end-bp INTEGER` | GRCh38 extended-MHC end coordinate (inclusive)  \[default: 33480577] |
+| `--chromosomes TEXT` | Chromosomes to process. 'all' uses 1-22 autosomes, or provide a comma-separated list of chromosomes (e.g., '1,2,3')  \[default: all] |
+| `--batch-size-hm3 INTEGER` | Batch size for HM3 SNPs  \[default: 50] |
+| `--calculate-w-ld / --no-calculate-w-ld` | Whether to calculate w_ld  \[default: no-calculate-w-ld] |
+| `--w-ld-dir PATH` | Directory for w_ld outputs |
+| `--help` | Show this message and exit. |
 
 ## `gsmap format-sumstats`
 
@@ -332,37 +297,31 @@ This command:
 - Converts SNP positions to RSID (if dbsnp is provided)
 - Saves formatted summary statistics
 
-**Usage**:
-
-```console
-$ gsmap format-sumstats [OPTIONS]
-```
-
-**Options**:
-
-* `--sumstats TEXT`: Path to gwas summary data  [required]
-* `--out TEXT`: Path to save the formatted gwas data  [required]
-* `--snp TEXT`: Name of snp column
-* `--a1 TEXT`: Name of effect allele column
-* `--a2 TEXT`: Name of none-effect allele column
-* `--info TEXT`: Name of info column
-* `--beta TEXT`: Name of gwas beta column.
-* `--se TEXT`: Name of gwas standar error of beta column
-* `--p TEXT`: Name of p-value column
-* `--frq TEXT`: Name of A1 ferquency column
-* `--n TEXT`: Name of sample size column
-* `--z TEXT`: Name of gwas Z-statistics column
-* `--or TEXT`: Name of gwas OR column
-* `--se-or TEXT`: Name of standar error of OR column
-* `--chr TEXT`: Name of SNP chromosome column  [default: Chr]
-* `--pos TEXT`: Name of SNP positions column  [default: Pos]
-* `--dbsnp TEXT`: Path to reference dnsnp file
-* `--chunksize INTEGER`: Chunk size for loading dbsnp file  [default: 1000000]
-* `--format [gsmap|cojo]`: Format of output data  [default: gsMap]
-* `--info-min FLOAT`: Minimum INFO score.  [default: 0.9]
-* `--maf-min FLOAT`: Minimum MAF.  [default: 0.01]
-* `--keep-chr-pos / --no-keep-chr-pos`: Keep SNP chromosome and position columns in the output data  [default: no-keep-chr-pos]
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `--sumstats TEXT` | Path to gwas summary data  \[required] |
+| `--out TEXT` | Path to save the formatted gwas data  \[required] |
+| `--snp TEXT` | Name of snp column |
+| `--a1 TEXT` | Name of effect allele column |
+| `--a2 TEXT` | Name of none-effect allele column |
+| `--info TEXT` | Name of info column |
+| `--beta TEXT` | Name of gwas beta column. |
+| `--se TEXT` | Name of gwas standar error of beta column |
+| `--p TEXT` | Name of p-value column |
+| `--frq TEXT` | Name of A1 ferquency column |
+| `--n TEXT` | Name of sample size column |
+| `--z TEXT` | Name of gwas Z-statistics column |
+| `--or TEXT` | Name of gwas OR column |
+| `--se-or TEXT` | Name of standar error of OR column |
+| `--chr TEXT` | Name of SNP chromosome column  \[default: Chr] |
+| `--pos TEXT` | Name of SNP positions column  \[default: Pos] |
+| `--dbsnp TEXT` | Path to reference dnsnp file |
+| `--chunksize INTEGER` | Chunk size for loading dbsnp file  \[default: 1000000] |
+| `--format [gsmap\|cojo]` | Format of output data  \[default: gsMap] |
+| `--info-min FLOAT` | Minimum INFO score.  \[default: 0.9] |
+| `--maf-min FLOAT` | Minimum MAF.  \[default: 0.01] |
+| `--keep-chr-pos / --no-keep-chr-pos` | Keep SNP chromosome and position columns in the output data  \[default: no-keep-chr-pos] |
+| `--help` | Show this message and exit. |
 
 ## `gsmap report-view`
 
@@ -375,18 +334,9 @@ Example:
     gsmap report-view /path/to/project/gsmap_web_report
     gsmap report-view /path/to/project/gsmap_web_report --port 9000
 
-**Usage**:
-
-```console
-$ gsmap report-view [OPTIONS] REPORT_PATH
-```
-
-**Arguments**:
-
-* `REPORT_PATH`: Path to gsmap_web_report directory containing index.html  [required]
-
-**Options**:
-
-* `--port INTEGER`: Port to serve the report on  [default: 8080]
-* `--no-browser`: Don&#x27;t automatically open browser
-* `--help`: Show this message and exit.
+| Option | Description |
+|---|---|
+| `REPORT_PATH` | Path to gsmap_web_report directory containing index.html  \[required] |
+| `--port INTEGER` | Port to serve the report on  \[default: 8080] |
+| `--no-browser` | Don't automatically open browser |
+| `--help` | Show this message and exit. |

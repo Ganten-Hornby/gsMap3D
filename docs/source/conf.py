@@ -40,6 +40,39 @@ templates_path = ["_templates"]
 html_show_sourcelink = False
 html_css_files = ["custom.css"]
 
+# One Mermaid theme for all documentation diagrams. Semantic node classes in
+# individual flowcharts distinguish work, buffers and data, not page themes.
+mermaid_light_theme = "base"
+mermaid_dark_theme = "base"
+mermaid_height = "auto"
+mermaid_fullscreen = True
+mermaid_fullscreen_button = "Expand"
+mermaid_init_config = {
+    "startOnLoad": False,
+    "theme": "base",
+    "themeVariables": {
+        "fontFamily": "Arial, sans-serif",
+        "fontSize": "14px",
+        "primaryColor": "#edf4fc",
+        "primaryTextColor": "#19324d",
+        "primaryBorderColor": "#517ba5",
+        "secondaryColor": "#fff4df",
+        "tertiaryColor": "#eef2f6",
+        "lineColor": "#64748b",
+        "textColor": "#19324d",
+        "clusterBkg": "#f8fafc",
+        "clusterBorder": "#cbd5e1",
+        "titleColor": "#19324d",
+        "edgeLabelBackground": "#ffffff",
+    },
+    "flowchart": {
+        "wrappingWidth": 320,
+        "nodeSpacing": 20,
+        "rankSpacing": 28,
+        "subGraphTitleMargin": {"top": 8, "bottom": 12},
+    },
+}
+
 html_theme_options = {
     # "light_css_variables": {
     #     "color-brand-primary": "#7C4DFF",

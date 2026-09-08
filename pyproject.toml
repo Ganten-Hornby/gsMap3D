@@ -168,8 +168,8 @@ torch = [
 
 [project.urls]
 Home = "https://github.com/Ganten-Hornby/gsMap3D"
-Documentation = "https://yanglab.westlake.edu.cn/gsmap3d/docs"
-Website = "https://yanglab.westlake.edu.cn/gsmap3d"
+Documentation = "https://yanglab.westlake.edu.cn/gsmap3d-portal/docs/"
+Website = "https://yanglab.westlake.edu.cn/gsmap3d-portal/"
 
 [project.scripts]
 gsmap = "gsMap.cli:app"

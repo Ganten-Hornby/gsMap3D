@@ -1,62 +1,275 @@
 # Customization Guide
 
-This section covers advanced configurations for `gsMap3D`, allowing users to customize key steps of the pipeline and optimize performance for large-scale datasets.
+Start from a working 2D or 3D tutorial and change the paths or flags for your
+analysis. Reuse the shared downloads in {doc}`downloads`; you do not need
+another copy of the reference resources. Use a fresh project name when changing
+scientific inputs or settings.
 
-## Customize SNP-to-Gene Linking
+For an explanation of embeddings, neighbors and GSS, see {doc}`key_concepts`.
+For CPU/GPU, SSD, memory and cluster examples, see {doc}`scalability`.
+This page focuses on **changing the analysis**, rather than tuning its execution.
 
-By default, `gsMap3D` utilizes pre-calculated SNP-to-gene weights based on the **1000 Genomes EUR reference panel** and **protein-coding genes from Gencode v46**. This streamlined mode is ideal for most users.
+CLI flags use hyphens (`--data-layer`); Python configuration fields use underscores
+(`data_layer`). Short **flag excerpts** below are marked as text: add/replace them
+in a complete tutorial command. Do not run excerpts as shell commands or specify
+the same option twice.
 
-For more customizable analyses—such as using custom gene BED files, alternative LD reference panels, or population-specific data—you can generate your own SNP-to-gene weight matrix. See the [Computing Custom LD Score Weight Matrix](ldscore_weight_matrix.md) guide for detailed instructions.
+## File paths and configuration flags
 
-### Using a Custom Weight Matrix
+| File or folder | CLI flag | Python field |
+|---|---|---|
+| `snp_gene_weights.h5ad` | `--snp-gene-weight-adata-path` | `snp_gene_weight_adata_path` |
+| Matching `w_ld/` folder | `--w-ld-dir` | `w_ld_dir` |
+| `mouse_human_homologs.txt` | `--homolog-file` | `homolog_file` |
+| One ST H5AD | `--h5ad-path` | `h5ad_path=["..."]` |
+| Ordered `sample_paths.txt` | `--h5ad-list-file` | `h5ad_list_file` |
+| One GWAS summary-statistics file | `--sumstats-file` with `--trait-name` | `sumstats_file`, `trait_name` |
+| Multiple GWAS in `gwas.yaml` | `--sumstats-config-file` | `sumstats_config_file` |
+| Output parent folder | `--workdir` | `workdir` |
 
-Once you have generated a custom SNP-to-gene weight matrix, provide it to `gsMap3D` using:
+The tutorial folder names are a convenience, not a requirement. Use absolute paths
+when shared resources are stored elsewhere. Paths inside `sample_paths.txt` and
+`gwas.yaml` are relative to each file's folder; keep the dataset and
+`example-traits/` folders together when moving an example. Preserve anatomical
+section order along the z axis in a 3D section list.
+
+```{important}
+For a different ancestry, change both the matrix and `w_ld/` paths. For a newer
+resource revision, extract into a separate parent folder, check its metadata and
+update paths explicitly; do not overwrite an existing installation. Leave
+checksum-listed bundle files unchanged and make separate configuration copies
+when customizing an example.
+```
+
+## Customize SNP-to-gene linking
+
+Current tutorials use GENCODE v50 / 1000G high-coverage EUR. For custom gene BED
+files or another LD panel, see {doc}`ldscore_weight_matrix`. For prebuilt AFR,
+AMR, EAS, EUR, SAS and historical v46 EUR choices, see {doc}`downloads`.
+
+### Using a different or custom weight matrix
+
+Change **both** the matrix and its accompanying regression weights. For example,
+after downloading the EAS bundle, replace these options:
+
+```text
+--snp-gene-weight-adata-path resources/1000g-hc-grch38-v50-eas/snp_gene_weights.h5ad
+--w-ld-dir resources/1000g-hc-grch38-v50-eas/w_ld
+```
+
+Python uses `snp_gene_weight_adata_path` and `w_ld_dir` with the same paths in
+`QuickModeConfig`. Choose ancestry from the GWAS study, not the tissue species.
+Ancestry matching does not guarantee larger association statistics.
+
+This is a **complete command** using the downloaded EUR pair and Visium data.
+To use your reference, replace the two reference paths; for an EAS GWAS, also
+replace the GWAS file and choose the appropriate reference pair.
 
 ```bash
 gsmap quick-mode \
-    --snp-gene-weight-adata-path "/path/to/custom_snp_gene_weights.h5ad" \
-    ...
+    --workdir results \
+    --project-name custom-reference \
+    --dataset-type spatial2D \
+    --h5ad-path example_data/mouse-visium/ST/V1_Adult_Mouse_Brain_Coronal_Section.h5ad \
+    --annotation domain \
+    --spatial-key spatial \
+    --data-layer count \
+    --species MOUSE_GENE_SYM \
+    --homolog-file resources/homologs/mouse_human_homologs.txt \
+    --snp-gene-weight-adata-path resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad \
+    --w-ld-dir resources/1000g-hc-grch38-v50-eur/w_ld \
+    --trait-name IQ \
+    --sumstats-file example_data/example-traits/IQ.sumstats.gz \
+    --plot-origin lower
 ```
+
+Do not mix v46/v50, builds or ancestry pairs. `w_ld` is not the row sums of the
+SNP × gene matrix. Absolute paths work if shared resources are stored elsewhere.
 
 ## Use your own embedding
 
-While `gsMap3D` provides GNN-based embeddings, you can utilize embeddings from other tools (e.g., Scanpy, Seurat, or custom VAEs) by specifying the corresponding keys in `adata.obsm`. In this case, you should skip the `find_latent` step by setting `--start-step latent2gene`.
+Store cell-state and niche embeddings in `adata.obsm`, then skip gsMap embedding
+training with these options:
+
+```text
+--start-step latent2gene
+--latent-representation-cell X_pca
+--latent-representation-niche X_spatial_pca
+--data-layer counts
+```
+
+Python equivalents: `start_step="latent2gene"`,
+`latent_representation_cell="X_pca"`, `latent_representation_niche="X_spatial_pca"`
+and `data_layer="counts"` in `QuickModeConfig`.
+
+For example, first create a **human-gene-symbol** input with:
+
+```text
+inputs/my_spatial_with_embeddings.h5ad
+├── obs_names                    unique cell/spot IDs
+├── obs['cell_type']              annotations
+├── var_names                    human gene symbols
+├── layers['counts']              raw expression counts
+├── obsm['spatial']               coordinates
+├── obsm['X_pca']                 cell-state embedding
+└── obsm['X_spatial_pca']          niche embedding
+```
+
+Then run this complete command on your prepared input:
 
 ```bash
 gsmap quick-mode \
+    --workdir results \
+    --project-name custom-embedding \
+    --dataset-type spatial2D \
+    --h5ad-path inputs/my_spatial_with_embeddings.h5ad \
     --start-step latent2gene \
-    --latent-representation-cell "X_pca" \
-    --latent-representation-niche "X_spatial_pca" \
-    ...
+    --latent-representation-cell X_pca \
+    --latent-representation-niche X_spatial_pca \
+    --annotation cell_type \
+    --spatial-key spatial \
+    --data-layer counts \
+    --snp-gene-weight-adata-path resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad \
+    --w-ld-dir resources/1000g-hc-grch38-v50-eur/w_ld \
+    --trait-name IQ \
+    --sumstats-file example_data/example-traits/IQ.sumstats.gz
 ```
 
-```{note}
-When using custom embeddings, ensure that your gene expression data is stored in `adata.X` (the main data matrix). The `latent2gene` step computes Gene Specificity Scores directly from the expression values in `X`.
-```
+Both embeddings must have one finite-valued row per observation. If raw counts
+are in `adata.X`, use `--data-layer X`; they do **not** have to be in X when a
+count layer is provided. Scaled/log-transformed values are not raw counts.
+For mouse or macaque genes, also specify `--species` and `--homolog-file` as in
+the tutorials. For 3D inputs, use an anatomically ordered `--h5ad-list-file`
+and `--dataset-type spatial3D`.
 
 ## Use your customized GSS
 
-If you have pre-calculated Gene Specificity Scores (GSS) or marker scores from other analytical pipelines, you can provide them directly to the `spatial-ldsc` step to skip the earlier computation steps.
+Run spatial LDSC directly on external Gene Specificity Scores to skip embedding
+and latent-to-gene. Create the input described below before executing:
 
 ```bash
 gsmap spatial-ldsc \
-    --marker-score-format "h5ad" \
-    --marker-score-h5ad-path "/path/to/custom_marker_scores.h5ad" \
-    --snp-gene-weight-adata-path "/path/to/snp_gene_weights.h5ad" \
-    ...
+    --workdir results \
+    --project-name custom-gss \
+    --marker-score-format h5ad \
+    --marker-score-h5ad-path inputs/custom_marker_scores.h5ad \
+    --snp-gene-weight-adata-path resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad \
+    --w-ld-dir resources/1000g-hc-grch38-v50-eur/w_ld \
+    --trait-name IQ \
+    --sumstats-file example_data/example-traits/IQ.sumstats.gz
 ```
 
-### Format Requirements
+### Format requirements
 
-The custom GSS file must be in **h5ad format** with:
+- **Rows:** cells/spots, with unique IDs in `.obs_names`.
+- **Columns:** human gene symbols in `.var_names`.
+- **Values in X:** your gene-specificity/marker scores, not ordinary expression counts.
+- **Gene overlap:** only overlapping genes with the reference are used. Inspect
+  the overlap; the presence of a few common genes is not sufficient validation.
 
-- **Rows**: Cells/spots (observations)
-- **Columns**: Genes (variables)
+Python uses `marker_score_format="h5ad"` and
+`marker_score_h5ad_path="inputs/custom_marker_scores.h5ad"` in `SpatialLDSCConfig`,
+with the same GWAS, reference and output fields shown above.
 
-```{note}
-The gene names in your custom GSS (`.var_names`) must overlap with the gene names in the SNP-to-gene weight matrix (`--snp-gene-weight-adata-path`). Only overlapping genes will be used for the spatial-LDSC analysis.
+This standalone command produces LDSC results, not missing spatial metadata for
+reports or Cauchy. Those steps require annotations/coordinates identifying the
+same spot IDs; matching row positions is insufficient. For native gsMap memmaps,
+keep `marker_scores.obs_indices.dat` with the matrix and metadata: it maps marker
+rows to canonical AnnData rows.
+
+## Customize the graph and cross-section matching
+
+### Graph neighbors
+
+Replace/add these flags in the embedding or full quick-mode command:
+
+```text
+--graph-mode symmetric_knn
+--n-neighbors 20
 ```
 
-## Scalability & Performance
+This requests 20 **external** neighbors before bidirectional union. The final
+undirected degree can be larger. Python uses `graph_mode="symmetric_knn"` and
+`n_neighbors=20`.
 
-For tips on optimizing performance for large-scale datasets—including speed optimization, GPU/TPU acceleration, JAX memory management, and handling million-scale spatial omics data—see the [Scalability](scalability.md) guide.
+For coordinates measured in micrometres, an **illustrative** 50 µm radius is:
+
+```text
+--graph-mode radius
+--graph-radius 50
+```
+
+The Gaussian-weighted alternative with illustrative bandwidth 25 µm is:
+
+```text
+--graph-mode weighted_radius
+--graph-radius 50
+--graph-sigma 25
+```
+
+Python uses `graph_mode`, `graph_radius` and `graph_sigma` with the same values.
+These distances are not universal defaults. Changing graph flags after starting
+at `latent2gene` cannot change embeddings that have already been computed.
+
+### Cross-section matching
+
+In `spatial3D`, the default ordinal setting searches two sections on each side,
+with boundary compensation: near the first and last sections, farther sections
+can fill the neighbor quota. This is a section-order rule, not a physical-distance
+cutoff. To use E11.5 ordinal matching:
+
+```text
+--n-adjacent-slices 8
+```
+
+Python uses `n_adjacent_slices=8` in `QuickModeConfig`. Keep the section paths in
+anatomical order along the z axis. See {doc}`3d_tutorial/mouse_e11` for a complete
+example and {doc}`cli_reference` for all available options.
+This setting controls **matching**, not graph edges between sections.
+`spatial2D` keeps matching within each section.
+
+### Resume an analysis
+
+If embedding completed successfully and inputs/settings are unchanged, add
+`--start-step latent2gene` to the same quick-mode command, or
+`start_step="latent2gene"` to its Python configuration.
+If embedding used high-quality cell QC, also pass `--high-quality-neighbor-filter`
+(`high_quality_neighbor_filter=True` in Python) to preserve that filtering.
+Do not rerun embedding upstream of existing GSS/LDSC outputs.
+
+```{warning}
+Use a new `project_name` when changing inputs, graph/matching settings or the LD
+reference. Completion checks do not establish scientific cache compatibility.
+Do not run the CLI and Python interfaces concurrently into the same project.
+```
+
+## Specify your own fields and traits
+
+| Input | CLI flag excerpt | Python field |
+|---|---|---|
+| Counts in a layer | `--data-layer counts` | `data_layer="counts"` |
+| Counts in X | `--data-layer X` | `data_layer="X"` |
+| Labels in `obs` | `--annotation cell_type` | `annotation="cell_type"` |
+| Coordinates in `obsm` | `--spatial-key spatial_aligned` | `spatial_key="spatial_aligned"` |
+| One GWAS | `--trait-name MyTrait --sumstats-file inputs/my_trait.sumstats.gz` | `trait_name`, `sumstats_file` |
+| Multiple GWAS | `--sumstats-config-file inputs/gwas.yaml` | `sumstats_config_file` |
+
+For multiple GWAS, replace the single-trait options; do not supply both forms.
+Paths in a GWAS YAML are relative to the **YAML directory**. For example, save
+this as `inputs/gwas.yaml` in the tutorial workspace:
+
+```yaml
+IQ: ../example_data/example-traits/IQ.sumstats.gz
+Height: ../example_data/example-traits/Height.sumstats.gz
+```
+
+## Scalability and performance
+
+See {doc}`scalability` for E16.5 examples covering CPU/GPU selection, SSD storage,
+memory tuning, one-trait-per-job execution and report display limits.
+For all available options, consult {doc}`cli_reference` or run:
+
+```bash
+gsmap quick-mode --help
+gsmap spatial-ldsc --help
+```

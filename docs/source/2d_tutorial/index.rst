@@ -1,5 +1,5 @@
 2D mapping
-========
+==========
 
 This section provides tutorials for integrating GWAS with 2D ST datasets using gsMap3D.
 

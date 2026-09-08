@@ -32,8 +32,8 @@ jobs:
 
     env:
       PYTHON: ${{ matrix.python }}
-      TEST_DATA_URL: https://yanglab.westlake.edu.cn/data/gsMap/gsmap3d_ci_test_data.tar.gz
-      TEST_DATA_DIR: ${{ github.workspace }}/gsmap3d_ci_test_data
+      TEST_DATA_CATALOG: https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/catalog.json
+      TEST_DATA_DIR: ${{ github.workspace }}/resources/ci-test-data
       WORK_DIR: ${{ github.workspace }}/gsmap_workdir
 
     steps:
@@ -82,17 +82,13 @@ jobs:
         id: cache-test-data
         with:
           path: ${{ env.TEST_DATA_DIR }}
-          key: test-data-gsmap3d-v2
+          key: gsmap3d-ci-test-data-r1-sha256
 
       - name: Download and extract test data
-        if: steps.cache-test-data.outputs.cache-hit != 'true'
         run: |
-          echo "Downloading test data from $TEST_DATA_URL"
-          curl -L $TEST_DATA_URL -o gsmap3d_ci_test_data.tar.gz
-          tar -xzf gsmap3d_ci_test_data.tar.gz -C ${{ github.workspace }}
-          rm gsmap3d_ci_test_data.tar.gz
-          echo "Test data extracted to ${{ github.workspace }}"
-          ls -la $TEST_DATA_DIR
+          python scripts/resources/fetch_resources.py \
+              --catalog "$TEST_DATA_CATALOG" \
+              --destination resources ci-test-data
 
       - name: Run pytest
         env:

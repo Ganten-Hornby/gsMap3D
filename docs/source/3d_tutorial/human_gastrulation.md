@@ -1,54 +1,84 @@
-# CS8 Human Embryo 3D Tutorial
+# CS8 human embryo
 
-By leveraging the continuity of biological domains across adjacent tissue sections, `gsMap3D` integrates GWAS data with 3D-reconstructed ST data to map trait-associated spots in 3D space.
+Analyze 62 registered sections with IQ, Height and MCHC GWAS using the default 3D settings.
 
-## Human Gastrulation (CS8 Human Embryo)
+[Xiao et al. · 2024 · Cell](https://doi.org/10.1016/j.cell.2024.03.041) ·
+[gsMap Report preview](https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reports/human-gastrulation/r1/index.html)
 
-This example demonstrates how to run **gsMap3D** on a 3D ST dataset from an early-stage human embryo.
+## Files needed for this tutorial
 
-### Preparation
+Run all commands from `gsmap_tutorials/`. Shared resources are downloaded once
+and reused across tutorials.
 
-First, download the required resources:
-
-```bash
-# Download gsMap3D quick mode resources
-wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_quick_mode_resource.tar.gz
-tar -xvzf gsMap_quick_mode_resource.tar.gz
-
-# Download 3D example data (Human Gastrulation)
-wget https://yanglab.westlake.edu.cn/data/gsMap/Human_Gastrulation_3D.tar.gz
-tar -xvzf Human_Gastrulation_3D.tar.gz
+```text
+gsmap_tutorials/
+├── resources/1000g-hc-grch38-v50-eur/
+│   ├── snp_gene_weights.h5ad
+│   └── w_ld/                           # 22 chromosome weight files
+└── example_data/
+    ├── example-traits/
+    │   ├── IQ.sumstats.gz
+    │   ├── Height.sumstats.gz
+    │   └── MCHC.sumstats.gz
+    └── human-gastrulation/
+        ├── ST/                         # 62 H5AD sections
+        ├── sample_paths.txt
+        └── gwas.yaml
 ```
 
-Set up environment variables for the resource and data directories:
+## 1. Download
+
+First time using gsMap? Follow {doc}`../install` and download the shared
+reference and example GWAS from {doc}`../downloads`.
+Then download this dataset. **Skip this step if its folder already exists.**
 
 ```bash
-WORK_DIR="./gsmap_3d_tutorial"
-GSMAP_RESOURCE_DIR="./gsMap_quick_mode_resource"
-GASTRULATION_3D_DATA_DIR="./Human_Gastrulation_3D"
-
-mkdir -p $WORK_DIR
+mkdir -p example_data
+wget -O example_data/human-gastrulation.tar.gz \
+    https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/human-gastrulation/r1/bundle.tar.gz && \
+    tar -xzf example_data/human-gastrulation.tar.gz -C example_data
 ```
 
-### Running the Analysis
+The archive includes `sample_paths.txt` and `gwas.yaml`; no configuration files
+need to be created. Download links and checksum instructions are on
+{doc}`../downloads`.
 
-Run the `quick-mode` command with the `--dataset-type spatial3D` flag:
+## 2. Run gsMap
+
+The first and last entries of `sample_paths.txt` are shown below:
+
+```text
+ST/human_gastrulation_slice_1.h5ad
+ST/human_gastrulation_slice_2.h5ad
+ST/human_gastrulation_slice_3.h5ad
+...
+ST/human_gastrulation_slice_60.h5ad
+ST/human_gastrulation_slice_61.h5ad
+ST/human_gastrulation_slice_62.h5ad
+```
+
+```{important}
+**Path order matters:** list sections in anatomical order along the z axis.
+gsMap uses this order for ordinal cross-section matching; it does not sort the
+list by coordinates.
+```
+
+Choose **CLI or Python** to run the same analysis:
 
 ````{tab} CLI
 ```bash
+mkdir -p results
 gsmap quick-mode \
-    --workdir "$WORK_DIR" \
-    --project-name "human_gastrulation_3d" \
-    --dataset-type "spatial3D" \
-    --h5ad-list-file "$GASTRULATION_3D_DATA_DIR/sample_path_list.txt" \
-    --w-ld-dir "${GSMAP_RESOURCE_DIR}/weights_hm3_no_hla" \
-    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
-    --sumstats-config-file "${GASTRULATION_3D_DATA_DIR}/GWAS/gwas_config.yaml" \
-    --annotation "clusters" \
-    --spatial-key "spatial_3d" \
-    --data-layer "counts" \
-    --no-high-quality-cell-qc \
-    --memmap-tmp-dir "/data/tmp"
+    --workdir results \
+    --project-name human-gastrulation \
+    --dataset-type spatial3D \
+    --h5ad-list-file example_data/human-gastrulation/sample_paths.txt \
+    --w-ld-dir resources/1000g-hc-grch38-v50-eur/w_ld \
+    --snp-gene-weight-adata-path resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad \
+    --sumstats-config-file example_data/human-gastrulation/gwas.yaml \
+    --annotation clusters \
+    --spatial-key spatial_3d \
+    --data-layer counts
 ```
 ````
 
@@ -58,75 +88,34 @@ from gsMap.config import QuickModeConfig, DatasetType
 from gsMap.pipeline import run_quick_mode
 
 config = QuickModeConfig(
-    workdir="./gsmap_3d_tutorial",
-    project_name="human_gastrulation_3d",
+    workdir="results",
+    project_name="human-gastrulation",
     dataset_type=DatasetType.SPATIAL_3D,
-    h5ad_list_file="./Human_Gastrulation_3D/sample_path_list.txt",
-    w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
-    snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
-    sumstats_config_file="./Human_Gastrulation_3D/GWAS/gwas_config.yaml",
+    h5ad_list_file="example_data/human-gastrulation/sample_paths.txt",
+    w_ld_dir="resources/1000g-hc-grch38-v50-eur/w_ld",
+    snp_gene_weight_adata_path="resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad",
+    sumstats_config_file="example_data/human-gastrulation/gwas.yaml",
     annotation="clusters",
     spatial_key="spatial_3d",
     data_layer="counts",
-    high_quality_cell_qc=False,
-    memmap_tmp_dir="/data/tmp",
 )
-
 run_quick_mode(config)
 ```
 ````
 
-### Parameters for 3D Analysis
+This example uses `counts` for expression, `clusters` for annotation and
+`spatial_3d` for coordinates. The default ordinal search uses two sections on
+each side, with boundary compensation. Human genes need no homolog conversion.
+See {doc}`../advanced_usage` to change these settings.
 
-- `--dataset-type`: Set to `spatial3D` to enable 3D neighborhood search and cross-slice integration.
-- `--h5ad-list-file`: A text file where each line is a path to an H5AD file representing one slice.
-- `--spatial-key`: The key in `adata.obsm` containing 3D coordinates (e.g., `spatial_3d`).
-- `--memmap-tmp-dir`: Directory for memory-mapped files. Using an SSD or high-speed local storage significantly boosts performance for 3D datasets.
-- `--no-high-quality-cell-qc`: Skips the high-quality cell filter if your dataset is already curated or you wish to process all spots.
+## 3. View results
 
-### Interpreting the Results
+[gsMap Report preview](https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reports/human-gastrulation/r1/index.html)
 
-In the generated 3D report, you can observe how different traits map to specific germ layers:
+```bash
+gsmap report-view results/human-gastrulation/gsmap_web_report --port 8080 --no-browser
+```
 
-- **Intelligence (IQ)**: Specifically mapped to the **ectoderm**, the progenitor of the nervous system.
-- **MCHC (Mean Corpuscular Hemoglobin Concentration)**: Mapped to the **endoderm**, the progenitor of blood-forming organs like the liver.
-- **Height**: Mapped across multiple germ layers, reflecting its highly polygenic and widespread biological influence.
-
-### Output Description
-
-The pipeline generates two main directories:
-
-**`report_data/`** - Data files for downstream analysis:
-
-- `spot_metadata.csv` - Spot-level coordinates and annotations
-- `cauchy_results.csv` - Cauchy combination test results
-- `umap_data.csv` - UMAP coordinates for visualization
-- `gene_list.csv` - List of genes used in analysis
-- `gss_stats/` - Gene-trait correlation statistics
-- `manhattan_data/` - Manhattan plot data per trait
-- `spatial_3d/` - 3D spatial data (for `spatial3D` datasets)
-
-**`gsmap_web_report/`** - Self-contained interactive web report:
-
-- `index.html` - Main report entry point
-- `spatial_plots/` - Static LDSC spatial plots
-- `gene_diagnostic_plots/` - Gene expression diagnostics
-- `annotation_plots/` - Annotation-based plots
-- `spatial_3d/` - Interactive 3D HTML visualizations
-
-**Viewing the Report:**
-
-1. **Remote Server**: Start a temporary web server:
-
-    ```bash
-    gsmap report-view ./gsmap_web_report --port 8080 --no-browser
-    ```
-
-1. **Local PC**: Copy the `gsmap_web_report` folder to your machine and open `index.html` in a browser.
-
-## See Also
-
-- {doc}`Output Files Reference <../output_files>`: Detailed documentation of all output files
-- {doc}`2D Tutorial <../2d_tutorial/mouse_embryo>`: For 2D spatial transcriptomics analysis
-- {doc}`Customization Guide <../advanced_usage>`: For custom SNP-to-gene weights and embeddings
-- {doc}`Scalability <../scalability>`: For performance optimization tips
+Open the printed HTTP address. Select a trait to explore its spatial association
+map and annotation-level enrichment. Outputs and logs are in
+`results/human-gastrulation/`; see {doc}`../output_files` for file details.

@@ -1,348 +1,403 @@
-# Scalability and Performance
+# Performance and scalability
 
-`gsMap3D` is designed to efficiently process large-scale 3D spatial transcriptomics datasets with millions of cells/spots. This guide covers the key scalability features and how to optimize performance for your hardware.
+Use this guide to choose resources, reduce memory use and reuse completed work.
+For the biological workflow and the meaning of GSS, see {doc}`key_concepts`.
+For graph, matching or input changes, see {doc}`advanced_usage`.
 
-## Overview
+## Example used in this guide
 
-gsMap3D employs multiple strategies to achieve high performance:
-
-- **GPU/TPU Acceleration**: JAX-based computation with JIT compilation
-- **Bounded Rank Cache**: One compact cache or capacity-limited windows per cell type
-- **Storage-Aware Memory Mapping**: Sequential shared-storage I/O with optional SSD staging
-- **Vectorized Operations**: Batched matrix operations using einsum
-- **Sparse Matrix Support**: Memory-efficient handling of sparse data
-
-## GPU/TPU Acceleration
-
-gsMap3D uses [JAX](https://github.com/google/jax) for GPU/TPU acceleration in the latent-to-gene and Spatial LDSC computation stages. JAX provides Just-In-Time (JIT) compilation, enabling efficient execution on accelerators.
-
-### Enabling/Disabling GPU
-
-````{tab} CLI
-```bash
-# Enable GPU (default)
-gsmap quick-mode --use-gpu ...
-
-# Disable GPU (CPU only)
-gsmap quick-mode --no-gpu ...
-```
-````
-
-````{tab} Python
-```python
-from gsMap.config import QuickModeConfig
-
-# Enable GPU (default)
-config = QuickModeConfig(use_gpu=True, ...)
-
-# Disable GPU
-config = QuickModeConfig(use_gpu=False, ...)
-```
-````
-
-### JAX Memory Management
-
-By default, JAX pre-allocates approximately 75% of the total GPU memory upon initialization to minimize memory fragmentation and allocation overhead. However, if you want to allocate memory as needed or constrain JAX to use a specific proportion of the memory, you can set the following environment variables:
-
-```bash
-# Disable pre-allocation (allocate memory as needed)
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-
-# Limit GPU memory to a specific fraction (e.g., 0.5 for 50%)
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.5
-```
-
-### Device Selection
-
-To select a specific GPU device:
-
-```bash
-# Use GPU 0
-export CUDA_VISIBLE_DEVICES=0
-
-# Use GPU 1
-export CUDA_VISIBLE_DEVICES=1
-
-```
-
-```{note}
-The first run may be slower due to JIT compilation. Subsequent runs will be faster as compiled functions are cached.
-```
-
-## GSS calculation
-
-The latent-to-gene stage calculates the Gene Specificity Score (GSS) with one bounded rank-cache engine. Homogeneous cells are placed in a locality-preserving order before rank access:
-
-- Spatial2D data are ordered separately within each section.
-- Spatial3D data use measured physical x/y/z coordinates when a varying z coordinate is available.
-- Spatial3D data without measured z use an explicit ordinal section coordinate.
-- Non-spatial data use homogeneous-neighbor overlap.
-
-For a cell type whose distinct rank rows fit under the 2 GiB cache limit, gsMap3D reads each distinct row once and transfers one right-sized cache to the JAX device. Larger cell types are divided into maximal contiguous windows under the same limit. On GPU, the next host window is prefetched and rank rows shared by adjacent windows remain in stable device-cache slots. This design bounds peak cache memory without reverting to random rank reads for every marker-score batch.
-
-Marker-score rows are written sequentially in this locality-preserving compute order. A compact companion permutation records which row of `concatenated_latent_adata.h5ad` belongs to each marker row. The standard loader applies that permutation to observation annotations and the configured spatial-coordinate array, so downstream Spatial LDSC, reporting, and Cauchy analysis remain aligned by spot name. The source H5AD is never reordered because rank and homogeneous-neighbor indices refer to its original row order. Non-spatial embedding arrays stay in the source H5AD rather than being duplicated in the marker wrapper, which bounds loader memory for very large datasets.
-
-### Execution controls
-
-| Parameter                  | Description                                                      | Default | Range  |
-| -------------------------- | ---------------------------------------------------------------- | ------- | ------ |
-| `rank_read_workers`        | Threads that materialize distinct rows for a rank-cache window    | 120     | 1-128  |
-| `mkscore_compute_workers`  | Concurrent fixed-shape JAX marker-score submissions               | 4       | 1-16   |
-| `mkscore_write_workers`    | Threads that write completed GSS batches                          | 2       | 1-50   |
-| `compute_input_queue_size` | Maximum pending batches per compute worker                        | 1       | 1-10   |
-| `writer_queue_size`        | Capacity of the bounded completed-batch writer queue              | 20      | 10-500 |
-
-`mkscore_batch_size=0` selects a deterministic workload- and device-aware batch size. An explicit positive value overrides that selection.
-
-After each cell type, the log reports end-to-end cells per second and separates time spent remapping rows, reading rank windows, and updating the device cache. The same record includes the numbers of distinct, newly read, and adjacent-window-retained rows.
-
-```{tip}
-If rank-window read time dominates, local NVMe can still improve an older, single-stripe rank file. New large files created directly on Lustre are automatically striped, and marker output is sequential, so local scratch is optional. If compute dominates, use GPU acceleration. Increasing pending batches cannot compensate for slow storage and raises transient memory use.
-```
-
-## Memory Mapping
-
-`gsMap3D` uses memory-mapped files to handle data that exceeds both RAM and local SSD capacity. By default, ranks and marker scores remain in the project directory. Marker scores are streamed there sequentially, and large Lustre files receive an automatic stripe count based on their logical size. This path does not require `/data`, NVMe, or a second full-sized copy.
-
-The optional `--memmap-tmp-dir` setting is an optimization for a complete memmap that fits on faster local storage. Before staging each live file, gsMap3D checks that the scratch filesystem is distinct and has room for the full logical file plus safety headroom. If it does not, gsMap3D logs the decision and uses the project storage directly.
-
-### Why Use memmap-tmp-dir?
-
-When the complete file fits on a fast local SSD, specifying a temporary directory lets gsMap3D:
-
-1. Copy memory-mapped files to the fast storage
-1. Perform all random access operations on the fast storage
-1. Sync results sequentially back to an automatically striped final file
-
-### Usage
-
-````{tab} CLI
-```bash
-gsmap quick-mode \
-    --memmap-tmp-dir /path/to/fast/ssd/tmp \
-    ...
-```
-````
-
-````{tab} Python
-```python
-from gsMap.config import QuickModeConfig
-
-config = QuickModeConfig(memmap_tmp_dir="/path/to/fast/ssd/tmp", ...)
-```
-````
-
-### Recommended Setup
-
-```bash
-# Create a dedicated temp directory on your fastest SSD
-mkdir -p /mnt/nvme_ssd/gsmap_tmp
-
-# Run gsMap3D with the temp directory
-gsmap quick-mode \
-    --workdir /network/storage/results \
-    --memmap-tmp-dir /mnt/nvme_ssd/gsmap_tmp \
-    ...
-```
-
-### Storage Requirements
-
-Both rank and marker matrices use float16. If both are staged simultaneously, required scratch capacity is approximately:
-
-```{math}
-\text{Temp Storage Space} = \text{spots} \times \text{genes} \times 2\ \text{bytes} \times 2\ \text{(rank + marker score)}
-```
-
-Assuming ~20,000 genes:
-
-| Dataset Size | Calculation        | Approximate Temp Space |
-| ------------ | ------------------ | ---------------------- |
-| 100K spots   | 100K × 20K × 2 × 2 | ~8 GB                  |
-| 1M spots     | 1M × 20K × 2 × 2   | ~80 GB                 |
-| 10M spots    | 10M × 20K × 2 × 2  | ~800 GB                |
-
-```{important}
-Scratch is not required. If the configured directory cannot safely hold a file, gsMap3D automatically falls back to the project filesystem. The project filesystem must still have capacity for the final rank and marker files.
-```
-
-## Batch Processing
-
-gsMap3D processes data in batches to balance memory usage and computational efficiency:
-
-| Parameter                    | Description                          | Default       |
-| ---------------------------- | ------------------------------------ | ------------- |
-| `rank_batch_size`            | Spots per batch for rank calculation | Automatic (0) |
-| `mkscore_batch_size`         | Spots per batch for marker score     | Automatic (0) |
-| `spots_per_chunk_quick_mode` | Spots per chunk for Spatial LDSC     | 50            |
-
-The automatic rank batch targets about 64 MiB of final float16 output and selects
-from bounded batch sizes. Explicitly larger batches can require substantially more
-memory without improving an I/O-bound run.
-
-## Performance Recommendations
-
-### For Very Large Datasets (>1M spots)
-
-1. **Use GPU acceleration**: GPU significantly speeds up both latent-to-gene and Spatial LDSC computation. Enabled by default with `--use-gpu`.
-1. **Use storage appropriate to the file size**: Leave `memmap_tmp_dir` unset when the memmaps exceed local capacity. New Lustre files are striped automatically, and marker output remains sequential. Use local NVMe only when the full staged files fit.
-1. **Keep automatic batch sizing initially**: Override it only after profiling shows that the default batch is limiting throughput.
-
-### For CPU-Only Systems
-
-1. **Disable GPU**: Use `--no-gpu` to avoid JAX GPU initialization overhead
-1. **Increase CPU cores and compute workers**: The Spatial LDSC step scales near-linearly with the number of available CPU cores. Increase `ldsc_compute_workers` to match available cores.
-1. **Prefer sequential shared storage for oversized files**: Local SSD is optional. Use it only when the complete staged memmaps fit; otherwise the automatic direct-storage path avoids a capacity failure.
-
-### For Cluster Users
-
-When running on HPC clusters, you can parallelize gsMap3D across multiple nodes:
-
-#### 1. Submit Each Trait as a Separate Job
-
-For multiple GWAS traits, submit each as an independent job:
-
-```bash
-# Job 1: Process trait1
-gsmap quick-mode \
-    --start-step spatial_ldsc --stop-step spatial_ldsc \
-    --trait-name trait1 --sumstats-file /path/to/trait1.sumstats.gz \
-    ...
-
-# Job 2: Process trait2
-gsmap quick-mode \
-    --start-step spatial_ldsc --stop-step spatial_ldsc \
-    --trait-name trait2 --sumstats-file /path/to/trait2.sumstats.gz \
-    ...
-```
-
-#### 2. Split Large Datasets by Cell Indices
-
-For very large datasets, use `--cell-indices-range` to process subsets of cells in parallel:
-
-````{tab} CLI
-```bash
-# Job 1: Process cells 0-1000000
-gsmap quick-mode \
-    --start-step spatial_ldsc --stop-step spatial_ldsc \
-    --cell-indices-range 0 1000000 \
-    --trait-name trait1 --sumstats-file /path/to/trait1.sumstats.gz \
-    ...
-
-# Job 2: Process cells 1000000-2000000
-gsmap quick-mode \
-    --start-step spatial_ldsc --stop-step spatial_ldsc \
-    --cell-indices-range 1000000 2000000 \
-    --trait-name trait1 --sumstats-file /path/to/trait1.sumstats.gz \
-    ...
-```
-````
-
-````{tab} Python
-```python
-from gsMap.config import QuickModeConfig
-from gsMap.run_all_mode import run_quick_mode
-
-# Job 1: Process cells 0-1000000
-config = QuickModeConfig(
-    start_step="spatial_ldsc",
-    stop_step="spatial_ldsc",
-    cell_indices_range=(0, 1000000),
-    trait_name="trait1",
-    sumstats_file="/path/to/trait1.sumstats.gz",
-    ...,
-)
-run_quick_mode(config)
-
-# Job 2: Process cells 1000000-2000000
-config = QuickModeConfig(
-    start_step="spatial_ldsc",
-    stop_step="spatial_ldsc",
-    cell_indices_range=(1000000, 2000000),
-    trait_name="trait1",
-    sumstats_file="/path/to/trait1.sumstats.gz",
-    ...,
-)
-run_quick_mode(config)
-```
-````
-
-```{note}
-The `--cell-indices-range` option uses 0-based indexing with the format `[start, end)` (start inclusive, end exclusive).
-```
-
-#### 3. Merge Results
-
-After all jobs complete, merge the partial result files. Each partial file is named with the cell range:
+All examples use **mouse embryo E16.5 E1S1 in Spatial2D mode**. Download its files
+using the {doc}`2d_tutorial/mouse_embryo`, then run from `gsmap_tutorials/`.
+There is no cross-section matching in this example. Keep the tutorial's graph
+and homogeneous-neighbor defaults unchanged when comparing performance.
 
 ```text
-# File naming pattern for partial results:
-{workdir}/{project_name}/spatial_ldsc/{project_name}_{trait_name}_cells_{start}_{end}.csv.gz
-
-# Example files:
-my_project_trait1_cells_0_1000000.csv.gz
-my_project_trait1_cells_1000000_2000000.csv.gz
+gsmap_tutorials/
+├── resources/
+│   ├── 1000g-hc-grch38-v50-eur/
+│   │   ├── snp_gene_weights.h5ad
+│   │   └── w_ld/
+│   └── homologs/mouse_human_homologs.txt
+├── example_data/
+│   ├── mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad
+│   └── example-traits/IQ.sumstats.gz
+└── results/mouse-e16-mosta/           # Created by the analysis
 ```
 
-Use pandas to concatenate the partial results:
+Complete commands below have **CLI/Python tabs**. Choose one interface.
+Short CLI flag excerpts are marked as text: add or replace them in a complete
+command. Python tuning snippets modify its `config` **before**
+`run_quick_mode(config)`. They are not separate analyses.
 
+## Performance recommendations
+
+- **Start with the defaults.** Measure the whole step, including loading and saving.
+- **Use a GPU when helpful.** Try one GPU for the compute-heavy stages; extra
+  workers or devices do not guarantee a faster run.
+- **Use an SSD if I/O is slow.** It is optional; project storage is supported.
+- **Reuse GSS for additional traits.** Do not recalculate embeddings or ranks
+  when only the GWAS changes.
+- **Leave room for memory and output.** More workers and larger batches can
+  increase memory use. Download size is not working disk space.
+
+## Choose CPU or GPU
+
+Embedding uses PyTorch and a visible CUDA GPU when available. Marker scoring
+and spatial LDSC use JAX; `--use-gpu` / `--no-gpu` controls these latter stages.
+
+### GPU run
+
+Use the defaults or set GPU use explicitly:
+
+````{tab} CLI
+```text
+--use-gpu
+```
+````
+
+````{tab} Python
 ```python
-import pandas as pd
+config.use_gpu = True
+```
+````
+
+### CPU-only run
+
+Before starting the CLI or Python process, hide CUDA devices:
+
+```bash
+export CUDA_VISIBLE_DEVICES=""
+```
+
+Then choose CPU execution. Four regression workers below are an example, not
+a requirement; use a count suitable for your available cores and memory.
+
+````{tab} CLI
+```text
+--no-gpu
+--ldsc-compute-workers 4
+```
+````
+
+````{tab} Python
+```python
+config.use_gpu = False
+config.ldsc_compute_workers = 4
+```
+````
+
+```{note}
+`--no-gpu` alone does not disable PyTorch embedding on a visible GPU.
+Set the environment before imports for a fully CPU-only run. For a GPU job,
+use a fresh shell without the CPU-only override and respect scheduler-assigned devices.
+```
+
+## I/O and fast storage
+
+Ranks and marker scores are stored on disk and read as needed. Use
+`--memmap-tmp-dir` to place eligible temporary arrays on a fast **SSD or NVMe**
+disk. Without it, gsMap uses project storage.
+
+1. Choose an existing, writable directory on the fast disk.
+2. Check that it has room for uncompressed arrays and temporary copies.
+3. Keep the project on persistent storage and let synchronization finish.
+
+For example, if `/fast-ssd/gsmap` is a directory on your SSD:
+
+````{tab} CLI
+```text
+--memmap-tmp-dir /fast-ssd/gsmap
+```
+````
+
+````{tab} Python
+```python
 from pathlib import Path
 
-workdir = Path("/path/to/workdir")
-project = "my_project"
-trait = "trait1"
+config.memmap_tmp_dir = Path("/fast-ssd/gsmap")
+```
+````
 
-# Find all partial result files
-result_dir = workdir / project / "spatial_ldsc"
-partial_files = sorted(result_dir.glob(f"{project}_{trait}_cells_*.csv.gz"))
+New ranks can be written to scratch first and synchronized back to the project.
+If staging cannot fit safely, gsMap falls back to project storage and logs the
+decision. Compare runtime including those copies.
 
-print(f"Found {len(partial_files)} partial result files")
+```{tip}
+This setting selects disk storage, not RAM or GPU memory. A directory named
+`scratch` on the same slow filesystem is not faster.
+```
 
-# Concatenate and save
-results = pd.concat([pd.read_csv(f) for f in partial_files], ignore_index=True)
-results.to_csv(
-    result_dir / f"{project}_{trait}.csv.gz", index=False, compression="gzip"
+A float16 matrix needs `2 × cells × genes` bytes: one million cells × 20,000
+genes is about **40 GB per matrix**. Ranks, marker scores and temporary copies
+can coexist. This is a disk-size estimate, not a peak-RAM estimate.
+
+## Tune memory and throughput
+
+1. **Identify the limiting step** in its log.
+2. **Change one setting** on the same input.
+3. **Compare total time and memory**, not just a batch's cells/s.
+
+| Setting | Default | When to adjust |
+|---|---|---|
+| `--mkscore-batch-size` | `0` (automatic) | Set a smaller explicit batch if marker-score computation runs out of memory. |
+| `--spots-per-chunk-quick-mode` | `100` | Reduce for lower per-chunk spatial-LDSC memory use. |
+| `--ldsc-read-workers` | `10` | CPU sparse-transform threads, or GPU marker-preparation workers; disk reads remain sequential. |
+| `--ldsc-compute-workers` | `10` | Tune CPU regression concurrency within your CPU/memory budget; the effective count may be lower. |
+
+For example, test these lower-memory settings. A marker batch of 50 helps only
+if it is smaller than the effective batch reported in your log.
+
+````{tab} CLI
+```text
+--mkscore-batch-size 50
+--spots-per-chunk-quick-mode 25
+```
+````
+
+````{tab} Python
+```python
+config.mkscore_batch_size = 50
+config.spots_per_chunk_quick_mode = 25
+```
+````
+
+```{note}
+Batching does not remove a cell's selected neighbors. gsMap loads its complete
+selected neighborhood before scoring, even when the rank rows are far apart.
+These settings change how work is scheduled, not which cells enter the analysis.
+```
+
+More workers are not always faster. Keep reader, writer and queue settings at
+their defaults unless the logs identify a specific bottleneck. GPU LDSC normally
+uses one compute worker; increasing the CPU worker setting does not create more
+GPU workers. See {doc}`cli_reference` for all controls.
+
+CPU sparse transforms cooperate on one batch. Regression workers submit batches
+to JAX, which also parallelizes internally; both stages share cores and memory
+bandwidth. CPU worker caps respect affinity and `SLURM_CPUS_PER_TASK` when present,
+but are not a global thread limit for every library.
+
+GPU LDSC keeps the SNP × gene matrix on the device, uploads marker batches and
+passes the resulting LD scores directly to JAX. Reported overall throughput
+includes final output writing; component throughput measures only that component.
+
+## Cluster users
+
+The simplest way to parallelize multiple traits is **one spatial-LDSC job per
+trait**, after preprocessing has completed.
+
+1. **Preprocess once.** Calculate embeddings and GSS.
+2. **Allocate resources.** Run on a compute node, not a login node. Set worker
+   counts for the CPUs assigned to the job, not the whole node.
+3. **Run independent trait jobs.** Keep shared inputs unchanged and write distinct
+   trait result files. Use only the GPUs assigned by your scheduler.
+4. **Check completion, then report.** Inspect job status and logs before combining
+   results. Do not let independent jobs overwrite the same report.
+
+### Example: calculate embeddings and GSS
+
+Skip this example if the E16.5 tutorial has already completed these stages.
+It uses `count`, `annotation`, `spatial` and the mouse–human homolog file,
+just like the tutorial. It stops before spatial LDSC.
+
+````{tab} CLI
+```bash
+mkdir -p results
+gsmap quick-mode \
+    --workdir results \
+    --project-name mouse-e16-mosta \
+    --dataset-type spatial2D \
+    --h5ad-path example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad \
+    --homolog-file resources/homologs/mouse_human_homologs.txt \
+    --species MOUSE_GENE_SYM \
+    --annotation annotation \
+    --spatial-key spatial \
+    --data-layer count \
+    --trait-name IQ \
+    --sumstats-file example_data/example-traits/IQ.sumstats.gz \
+    --plot-origin lower \
+    --stop-step latent2gene
+```
+````
+
+````{tab} Python
+```python
+from gsMap.config import QuickModeConfig
+from gsMap.pipeline import run_quick_mode
+
+config = QuickModeConfig(
+    workdir="results",
+    project_name="mouse-e16-mosta",
+    dataset_type="spatial2D",
+    h5ad_path=["example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad"],
+    homolog_file="resources/homologs/mouse_human_homologs.txt",
+    species="MOUSE_GENE_SYM",
+    annotation="annotation",
+    spatial_key="spatial",
+    data_layer="count",
+    trait_name="IQ",
+    sumstats_file="example_data/example-traits/IQ.sumstats.gz",
+    plot_origin="lower",
+    stop_step="latent2gene",
 )
+run_quick_mode(config)
+```
+````
 
-print(f"Merged {len(results)} spots to {result_dir / f'{project}_{trait}.csv.gz'}")
+### Example: one trait per job
+
+After preprocessing finishes, submit the following command in a compute job.
+`--start-step spatial_ldsc --stop-step spatial_ldsc` runs only association
+testing; it reuses the saved ranks and GSS.
+
+````{tab} CLI
+```bash
+gsmap quick-mode \
+    --workdir results \
+    --project-name mouse-e16-mosta \
+    --dataset-type spatial2D \
+    --annotation annotation \
+    --start-step spatial_ldsc \
+    --stop-step spatial_ldsc \
+    --w-ld-dir resources/1000g-hc-grch38-v50-eur/w_ld \
+    --snp-gene-weight-adata-path resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad \
+    --trait-name IQ \
+    --sumstats-file example_data/example-traits/IQ.sumstats.gz
+```
+````
+
+````{tab} Python
+```python
+from gsMap.config import QuickModeConfig
+from gsMap.pipeline import run_quick_mode
+
+config = QuickModeConfig(
+    workdir="results",
+    project_name="mouse-e16-mosta",
+    dataset_type="spatial2D",
+    annotation="annotation",
+    start_step="spatial_ldsc",
+    stop_step="spatial_ldsc",
+    w_ld_dir="resources/1000g-hc-grch38-v50-eur/w_ld",
+    snp_gene_weight_adata_path="resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad",
+    trait_name="IQ",
+    sumstats_file="example_data/example-traits/IQ.sumstats.gz",
+)
+run_quick_mode(config)
+```
+````
+
+To analyze another downloaded trait, change **both** `IQ` and its GWAS path,
+for example to `Height` or `MCHC`. The original E16.5 example uses IQ only.
+For a CPU job, apply the CPU settings above. Limit concurrency if many jobs
+saturate the shared filesystem.
+
+```{important}
+Keep the complete `latent_to_gene/` directory, including metadata, the
+observation-index mapping and `concatenated_latent_adata.h5ad`. Use persistent
+project storage; node-local SSD may disappear after a job ends.
+See {doc}`output_files` for the files needed to reuse scores.
 ```
 
-## Troubleshooting
+For an exceptionally large single trait, `--cell-indices-range` can split LDSC
+into nonoverlapping ranges. This is an advanced option: merge partial results
+and verify complete coverage with no duplicate cells before enrichment/reporting.
+Prefer trait-level parallelism when possible.
 
-### GPU Out of Memory (OOM) Errors
+## Keep large reports responsive
 
-The rank and marker-score batch sizes are selected deterministically from the
-workload. Worker and queue counts use stable defaults and are never inferred
-from host or scheduler resources. If you encounter a GPU out-of-memory error,
-try the following solutions in order:
+Report limits control browser views and diagnostic plots, **not which cells**
+enter spatial LDSC.
 
-**1. Override the automatic marker-score batch size**:
+| CLI flag | Default | Scope |
+|---|---|---|
+| `--downsampling-n-spots-2d` | `100000` | Displayed spots per section. |
+| `--downsampling-n-spots-3d` | `100000` | Displayed spots in the combined 3D view. |
+| `--downsampling-n-spots-umap` | `50000` | Spots used for each report UMAP. |
+| `--downsampling-n-spots-pcc` | `20000` | Sampled spots for GSS correlations. |
+
+To display all analyzed E16.5 E1S1 spots, use a 2D cap above its 121,767 input
+spots. Leave UMAP and correlation limits unchanged unless you need more detail.
+
+````{tab} CLI
+```text
+--downsampling-n-spots-2d 150000
+```
+````
+
+````{tab} Python
+```python
+config.downsampling_n_spots_2d = 150000
+```
+````
+
+### Example: finish enrichment and the report
+
+After the **IQ** LDSC result is complete, this runs Cauchy enrichment and builds
+the IQ report. It also applies the larger 2D display limit without recalculating
+embeddings, GSS or spatial LDSC.
+
+````{tab} CLI
+```bash
+gsmap quick-mode \
+    --workdir results \
+    --project-name mouse-e16-mosta \
+    --dataset-type spatial2D \
+    --annotation annotation \
+    --spatial-key spatial \
+    --plot-origin lower \
+    --start-step cauchy \
+    --trait-name IQ \
+    --sumstats-file example_data/example-traits/IQ.sumstats.gz \
+    --downsampling-n-spots-2d 150000
+```
+````
+
+````{tab} Python
+```python
+from gsMap.config import QuickModeConfig
+from gsMap.pipeline import run_quick_mode
+
+config = QuickModeConfig(
+    workdir="results",
+    project_name="mouse-e16-mosta",
+    dataset_type="spatial2D",
+    annotation="annotation",
+    spatial_key="spatial",
+    plot_origin="lower",
+    start_step="cauchy",
+    trait_name="IQ",
+    sumstats_file="example_data/example-traits/IQ.sumstats.gz",
+    downsampling_n_spots_2d=150000,
+)
+run_quick_mode(config)
+```
+````
+
+If you ran additional trait jobs, use a multi-trait GWAS configuration containing
+all completed traits instead of the single IQ options. The
+{doc}`advanced_usage` shows how to specify that configuration. Generate the
+combined report once, after every requested trait is complete.
+
+## Where the work happens
+
+The biological workflow diagram is in
+{ref}`Key Concepts <pipeline-overview>`. For performance diagnosis,
+start with the log for the slow step:
+
+| Step | What to check | Log under `logs/latest/` |
+|---|---|---|
+| Embeddings | Expression preparation, graph size, training and device memory | `01_find_latent.log` |
+| Ranks and marker scores | Expression/rank reading, score computation and output I/O | `02_latent_to_gene.log` |
+| Spatial LDSC | GSS-to-LD transformation and regression time | `03_spatial_ldsc.log` and per-trait logs |
+| Report | Plots, UMAP, sampled GSS reads and browser payload size | `05_report.log` |
+
+For example, inspect the end of the E16.5 marker-score log:
 
 ```bash
-gsmap quick-mode --mkscore-batch-size 25 ...
+tail -n 40 results/mouse-e16-mosta/logs/latest/02_latent_to_gene.log
 ```
 
-**2. Limit JAX memory allocation**:
-
-```bash
-# Remove JAX memory pre-allocation
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
-```
-
-**3. Disable GPU entirely**:
-
-```bash
-# Fall back to CPU computation
-gsmap quick-mode --no-gpu ...
-```
-
-### JAX/CUDA Issues
-
-```bash
-# Check JAX device availability
-python -c "import jax; print(jax.devices())"
-
-# Check CUDA availability
-python -c "import torch; print(torch.cuda.is_available())"
-```
+Look at sustained timings across the step. Brief pauses or low GPU utilization
+do not, by themselves, identify the bottleneck. See {doc}`output_files` for
+the full log layout and {doc}`advanced_usage` for safe restart settings.

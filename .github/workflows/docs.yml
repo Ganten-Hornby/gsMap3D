@@ -4,8 +4,14 @@ on:
   push:
     branches:
       - main
+      - revision/graph-3d-20260807
     paths:
       - "docs/**"
+      - "scripts/resources/**"
+      - "scripts/docs/**"
+      - "src/gsMap/config/**"
+      - "src/gsMap/cli.py"
+      - "pyproject.toml"
   workflow_dispatch: # Allow manual trigger
 
 permissions:
@@ -39,9 +45,12 @@ jobs:
           uv pip install --system --torch-backend=cpu . --group doc
 
       - name: Build documentation
-        working-directory: ./docs
         run: |
-          make html
+          python scripts/docs/generate_cli_reference.py
+          python scripts/docs/generate_downloads.py --catalog docs/resource_catalog.json
+          git diff --exit-code -- docs/source/cli_reference.md
+          git diff --exit-code -- docs/source/downloads.md
+          sphinx-build -W --keep-going -b html docs/source docs/build/html
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -52,6 +61,7 @@ jobs:
           path: "./docs/build/html"
 
   deploy:
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

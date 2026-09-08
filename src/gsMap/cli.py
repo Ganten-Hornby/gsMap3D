@@ -312,7 +312,7 @@ def main(
        gsmap spatial-ldsc ...
        gsmap report ...
 
-    For detailed documentation, visit: https://yanglab.westlake.edu.cn/gsmap3d/docs
+    For detailed documentation, visit: https://yanglab.westlake.edu.cn/gsmap3d-portal/docs/
     """
     configure_console_logging()
 

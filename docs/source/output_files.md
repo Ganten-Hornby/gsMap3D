@@ -25,42 +25,31 @@ For `spatial3D` datasets, additional 3D-specific files are generated in `report_
 
 ## Execution Logs
 
-Every CLI command and public pipeline entry point automatically creates a unique run directory under `{project_name}/logs/`. No logging option is required.
+Logs are saved automatically under `{workdir}/{project_name}/logs/`.
+Start with `logs/latest/` to inspect the most recent log for each step:
 
 ```text
 logs/
-├── latest.json
 ├── latest/
-│   ├── run_manifest.json
+│   ├── quick_mode.log                 # Whole pipeline
 │   ├── 01_find_latent.log
-│   ├── 01_find_latent.manifest.json
 │   ├── 02_latent_to_gene.log
 │   ├── 03_spatial_ldsc.log
 │   ├── 03_spatial_ldsc/
-│   │   ├── SCZ.log
-│   │   ├── SCZ.manifest.json
-│   │   └── {trait}.log
+│   │   └── {trait}.log                # One trait's LDSC log
 │   ├── 04_cauchy_combination.log
-│   └── 05_report.log
-└── {UTC_timestamp}__{stage}__[trait]__[slurm_job]__{host}__{pid}__{unique_id}/
-    ├── run_manifest.json
-    ├── quick_mode.log
-    ├── 01_find_latent.log
-    ├── 02_latent_to_gene.log
-    ├── 03_spatial_ldsc.log
-    ├── 03_spatial_ldsc/
-    │   └── {trait}.log
-    ├── 04_cauchy_combination.log
-    └── 05_report.log
+│   ├── 05_report.log
+│   └── run_manifest.json             # Latest run's settings and status
+└── {run_id}/                         # Logs and manifest retained for each run
 ```
 
-Only files for stages entered by a run are created. `quick_mode.log` records the complete pipeline, while numbered files isolate each stage. Spatial LDSC additionally writes one file per trait so that a failed trait can be diagnosed without searching a combined log.
+Only steps that ran have log files. The terminal shows progress and key messages;
+files also include debug details and full error tracebacks.
 
-Directories outside `latest/` are immutable provenance records. Their names include the entry stage and, when available, the single trait, so they are still recognizable in directory listings. Files under `latest/` are atomic symbolic links to the newest matching immutable artifact. For example, `logs/latest/03_spatial_ldsc/SCZ.log` is the direct inspection path for the most recent SCZ run; the adjacent `SCZ.manifest.json` link identifies its configuration, SLURM allocation, status, and timings.
-
-The terminal remains concise: `INFO` and progress output go to standard output, and warnings or errors go to standard error. Log files retain `DEBUG` messages, full exception tracebacks, source locations, process and thread identifiers, and periodic resource snapshots (RSS, cgroup memory, CPU, and I/O). Plain-text rotating files are used, so ANSI terminal formatting is not stored. The per-line prefix contains only timestamp, level, process/thread, and source location. Run, stage, and trait context is written once in the stage-start record and retained in the manifest rather than repeated on every line.
-
-`run_manifest.json` records the resolved configuration (with credential-like fields redacted), command line, source commit, SLURM context, stage and trait status, timing, and log paths. A run can finish with `complete`, `partial_failure`, or `failed` status. `latest.json` points to the most recently updated run directory; use the manifest inside an immutable run directory as the authoritative record for that run. The `rebuild_log_index(project_dir)` helper in `gsMap.logging_config` can recreate all `latest/` links from existing manifests, including logs produced before the index was introduced.
+For a failed step, open its numbered log; for a failed LDSC trait, open
+`03_spatial_ldsc/{trait}.log`. The adjacent `.manifest.json` file records the
+corresponding run's settings, status and timings. Earlier runs remain in their
+own folders; `latest/` can include steps from different runs.
 
 ______________________________________________________________________
 
@@ -141,9 +130,18 @@ If you want to check the GSS values, gsMap3D provides the `load_marker_scores_me
 ```python
 from gsMap.spatial_ldsc.io import load_marker_scores_memmap_format
 from gsMap.config import QuickModeConfig
+from pathlib import Path
 
-# Create a minimal config with required paths
-config = QuickModeConfig(workdir="path/to/workdir", project_name="your_project", ...)
+# Run the Visium coronal tutorial first; use the same resources and output paths.
+config = QuickModeConfig(
+    workdir=Path("results"),
+    project_name="visium-coronal",
+    dataset_type="spatial2D",
+    annotation="domain",
+    spatial_key="spatial",
+    trait_name="IQ",
+    sumstats_file=Path("example_data/example-traits/IQ.sumstats.gz"),
+)
 
 # Load marker scores as AnnData
 gss_adata = load_marker_scores_memmap_format(config)
@@ -158,36 +156,10 @@ print(gss_adata.obs.head())
 print(gss_adata.var_names[:10])
 ```
 
-The loader transparently handles both layouts: current sequential marker files with a companion observation mapping, and legacy files whose marker rows use source-H5AD order. In the returned object, `gss_adata.X[i]`, `gss_adata.obs.iloc[i]`, `gss_adata.obsm[config.spatial_key][i]` (when configured), and `gss_adata.obs_names[i]` always refer to the same spot. Other latent arrays remain in `concatenated_latent_adata.h5ad` instead of being copied into this wrapper.
-
-The raw memory map is stored in compute order for efficient sequential I/O. If you load it manually, apply the row mapping before combining it with metadata from `concatenated_latent_adata.h5ad`:
-
-```python
-import numpy as np
-import json
-
-# Load metadata
-with open("marker_scores.meta.json") as f:
-    meta = json.load(f)
-
-# Load marker scores
-marker_scores = np.memmap(
-    "marker_scores.dat", dtype=meta["dtype"], mode="r", shape=tuple(meta["shape"])
-)
-
-# Current files: raw marker row -> original concatenated-H5AD row.
-# Legacy metadata has no "row_layout" and therefore uses identity order.
-if "row_layout" in meta:
-    layout = meta["row_layout"]
-    marker_to_source_row = np.memmap(
-        layout["mapping_file"],
-        dtype=layout["dtype"],
-        mode="r",
-        shape=tuple(layout["shape"]),
-    )
-```
-
-Prefer `load_marker_scores_memmap_format` unless raw storage-order access is specifically required. Do not assume raw marker row `i` is source-H5AD row `i` for current files.
+The loader aligns scores, spot IDs, annotations and spatial coordinates, so each
+row refers to the same spot. Keep the marker-score files, observation mapping
+and `concatenated_latent_adata.h5ad` together; use this API instead of reading the
+raw `.dat` file directly.
 
 ### Check Homogeneous Spots
 
@@ -205,7 +177,7 @@ These metrics can be used to identify spots with poor homogeneous neighbor cover
 import scanpy as sc
 
 # Load the concatenated latent adata
-adata = sc.read_h5ad("latent_to_gene/concatenated_latent_adata.h5ad")
+adata = sc.read_h5ad("results/visium-coronal/latent_to_gene/concatenated_latent_adata.h5ad")
 
 # Check median cell similarity distribution
 print(adata.obs["gsMap_homo_cell_sims_median"].describe())
@@ -238,7 +210,7 @@ This directory contains the cell-level trait association results from stratified
 
 ### Example
 
-```csv
+```text
 spot,beta,se,z,p,neg_log10_p
 AAACAACGAATAGTTC-1|Cortex_151507,9.28e-09,3.58e-09,2.593,0.00476,2.323
 AAACAAGTATCTCCCA-1|Cortex_151507,2.91e-09,1.89e-09,1.535,0.0624,1.205
@@ -325,7 +297,7 @@ This is the primary file for downstream analysis, containing all spot-level info
 
 **Example:**
 
-```csv
+```text
 spot,sx,sy,3d_x,3d_y,3d_z,sample_name,Height,IQ,layer_guess
 AAACAACGAATAGTTC-1|Cortex_151507,3276,2514,3276,2514,0.0,Cortex_151507,2.323,1.151,Layer1
 AAACAAGTATCTCCCA-1|Cortex_151507,9178,8520,9178,8520,0.0,Cortex_151507,1.205,5.047,Layer3
@@ -335,7 +307,7 @@ AAACAAGTATCTCCCA-1|Cortex_151507,9178,8520,9178,8520,0.0,Cortex_151507,1.205,5.0
 
 Simple list of genes used in the analysis:
 
-```csv
+```text
 gene
 MOBP
 SPP1
@@ -359,7 +331,7 @@ Gene-trait correlation statistics for identifying putative causal genes.
 
 **Example:**
 
-```csv
+```text
 gene,PCC,trait,Annotation,Median_GSS
 MOBP,0.226,Height,WM,7.969
 SPP1,0.225,Height,WM,6.848
@@ -420,7 +392,7 @@ Contains comprehensive metadata about the analysis:
   "project_name": "my_project",
   "dataset_type": "spatial3D",
   "traits": ["Height", "IQ"],
-  "samples": ["sample1", "sample2", ...],
+  "samples": ["sample1", "sample2"],
   "annotations": ["layer_guess"],
   "is_3d": true,
   "has_3d_widget": true,
@@ -438,12 +410,9 @@ ______________________________________________________________________
 
 ### Option 1: Local Viewing
 
-Copy the `gsmap_web_report/` folder to your local machine and open `index.html` in a web browser.
-
-```bash
-# On your local machine
-open gsmap_web_report/index.html
-```
+Copy the complete `gsmap_web_report/` directory to your machine, including all
+relative assets. Use the report viewer below for consistent lazy-payload loading;
+opening an isolated HTML file is not sufficient.
 
 ### Option 2: Web Server (Remote)
 
@@ -451,19 +420,21 @@ For remote servers, use the built-in report viewer:
 
 ```bash
 # Start a web server on port 8080
-gsmap report-view ./gsmap_web_report --port 8080 --no-browser
+gsmap report-view results/visium-coronal/gsmap_web_report --port 8080 --no-browser
 ```
 
 Then access the report at `http://your-server:8080` or set up SSH port forwarding:
 
-```bash
+```text
 # On your local machine
 ssh -L 8080:localhost:8080 user@remote-server
 ```
 
 ### Demonstration
 
-A demonstration report can be found at the [gsMap3D interactive report demo](https://yanglab.westlake.edu.cn/gsmap3d-report).
+Open **gsMap Report preview** on any tutorial page to explore an online report:
+{doc}`2d_tutorial/10x`, {doc}`2d_tutorial/mouse_embryo`,
+{doc}`3d_tutorial/human_gastrulation` or {doc}`3d_tutorial/mouse_e11`.
 
 ______________________________________________________________________
 

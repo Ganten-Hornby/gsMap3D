@@ -7,13 +7,13 @@ Welcome to gsMap3D's documentation!
 
 
 What's New
---------
+----------
 
 .. important::
 
    - Support for **3D** ST data mapping
    - **Dual-embedding** strategy for more accurate gene specificity scoring
-   - Full **GPU acceleration** across all analysis steps
+   - **GPU support** for embeddings, gene specificity scoring and spatial LDSC
 
 
 Features
@@ -22,11 +22,11 @@ Features
 - **Spatially-aware High-Resolution Trait Mapping**: Maps trait-associated cells at single-cell resolution, offering insights into their spatial distributions.
 - **Spatial Region Identification**: Aggregates trait-cell association p-values into trait-tissue region association p-values, prioritizing tissue regions relevant to traits of interest.
 - **Putative Causal Genes Identification**: Prioritizes putative causal genes by associating gene expression levels with cell-trait relevance.
-- **Scalability**: Employs `JAX <https://github.com/google/jax>`_ JIT and GPU/TPU acceleration to scale to million-scale cells (spots) spatial omics datasets.
+- **Scalability**: Supports CPU/GPU computation and disk-backed arrays for large spatial datasets.
 
 
 Explore gsMap3D
--------------
+---------------------
 
 .. list-table::
    :widths: 50 50
@@ -39,7 +39,7 @@ Explore gsMap3D
        :doc:`Go to Installation <install>`
      - **Key Concepts**
 
-       Understand how to prepare data and configure gsMap3D.
+       Learn basic CLI/Python usage, input formats, key settings and the biological workflow.
 
        :doc:`Go to Key Concepts <key_concepts>`
 
@@ -56,17 +56,17 @@ Explore gsMap3D
 
    * - **Customization Guide**
 
-       Customize SNP-to-gene linking, use custom embeddings, and optimize performance.
+       Change input fields, embeddings, graph/matching settings and LD references.
 
        :doc:`Go to Customization Guide <advanced_usage>`
      - **Scalability**
 
-       Optimize performance for large-scale datasets.
+       E16.5 examples for CPU/GPU, SSD storage, memory tuning and cluster jobs.
 
        :doc:`Go to Scalability Guide <scalability>`
 
 Overview of ``gsMap3D`` Method
------------------------------
+------------------------------------
 
 ``gsMap3D`` operates on a four-step process:
 
@@ -113,6 +113,7 @@ If you use ``gsMap`` in your studies, please cite:
     :hidden:
 
     install
+    downloads
     key_concepts
     2D Mapping <2d_tutorial/index>
     3D Mapping <3d_tutorial/index>

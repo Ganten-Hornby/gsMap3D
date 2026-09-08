@@ -2,3 +2,38 @@
 .theme-toggle-container {
     display: none !important;
 }
+
+/* The extension's default 28px button fits an icon, not a text label. */
+html .mermaid-fullscreen-btn {
+    width: auto;
+    min-width: 60px;
+    padding-inline: 8px;
+}
+
+/* Size the overview views separately. Keep detailed text at a readable scale
+   instead of shrinking the entire graph to the article width. These selectors
+   exclude the fullscreen copy, whose dimensions are managed by Mermaid. */
+#pipeline-overview #pipeline-simple > svg {
+    height: 560px;
+    width: 100%;
+}
+
+#pipeline-overview #pipeline-detailed {
+    overflow-x: auto;
+}
+
+#pipeline-overview #pipeline-detailed > svg {
+    height: 900px;
+    width: auto;
+    max-width: none !important;
+}
+
+@media (max-width: 600px) {
+    #pipeline-overview #pipeline-simple > svg {
+        height: 440px;
+    }
+
+    #pipeline-overview #pipeline-detailed > svg {
+        height: 760px;
+    }
+}

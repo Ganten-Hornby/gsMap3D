@@ -1,104 +1,74 @@
 # Mouse Embryo 2D (Quick Mode)
 
-The `Quick Mode` option provides a simplified and efficient way to execute the entire `gsMap3D` pipeline. It minimizes running time and configuration complexity by utilizing pre-calculated weights based on the 1000G EUR reference panel and protein-coding genes from BED file of Gencode v46. This mode is ideal for users who prefer a streamlined approach. For a more customizable experience, such as using custom BED files, reference panels, and more adjustable parameters, please refer to the {doc}`Customization Guide <../advanced_usage>` guide.
+Quick mode runs embedding, gene specificity scoring, spatial LDSC, Cauchy
+combination and reporting using precomputed LD resources. This example analyzes
+the MOSTA E16.5 E1S1 section (121,767 input spots) in `spatial2D` mode; cross-section
+matching is disabled. The reference is GENCODE v50 / 1000G high-coverage EUR.
 
-## Preparation
+[Chen et al. · 2022 · Cell](https://doi.org/10.1016/j.cell.2022.04.003) ·
+[gsMap Report preview](https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reports/mouse-e16-mosta/r1/index.html)
 
-Make sure you have {doc}`installed <../install>` the `gsMap3D` package before proceeding.
+## Files needed for this tutorial
 
-### 1. Download Dependencies
+Run from `gsmap_tutorials/`. Shared dependencies come from {doc}`../downloads`;
+if you already completed the Visium tutorial, only the E16.5 ST file is new.
 
-The `gsMap3D` package in quick mode requires the following resources:
-
-- **LD reference panel weights**, for heritability partitioning.
-- **SNP-to-gene weight matrix**, linking SNPs to gene expression specificity.
-- **Homologous gene transformations file** (optional), to map genes between species.
-
-To download all the required files:
-
-```bash
-wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_quick_mode_resource.tar.gz
-tar -xvzf gsMap_quick_mode_resource.tar.gz
+```text
+gsmap_tutorials/
+├── resources/                                    # shared; reuse
+│   ├── 1000g-hc-grch38-v50-eur/
+│   │   ├── snp_gene_weights.h5ad
+│   │   └── w_ld/weights.{1..22}.l2.ldscore.gz     # 22 autosomal files
+│   └── homologs/mouse_human_homologs.txt
+└── example_data/
+    ├── example-traits/IQ.sumstats.gz             # shared GWAS; reuse
+    └── mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad  # this tutorial's ST data
 ```
 
-Directory structure:
+`{1..22}` denotes the 22 chromosome files.
+
+## 1. Download
+
+First time using gsMap? Follow {doc}`../install` and download the shared
+reference, homologs and example GWAS from {doc}`../downloads`.
+Then download this dataset. **Skip this step if its folder already exists.**
 
 ```bash
-tree -L 2 gsMap_quick_mode_resource
-
-gsMap_quick_mode_resource/
-├── 1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad
-└── weights_hm3_no_hla
-    ├── weights.1.l2.ldscore.gz
-    ├── ...
-    └── weights.22.l2.ldscore.gz
+mkdir -p example_data
+wget -O example_data/mouse-e16-mosta.tar.gz \
+    https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/2d/mouse-e16-mosta/r1/bundle.tar.gz && \
+    tar -xzf example_data/mouse-e16-mosta.tar.gz -C example_data
 ```
 
-For homolog files (mouse/macaque to human gene mapping), download separately:
+Download links and checksum instructions are on {doc}`../downloads`.
 
-```bash
-wget https://yanglab.westlake.edu.cn/data/gsMap/gsMap_homologs.tar.gz
-tar -xvzf gsMap_homologs.tar.gz
-```
+## 2. Run gsMap
 
-### 2. Download Example Data
-
-To run the quick mode example, you can download the example data as follows:
-
-```bash
-wget https://yanglab.westlake.edu.cn/data/gsMap/mouse_embryo_E16_example_data.tar.gz
-tar -xvzf mouse_embryo_E16_example_data.tar.gz
-```
-
-Directory structure:
-
-```bash
-tree -L 2 mouse_embryo_E16_example_data/
-
-mouse_embryo_E16_example_data/
-├── GWAS
-│   ├── BCX2_MCHC_EA_GWAMA.sumstats.gz
-│   ├── GIANT_EUR_Height_2022_Nature.sumstats.gz
-│   ├── gwas_config.yaml
-│   └── IQ_NG_2018.sumstats.gz
-└── ST
-    └── E16.5_E1S1.MOSTA.h5ad
-```
-
-## Running `gsMap3D` in Quick Mode
-
-<span style="color:#31a354"> Required memory: ~80G (for ~120K spots) </span>
-
-First, set up environment variables for resource directories to make commands easier to manage:
-
-```bash
-# Define resource and data directories
-GSMAP_RESOURCE_DIR="./gsMap_quick_mode_resource"
-HOMOLOG_DIR="./gsMap_homologs"
-EXAMPLE_DATA_DIR="./mouse_embryo_E16_example_data"
-```
-
-Now run the analysis using `gsmap quick-mode`:
+Choose the CLI or Python tab. Both specify the same inputs and keep the default
+corrected symmetric KNN graph (10 external neighbors). Counts are in
+`layers['count']`, annotations in `obs['annotation']`, and coordinates in
+`obsm['spatial']`.
 
 ````{tab} CLI
 ```bash
 # Create output directory
-mkdir -p ./gsmap_2d_tutorial/mouse_embryo
+mkdir -p results
 
 # Run gsMap3D in quick mode
 gsmap quick-mode \
-    --workdir "./gsmap_2d_tutorial/mouse_embryo" \
-    --project-name "E16.5_E1S1" \
+    --workdir "results" \
+    --project-name "mouse-e16-mosta" \
     --dataset-type "spatial2D" \
-    --h5ad-path "${EXAMPLE_DATA_DIR}/ST/E16.5_E1S1.MOSTA.h5ad" \
-    --homolog-file "${HOMOLOG_DIR}/mouse_human_homologs.txt" \
-    --w-ld-dir "${GSMAP_RESOURCE_DIR}/weights_hm3_no_hla" \
-    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
+    --h5ad-path "example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad" \
+    --homolog-file "resources/homologs/mouse_human_homologs.txt" \
+    --species MOUSE_GENE_SYM \
+    --w-ld-dir "resources/1000g-hc-grch38-v50-eur/w_ld" \
+    --snp-gene-weight-adata-path "resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad" \
     --annotation "annotation" \
     --spatial-key "spatial" \
     --data-layer "count" \
     --trait-name "IQ" \
-    --sumstats-file "${EXAMPLE_DATA_DIR}/GWAS/IQ_NG_2018.sumstats.gz" \
+    --sumstats-file "example_data/example-traits/IQ.sumstats.gz" \
     --plot-origin "lower"
 ```
 ````
@@ -109,18 +79,19 @@ from gsMap.config import QuickModeConfig, DatasetType
 from gsMap.pipeline import run_quick_mode
 
 config = QuickModeConfig(
-    workdir="./gsmap_2d_tutorial/mouse_embryo",
-    project_name="E16.5_E1S1",
+    workdir="results",
+    project_name="mouse-e16-mosta",
     dataset_type=DatasetType.SPATIAL_2D,
-    h5ad_path="./mouse_embryo_E16_example_data/ST/E16.5_E1S1.MOSTA.h5ad",
-    homolog_file="./gsMap_homologs/mouse_human_homologs.txt",
-    w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
-    snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
+    h5ad_path=["example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad"],
+    homolog_file="resources/homologs/mouse_human_homologs.txt",
+    species="MOUSE_GENE_SYM",
+    w_ld_dir="resources/1000g-hc-grch38-v50-eur/w_ld",
+    snp_gene_weight_adata_path="resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad",
     annotation="annotation",
     spatial_key="spatial",
     data_layer="count",
     trait_name="IQ",
-    sumstats_file="./mouse_embryo_E16_example_data/GWAS/IQ_NG_2018.sumstats.gz",
+    sumstats_file="example_data/example-traits/IQ.sumstats.gz",
     plot_origin="lower",
 )
 
@@ -128,95 +99,22 @@ run_quick_mode(config)
 ```
 ````
 
-### Parameters
+Use `count` for expression, `annotation` for labels and `spatial` for coordinates.
+The homolog file maps mouse gene symbols to human genes. See
+{doc}`../advanced_usage` for other flags and multiple-trait configurations.
 
-- `--workdir`: The working directory where output files will be saved.
-- `--project-name`: Identifies the project/sample within the workdir.
-- `--dataset-type`: `spatial2D` for standard 2D spatial transcriptomics.
-- `--h5ad-path`: Path to the input `.h5ad` file.
-- `--homolog-file`: Used to map mouse genes to human homologs.
-- `--w-ld-dir`: Directory containing pre-computed LD weights.
-- `--snp-gene-weight-adata-path`: Path to the SNP-gene weight matrix.
-- `--annotation`: Column in `adata.obs` for cell type or region labels.
-- `--spatial-key`: Key in `adata.obsm` for spatial coordinates.
-- `--data-layer`: Layer in `adata.layers` to use for raw counts (default is `.X`).
-- `--trait-name`: Name of the trait for labeling results.
-- `--sumstats-file`: Path to the GWAS summary statistics.
-- `--plot-origin`: `lower` or `upper` to match the coordinate system of your data for plotting.
+To run these same data on CPU, use fast temporary storage, split work by trait,
+or display every analyzed spot, follow the E16.5 examples in
+{doc}`../scalability`. The biological workflow is explained in
+{doc}`../key_concepts`.
 
-### Analysis of Multiple Traits
+## 3. View results
 
-You can analyze multiple traits simultaneously by providing a configuration file:
+[gsMap Report preview](https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reports/mouse-e16-mosta/r1/index.html)
 
-````{tab} CLI
 ```bash
-gsmap quick-mode \
-    --workdir "./gsmap_2d_tutorial/mouse_embryo" \
-    --project-name "E16.5_E1S1" \
-    --dataset-type "spatial2D" \
-    --h5ad-path "${EXAMPLE_DATA_DIR}/ST/E16.5_E1S1.MOSTA.h5ad" \
-    --homolog-file "${HOMOLOG_DIR}/mouse_human_homologs.txt" \
-    --w-ld-dir "${GSMAP_RESOURCE_DIR}/weights_hm3_no_hla" \
-    --snp-gene-weight-adata-path "${GSMAP_RESOURCE_DIR}/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad" \
-    --annotation "annotation" \
-    --sumstats-config-file "${EXAMPLE_DATA_DIR}/GWAS/gwas_config.yaml"
+gsmap report-view results/mouse-e16-mosta/gsmap_web_report --port 8080 --no-browser
 ```
-````
 
-````{tab} Python
-```python
-from gsMap.config import QuickModeConfig, DatasetType
-from gsMap.pipeline import run_quick_mode
-
-config = QuickModeConfig(
-    workdir="./gsmap_2d_tutorial/mouse_embryo",
-    project_name="E16.5_E1S1",
-    dataset_type=DatasetType.SPATIAL_2D,
-    h5ad_path="./mouse_embryo_E16_example_data/ST/E16.5_E1S1.MOSTA.h5ad",
-    homolog_file="./gsMap_homologs/mouse_human_homologs.txt",
-    w_ld_dir="./gsMap_quick_mode_resource/weights_hm3_no_hla",
-    snp_gene_weight_adata_path="./gsMap_quick_mode_resource/1000GP3_GRCh37_gencode_v46_protein_coding_ldscore_weights.h5ad",
-    annotation="annotation",
-    sumstats_config_file="./mouse_embryo_E16_example_data/GWAS/gwas_config.yaml",
-)
-
-run_quick_mode(config)
-```
-````
-
-### Output Description
-
-The pipeline generates two main directories:
-
-**`report_data/`** - Data files for downstream analysis:
-
-- `spot_metadata.csv` - Spot-level coordinates and annotations
-- `cauchy_results.csv` - Cauchy combination test results
-- `umap_data.csv` - UMAP coordinates for visualization
-- `gene_list.csv` - List of genes used in analysis
-- `gss_stats/` - Gene-trait correlation statistics
-- `manhattan_data/` - Manhattan plot data per trait
-
-**`gsmap_web_report/`** - Self-contained interactive web report:
-
-- `index.html` - Main report entry point
-- `spatial_plots/` - Static LDSC spatial plots
-- `gene_diagnostic_plots/` - Gene expression diagnostics
-- `annotation_plots/` - Annotation-based plots
-
-**Viewing the Report:**
-
-1. **Remote Server**: Start a temporary web server:
-
-    ```bash
-    gsmap report-view ./gsmap_web_report --port 8080 --no-browser
-    ```
-
-1. **Local PC**: Copy the `gsmap_web_report` folder to your machine and open `index.html` in a browser.
-
-## See Also
-
-- {doc}`Output Files Reference <../output_files>`: Detailed documentation of all output files
-- {doc}`3D Tutorial <../3d_tutorial/human_gastrulation>`: For 3D spatial transcriptomics analysis
-- {doc}`Customization Guide <../advanced_usage>`: For custom SNP-to-gene weights and embeddings
-- {doc}`Scalability <../scalability>`: For performance optimization tips
+Open the HTTP address printed by the server. Results and per-stage logs are in
+`results/mouse-e16-mosta/`; see {doc}`../output_files`. Select IQ in the report to explore the spatial map and annotation-level enrichment.

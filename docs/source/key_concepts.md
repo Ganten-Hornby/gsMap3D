@@ -2,99 +2,199 @@
 
 # Key Concepts
 
-This guide explains the core data structures, pipeline stages, and configuration options in `gsMap3D`.
+This guide introduces the basic workflow, input formats and key settings.
+For a complete walkthrough, follow the {doc}`2d_tutorial/mouse_embryo` or
+{doc}`3d_tutorial/index`. Use {doc}`advanced_usage` for customization and
+{doc}`scalability` for hardware, I/O and performance tuning.
 
-```{note}
-For usage demonstrations, please refer to the {doc}`/2d_tutorial/index` or {doc}`/3d_tutorial/index`.
-```
+## Basic usage
 
-## Basic Usage
+gsMap can be run from the command line or Python. Choose one interface and
+replace the **placeholder paths, project name and trait name** below with your own.
 
-`gsMap3D` can be used as a Python library or via the command line.
+This example assumes human gene symbols, counts in `adata.X`, coordinates in
+`obsm["spatial"]` and annotations in `obs["cell_type"]`. Change these fields to
+match your data; non-human data also need a homolog file.
 
 ````{tab} CLI
 ```bash
+mkdir -p ./output
+
 gsmap quick-mode \
-    --workdir ./output \
-    --project-name my_project \
-    --h5ad-path sample1.h5ad \
+    --workdir "./output" \
+    --project-name "my_project" \
     --dataset-type spatial2D \
-    --trait-name Trait1 \
-    --sumstats-file trait1.sumstats.gz \
-    --snp-gene-weight-adata-path ./resources/snp_gene_weights.h5ad \
-    --w-ld-dir ./resources/w_ld
+    --h5ad-path "sample.h5ad" \
+    --annotation "cell_type" \
+    --spatial-key "spatial" \
+    --data-layer "X" \
+    --trait-name "Trait1" \
+    --sumstats-file "trait1.sumstats.gz" \
+    --snp-gene-weight-adata-path "./resources/snp_gene_weights.h5ad" \
+    --w-ld-dir "./resources/w_ld"
 ```
 ````
 
 ````{tab} Python
 ```python
-from gsMap.config import QuickModeConfig, DatasetType
+from pathlib import Path
+
+from gsMap.config import QuickModeConfig
 from gsMap.pipeline import run_quick_mode
+
+Path("./output").mkdir(parents=True, exist_ok=True)
 
 config = QuickModeConfig(
     workdir="./output",
     project_name="my_project",
-    h5ad_path="sample1.h5ad",
-    dataset_type=DatasetType.SPATIAL_2D,
+    dataset_type="spatial2D",
+    h5ad_path=["sample.h5ad"],
+    annotation="cell_type",
+    spatial_key="spatial",
+    data_layer="X",
     trait_name="Trait1",
     sumstats_file="trait1.sumstats.gz",
     snp_gene_weight_adata_path="./resources/snp_gene_weights.h5ad",
     w_ld_dir="./resources/w_ld",
 )
-
 run_quick_mode(config)
 ```
 ````
 
-## Pipeline Overview
+Results are saved in `output/my_project/`. For a ready-to-run example with
+downloadable data, follow the {doc}`2d_tutorial/mouse_embryo`.
 
-The `gsMap3D` pipeline integrates spatial transcriptomics with GWAS summary statistics through five key stages:
+The sections below explain the arguments. Short flag excerpts illustrate
+settings to add to a complete command; they are not standalone commands.
 
+(pipeline-overview)=
+
+## Pipeline overview
+
+Start with **Simplified** for the main stages. Switch to **Detailed** to see
+the inputs to each calculation; arrow labels describe what each connection
+contributes. Use **Expand** for a larger view.
+
+````{tab} Simplified
 ```{mermaid}
-graph TD
-    %% Define styles
-    classDef input fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,rx:10,ry:10;
-    classDef output fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px;
+:name: pipeline-simple
 
-    %% Nodes
-    ST(Spatial Transcriptomics Data):::input
-    GWAS(GWAS Summary Statistics):::input
+flowchart TB
+    ST("Spatial transcriptomics")
+    GWAS("GWAS + LD resources")
 
-    subgraph Integrated Pipeline
+    subgraph PIPELINE["Integrated pipeline"]
         direction TB
-        S1[1. Latent Representation<br/><i>Dual Embedding</i>]:::process
-        S2[2. Find Homogeneous Cells]:::process
-        S3[3. Gene Specificity Score<br/><i>GSS Calculation</i>]:::process
-        S4[4. Spatial LDSC<br/><i>Cell-Trait Association</i>]:::process
-        S5[5. Region Identification<br/><i>Cauchy Combination</i>]:::process
+        S1("1 · Latent representation<br/>Cell + niche embeddings")
+        S2("2 · Homogeneous neighbors<br/>Similar cells in spatial context")
+        S3("3 · Gene specificity score<br/>GSS calculation")
+        S4("4 · Spatial LDSC<br/>Cell–trait associations")
+        S5("5 · Cauchy combination<br/>Region / cell-type associations")
+        S1 --> S2 --> S3 --> S4 --> S5
     end
 
-    Report(Interactive Report):::output
-
-    %% Edges
+    Q("Interactive report")
     ST --> S1
-    S1 --> S2
-    S2 --> S3
-    S3 --> S4
     GWAS --> S4
-    S4 --> S5
-    S5 --> Report
+    S5 --> Q
+
+    classDef input fill:#eaf2fa,stroke:#809ab7,color:#304962;
+    classDef process fill:#f0edfa,stroke:#9284b5,color:#453a61;
+    classDef output fill:#eaf5ef,stroke:#79a58e,color:#2f5140;
+    class ST,GWAS input;
+    class S1,S2,S3,S4,S5 process;
+    class Q output;
+    style PIPELINE fill:#faf9fd,stroke:#d9d3e7,color:#453a61
+```
+````
+
+````{tab} Detailed
+Scroll horizontally to see the full diagram, or choose **Expand**.
+
+```{mermaid}
+:name: pipeline-detailed
+
+flowchart TB
+    E["Gene expression"]
+    S["Spatial coordinates<br/>+ section information"]
+    A["Annotation · optional"]
+
+    subgraph NEIGHBORS["1 · Choose comparable cells"]
+        C["Cell embedding"]
+        N["Niche embedding · optional"]
+        P["Spatial constraints<br/>Allowed cells / sections"]
+        H["Homogeneous neighbors<br/>+ similarity weights"]
+        C -->|"Cell similarity"| H
+        N -.->|"Niche similarity"| H
+        P -->|"Eligible candidates"| H
+    end
+    E -->|"Expression features"| C
+    E -.->|"Propagated expression"| N
+    S -.->|"Spatial graph"| N
+    S -->|"Distances / section order"| P
+    A -.->|"Same-group restriction"| H
+
+    subgraph SCORES["2 · Calculate gene specificity"]
+        R["Expression ranks<br/>Within each cell"]
+        F["Global reference<br/>Geometric-mean rank<br/>+ expression fraction"]
+        M["Marker scores · GSS<br/>Gene specificity"]
+        R -->|"Neighbor ranks"| M
+        F -->|"Normalize / filter"| M
+    end
+    E -->|"Rank genes per cell"| R
+    E -->|"Summarize across cells"| F
+    H -->|"Neighbor IDs + weights"| M
+    %% Invisible links keep the three stages vertically ordered.
+    A ~~~ C
+    H ~~~ R
+    H ~~~ F
+
+    subgraph ASSOCIATION["3 · Test trait associations"]
+        D["Cell-specific LD scores"]
+        L["Spatial LDSC"]
+        O["Cell–trait associations"]
+        D -->|"Cell-specific annotations"| L
+        L -->|"Regression test"| O
+    end
+    M -->|"Gene scores"| D
+    W["SNP × gene<br/>weight matrix"] -->|"LD-weighted mapping"| D
+    G["GWAS + w_ld<br/>Baseline covariates"] -->|"Trait statistics + reference"| L
+    O -->|"Cell-level p-values"| Q["Cauchy enrichment<br/>+ interactive report"]
+
+    classDef compute fill:#edf4fc,stroke:#517ba5,color:#19324d;
+    classDef data fill:#eef2f6,stroke:#8798ad,color:#33465e;
+    classDef result fill:#edf7ef,stroke:#71876b,color:#253621;
+    class C,N,P,R,F,D,L compute;
+    class E,S,A,W,G data;
+    class H,M,O,Q result;
 ```
 
-1. **Dual Embeddings**: gsMap3D constructs batch-corrected dual embeddings to capture complementary aspects of cellular organization. High-dimensional gene expression profiles are projected into a cell-identity embedding, which represents intrinsic cellular states independent of spatial location. In parallel, gene expression is jointly modeled with spatial coordinates to generate a spatial-domain (cell-niche) embedding, which captures local tissue architecture and microenvironmental context.
+Dashed arrows indicate optional inputs or paths. The global geometric mean is
+calculated from **expression ranks**, not raw expression values. Expression
+fraction means the proportion of cells expressing a gene.
+````
 
-1. **Identification of Homogeneous cells** Using the dual embeddings, gsMap3D identifies homogeneous cells for each spot by jointly considering transcriptomic similarity and spatial context. For 2D ST data, homogeneous cells are identified within the same section, whereas for 3D ST data, homogeneous cells span adjacent sections, enabling volumetric identification of homogeneous cells across the tissue.
+1. **Embeddings:** cell embeddings describe expression similarity; optional
+   niche embeddings add spatial context.
+2. **Homogeneous neighbors:** choose similar cells subject to spatial and
+   optional annotation constraints. Spatial2D stays within each section;
+   Spatial3D can also match cells in allowed neighboring sections.
+3. **Gene specificity:** aggregate neighbors' expression ranks using their
+   similarity weights and compare with the global reference to calculate GSS.
+4. **Spatial LDSC:** combine GSS, SNP × gene weights and GWAS statistics to
+   test cell–trait associations.
+5. **Group summaries and report:** combine cell-level p-values by annotation
+   using the Cauchy test, then explore the spatial maps and enrichment results.
 
-1. **Gene Specificity Score**: gsMap3D computes a Gene Specificity Score (GSS) for each gene in each cell by aggregating normalized gene expression ranks across its homogeneous cells. The GSS quantifies how highly and specifically a gene is expressed in a given cell.
-
-1. **Spatial LDSC**: The cell-level GSS annotations are integrated with GWAS summary statistics using S-LDSC to partition trait heritability. This framework assesses trait heritability enrichment of specific cells within specific spatial context.
-
-1. **Spatial Region or Cell-Type Association** To assess trait associations at the level of spatial regions or cell types, gsMap3D aggregates cell-level association p-values using the Cauchy combination test. This yields robust region- or cell-type–level association statistics while accounting for heterogeneous signals across constituent cells.
+```{note}
+Graph propagation and cross-section matching are separate. Allowing matches
+across sections does not itself create cross-section graph edges.
+```
 
 ## Key Configurations
 
-The following options are used in the `gsMap3D` CLI (`gsmap quick-mode`) and Python API.
+The following options are used in `gsmap quick-mode`. In Python, replace hyphens
+with underscores: for example, `--project-name` becomes `project_name=...`.
 
 ### Project Setup
 
@@ -115,11 +215,12 @@ The input ST data must be an h5ad file containing at least the gene expression m
 ```python
 import scanpy as sc
 
-adata = sc.read_h5ad("gsMap_example_data/ST/E16.5_E1S1.MOSTA.h5ad")
+adata = sc.read_h5ad("example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad")
 
 print(adata.layers["count"].shape)
 print(adata.obsm["spatial"].shape)
 print(adata.obs["annotation"].value_counts().head())
+
 ```
 
 - **`--dataset-type`**:
@@ -134,12 +235,12 @@ There are three ways to provide input AnnData (.h5ad) files:
 1. **Single or Multiple Files** (`--h5ad-path`):
     Specify each file with its own flag. Sample names are derived from filenames (e.g., `sample1.h5ad` -> `sample1`).
 
-    ```bash
+    ```text
     --h5ad-path data/sample1.h5ad \
     --h5ad-path data/sample2.h5ad
     ```
 
-1. **YAML Configuration (recommended)** (`--h5ad-yaml`):
+1. **YAML Configuration** (`--h5ad-yaml`):
     A YAML file where keys are sample names and values are file paths.
 
     ```yaml
@@ -154,6 +255,9 @@ There are three ways to provide input AnnData (.h5ad) files:
     /path/to/sample1.h5ad
     /path/to/sample2.h5ad
     ```
+
+For YAML and list files, relative paths are resolved from the directory containing
+the configuration file, not the shell working directory. Use one input form.
 
 ```{important}
 For `spatial3D` datasets, the order of file paths defines the Z-axis order of slices. Ensure files are listed in the same order as they appear along the Z-axis (e.g., from bottom to top or vice versa).
@@ -170,63 +274,70 @@ For `spatial3D` datasets, the spatial coordinates must be **aligned across slice
 
 #### Annotation
 
-- **`--annotation`**: Key in `adata.obs` containing cell type or spatial domain annotations. Constrains the homogeneous neighbor search within same annotation, improving the accuracy of homogeneous neighbor finding.
+- **`--annotation`**: Key in `adata.obs` containing cell type or spatial domain annotations. Restricts the homogeneous-neighbor search to the same annotation group.
 - **`--two-stage`**: If provided, this annotation is used to refine the latent embedding in the find latent representation stage.
 
 ```{note}
-If both cell type and spatial domain are available, using **cell type** is suggested for better homogeneous cell finding.
+If both cell type and spatial domain are available, **cell type** is usually
+appropriate for restricting homogeneous-neighbor matching. Quick mode also
+needs annotation groups for enrichment/reporting; use `--annotation` or
+`--cauchy-annotations`. The E16.5 example supplies `--annotation annotation`.
 ```
 
 ### GWAS Summary Statistics
 
-The input GWAS data is a text file containing at least the columns for SNP (rs number), Z (Z-statistics), and N (sample size). Column headers are keywords used by gsMap3D.
+The input GWAS data is a text file containing at least the columns for SNP (rs number), Z (Z-statistics), and N (sample size). Use these exact column names. Alleles `A1` (effect allele) and `A2` (other allele)
+are retained by the formatter for checking effect orientation.
 
-```shell
-zcat gsMap_example_data/GWAS/IQ_NG_2018.sumstats.gz | head -n 5
+An illustrative formatted file looks like this (not real association results):
 
-SNP  A1 A2 Z N
-rs12184267 T C 0.916 225955
-rs12184277 G A 0.656 226215
-rs12184279 A C 1.050 226224
-rs116801199 T G 0.300 226626
+```text
+SNP          A1  A2  Z       N
+rs12184267   T   C   0.916   225955
+rs12184277   G   A   0.656   226215
 ```
 
-#### How to Format GWAS Data
+- **SNP:** variant rsID matching the LD reference.
+- **Z:** signed association Z statistic, not a p-value.
+- **N:** positive sample size for that variant.
 
-You can convert GWAS summary data into the required format using custom code. For convenience, gsMap3D provides a command to do this. Below is an example of how to use the command.
+Inspect a formatted example without decompressing the entire file:
 
-Download the human height GWAS data and decompress it.
+```python
+import pandas as pd
 
-```bash
-wget https://portals.broadinstitute.org/collaboration/giant/images/4/4e/GIANT_HEIGHT_YENGO_2022_GWAS_SUMMARY_STATS_ALL.gz
-
-gzip -d GIANT_HEIGHT_YENGO_2022_GWAS_SUMMARY_STATS_ALL.gz
+print(pd.read_csv("example_data/example-traits/IQ.sumstats.gz", sep=r"\s+", nrows=5))
 ```
 
-Convert the summary statistics to the required format.
+#### Formatting your own GWAS
+
+Provide rsIDs, effect/non-effect alleles, signed Z statistics (or beta and SE),
+and sample size. Confirm the ancestry and genome build from the original study.
+Column names and QC thresholds are study-specific; automatic detection is not
+substitute for checking effect direction, sample size and variant identifiers.
+
+The downloadable example GWAS are already formatted and do not need reformatting.
+For example, suppose your raw file `my_trait.tsv` has columns `rsid`,
+`effect_allele`, `other_allele`, `beta`, `se` and `n_samples`. Map them explicitly:
 
 ```bash
-gsmap format_sumstats \
---sumstats 'GIANT_HEIGHT_YENGO_2022_GWAS_SUMMARY_STATS_ALL' \
---out 'HEIGHT'
+gsmap format-sumstats \
+    --sumstats my_trait.tsv \
+    --out my_trait \
+    --snp rsid \
+    --a1 effect_allele \
+    --a2 other_allele \
+    --beta beta \
+    --se se \
+    --n n_samples
 ```
 
-You will obtain a file named HEIGHT.sumstats.gz
+This writes `my_trait.sumstats.gz`, with signed `Z = beta / se`.
+If the study supplies Z directly, use `--z COLUMN` instead of `--beta` and `--se`.
+For other fields and QC options:
 
 ```bash
-zcat HEIGHT.sumstats.gz | head -n 5
-
-SNP  A1 A2 Z N
-rs3131969 G A 0.328 1494218.000
-rs3131967 C T 0.386 1488150.000
-rs12562034 A G 1.714 1554976.000
-rs4040617 G A -0.463 1602016.000
-```
-
-For more usage options, please refer to:
-
-```bash
-gsMap format_sumstats -h
+gsmap format-sumstats --help
 ```
 
 #### Providing GWAS Data
@@ -236,22 +347,22 @@ There are two ways to provide GWAS summary statistics:
 1. **Single Trait** (`--trait-name` + `--sumstats-file`):
     Provide a single trait name and its corresponding summary statistics file.
 
-    ```bash
-    --trait-name "IQ" --sumstats-file "./GWAS/IQ_NG_2018.sumstats.gz"
+    ```text
+    --trait-name "IQ" --sumstats-file "example_data/example-traits/IQ.sumstats.gz"
     ```
 
 1. **Multiple Traits** (`--sumstats-config-file`):
     Provide a YAML configuration file mapping trait names to file paths.
 
     ```yaml
-    # gwas_config.yaml
-    IQ: ./GWAS/IQ_NG_2018.sumstats.gz
-    Height: ./GWAS/GIANT_EUR_Height_2022_Nature.sumstats.gz
-    MCHC: ./GWAS/BCX2_MCHC_EA_GWAMA.sumstats.gz
+    # Save as inputs/gwas_config.yaml; paths are relative to this YAML file.
+    IQ: ../example_data/example-traits/IQ.sumstats.gz
+    Height: ../example_data/example-traits/Height.sumstats.gz
+    MCHC: ../example_data/example-traits/MCHC.sumstats.gz
     ```
 
-    ```bash
-    --sumstats-config-file "./GWAS/gwas_config.yaml"
+    ```text
+    --sumstats-config-file "inputs/gwas_config.yaml"
     ```
 
 ### SNP to Gene & LD Weights
@@ -262,24 +373,39 @@ These files define how SNPs are linked to genes and the LD structure used for he
     Path to the pre-calculated SNP-to-gene weight matrix (.h5ad format).
 
 - **`--w-ld-dir`**:
-    Directory containing LD score weights for heritability partitioning.
+    Directory containing the per-chromosome regression-weight LD scores.
+
+Download the matrix and `w_ld/` as a **matched pair** from {doc}`downloads`.
+Choose ancestry according to the **GWAS population**, not the tissue species.
+The SNP × gene matrix converts GSS into LD scores; `w_ld` weights the regression.
 
 ### Homogeneous Neighbor & GSS
 
 - **`--spatial-neighbors`**:
-    Number of nearest neighbors to search in physical space (default: 301).
+    Number of within-section spatial candidates for homogeneous-neighbor selection (default: 301).
 - **`--homogeneous-neighbors`**:
-    Number of molecularly similar neighbors to use for GSS calculation (default: 21).
+    Number of similar neighbors selected for GSS (default: 21); default 3D pooling selects neighbors per section.
+
+#### Graph neighbors versus homogeneous neighbors
+
+These are different settings: `--n-neighbors` requests **10 external neighbors**
+per spot for the default KNN graph, before bidirectional union. It controls
+embedding propagation, not the number of homogeneous neighbors used for GSS.
+Batch and chunk sizes control execution, not the biological neighborhood.
 
 #### 3D Specific Options
 
 For `spatial3D` datasets, `gsMap3D` can search for homogeneous neighbors across aligned adjacent slices.
 
 - **`--n-adjacent-slices`**:
-    Number of slices above and below the focal slice to include in the neighbor search (e.g., `1` means focal slice ± 1 slice).
+    Default: `2` sections above and below. Ordinal selection follows input order
+    and can fill its quota from farther sections near boundaries. Two-section
+    inputs must explicitly set `1`. The {doc}`3d_tutorial/mouse_e11` uses `8`.
+    Ordinal section counts are not physical distances; see {doc}`cli_reference`
+    for calibrated physical-distance options.
 - **`--cross-slice-marker-score-strategy`**:
     Strategy for calculating Gene Specificity Scores across slices:
-    - `hierarchical_pool` (Default): Select *K* homogeneous neighbors from each adjacent slice independently, compute a per-slice GSS, then average across slices. Robust to batch effects between slices.
+    - `hierarchical_pool` (Default): Select *K* homogeneous neighbors from each adjacent slice independently, compute a per-slice GSS, then average across slices.
     - `global_pool`: Select the top K × (2 × n_adjacent_slices + 1) homogeneous neighbors globally across all adjacent slices. Each slice may contribute a variable number of neighbors.
     - `per_slice_pool`: Select *K* homogeneous neighbors from each adjacent slice, then compute a single GSS from the pooled neighbors.
 
@@ -288,13 +414,21 @@ For `spatial3D` datasets, `gsMap3D` can search for homogeneous neighbors across 
 - **`--latent-representation-cell`**:
     Key in `adata.obsm` for cell identity embedding (default: `emb_cell`).
 - **`--latent-representation-niche`**:
-    Key in `adata.obsm` for spatial niche embedding (default: `emb_niche`).
+    Key in `adata.obsm` for the optional spatial niche embedding. Spatial quick mode
+    uses `emb_niche` by default; the standalone latent-to-gene step defaults to none.
 - **`--use-gpu` / `--no-gpu`**:
-    Enable or disable JAX GPU acceleration.
+    Enable or disable JAX GPU acceleration for marker scoring and spatial LDSC.
+    For a fully CPU-only run, including embeddings, see {doc}`scalability`.
+
+Changing graph or matching settings can change the scientific result; use a new
+project for such changes. GSS can be reused for new GWAS traits when the inputs
+and scientific settings stay the same.
 
 ## See Also
 
 - {doc}`Output Files Reference <output_files>`: Detailed documentation of all output files and their formats
 - {doc}`2D Tutorial <2d_tutorial/index>`: Step-by-step guide for 2D spatial transcriptomics
 - {doc}`3D Tutorial <3d_tutorial/index>`: Step-by-step guide for 3D spatial transcriptomics
+- {doc}`Performance and scalability <scalability>`: CPU/GPU, SSD and batch-size examples
+- {doc}`Customization Guide <advanced_usage>`: Adapt inputs and analysis settings
 - {doc}`CLI Reference <cli_reference>`: Complete command-line reference

@@ -1,11 +1,12 @@
 3D mapping
-========
+==========
 
-Disease genetic risk is fundamentally embeded within the native 3D cellular architecture of tissues. While 2D ST sections are informative, they capture only a partial view of spatial organization and may miss critical biological signals that span across sections. This limitation can lead to incomplete or even misleading interpretations of where disease-associated cells actually function.
+The human CS8 embryo contains **38,562 spots across 62 sections**, making it a
+compact example for a quick first run. The mouse E11.5 embryo contains
+**6,993,667 cells across 84 sections** and demonstrates a large-scale analysis
+that requires substantially more computation time and memory.
 
-gsMap3D is a comprehensive computational framework that addresses this gap by integrating (GWAS) with 3D-reconstructed ST data, enabling the discovery of the true spatial organization of disease risk.
-
-This section provides tutorials for integrating GWAS with 3D ST datasets using gsMap3D.
+Both follow the same sequence: get the data, run gsMap, view the report.
 
 
 Tutorials
@@ -15,3 +16,4 @@ Tutorials
     :maxdepth: 1
 
     CS8 Human Embryo <human_gastrulation.md>
+    Mouse E11.5 embryo <mouse_e11.md>
