@@ -15,6 +15,7 @@ import h5py
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pa_compute
 import pyarrow.csv as pa_csv
 import pyarrow.parquet as pa_parquet
 import scipy as sp
@@ -92,16 +93,27 @@ def _update_hash_from_python_strings(hasher, values: np.ndarray) -> None:
     if not materialized:
         return
     if isinstance(materialized[0], bytes):
-        hasher.update(b"".join(materialized))
+        if any(b"\0" in value for value in materialized):
+            raise ValueError("AnnData spot identifiers cannot contain NUL characters.")
+        hasher.update(b"\0".join(materialized) + b"\0")
     else:
-        hasher.update("".join(str(value) for value in materialized).encode())
+        if any("\0" in str(value) for value in materialized):
+            raise ValueError("AnnData spot identifiers cannot contain NUL characters.")
+        hasher.update(("\0".join(str(value) for value in materialized) + "\0").encode())
 
 
 def _update_hash_from_arrow_strings(hasher, values: pa.Array) -> None:
     """Hash Arrow string data without converting every value to a Python object."""
 
+    if not len(values):
+        return
     if values.null_count:
         raise ValueError("LDSC spot identifiers cannot contain missing values.")
+    if bool(pa_compute.any(pa_compute.match_substring(values, "\0")).as_py()):
+        raise ValueError("LDSC spot identifiers cannot contain NUL characters.")
+    # Include string boundaries: ["ab", "c"] must not hash as ["a", "bc"].
+    # Per-string delimiters also make this independent of CSV/H5AD chunk sizes.
+    values = pa_compute.binary_join_element_wise(values, "\0", "")
     if pa.types.is_string(values.type):
         offset_dtype = np.int32
     elif pa.types.is_large_string(values.type):
@@ -221,6 +233,8 @@ def _read_trait_into_row(
         spots = batch.column("spot")
         _update_hash_from_arrow_strings(spot_hasher, spots)
         p_values = batch.column("p").to_numpy(zero_copy_only=False)
+        if np.any((p_values < 0) | (p_values > 1)):
+            raise ValueError(f"LDSC result for {trait} contains p-values outside [0, 1]: {path}")
         with np.errstate(divide="ignore", invalid="ignore"):
             np.log10(p_values, out=destination[offset:end])
             np.negative(destination[offset:end], out=destination[offset:end])
@@ -268,6 +282,10 @@ def _load_trait_matrix(
     )
     logger.info(f"Loading LDSC traits with {worker_count} shared-memory reader threads")
     started = time.perf_counter()
+    canonical_spots = None
+    cached_fingerprint = None
+    cached_positions = None
+    trait_positions = {trait: index for index, trait in enumerate(traits)}
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="cauchy-reader") as pool:
         futures = {
             pool.submit(
@@ -283,9 +301,41 @@ def _load_trait_matrix(
             futures.pop(future)
             trait, fingerprint, elapsed = future.result()
             if fingerprint != metadata.spot_fingerprint:
-                raise ValueError(
-                    f"Spot order in LDSC result for {trait} does not match the canonical "
-                    "concatenated AnnData row order."
+                # Sequential marker layouts legitimately write LDSC in marker-row
+                # order. Restore canonical metadata order by ID, never by position.
+                # Materialize names only on this fallback and cache one permutation
+                # (normally shared by every trait), not one index per trait.
+                if canonical_spots is None:
+                    if metadata.in_memory_spots is not None:
+                        canonical_spots = pd.Index(metadata.in_memory_spots.astype(str))
+                    else:
+                        with h5py.File(metadata.h5ad_path, "r") as handle:
+                            canonical_spots = pd.Index(
+                                read_elem(handle["obs"][metadata.index_key]).astype(str)
+                            )
+                    if not canonical_spots.is_unique:
+                        raise ValueError("Canonical AnnData spot identifiers must be unique.")
+                if fingerprint != cached_fingerprint:
+                    spot_table = pa_csv.read_csv(
+                        paths[trait],
+                        read_options=pa_csv.ReadOptions(use_threads=False),
+                        convert_options=pa_csv.ConvertOptions(
+                            include_columns=["spot"], column_types={"spot": pa.string()}
+                        ),
+                    )
+                    result_spots = pd.Index(spot_table.column("spot").to_pandas())
+                    if not result_spots.is_unique:
+                        raise ValueError(f"Duplicate spot identifiers in LDSC result for {trait}.")
+                    cached_positions = result_spots.get_indexer(canonical_spots)
+                    if np.any(cached_positions < 0):
+                        raise ValueError(
+                            f"Spot universe in LDSC result for {trait} does not match the canonical concatenated AnnData."
+                        )
+                    cached_fingerprint = fingerprint
+                row = values[trait_positions[trait]]
+                row[:] = row[cached_positions]
+                logger.info(
+                    f"Aligned LDSC trait {trait} from marker-row order to canonical AnnData order by spot ID"
                 )
             logger.info(
                 f"Loaded LDSC trait {completed}/{len(traits)}: {trait}; "

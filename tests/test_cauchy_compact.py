@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING
 
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 from scipy import stats
 
@@ -19,10 +21,34 @@ from gsMap.cauchy_combination_test import (
     _read_metadata,
     _result_frame,
     _summarize_trait_groups,
+    _update_hash_from_arrow_strings,
+    _update_hash_from_python_strings,
     _write_combined_parquet,
     run_Cauchy_combination,
     run_cauchy_on_dataframe,
 )
+
+
+def test_identifier_hash_preserves_boundaries_and_chunk_invariance():
+    values = np.array(["ab", "c", "δ"], dtype=object)
+    python_hash = hashlib.blake2b()
+    _update_hash_from_python_strings(python_hash, values)
+    arrow_hash = hashlib.blake2b()
+    for chunk in [pa.array(values[:1]), pa.array(values[1:])]:
+        _update_hash_from_arrow_strings(arrow_hash, chunk)
+    assert arrow_hash.digest() == python_hash.digest()
+    different = hashlib.blake2b()
+    _update_hash_from_python_strings(different, np.array(["a", "bc", "δ"], dtype=object))
+    assert different.digest() != python_hash.digest()
+
+
+def test_identifier_hash_handles_empty_arrow_chunk_and_rejects_nul():
+    empty = hashlib.blake2b()
+    _update_hash_from_arrow_strings(empty, pa.array([], type=pa.string()))
+    assert empty.digest() == hashlib.blake2b().digest()
+    for values in (np.array(["a\0b"]), np.array([b"a\0b"])):
+        with pytest.raises(ValueError, match="NUL"):
+            _update_hash_from_python_strings(hashlib.blake2b(), values)
 
 
 def _legacy_equal_weight_acat(p_values: np.ndarray) -> float:
@@ -120,6 +146,17 @@ def test_compact_loader_and_bounded_parquet_preserve_values(compact_cauchy_input
     )
 
 
+@pytest.mark.parametrize("invalid", [-0.1, 1.01, np.inf, -np.inf])
+def test_compact_loader_rejects_invalid_probabilities(compact_cauchy_inputs, invalid):
+    h5ad_path, spots, paths, p_values = compact_cauchy_inputs
+    values = p_values[0].copy()
+    values[0] = invalid
+    with np.errstate(invalid="ignore"):
+        _write_ldsc(paths["trait_1"], spots, values)
+    with pytest.raises(ValueError, match=r"outside \[0, 1\]"):
+        _load_trait_matrix(paths, _read_metadata(h5ad_path, ["annotation"]), max_workers=1)
+
+
 def test_equal_weight_acat_avoids_weight_array_without_changing_result():
     p_values = np.concatenate(
         (
@@ -185,13 +222,31 @@ def test_compact_cauchy_matches_dataframe_reference(compact_cauchy_inputs, sampl
     )
 
 
-def test_compact_loader_rejects_reordered_spots(compact_cauchy_inputs):
+def test_compact_loader_aligns_reordered_spots(compact_cauchy_inputs):
     h5ad_path, spots, paths, p_values = compact_cauchy_inputs
     _write_ldsc(paths["trait_2"], list(reversed(spots)), p_values[1][::-1])
     metadata = _read_metadata(h5ad_path, ["annotation"])
 
+    matrix = _load_trait_matrix(paths, metadata, max_workers=2)
+    np.testing.assert_allclose(matrix.values[1], -np.log10(p_values[1]), equal_nan=True)
+
+
+def test_compact_loader_rejects_changed_spot_universe(compact_cauchy_inputs):
+    h5ad_path, spots, paths, p_values = compact_cauchy_inputs
+    changed = list(spots)
+    changed[0] = "unknown-spot"
+    _write_ldsc(paths["trait_2"], changed, p_values[1])
     with pytest.raises(ValueError, match="does not match the canonical"):
-        _load_trait_matrix(paths, metadata, max_workers=2)
+        _load_trait_matrix(paths, _read_metadata(h5ad_path, ["annotation"]), max_workers=2)
+
+
+def test_compact_loader_rejects_duplicate_result_spots(compact_cauchy_inputs):
+    h5ad_path, spots, paths, p_values = compact_cauchy_inputs
+    changed = list(spots)
+    changed[0] = changed[1]
+    _write_ldsc(paths["trait_2"], changed, p_values[1])
+    with pytest.raises(ValueError, match="Duplicate spot"):
+        _load_trait_matrix(paths, _read_metadata(h5ad_path, ["annotation"]), max_workers=2)
 
 
 def test_compact_cauchy_end_to_end_preserves_output_contract(
