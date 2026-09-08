@@ -317,7 +317,7 @@ def test_cauchy_export_is_file_scheme_compatible_and_sharded(tmp_path):
 
     index_text = (js_data_dir / "cauchy_index.js").read_text(encoding="utf-8")
     index = json.loads(index_text.split("=", 1)[1].rstrip(";"))
-    assert index["version"] == 2
+    assert index["version"] == 3
     assert set(index["table"]) == {"all", "sample"}
     entry = index["table"]["sample"]["trait/a"]["cell type"]
     assert entry["n_rows"] == 4

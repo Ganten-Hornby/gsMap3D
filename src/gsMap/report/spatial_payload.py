@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SPATIAL_PAYLOAD_VERSION = 8
+SPATIAL_PAYLOAD_VERSION = 9
 P_VALUE_COLORS = [
     "#313695",
     "#4575b4",

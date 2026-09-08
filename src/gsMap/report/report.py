@@ -1,4 +1,5 @@
 import logging
+import shlex
 from datetime import datetime
 from pathlib import Path
 
@@ -8,9 +9,20 @@ import gsMap
 from gsMap.config import QuickModeConfig
 from gsMap.logging_config import logged_stage
 
-from .report_data import ReportDataManager
+from .report_data import ReportDataManager, _atomic_write_text
 
 logger = logging.getLogger(__name__)
+
+
+def _render_report_html(project_name: str) -> str:
+    template_path = Path(__file__).parent / "static" / "template.html"
+    template = Template(template_path.read_text(encoding="utf-8"), autoescape=True)
+    return template.render(
+        title=f"gsMap Report - {project_name}",
+        project_name=project_name,
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        gsmap_version=getattr(gsMap, "__version__", "unknown"),
+    )
 
 
 @logged_stage("report")
@@ -53,6 +65,8 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
                 └── ... (other JS modules)
     """
     logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")
+    # Validate the template before doing expensive data preparation.
+    rendered_html = _render_report_html(config.project_name)
 
     # 1. Use ReportDataManager to prepare all data and JS assets
     manager = ReportDataManager(config)
@@ -65,28 +79,9 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         with open(web_report_dir / "execution_summary.yaml", "w") as f:
             yaml.dump(run_parameters, f)
 
-    # 3. Render the Jinja2 template
-    template_path = Path(__file__).parent / "static" / "template.html"
-    if not template_path.exists():
-        logger.error(f"Template file not found at {template_path}")
-        return
-
-    with open(template_path, encoding="utf-8") as f:
-        template = Template(f.read())
-
-    # Prepare context
-    context = {
-        "title": f"gsMap Report - {config.project_name}",
-        "project_name": config.project_name,
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "gsmap_version": getattr(gsMap, "__version__", "unknown"),
-    }
-
-    rendered_html = template.render(**context)
-
+    # Publish the entry point atomically, only after its data files are ready.
     report_file = web_report_dir / "index.html"
-    with open(report_file, "w", encoding="utf-8") as f:
-        f.write(rendered_html)
+    _atomic_write_text(report_file, rendered_html)
 
     from rich import print as rprint
 
@@ -99,7 +94,7 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
         "1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:"
     )
     rprint(
-        f"   [bold cyan]gsmap report-view {web_report_dir} --port 8080 --no-browser[/bold cyan]"
+        f"   [bold cyan]gsmap report-view {shlex.quote(str(web_report_dir))} --port 8080 --no-browser[/bold cyan]"
     )
     rprint(
         f"\n2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n"

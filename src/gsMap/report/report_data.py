@@ -49,13 +49,59 @@ from gsMap.spatial_ldsc.io import (
 
 logger = logging.getLogger(__name__)
 
-CAUCHY_PAYLOAD_VERSION = 2
+CAUCHY_PAYLOAD_VERSION = 3
 CAUCHY_TABLE_CONSTANT_COLUMNS = {"trait", "annotation_name", "type"}
 CAUCHY_HEATMAP_METRICS = (
     "mlog10_p_cauchy",
     "mlog10_p_median",
     "top_95_quantile",
 )
+
+
+def _read_report_csv(path: Path, *, labels=(), **kwargs) -> pd.DataFrame:
+    """Keep identifiers categorical, including '01', 'NA' and numeric labels."""
+    return pd.read_csv(
+        path,
+        converters={label: lambda value: value if value else np.nan for label in labels},
+        **kwargs,
+    )
+
+
+def _read_cauchy_report_result(path: Path) -> pd.DataFrame:
+    frame = _read_report_csv(path, labels=["annotation", "sample", "sample_name"])
+    required = {"annotation", "p_cauchy", "p_median", "top_95_quantile"}
+    if missing := required.difference(frame.columns):
+        raise ValueError(f"Cauchy result {path} is missing columns: {sorted(missing)}")
+    for column in ("p_cauchy", "p_median"):
+        # All-zero CSV columns may be inferred as integers; convert before
+        # clipping so the positive floor is not truncated back to zero.
+        values = pd.to_numeric(frame[column], errors="raise").astype(np.float64)
+        if ((values < 0) | (values > 1)).any():
+            raise ValueError(f"Cauchy result {path} has {column} outside [0, 1]")
+        frame[f"mlog10_{column}"] = -np.log10(values.clip(lower=1e-300))
+    if "sample" in frame.columns and "sample_name" not in frame.columns:
+        frame = frame.rename(columns={"sample": "sample_name"})
+    return frame
+
+
+def _cauchy_collection_signature(config, traits) -> dict:
+    sources = []
+    for trait in traits:
+        for annotation in config.annotation_list:
+            for all_samples in (True, False):
+                path = config.get_cauchy_result_file(
+                    trait, annotation=annotation, all_samples=all_samples
+                )
+                sources.append(
+                    {
+                        "trait": trait,
+                        "annotation": annotation,
+                        "all_samples": all_samples,
+                        "path": str(path),
+                        "signature": _cauchy_source_signature(path) if path.is_file() else None,
+                    }
+                )
+    return {"version": CAUCHY_PAYLOAD_VERSION, "sources": sources}
 
 
 def _available_cpu_count() -> int:
@@ -304,7 +350,9 @@ class ReportDataManager:
             coordinate_info_file, self.spatial_3d_coordinate_info
         )
         if self._is_step_complete([metadata_file]):
-            self.metadata = pd.read_csv(metadata_file)
+            self.metadata = _read_report_csv(
+                metadata_file, labels=["spot", "sample_name", *self.report_config.annotation_list]
+            )
             required_columns = {
                 "spot",
                 "sample_name",
@@ -387,9 +435,7 @@ class ReportDataManager:
                 if ticks:
                     chrom_tick_positions[trait] = ticks
                     if not _manhattan_js_has_embedded_ticks(js_path):
-                        logger.info(
-                            f"Updating cached Manhattan payload metadata for {trait}..."
-                        )
+                        logger.info(f"Updating cached Manhattan payload metadata for {trait}...")
                         _export_single_manhattan_js(trait, csv_path, self.js_data_dir)
                 else:
                     logger.warning(
@@ -526,8 +572,7 @@ class ReportDataManager:
             trait_plot_dir = spatial_plot_dir / "by_trait"
             sample_plot_dir = spatial_plot_dir / "by_sample"
             trait_paths = {
-                trait: trait_plot_dir / f"ldsc_{safe_name(trait)}.png"
-                for trait in self.traits
+                trait: trait_plot_dir / f"ldsc_{safe_name(trait)}.png" for trait in self.traits
             }
             sample_paths = {
                 sample: sample_plot_dir / f"sample_{safe_name(sample)}.png"
@@ -537,7 +582,9 @@ class ReportDataManager:
                 trait for trait, path in trait_paths.items() if not self._is_step_complete([path])
             }
             missing_sample_plots = {
-                sample for sample, path in sample_paths.items() if not self._is_step_complete([path])
+                sample
+                for sample, path in sample_paths.items()
+                if not self._is_step_complete([path])
             }
             if missing_trait_plots or missing_sample_plots:
                 overview_cache = MultiSampleSpatialRasterCache(obs_data, self.sample_names)
@@ -553,9 +600,7 @@ class ReportDataManager:
                         )
                         finite_values = values[np.isfinite(values)]
                         color_maximum = (
-                            float(np.quantile(finite_values, 0.999))
-                            if finite_values.size
-                            else 1.0
+                            float(np.quantile(finite_values, 0.999)) if finite_values.size else 1.0
                         )
                         if not np.isfinite(color_maximum) or color_maximum <= 0:
                             color_maximum = 1.0
@@ -612,34 +657,30 @@ class ReportDataManager:
     def collect_cauchy_results(self):
         """Collect and save Cauchy combination results."""
         cauchy_file = self.report_data_dir / "cauchy_results.csv"
+        manifest_path = self.report_data_dir / "cauchy_collection_manifest.json"
+        source_signature = _cauchy_collection_signature(self.report_config, self.traits)
         data_are_current = False
-        if cauchy_file.is_file() and cauchy_file.stat().st_size > 0:
+        if cauchy_file.is_file() and manifest_path.is_file():
             try:
-                coverage = pd.read_csv(
-                    cauchy_file,
-                    usecols=["trait", "annotation_name"],
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                data_are_current = (
+                    isinstance(manifest, dict)
+                    and manifest.get("inputs") == source_signature
+                    and manifest.get("output") == _cauchy_source_signature(cauchy_file)
                 )
-            except (OSError, ValueError, pd.errors.ParserError) as error:
+            except (OSError, ValueError) as error:
                 logger.warning(
                     f"Cached Cauchy results could not be validated ({error}); regenerating them."
                 )
-            else:
-                cached_traits = set(coverage["trait"].dropna().astype(str).unique())
-                cached_annotations = set(coverage["annotation_name"].dropna().astype(str).unique())
-                missing_traits = sorted(set(self.traits) - cached_traits)
-                missing_annotations = sorted(
-                    set(self.report_config.annotation_list) - cached_annotations
-                )
-                data_are_current = not missing_traits and not missing_annotations
-                if not data_are_current:
-                    logger.warning(
-                        "Cached Cauchy results are incomplete; "
-                        f"missing traits={missing_traits}, "
-                        f"missing annotations={missing_annotations}. Regenerating them."
-                    )
 
         if self.force_re_run or not data_are_current:
             _collect_cauchy_results(self.report_config, self.traits, self.report_data_dir)
+            _atomic_write_text(
+                manifest_path,
+                json.dumps(
+                    {"inputs": source_signature, "output": _cauchy_source_signature(cauchy_file)}
+                ),
+            )
 
         payloads_are_current = _cauchy_payloads_current(cauchy_file, self.js_data_dir)
         if self.force_re_run or not payloads_are_current:
@@ -665,6 +706,14 @@ class ReportDataManager:
             )
             if self.umap_info and cached_limit == requested_limit:
                 logger.info("UMAP data already exists. Skipping.")
+                _export_umap_js(
+                    self.report_data_dir,
+                    self.js_data_dir,
+                    {
+                        "umap_info": self.umap_info,
+                        "annotations": self.report_config.annotation_list,
+                    },
+                )
                 return
             if self.umap_info:
                 logger.info(
@@ -679,7 +728,11 @@ class ReportDataManager:
         self.umap_info = _prepare_umap_data(
             self.report_config, self.metadata, self.report_data_dir
         )
-        _export_umap_js(self.report_data_dir, self.js_data_dir, {"umap_info": self.umap_info})
+        _export_umap_js(
+            self.report_data_dir,
+            self.js_data_dir,
+            {"umap_info": self.umap_info, "annotations": self.report_config.annotation_list},
+        )
 
     def prepare_3d_visualization(self):
         """Prepare 3D visualization if applicable."""
@@ -2271,22 +2324,18 @@ def _collect_cauchy_results(report_config: QuickModeConfig, traits: list[str], r
             )
             if cauchy_file_all.exists():
                 try:
-                    df = pd.read_csv(cauchy_file_all)
+                    df = _read_cauchy_report_result(cauchy_file_all)
                     df["trait"] = trait
                     df["annotation_name"] = annotation
                     df["type"] = "aggregated"
                     if "sample_name" not in df.columns:
                         df["sample_name"] = "All Samples"
 
-                    # Convert to -log10 scale for report
-                    df["mlog10_p_cauchy"] = -np.log10(df["p_cauchy"].clip(lower=1e-300))
-                    df["mlog10_p_median"] = -np.log10(df["p_median"].clip(lower=1e-300))
-
                     all_cauchy.append(df)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
+                except Exception as e:
+                    raise ValueError(
                         f"Failed to load aggregated Cauchy result {cauchy_file_all}: {e}"
-                    )
+                    ) from e
 
             # Per-sample results
             cauchy_file = report_config.get_cauchy_result_file(
@@ -2294,18 +2343,16 @@ def _collect_cauchy_results(report_config: QuickModeConfig, traits: list[str], r
             )
             if cauchy_file.exists():
                 try:
-                    df = pd.read_csv(cauchy_file)
+                    df = _read_cauchy_report_result(cauchy_file)
                     df["trait"] = trait
                     df["annotation_name"] = annotation
                     df["type"] = "sample"
 
-                    # Convert to -log10 scale for report
-                    df["mlog10_p_cauchy"] = -np.log10(df["p_cauchy"].clip(lower=1e-300))
-                    df["mlog10_p_median"] = -np.log10(df["p_median"].clip(lower=1e-300))
-
                     all_cauchy.append(df)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"Failed to load sample Cauchy result {cauchy_file}: {e}")
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to load sample Cauchy result {cauchy_file}: {e}"
+                    ) from e
 
     if all_cauchy:
         combined_cauchy = pd.concat(all_cauchy, ignore_index=True)
@@ -2321,6 +2368,7 @@ def _collect_cauchy_results(report_config: QuickModeConfig, traits: list[str], r
                 columns=[
                     "trait",
                     "annotation_name",
+                    "annotation",
                     "mlog10_p_cauchy",
                     "mlog10_p_median",
                     "top_95_quantile",
@@ -2480,10 +2528,7 @@ def _save_report_metadata(
                 else {}
             ),
             "single_sample_multi_trait_plots": (
-                {
-                    sample: f"by_sample/sample_{safe_name(sample)}.png"
-                    for sample in sample_names
-                }
+                {sample: f"by_sample/sample_{safe_name(sample)}.png" for sample in sample_names}
                 if report_config.generate_multi_sample_plots
                 else {}
             ),
@@ -2688,7 +2733,9 @@ def _export_per_sample_spatial_js(
 
     logger.info("Exporting compact per-sample spatial payloads...")
     if metadata is None:
-        metadata = pd.read_csv(metadata_file)
+        metadata = _read_report_csv(
+            metadata_file, labels=["spot", "sample_name", *meta.get("annotations", [])]
+        )
 
     samples = meta.get("samples", [])
     traits = meta.get("traits", [])
@@ -2810,7 +2857,9 @@ def _export_cauchy_js(data_dir: Path, js_data_dir: Path) -> None:
         return
 
     started = time.perf_counter()
-    frame = pd.read_csv(cauchy_file)
+    frame = _read_report_csv(
+        cauchy_file, labels=["trait", "annotation_name", "annotation", "type", "sample_name"]
+    )
     required = {
         "trait",
         "annotation_name",
@@ -3005,7 +3054,8 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
     """Export UMAP data as JS module."""
     umap_file = data_dir / "umap_data.csv"
     if umap_file.exists():
-        df = pd.read_csv(umap_file)
+        annotations = meta.get("annotations", [])
+        df = _read_report_csv(umap_file, labels=["spot", "sample_name", *annotations])
 
         # Build efficient columnar structure for ScatterGL
         data_struct = {
@@ -3055,7 +3105,7 @@ def _export_umap_js(data_dir: Path, js_data_dir: Path, meta: dict):
         for col in annotation_cols:
             data_struct[col] = df[col].tolist()
             # Generate color map for each column
-            if pd.api.types.is_numeric_dtype(df[col]):
+            if col not in annotations and pd.api.types.is_numeric_dtype(df[col]):
                 color_maps[col] = P_COLOR
             else:
                 # Convert to string before sorting to avoid TypeError with mixed float/str (e.g. NaN)
