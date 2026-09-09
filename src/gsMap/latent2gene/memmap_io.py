@@ -19,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
+from gsMap.utils.matrix_io import pwrite_rows
+
 logger = logging.getLogger(__name__)
 
 _LUSTRE_STRIPE_SIZE_BYTES = 4 * 1024**2
@@ -256,6 +258,7 @@ class MemMapDense:
         self._published = False
         self._closed = False
         self._writers_stopped = False
+        self._write_fd: int | None = None
 
         # A scratch directory must not bypass the normal protection against
         # overwriting a completed final output.
@@ -311,6 +314,7 @@ class MemMapDense:
             else:
                 raise ValueError(f"Invalid mode: {mode}. Must be 'w', 'r', or 'r+'")
         except BaseException:
+            self._close_memmap_handle()
             self._cleanup_tmp()
             raise
 
@@ -323,7 +327,15 @@ class MemMapDense:
         self.writer_error: BaseException | None = None
 
         if mode in ("w", "r+"):
-            self._start_writer_threads()
+            try:
+                self._start_writer_threads()
+            except BaseException:
+                self.stop_writer.set()
+                for thread in self.writer_threads:
+                    thread.join()
+                self._close_memmap_handle()
+                self._cleanup_tmp()
+                raise
 
     def _setup_tmp_paths(self):
         """Set up temporary paths for memory-mapped files"""
@@ -385,6 +397,8 @@ class MemMapDense:
         ):
             shutil.copyfileobj(source, destination, length=_COPY_BUFFER_BYTES)
             destination.truncate(file_bytes)
+            destination.flush()
+            os.fsync(destination.fileno())
 
         final_meta["storage_layout"] = storage_layout
         _atomic_write_json(original_meta_path, final_meta)
@@ -428,10 +442,6 @@ class MemMapDense:
             mode=memmap_mode,
             shape=self.shape,
         )
-
-        # # Initialize to zeros
-        # self.memmap[:] = 0
-        # self.memmap.flush()
 
         # Write metadata
         meta = {
@@ -496,7 +506,7 @@ class MemMapDense:
         logger.info(f"Opened MemMapDense at {self.data_path} in read-write mode")
 
     def _start_writer_threads(self):
-        """Start multiple background writer threads sharing the same memmap object"""
+        """Start background writers sharing one positional descriptor when supported."""
 
         def writer_worker(worker_id):
             last_flush_time = time.time()  # Track last flush time for worker 0
@@ -520,19 +530,11 @@ class MemMapDense:
                         continue
                     data, row_indices, col_slice = item
 
-                    # Write data with thread safety using shared memmap
-                    if isinstance(row_indices, slice):
-                        self.memmap[row_indices, col_slice] = data
-                    elif isinstance(row_indices, int | np.integer):
-                        start_row = row_indices
-                        end_row = start_row + data.shape[0]
-                        self.memmap[start_row:end_row, col_slice] = data
-                    else:
-                        # Handle array of indices
-                        self.memmap[row_indices, col_slice] = data
+                    self._write_batch_data(data, row_indices, col_slice)
 
-                    # Periodic flush every 1 second for worker 0
-                    if worker_id == 0:
+                    # Only the mmap fallback needs periodic flushes. Positional
+                    # output is made durable once, before completion is published.
+                    if worker_id == 0 and self._write_fd is None:
                         current_time = time.time()
                         if current_time - last_flush_time >= self.flush_interval:
                             self.memmap.flush()
@@ -545,12 +547,42 @@ class MemMapDense:
                 finally:
                     self.write_queue.task_done()
 
+        # Open once before threads start; all positional writers share this fd.
+        if self.num_write_workers and callable(getattr(os, "pwrite", None)):
+            self._write_fd = os.open(self.data_path, os.O_WRONLY)
+        logger.info(
+            f"Matrix async write backend={'pwrite' if self._write_fd is not None else 'mmap'}"
+        )
         # Start multiple writer threads
         for i in range(self.num_write_workers):
             thread = threading.Thread(target=writer_worker, args=(i,), daemon=True)
             thread.start()
             self.writer_threads.append(thread)
         logger.info(f"Started {self.num_write_workers} writer threads for MemMapDense")
+
+    def _write_batch_data(
+        self,
+        data: np.ndarray,
+        row_indices: int | slice | np.ndarray,
+        col_slice: slice | np.ndarray,
+    ) -> None:
+        if isinstance(row_indices, int | np.integer):
+            # In this API an integer means the first row of a whole batch.
+            start = int(row_indices)
+            if not -self.shape[0] <= start < self.shape[0]:
+                raise IndexError("Matrix batch start row out of bounds")
+            if start < 0:
+                start += self.shape[0]
+            row_indices = slice(start, start + data.shape[0])
+        all_columns = isinstance(col_slice, slice) and col_slice.indices(self.shape[1]) == (
+            0,
+            self.shape[1],
+            1,
+        )
+        if self._write_fd is not None and all_columns:
+            pwrite_rows(self._write_fd, self.shape, self.dtype, data, row_indices)
+        else:
+            self.memmap[row_indices, col_slice] = data
 
     def write_batch(
         self, data: np.ndarray, row_indices: int | slice | np.ndarray, col_slice=slice(None)
@@ -565,18 +597,24 @@ class MemMapDense:
         if self.mode not in ("w", "r+"):
             logger.warning("Cannot write to read-only MemMapDense")
             return
+        if self._closed or self._published or self._writers_stopped:
+            raise RuntimeError("Cannot write to a closed or published matrix")
+        if self.writer_error is not None:
+            raise RuntimeError(
+                f"Matrix write already failed: {self.writer_error}"
+            ) from self.writer_error
 
         # A zero-worker mapping is useful when a caller already serializes its
         # output. Keep write_batch functional instead of enqueuing work that no
         # thread can ever consume.
         if not self.writer_threads:
-            if isinstance(row_indices, slice):
-                self.memmap[row_indices, col_slice] = data
-            elif isinstance(row_indices, int | np.integer):
-                start_row = int(row_indices)
-                self.memmap[start_row : start_row + data.shape[0], col_slice] = data
-            else:
-                self.memmap[row_indices, col_slice] = data
+            if self._write_fd is None and callable(getattr(os, "pwrite", None)):
+                self._write_fd = os.open(self.data_path, os.O_WRONLY)
+            try:
+                self._write_batch_data(data, row_indices, col_slice)
+            except Exception as error:
+                self.writer_error = error
+                raise
             return
 
         self.write_queue.put((data, row_indices, col_slice))
@@ -627,6 +665,12 @@ class MemMapDense:
             # Flush memory map to disk
             logger.info("Flushing memmap to disk...")
             self.memmap.flush()
+            if self._write_fd is not None:
+                try:
+                    os.fsync(self._write_fd)
+                except OSError as error:
+                    self.writer_error = error
+                    raise
             logger.info("Memmap flush complete")
 
             # Update metadata
@@ -755,9 +799,14 @@ class MemMapDense:
         self._published = True
 
     def _close_memmap_handle(self) -> None:
-        underlying_mmap = getattr(getattr(self, "memmap", None), "_mmap", None)
-        if underlying_mmap is not None and not getattr(underlying_mmap, "closed", False):
-            underlying_mmap.close()
+        try:
+            if self._write_fd is not None:
+                fd, self._write_fd = self._write_fd, None
+                os.close(fd)
+        finally:
+            underlying_mmap = getattr(getattr(self, "memmap", None), "_mmap", None)
+            if underlying_mmap is not None and not getattr(underlying_mmap, "closed", False):
+                underlying_mmap.close()
 
     def close(self, metadata_updates: dict | None = None):
         """Publish pending output, close the mapping, and clean temporary storage."""
@@ -837,7 +886,13 @@ class ComponentThroughput:
 
 
 class ParallelMarkerScoreWriter:
-    """Multi-threaded writer pool for marker scores using shared memmap"""
+    """Bounded marker writer using positional I/O for file-backed output.
+
+    Writing through a Lustre mmap can synchronously fetch a page before
+    modifying it, even for sequential, newly generated output. Positional
+    writes send whole row blocks without faulting output pages into the
+    process. The binary layout and observation mapping are unchanged.
+    """
 
     def __init__(
         self,
@@ -884,11 +939,51 @@ class ParallelMarkerScoreWriter:
         self.error_lock = threading.Lock()
         self.writer_error: tuple[int, BaseException, str] | None = None
         self._closed = False
+        self._output_memmap = output_memmap
+        self._output_fd: int | None = None
+        self.io_backend = "mmap"
+        if output_memmap.mode not in ("w", "r+"):
+            raise ValueError("Marker-score output must be writable")
+        if callable(getattr(os, "pwrite", None)) and isinstance(self.shared_memmap, np.memmap):
+            self._output_fd = os.open(output_memmap.data_path, os.O_WRONLY)
+            self.io_backend = "pwrite"
+        logger.info(
+            f"Marker writer backend={self.io_backend}; "
+            f"output={output_memmap.data_path}; workers={self.num_workers}"
+        )
 
         # Start worker threads
         self.workers = []
         self.stop_workers = threading.Event()
-        self._start_workers()
+        try:
+            self._start_workers()
+        except BaseException as error:
+            self._record_error(-1, error, traceback.format_exc())
+            self.stop_workers.set()
+            for worker in self.workers:
+                worker.join()
+            self._close_output_fd()
+            raise
+
+    def _close_output_fd(self) -> None:
+        if self._output_fd is not None:
+            fd, self._output_fd = self._output_fd, None
+            os.close(fd)
+
+    def _write_rows(self, marker_scores: np.ndarray, cell_indices) -> None:
+        if self._output_fd is None:
+            self.shared_memmap[cell_indices] = marker_scores
+        else:
+            pwrite_rows(self._output_fd, self.shape, self.dtype, marker_scores, cell_indices)
+
+    def _record_error(self, worker_id: int, error: BaseException, error_trace: str) -> None:
+        with self.error_lock:
+            if self.writer_error is None:
+                self.writer_error = (worker_id, error, error_trace)
+                self.exception_queue.put(self.writer_error)
+                # Refuse publication even if a caller overlooks the writer error.
+                self._output_memmap.writer_error = error
+        self.has_error.set()
 
     def _start_workers(self):
         """Start writer worker threads"""
@@ -896,17 +991,18 @@ class ParallelMarkerScoreWriter:
             worker = threading.Thread(target=self._writer_worker, args=(i,), daemon=True)
             worker.start()
             self.workers.append(worker)
-        logger.debug(f"Started {self.num_workers} writer threads with shared memmap")
+        logger.debug(f"Started {self.num_workers} marker writer threads ({self.io_backend})")
 
     def _writer_worker(self, worker_id: int):
-        """Writer worker thread using shared memmap"""
+        """Consume disjoint row batches using the selected output backend."""
         logger.debug(f"Writer worker {worker_id} started")
 
         while not self.stop_workers.is_set():
-            item = None
             try:
-                # Get write request
                 item = self.write_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
                 if item is None:
                     break
 
@@ -921,10 +1017,9 @@ class ParallelMarkerScoreWriter:
                 # Track timing
                 start_time = time.perf_counter()
 
-                # Write directly to shared memory map
-                # Thread-safe because workers process disjoint batches (indices)
-                # cell_indices should be the absolute indices in the full matrix
-                self.shared_memmap[cell_indices] = marker_scores
+                # Workers write disjoint absolute row ranges; positional writes
+                # do not share a mutable seek offset.
+                self._write_rows(marker_scores, cell_indices)
 
                 # Track throughput
                 elapsed = time.perf_counter() - start_time
@@ -935,22 +1030,14 @@ class ParallelMarkerScoreWriter:
                 with self.completed_lock:
                     self.completed_count += 1
 
-            except queue.Empty:
-                continue
             except Exception as e:  # noqa: BLE001
                 error_trace = traceback.format_exc()
                 logger.error(f"Writer worker {worker_id} error: {e}\nTraceback:\n{error_trace}")
-                with self.error_lock:
-                    if self.writer_error is None:
-                        self.writer_error = (worker_id, e, error_trace)
-                        self.exception_queue.put(self.writer_error)
-                self.has_error.set()
+                self._record_error(worker_id, e, error_trace)
             finally:
-                if item is not None:
-                    self.write_queue.task_done()
+                self.write_queue.task_done()
 
-        # We do not close or delete the shared memmap here.
-        # Flushing is handled by the main thread or MemMapDense wrapper.
+        # Only close() owns the shared descriptor and final durability check.
         logger.debug(f"Writer worker {worker_id} stopping")
 
     def reset_for_cell_type(self, cell_type: str):
@@ -994,7 +1081,16 @@ class ParallelMarkerScoreWriter:
         if wait:
             logger.info("Waiting for remaining writes...")
             self.write_queue.join()
+            # Wake idle consumers immediately instead of paying one queue
+            # timeout at the end of every marker calculation.
+            for _ in self.workers:
+                self.write_queue.put(None)
         else:
+            self._record_error(
+                -1,
+                RuntimeError("Marker-score writing was aborted before completion"),
+                "",
+            )
             while True:
                 try:
                     self.write_queue.get_nowait()
@@ -1002,13 +1098,32 @@ class ParallelMarkerScoreWriter:
                     break
                 else:
                     self.write_queue.task_done()
+            self.stop_workers.set()
 
-        self.stop_workers.set()
         for worker in self.workers:
             worker.join(timeout=5)
             if worker.is_alive():
+                self._record_error(
+                    -1,
+                    RuntimeError("Marker-score writer thread did not stop within 5 seconds"),
+                    "",
+                )
                 raise RuntimeError("Marker-score writer thread did not stop within 5 seconds")
+        self.stop_workers.set()
 
+        # mmap.flush() is not the durability boundary for positional writes.
+        # Surface delayed filesystem failures before metadata can become complete.
+        try:
+            if wait and self._output_fd is not None and not self.has_error.is_set():
+                started = time.perf_counter()
+                os.fsync(self._output_fd)
+                logger.info(
+                    f"Marker output fsync completed in {time.perf_counter() - started:.2f}s"
+                )
+        except OSError as error:
+            self._record_error(-1, error, traceback.format_exc())
+        finally:
+            self._close_output_fd()
         self._closed = True
         logger.info("Writer pool closed")
         if raise_errors:

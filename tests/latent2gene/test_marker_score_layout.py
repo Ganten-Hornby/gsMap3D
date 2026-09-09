@@ -850,7 +850,7 @@ def test_annotation_free_marker_mode_does_not_create_invalid_obs_column(tmp_path
     adata.write_h5ad(tmp_path / "annotation_free.h5ad")
 
 
-def test_parallel_marker_writer_surfaces_write_failure_without_deadlock(tmp_path):
+def test_parallel_marker_writer_surfaces_write_failure_without_deadlock(tmp_path, monkeypatch):
     marker_path = tmp_path / "marker_scores.dat"
     marker = MemMapDense(
         marker_path,
@@ -861,12 +861,10 @@ def test_parallel_marker_writer_surfaces_write_failure_without_deadlock(tmp_path
     )
     writer = ParallelMarkerScoreWriter(marker, num_workers=1, queue_size=2)
 
-    class BrokenArray:
-        def __setitem__(self, key, value):
-            del key, value
-            raise OSError("synthetic marker write failure")
+    def fail_write(*args):
+        raise OSError("synthetic marker write failure")
 
-    writer.shared_memmap = BrokenArray()
+    monkeypatch.setattr(writer, "_write_rows", fail_write)
     writer.write_queue.put((0, np.ones((1, 2), dtype=np.float16), np.asarray([0], dtype=np.int64)))
     try:
         with pytest.raises(RuntimeError, match="synthetic marker write failure"):

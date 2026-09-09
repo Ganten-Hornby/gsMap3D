@@ -233,25 +233,35 @@ def test_sequential_marker_window_matches_individual_memmap_reads(tmp_path):
         marker_memmap._mmap.close()
 
 
-def test_sequential_marker_window_falls_back_for_noncontiguous_rows(tmp_path):
+@pytest.mark.parametrize("rows", [[0, 2, 4], [2, 1, 4, 0, 2], [0, 2, 1, 3, 4]])
+def test_noncontiguous_rows_retain_correct_fallback(tmp_path, rows):
     marker_path = tmp_path / "marker_scores.dat"
     marker_memmap = np.memmap(marker_path, dtype=np.float16, mode="w+", shape=(5, 3))
+    marker_memmap[:] = np.arange(15, dtype=np.float16).reshape(5, 3)
+    marker_memmap.flush()
     marker_adata = type("MarkerAdata", (), {"X": marker_memmap})()
     source = SpatialLDChunkSource(
         mode="weight_matrix",
-        chunk_starts=[0],
-        chunk_size=3,
-        cell_end=3,
-        spot_indices=np.array([0, 2, 4]),
-        spot_names_filtered=np.array(["cell0", "cell2", "cell4"]),
+        chunk_starts=list(range(0, len(rows), 2)),
+        chunk_size=2,
+        cell_end=len(rows),
+        spot_indices=np.array(rows),
+        spot_names_filtered=np.array([f"cell{i}" for i in rows]),
         marker_score_adata=marker_adata,
-        marker_score_gene_indices=np.arange(3),
+        marker_score_gene_indices=np.array([2, 0, 1]),
         snp_gene_weight_sparse=sp.eye(3, format="csr", dtype=np.float32),
     )
 
     try:
         assert not source.supports_sequential_marker_windows()
+        assert source.recommended_marker_window_chunks() == 1
+        for i in range(len(source.chunk_starts)):
+            selected = rows[2 * i : 2 * i + 2]
+            actual = source.fetch_chunk(i, defer_ldscore_to_compute=True)
+            np.testing.assert_array_equal(actual[4], marker_memmap[selected][:, [2, 0, 1]].T)
+            assert list(actual[1]) == [f"cell{j}" for j in selected]
     finally:
+        source.close_sequential_marker_access()
         marker_memmap._mmap.close()
 
 
@@ -290,7 +300,8 @@ def test_ldscore_stream_uses_sequential_marker_windows(tmp_path):
         assert not hasattr(stream, "read_queue")
         assert stream.batch_queue.maxsize < stream.total_chunks + 256
         stream.start()
-        assert source._marker_read_fd is not None
+        assert source._matrix_reader is not None
+        assert source._matrix_reader.fd is not None
         with pytest.raises(RuntimeError, match="already been started"):
             stream.start()
 
@@ -308,8 +319,28 @@ def test_ldscore_stream_uses_sequential_marker_windows(tmp_path):
         assert stream.sequential_io_throughput.total_bytes == marker_scores.nbytes
     finally:
         stream.close()
-        assert source._marker_read_fd is None
+        assert source._matrix_reader is None
         marker_memmap._mmap.close()
+
+
+@pytest.mark.parametrize(("step", "expected_chunks"), [(1, 16), (2, 1)])
+def test_marker_window_keeps_32m_contiguous_default(tmp_path, step, expected_chunks):
+    matrix = np.memmap(tmp_path / "matrix.dat", mode="w+", shape=(1000, 10000), dtype=np.float16)
+    rows = np.arange(0, 1000, step)
+    source = SpatialLDChunkSource(
+        mode="weight_matrix",
+        chunk_starts=list(range(0, len(rows), 100)),
+        chunk_size=100,
+        cell_end=len(rows),
+        spot_indices=rows,
+        spot_names_filtered=rows.astype(str),
+        marker_score_adata=type("MarkerAdata", (), {"X": matrix})(),
+    )
+    try:
+        assert source.recommended_marker_window_chunks() == expected_chunks
+        assert source.recommended_marker_window_chunks(32 * 1024**2) == expected_chunks
+    finally:
+        matrix._mmap.close()
 
 
 def test_noncontiguous_chunk_progress_counts_rows_not_source_span():

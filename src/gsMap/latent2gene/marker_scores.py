@@ -38,6 +38,7 @@ from rich.table import Table
 
 from gsMap.config import DatasetType, MarkerScoreCrossSliceStrategy
 from gsMap.logging_config import is_interactive_output
+from gsMap.utils.matrix_io import MatrixRowReader
 
 from .connectivity import ConnectivityMatrixBuilder
 from .marker_layout import MARKER_SCORE_LAYOUT_VERSION, SequentialMarkerRowWriter
@@ -103,6 +104,7 @@ class PreparedRankWindow:
     weights: np.ndarray
     remap_seconds: float
     read_seconds: float
+    read_bytes: int
 
 
 @partial(jit, donate_argnums=(0,))
@@ -801,8 +803,11 @@ class MarkerScoreCalculator:
         total_new_rows = 0
         total_retained_rows = 0
         total_read_seconds = 0.0
+        total_read_bytes = 0
         total_remap_seconds = 0.0
         total_update_seconds = 0.0
+        compute_future_wait_seconds = 0.0
+        writer_queue_wait_seconds = 0.0
 
         def prepare_window(
             window_index: int,
@@ -853,15 +858,18 @@ class MarkerScoreCalculator:
                 for start in range(0, new_rows, _CELL_TYPE_CACHE_READ_CHUNK_ROWS)
             ]
 
-            def read_chunk(chunk: tuple[int, int]) -> None:
+            def read_chunk(chunk: tuple[int, int]) -> int:
                 if host_ranks is None:
                     raise RuntimeError("Missing host rank-window buffer")
                 start, end = chunk
-                host_ranks[start:end] = read_memmap[mapping.rows_to_read[start:end]]
+                return rank_reader.read_into(
+                    mapping.rows_to_read[start:end], host_ranks[start:end]
+                )
 
             read_started = time.perf_counter()
+            read_bytes = 0
             if chunks:
-                list(read_executor.map(read_chunk, chunks))
+                read_bytes = sum(read_executor.map(read_chunk, chunks))
                 if host_ranks is None:
                     raise RuntimeError("Missing populated host rank-window buffer")
                 if bucket_rows > new_rows:
@@ -885,6 +893,7 @@ class MarkerScoreCalculator:
                 weights=np.asarray(neighbor_weights[bounds.start : bounds.end]),
                 remap_seconds=remap_seconds,
                 read_seconds=read_seconds,
+                read_bytes=read_bytes,
             )
 
         def update_device_cache(prepared: PreparedRankWindow) -> float:
@@ -991,9 +1000,14 @@ class MarkerScoreCalculator:
             pending = deque()
 
             def finish_one() -> None:
+                nonlocal compute_future_wait_seconds, writer_queue_wait_seconds
+                wait_started = time.perf_counter()
                 batch_id, marker_scores, output_indices = pending.popleft().result()
+                compute_future_wait_seconds += time.perf_counter() - wait_started
                 self.writer.check_errors()
+                wait_started = time.perf_counter()
                 self.writer.write_queue.put((batch_id, marker_scores, output_indices))
+                writer_queue_wait_seconds += time.perf_counter() - wait_started
                 progress.advance(progress_task)
 
             for start in range(0, focal_cells, batch_size):
@@ -1011,18 +1025,21 @@ class MarkerScoreCalculator:
         # __init__; keep the cache engine independently usable in that case.
         progress_console = getattr(self, "console", None) or Console()
         show_rich_output = getattr(self, "show_rich_output", is_interactive_output())
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            console=progress_console,
-            disable=not show_rich_output,
-            refresh_per_second=10,
-        ) as progress:
+        with (
+            MatrixRowReader(read_memmap) as rank_reader,
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                console=progress_console,
+                disable=not show_rich_output,
+                refresh_per_second=10,
+            ) as progress,
+        ):
             task = progress.add_task(
                 f"[bold]{cell_type} (rank cache)[/bold]",
                 total=total_batches,
@@ -1056,6 +1073,7 @@ class MarkerScoreCalculator:
                             total_new_rows += current.mapping.rows_to_read.size
                             total_retained_rows += current.mapping.retained_rows
                             total_read_seconds += current.read_seconds
+                            total_read_bytes += current.read_bytes
                             total_remap_seconds += current.remap_seconds
                             total_update_seconds += update_seconds
                 else:
@@ -1067,10 +1085,13 @@ class MarkerScoreCalculator:
                         total_new_rows += current.mapping.rows_to_read.size
                         total_retained_rows += current.mapping.retained_rows
                         total_read_seconds += current.read_seconds
+                        total_read_bytes += current.read_bytes
                         total_remap_seconds += current.remap_seconds
                         total_update_seconds += update_seconds
 
+        drain_started = time.perf_counter()
         self.writer.write_queue.join()
+        writer_drain_seconds = time.perf_counter() - drain_started
         self.writer.check_errors()
         completed = self.writer.get_completed_count()
         if completed != total_batches or next_batch_id != total_batches:
@@ -1086,6 +1107,20 @@ class MarkerScoreCalculator:
             f"{total_unique_rows}/{total_new_rows}/{total_retained_rows}, "
             f"remap/read/update={total_remap_seconds:.2f}/"
             f"{total_read_seconds:.2f}/{total_update_seconds:.2f}s"
+        )
+        logger.info(
+            f"Marker pipeline waits for {cell_type}: "
+            f"compute futures={compute_future_wait_seconds:.2f}s, "
+            f"writer queue={writer_queue_wait_seconds:.2f}s, "
+            f"writer drain={writer_drain_seconds:.2f}s; "
+            f"output backend={getattr(self.writer, 'io_backend', 'in-memory')}. "
+            "These are host wait times, not GPU kernel durations."
+        )
+        logger.info(
+            f"Rank input for {cell_type}: {total_read_bytes / 1024**3:.2f} GiB read for "
+            f"{total_new_rows * row_bytes / 1024**3:.2f} GiB selected; "
+            f"{total_read_bytes / max(total_read_seconds, 1e-9) / 1024**2:.0f} MiB/s "
+            "during cache loading (includes any page-cache hits)."
         )
 
         device_cache = None
