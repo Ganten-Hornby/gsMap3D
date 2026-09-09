@@ -3088,6 +3088,7 @@
                             type: 'scatter3d', mode: 'markers',
                             x: points.x, y: points.y, z: points.z,
                             marker: { ...marker, color: values },
+                            meta: { sourceIndices: points.indices || null },
                             hovertemplate,
                             name
                         }] : [];
@@ -3136,6 +3137,7 @@
                             },
                             hovertemplate,
                             name,
+                            meta: { sourceIndices: Uint32Array.from(indices, i => points.indices ? points.indices[i] : i) },
                             showlegend: false
                         });
                     }
@@ -3238,7 +3240,8 @@
                         ...(this.spatial3dAspectMode === 'expanded'
                             ? { aspectratio: expandedAspectRatio }
                             : {}),
-                        dragmode: 'orbit'
+                        dragmode: 'orbit',
+                        hovermode: false
                     };
                 },
 
@@ -3253,6 +3256,133 @@
                         uirevision: `spatial3d-${this.spatial3dAspectMode}`,
                         showlegend: false
                     };
+                },
+
+                spatial3dHoverIndex(plot) {
+                    // Read the matrices used by the bundled Plotly renderer.
+                    // Screen projection avoids synchronous GPU pick-buffer reads.
+                    const scene = plot._fullLayout?.scene?._scene, gl = scene?.glplot;
+                    const params = gl?.cameraParams, canvas = gl?.canvas;
+                    if (!params?.model || !params.view || !params.projection || !canvas) return null;
+                    const box = canvas.getBoundingClientRect();
+                    if (!(box.width > 0 && box.height > 0)) return null;
+                    const signature = [box.width, box.height, ...params.model, ...params.view,
+                        ...params.projection, ...scene.dataScale].join(',');
+                    const traces = plot.data || [], old = plot.__gsMapSpatial3dHoverIndex;
+                    if (old?.signature === signature && old.traces.length === traces.length &&
+                        old.traces.every((t, i) => t === traces[i])) return old;
+                    const multiply = (a, b) => {
+                        const out = new Float64Array(16);
+                        for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+                            for (let k = 0; k < 4; k++) out[c*4+r] += a[k*4+r]*b[c*4+k];
+                        }
+                        return out;
+                    };
+                    const m = multiply(params.projection, multiply(params.view, params.model));
+                    const cell = 8, width = box.width, height = box.height;
+                    const columns = Math.ceil(width / cell) + 1, rows = Math.ceil(height / cell) + 1;
+                    const count = traces.reduce((n, t) => n + (t.x?.length || 0), 0);
+                    const heads = new Int32Array(columns * rows).fill(-1), next = new Int32Array(count);
+                    const px = new Float32Array(count), py = new Float32Array(count);
+                    const depth = new Float32Array(count), curve = new Uint32Array(count), point = new Uint32Array(count);
+                    let offset = 0;
+                    traces.forEach((trace, c) => {
+                        for (let j = 0; j < (trace.x?.length || 0); j++, offset++) {
+                            if (trace.visible === false || trace.visible === 'legendonly') continue;
+                            const x = trace.x[j]*scene.dataScale[0], y = trace.y[j]*scene.dataScale[1],
+                                z = trace.z[j]*scene.dataScale[2];
+                            if (!Number.isFinite(x+y+z) || [x,y,z].some((v,k) =>
+                                v < gl.bounds[0][k] || v > gl.bounds[1][k])) continue;
+                            const w = m[3]*x + m[7]*y + m[11]*z + m[15];
+                            if (!(w > 0)) continue;
+                            const sx = ((m[0]*x + m[4]*y + m[8]*z + m[12])/w + 1)*width/2;
+                            const sy = (1 - (m[1]*x + m[5]*y + m[9]*z + m[13])/w)*height/2;
+                            const sz = (m[2]*x + m[6]*y + m[10]*z + m[14])/w;
+                            if (sx < 0 || sy < 0 || sx > width || sy > height || sz < -1 || sz > 1) continue;
+                            px[offset] = sx; py[offset] = sy; depth[offset] = sz;
+                            curve[offset] = c; point[offset] = j;
+                            const bucket = Math.floor(sy/cell)*columns + Math.floor(sx/cell);
+                            next[offset] = heads[bucket]; heads[bucket] = offset;
+                        }
+                    });
+                    const index = {signature, traces: [...traces], cell, width, height, columns, rows,
+                        heads, next, px, py, depth, curve, point};
+                    plot.__gsMapSpatial3dHoverIndex = index;
+                    return index;
+                },
+
+                setSpatial3dHoverContexts(plot, traces, points, annotation, colors = null, feature = null) {
+                    const prefix = `spatial3d\u001f${plot.id}\u001f`;
+                    this.clearPointHoverContexts(prefix);
+                    traces.forEach((trace, i) => {
+                        const indices = feature ? trace.meta?.sourceIndices : points.indices;
+                        const key = this.setPointHoverContext(`${prefix}${i}`, {
+                            hoverKind: feature ? 'trait' : 'annotation',
+                            indices,
+                            compactAnnotations: annotation ? {[this.selectedAnnotationCategory]: annotation.codes} : {},
+                            annotationSchemas: annotation ? {[this.selectedAnnotationCategory]: annotation} : {},
+                            annotation,
+                            colorMap: colors,
+                            cmin: feature?.cmin,
+                            cmax: feature?.cmax,
+                            axisTitles: this.spatial3dCoordinateInfo?.axis_titles || ['X','Y','Z']
+                        });
+                        trace.meta = {hoverContextKey: key};
+                        trace.hoverinfo = 'skip';
+                        delete trace.hovertemplate;
+                    });
+                },
+
+                bindSpatial3dHover(plot) {
+                    const prepare = () => {
+                        const gl = plot._fullLayout?.scene?._scene?.glplot;
+                        // Camera controls have their own listener: disable only GPU hover picking.
+                        if (gl?.mouseListener) gl.mouseListener.enabled = false;
+                    };
+                    prepare();
+                    if (plot.__gsMapSpatial3dHoverBound) return;
+                    plot.__gsMapSpatial3dHoverBound = true;
+                    let pointer = null, frame = null;
+                    const hide = () => {
+                        if (this._pointHoverOwner === plot) {
+                            this._pointHoverOwner = null;
+                            this.hidePointHoverTooltip();
+                        }
+                    };
+                    const cancel = () => {
+                        pointer = null;
+                        if (frame !== null) cancelAnimationFrame(frame);
+                        frame = null;
+                        hide();
+                    };
+                    plot.addEventListener('pointermove', event => {
+                        if (event.buttons) { cancel(); return; }
+                        pointer = event;
+                        if (frame !== null) return;
+                        frame = requestAnimationFrame(() => {
+                            frame = null;
+                            const e = pointer, gl = plot._fullLayout?.scene?._scene?.glplot;
+                            if (!e || e.buttons || this.spatial3dTraitLoading || this.spatial3dAnnotationLoading ||
+                                !gl?.canvas || !plot.getClientRects().length) { hide(); return; }
+                            const box = gl.canvas.getBoundingClientRect();
+                            const index = this.spatial3dHoverIndex(plot);
+                            const hit = this.findSpatial2dHoverPoint(index, e.clientX-box.left, e.clientY-box.top);
+                            if (hit < 0) { hide(); return; }
+                            const trace = plot.data[index.curve[hit]], pointNumber = index.point[hit];
+                            const key = trace.meta?.hoverContextKey;
+                            if (!key || !this._pointHoverContexts[key]) { hide(); return; }
+                            this._pointHoverOwner = plot;
+                            this.showPointHoverTooltip({event:e,points:[{data:trace,pointNumber,
+                                x:trace.x[pointNumber],y:trace.y[pointNumber],z:trace.z[pointNumber]}]});
+                        });
+                    });
+                    for (const name of ['pointerleave','pointercancel','pointerdown']) plot.addEventListener(name,cancel);
+                    plot.addEventListener('wheel',cancel,{passive:true});
+                    window.addEventListener('scroll',cancel,{passive:true,capture:true});
+                    window.addEventListener('blur',cancel);
+                    plot.on('plotly_beforeplot',cancel);
+                    plot.on('plotly_afterplot',prepare);
+                    plot.on('plotly_relayout',cancel);
                 },
 
                 renderSpatial3dTrait() {
@@ -3294,6 +3424,7 @@
                         threshold,
                         emphasis
                     );
+                    this.setSpatial3dHoverContexts(plot, traces, associationPoints, annotation, colors, feature);
                     const rendered = Plotly.react(
                         plot,
                         traces,
@@ -3301,6 +3432,7 @@
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
+                        this.bindSpatial3dHover(plot);
                         this.bindSpatial3dCameraSync('spatial3dPlotTrait', 'spatial3dPlotAnnotation');
                     });
                     return rendered;
@@ -3326,22 +3458,9 @@
                             points, traitValues, this.spatial3dAssociationMinLogP
                         );
                     }
-                    let annotationHoverLabels = null;
-                    if (base.n_points <= 200000) {
-                        if (!feature._hoverLabels) {
-                            feature._hoverLabels = Object.freeze(Array.from(
-                                feature.codes,
-                                code => feature.categories[code] ?? 'Unknown'
-                            ));
-                        }
-                        annotationHoverLabels = points.indices
-                            ? points.indices.map(index => feature._hoverLabels[index])
-                            : feature._hoverLabels;
-                    }
                     const traces = [{
                         type: 'scatter3d', mode: 'markers',
                         x: points.x, y: points.y, z: points.z,
-                        text: annotationHoverLabels,
                         marker: {
                             size: Number(this.spatial3dPointSize),
                             color: points.codes,
@@ -3359,13 +3478,9 @@
                                 tickfont: { size: 9 }
                             }
                         },
-                        hovertemplate: annotationHoverLabels
-                            ? `<b>${this.selectedAnnotationCategory}</b>: %{text}` +
-                                '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>'
-                            : `<b>${this.selectedAnnotationCategory}</b> code: %{marker.color:.0f}` +
-                                '<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>',
                         name: this.selectedAnnotationCategory
                     }];
+                    this.setSpatial3dHoverContexts(plot, traces, points, feature);
                     const rendered = Plotly.react(
                         plot,
                         traces,
@@ -3373,6 +3488,7 @@
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
                     Promise.resolve(rendered).then(() => {
+                        this.bindSpatial3dHover(plot);
                         this.bindSpatial3dCameraSync('spatial3dPlotAnnotation', 'spatial3dPlotTrait');
                     });
                     return rendered;
@@ -4674,6 +4790,9 @@
                             `${Number(point.y).toFixed(2)}`
                         );
                     }
+                    if (context.axisTitles?.length >= 3 && Number.isFinite(point.z)) {
+                        lines.push(`<b>${this.escapeSpatial2dHoverValue(context.axisTitles[2])}:</b> ${Number(point.z).toFixed(2)}`);
+                    }
                     tooltip.innerHTML = lines.join('<br>');
                     tooltip.style.background = background;
                     tooltip.style.color = this.hoverTextColor(background);
@@ -4994,7 +5113,9 @@
                             for (let i = heads[row * columns + column]; i !== -1; i = next[i]) {
                                 const d = (px[i] - x) ** 2 + (py[i] - y) ** 2;
                                 // Last-drawn point wins exact overlap ties.
-                                if (d < distance || (d === distance && i > best)) {
+                                const tieWins = index.depth && best >= 0
+                                    ? index.depth[i] < index.depth[best] : i > best;
+                                if (d < distance || (d === distance && tieWins)) {
                                     best = i; distance = d;
                                 }
                             }

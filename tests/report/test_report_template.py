@@ -162,8 +162,8 @@ def test_spatial2d_has_scalable_controls_and_synchronized_comparison(
 
 def test_spatial_views_offer_scalable_hover_details(report_template: str) -> None:
     assert "−log10(P): %{marker.color:.2f}" in report_template
-    assert "annotationHoverLabels" in report_template
-    assert "base.n_points <= 200000" in report_template
+    assert "bindSpatial3dHover" in report_template
+    assert "gl.mouseListener.enabled = false" in report_template
     assert "appendPointAnnotationLines(lines, context, sourceIndex)" in report_template
     assert "setPointHoverContext(key, context)" in report_template
     assert "buildSpatial2dAnnotationHoverText" not in report_template

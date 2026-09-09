@@ -90,8 +90,8 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--cauchy-annotations TEXT` | List of annotations in adata.obs to use |
 | `--downsampling-n-spots-pcc INTEGER RANGE` | Number of spots to downsample for PCC calculation if n_spots > this value  \[default: 20000; 1000<=x<=100000] |
 | `--downsampling-n-spots-umap INTEGER RANGE` | Maximum representative spots used to calculate and display each report UMAP. Valid precomputed UMAP coordinates are sampled to the same limit.  \[default: 50000; 1000<=x<=500000] |
-| `--downsampling-n-spots-3d INTEGER RANGE` | Maximum representative spots rendered in the browser's 3D view. Larger datasets use deterministic annotation-aware sampling.  \[default: 100000; 1000<=x<=2000000] |
-| `--downsampling-n-spots-2d INTEGER RANGE` | Maximum representative spots per sample in the browser's 2D view. Larger samples use deterministic annotation-aware sampling.  \[default: 100000; 10000<=x<=500000] |
+| `--downsampling-n-spots-3d INTEGER RANGE` | Maximum representative spots rendered in the browser's 3D view. Larger datasets use deterministic annotation-aware sampling.  \[default: 200000; 1000<=x<=2000000] |
+| `--downsampling-n-spots-2d INTEGER RANGE` | Maximum representative spots per sample in the browser's 2D view. Larger samples use deterministic annotation-aware sampling.  \[default: 300000; 10000<=x<=500000] |
 | `--top-corr-genes INTEGER RANGE` | Number of top correlated genes to display  \[default: 50; 1<=x<=500] |
 | `--plot-origin TEXT` | Plot origin for spatial plots ('upper' or 'lower'). 'upper' will flip the y-axis (standard for images).  \[default: upper] |
 | `--start-step TEXT` | Step to start execution from (find_latent, latent2gene, spatial_ldsc, cauchy, report)  \[default: find_latent] |

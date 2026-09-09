@@ -1148,7 +1148,7 @@ def _prepare_3d_visualization(
         annotations=report_config.annotation_list,
         report_data_dir=report_data_dir,
         web_report_dir=web_report_dir,
-        max_points=getattr(report_config, "downsampling_n_spots_3d", 100000),
+        max_points=getattr(report_config, "downsampling_n_spots_3d", 200000),
         force=getattr(report_config, "force_report_re_run", False),
         coordinate_info=coordinate_info,
     )
@@ -2836,7 +2836,7 @@ def _export_per_sample_spatial_js(
         traits=traits,
         annotations=annotations,
         js_data_dir=js_data_dir,
-        max_points=int(meta.get("downsampling_n_spots_2d", 100000)),
+        max_points=int(meta.get("downsampling_n_spots_2d", 300000)),
         coordinate_info=(meta.get("spatial_3d") or {}).get("coordinate_info"),
     )
 

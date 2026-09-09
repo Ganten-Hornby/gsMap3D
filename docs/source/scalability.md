@@ -311,13 +311,14 @@ enter spatial LDSC.
 
 | CLI flag | Default | Scope |
 |---|---|---|
-| `--downsampling-n-spots-2d` | `100000` | Displayed spots per section. |
-| `--downsampling-n-spots-3d` | `100000` | Displayed spots in the combined 3D view. |
+| `--downsampling-n-spots-2d` | `300000` | Displayed spots per section. |
+| `--downsampling-n-spots-3d` | `200000` | Displayed spots in the combined 3D view. |
 | `--downsampling-n-spots-umap` | `50000` | Spots used for each report UMAP. |
 | `--downsampling-n-spots-pcc` | `20000` | Sampled spots for GSS correlations. |
 
-To display all analyzed E16.5 E1S1 spots, use a 2D cap above its 121,767 input
-spots. Leave UMAP and correlation limits unchanged unless you need more detail.
+The defaults display all analyzed E16.5 E1S1 spots. A lower 2D cap of 150,000
+also covers this example and reduces browser load for larger datasets. Leave
+UMAP and correlation limits unchanged unless you need more detail.
 
 ````{tab} CLI
 ```text
@@ -334,7 +335,7 @@ config.downsampling_n_spots_2d = 150000
 ### Example: finish enrichment and the report
 
 After the **IQ** LDSC result is complete, this runs Cauchy enrichment and builds
-the IQ report. It also applies the larger 2D display limit without recalculating
+the IQ report with a 150,000-spot 2D display limit, without recalculating
 embeddings, GSS or spatial LDSC.
 
 ````{tab} CLI

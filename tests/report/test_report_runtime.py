@@ -109,6 +109,43 @@ def test_spatial2d_hover_index_matches_exact_nearest_point_and_rebuilds(run_js):
                       "filteredChanged": True, "n": 1, "outside": -1, "center": 0}
 
 
+def test_spatial3d_projection_depth_clipping_and_camera_cache(run_js):
+    result = run_js("""
+        const identity=()=>Float64Array.from([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+        const params={model:identity(),view:identity(),projection:identity()};
+        const gl={cameraParams:params,canvas:{getBoundingClientRect:()=>({width:100,height:100})},
+            bounds:[[-1,-1,-1],[1,1,1]]};
+        const target={data:[{x:[0,0,4,NaN],y:[0,0,0,0],z:[.5,-.5,0,0]}],
+            _fullLayout:{scene:{_scene:{glplot:gl,dataScale:[1,1,1]}}}};
+        const index=app.spatial3dHoverIndex(target);
+        const reused=app.spatial3dHoverIndex(target)===index;
+        const nearest=app.findSpatial2dHoverPoint(index,50,50);
+        params.view[12]=.5;
+        const moved=app.spatial3dHoverIndex(target);
+        const hit=app.findSpatial2dHoverPoint(moved,75,50);
+        console.log(JSON.stringify({reused,nearest,index:moved.point[hit],cameraChanged:moved!==index,
+            oldPosition:app.findSpatial2dHoverPoint(moved,50,50),outside:app.findSpatial2dHoverPoint(moved,200,50)}));
+    """)
+    assert result == {"reused": True, "nearest": 1, "index": 1, "cameraChanged": True,
+                      "oldPosition": -1, "outside": -1}
+
+
+def test_spatial3d_opacity_bins_preserve_hover_source_indices(run_js):
+    result = run_js("""
+        const points={x:[10,20,30],y:[1,2,3],z:[4,5,6],indices:[4,2,0]};
+        const values=[0,5,10],marker={opacity:.8,cmin:0,cmax:10,showscale:true};
+        const traces=app.buildSpatial3dAssociationTraces(points,values,marker,'unused','IQ',10,0,.65);
+        app.selectedAnnotationCategory='celltype';
+        const annotation={categories:['A','B'],colors:['red','blue'],codes:[0,1,1,0,0]};
+        app.setSpatial3dHoverContexts({id:'trait'},traces,points,annotation,['red','blue'],{cmin:0,cmax:10});
+        const rows=traces.flatMap(t=>Array.from(t.x,(_,j)=>({x:t.x[j],source:
+            app.pointHoverSourceIndex({pointNumber:j},app._pointHoverContexts[t.meta.hoverContextKey])}))).sort((a,b)=>a.x-b.x);
+        console.log(JSON.stringify({rows,allSkip:traces.every(t=>t.hoverinfo==='skip'&&!t.hovertemplate)}));
+    """)
+    assert result["rows"] == [{"x": 10, "source": 4}, {"x": 20, "source": 2}, {"x": 30, "source": 0}]
+    assert result["allSkip"]
+
+
 def test_spatial2d_hover_cancels_pending_frames_and_ignores_plotly_events(run_js):
     result = run_js("""
         const frames=new Map(); let serial=0, shown=0, hidden=0;

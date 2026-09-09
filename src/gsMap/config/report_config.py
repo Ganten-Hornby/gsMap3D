@@ -50,7 +50,7 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
             min=1000,
             max=2000000,
         ),
-    ] = 100000
+    ] = 200000
 
     downsampling_n_spots_2d: Annotated[
         int,
@@ -62,7 +62,7 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
             min=10000,
             max=500000,
         ),
-    ] = 100000
+    ] = 300000
 
     top_corr_genes: Annotated[
         int, typer.Option(help="Number of top correlated genes to display", min=1, max=500)

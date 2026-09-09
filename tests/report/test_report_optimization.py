@@ -47,7 +47,7 @@ from gsMap.report.visualize import (
 def test_report_3d_display_default_balances_density_and_interaction():
     field = ReportConfig.__dataclass_fields__["downsampling_n_spots_3d"]
 
-    assert field.default == 100_000
+    assert field.default == 200_000
 
 
 def test_report_umap_and_2d_defaults_prioritize_visual_density():
@@ -55,7 +55,7 @@ def test_report_umap_and_2d_defaults_prioritize_visual_density():
     spatial_2d_field = ReportConfig.__dataclass_fields__["downsampling_n_spots_2d"]
 
     assert umap_field.default == 50_000
-    assert spatial_2d_field.default == 100_000
+    assert spatial_2d_field.default == 300_000
 
 
 def test_multi_sample_raster_cache_reuses_geometry_and_keeps_strongest_pixel():
