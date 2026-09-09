@@ -3572,6 +3572,7 @@
                 },
 
                 async onTraitChange() {
+                    this.hidePointHoverTooltip();
                     const trait = this.selectedTrait;
                     const sampleName = this.selectedSample;
                     // Invalidate caches
@@ -3641,6 +3642,7 @@
                 },
 
                 async onSampleChange() {
+                    this.hidePointHoverTooltip();
                     const sampleName = this.selectedSample;
                     const trait = this.selectedTrait;
                     // Invalidate sample-specific caches
@@ -4700,8 +4702,51 @@
                 bindPointHoverTooltip(plotDiv) {
                     if (!plotDiv?.on || plotDiv.__gsMapHoverTooltipBound) return;
                     plotDiv.__gsMapHoverTooltipBound = true;
-                    plotDiv.on('plotly_hover', event => this.showPointHoverTooltip(event));
-                    plotDiv.on('plotly_unhover', () => this.hidePointHoverTooltip());
+                    const state = { inside: false, pointer: null };
+                    plotDiv.__gsMapHoverState = state;
+                    const hide = () => {
+                        // A delayed unhover from another panel must not hide
+                        // the tooltip now owned by this panel.
+                        if (this._pointHoverOwner === plotDiv) {
+                            this._pointHoverOwner = null;
+                            this.hidePointHoverTooltip();
+                        }
+                    };
+                    const leave = () => {
+                        state.inside = false;
+                        state.pointer = null;
+                        hide();
+                    };
+                    const move = event => {
+                        state.inside = !event.buttons;
+                        state.pointer = event;
+                        if (!state.inside) hide();
+                    };
+                    plotDiv.addEventListener('pointerenter', move);
+                    plotDiv.addEventListener('pointermove', move);
+                    plotDiv.addEventListener('pointerleave', leave);
+                    plotDiv.addEventListener('pointercancel', leave);
+                    plotDiv.addEventListener('pointerdown', leave);
+                    plotDiv.addEventListener('wheel', leave, { passive: true });
+                    window.addEventListener('blur', leave);
+                    plotDiv.on('plotly_hover', event => {
+                        const pointer = event?.event;
+                        const point = event?.points?.[0];
+                        const key = point?.data?.meta?.hoverContextKey;
+                        // Plotly may deliver throttled hover events after a
+                        // leave, drag, sample switch or plot re-render.
+                        if (!state.inside || !pointer || pointer.buttons || plotDiv._dragging ||
+                            !key || !this._pointHoverContexts[key] ||
+                            pointer.timeStamp < (plotDiv.__gsMapHoverNotBefore || 0) ||
+                            (key.startsWith('spatial2d\u001f') && this.loadingSpatial2dTraitData)) return;
+                        // PointerEvent coordinates may be fractional while
+                        // Plotly's MouseEvent coordinates are rounded pixels.
+                        if (state.pointer && (Math.abs(pointer.clientX - state.pointer.clientX) > 1 ||
+                            Math.abs(pointer.clientY - state.pointer.clientY) > 1)) return;
+                        this._pointHoverOwner = plotDiv;
+                        this.showPointHoverTooltip(event);
+                    });
+                    plotDiv.on('plotly_unhover', hide);
                 },
 
                 // Render continuous UMAP with low signals first so hotspots remain visible.
@@ -4909,6 +4954,8 @@
                 renderSpatial2DPlotSingle(divId, plotType) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
+                    plotDiv.__gsMapHoverNotBefore = performance.now();
+                    this.hidePointHoverTooltip();
                     this.clearPointHoverContexts(`spatial2d\u001f${divId}\u001f`);
 
                     const data = this.currentSampleData;
@@ -5089,6 +5136,9 @@
                         hovermode: 'closest',
                         dragmode: 'pan',
                         margin: { l: 12, r: plotType === 'trait' ? 62 : 12, t: 8, b: 12 },
+                        // Keep hit testing local for dense maps. Plotly's
+                        // default 20px search can block the UI on large grids.
+                        hoverdistance: 5,
                         paper_bgcolor: '#ffffff',
                         plot_bgcolor: '#ffffff',
                         showlegend: false,

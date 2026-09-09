@@ -69,6 +69,55 @@ def test_spatial_maps_start_in_compare_without_2d_signal_fading(run_js):
     assert result["camera"]["eye"] == pytest.approx({"x": 1.8, "y": 1.8, "z": 1.8})
 
 
+def test_hover_cleanup_rejects_stale_events_and_respects_panel_owner(run_js):
+    result = run_js("""
+        const blur = [];
+        window.addEventListener = (name, handler) => {if(name === 'blur') blur.push(handler);};
+        let shown = 0, hidden = 0;
+        app.showPointHoverTooltip = () => shown++;
+        app.hidePointHoverTooltip = () => hidden++;
+        const makePlot = () => ({dom: {}, events: {}, registrations: 0,
+            on(name, fn) {this.events[name] = fn;},
+            addEventListener(name, fn) {this.dom[name] = fn; this.registrations++;}});
+        const a = makePlot(), b = makePlot();
+        app.bindPointHoverTooltip(a);
+        app.bindPointHoverTooltip(a);
+        app.bindPointHoverTooltip(b);
+        const key = 'spatial2d\\u001ftrait';
+        app._pointHoverContexts[key] = {};
+        const pointer = {clientX: 20, clientY: 30, timeStamp: 100, buttons: 0};
+        const event = {event: pointer, points: [{data: {meta: {hoverContextKey: key}}}]};
+        const counts = [];
+        a.dom.pointerenter(pointer); a.events.plotly_hover(event); counts.push(shown);
+        a.dom.pointerleave(); a.events.plotly_hover(event); counts.push(shown);
+        a.dom.pointermove({...pointer, buttons: 1}); a.events.plotly_hover(event); counts.push(shown);
+        a.dom.pointermove(pointer); a.dom.pointerdown(); a.events.plotly_hover(event); counts.push(shown);
+        a.dom.pointermove(pointer);
+        a.__gsMapHoverNotBefore = 101; a.events.plotly_hover(event); counts.push(shown);
+        a.__gsMapHoverNotBefore = 0;
+        app.loadingSpatial2dTraitData = true; a.events.plotly_hover(event); counts.push(shown);
+        app.loadingSpatial2dTraitData = false;
+        a.dom.pointermove({...pointer, clientX: 23}); a.events.plotly_hover(event); counts.push(shown);
+        a.dom.pointermove(pointer);
+        delete app._pointHoverContexts[key]; a.events.plotly_hover(event); counts.push(shown);
+        app._pointHoverContexts[key] = {};
+        a.dom.pointermove({...pointer, clientX: 20.75, clientY: 30.5});
+        a.events.plotly_hover(event); counts.push(shown);
+        b.dom.pointerenter(pointer); b.events.plotly_hover(event); counts.push(shown);
+        const before = hidden;
+        a.events.plotly_unhover();
+        const lateUnhoverIgnored = hidden === before;
+        blur.forEach(fn => fn()); b.events.plotly_hover(event); counts.push(shown);
+        b.dom.pointerenter(pointer); b.events.plotly_hover(event);
+        b.dom.pointercancel(); b.events.plotly_hover(event); counts.push(shown);
+        console.log(JSON.stringify({counts, hidden, lateUnhoverIgnored, registrations:a.registrations}));
+    """)
+    assert result["counts"] == [1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 3, 4]
+    assert result["hidden"] >= 3
+    assert result["lateUnhoverIgnored"]
+    assert result["registrations"] == 6
+
+
 def test_spatial2d_markers_follow_actual_viewport_zoom_and_manual_scale(run_js):
     result = run_js("""
         const data = {point_size: 6, point_geometry: {diameter: 1.4}, coordinate_ranges: [100, 200]};
