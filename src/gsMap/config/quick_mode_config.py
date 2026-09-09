@@ -207,6 +207,8 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         report_data_dir / "gene_list.csv",
         report_data_dir / "cauchy_results.csv",
     ]
+    if getattr(config, "export_spatialvista", False):
+        core_data_files.append(config.project_dir / f"{config.project_dir.name}.spatialvista.h5ad")
 
     for f in core_data_files:
         if not f.exists():

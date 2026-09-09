@@ -7,6 +7,7 @@ from jinja2 import Template
 
 import gsMap
 from gsMap.config import QuickModeConfig
+from gsMap.config.latent2gene_config import DatasetType
 from gsMap.logging_config import logged_stage
 
 from .report_data import ReportDataManager, _atomic_write_text
@@ -65,12 +66,28 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
                 └── ... (other JS modules)
     """
     logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")
+    if (
+        getattr(config, "export_spatialvista", False)
+        and config.dataset_type != DatasetType.SPATIAL_3D
+    ):
+        raise ValueError("SpatialVista report export requires a spatial3D dataset")
     # Validate the template before doing expensive data preparation.
     rendered_html = _render_report_html(config.project_name)
 
     # 1. Use ReportDataManager to prepare all data and JS assets
     manager = ReportDataManager(config)
     web_report_dir = manager.run()
+
+    if getattr(config, "export_spatialvista", False):
+        from gsMap.export_spatialvista import export_spatialvista
+
+        exported = export_spatialvista(
+            config.project_dir, metadata=manager.metadata, overwrite=True
+        )
+        logger.info(f"SpatialVista export: {exported}")
+        logger.info(
+            f"Open with a gsMap-aware SpatialVista build: spatialvista --input {shlex.quote(str(exported))}"
+        )
 
     # 2. Save run_parameters for future reference
     if run_parameters:

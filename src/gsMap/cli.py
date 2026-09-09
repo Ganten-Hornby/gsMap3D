@@ -4,6 +4,7 @@ gsMap CLI - Main command-line interface using the modular config design.
 """
 
 import logging
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -205,6 +206,60 @@ def format_sumstats(config: FormatSumstatsConfig):
 
     gwas_format(config)
     logger.info("✓ Summary statistics formatted successfully!")
+
+
+@app.command(name="export-spatialvista")
+def export_spatialvista_command(
+    project_dir: Annotated[
+        Path,
+        typer.Argument(
+            help="Completed gsMap project containing report_data and gsmap_web_report",
+            exists=True,
+            file_okay=False,
+        ),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Output .h5ad (defaults to <project>/<project>.spatialvista.h5ad)"),
+    ] = None,
+    trait: Annotated[
+        list[str] | None,
+        typer.Option("--trait", help="Trait to include; repeat to select several (default: all)"),
+    ] = None,
+    annotation: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--annotation", help="Annotation to include; repeat to select several (default: all)"
+        ),
+    ] = None,
+    max_spots: Annotated[
+        int | None,
+        typer.Option(
+            min=1, help="Optional deterministic sampling limit; default exports all spots"
+        ),
+    ] = None,
+    overwrite: Annotated[bool, typer.Option(help="Replace an existing export")] = False,
+):
+    """Export coordinates, annotations and trait -log10(P) for SpatialVista."""
+    import shlex
+
+    from gsMap.export_spatialvista import export_spatialvista
+
+    try:
+        path = export_spatialvista(
+            project_dir,
+            output,
+            traits=trait,
+            annotations=annotation,
+            max_spots=max_spots,
+            overwrite=overwrite,
+        )
+    except (ValueError, FileNotFoundError, FileExistsError) as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"SpatialVista H5AD: {path}")
+    typer.echo(
+        f"Open with a gsMap-aware SpatialVista build: spatialvista --input {shlex.quote(str(path))}"
+    )
 
 
 @app.command(name="report-view")

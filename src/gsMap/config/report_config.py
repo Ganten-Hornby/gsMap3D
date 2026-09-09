@@ -19,6 +19,13 @@ logger = logging.getLogger("gsMap.config")
 class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     """Report Generation Configuration"""
 
+    export_spatialvista: Annotated[
+        bool,
+        typer.Option(
+            help="Also export all 3D result spots to a lightweight SpatialVista H5AD with trait metadata"
+        ),
+    ] = False
+
     downsampling_n_spots_pcc: Annotated[
         int,
         typer.Option(
