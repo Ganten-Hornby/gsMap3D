@@ -69,6 +69,85 @@ def test_spatial_maps_start_in_compare_without_2d_signal_fading(run_js):
     assert result["camera"]["eye"] == pytest.approx({"x": 1.8, "y": 1.8, "z": 1.8})
 
 
+def test_spatial2d_hover_index_matches_exact_nearest_point_and_rebuilds(run_js):
+    result = run_js("""
+        let seed = 7123;
+        const rand = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2**32);
+        const x = Float32Array.from({length: 20000}, () => rand()*120-10);
+        const y = Float32Array.from({length: 20000}, () => rand()*120-10);
+        x[0]=NaN; y[1]=Infinity; x[2]=x[3]=50; y[2]=y[3]=50;
+        const axis = (range, length, reverse=false) => ({range, _length:length,
+            l2p(v) {return (reverse ? 1-(v-this.range[0])/(this.range[1]-this.range[0]) :
+                (v-this.range[0])/(this.range[1]-this.range[0])) * this._length;}});
+        const hoverPlot = {data:[{x,y}], _fullLayout:{xaxis:axis([0,100],800), yaxis:axis([100,0],600,true)}};
+        const index=app.spatial2dHoverIndex(hoverPlot);
+        const reused=app.spatial2dHoverIndex(hoverPlot)===index;
+        let mismatches=0;
+        for (let q=0;q<100;q++) {
+            const px=rand()*800, py=rand()*600;
+            let best=-1, distance=25;
+            for(let i=0;i<x.length;i++) {
+                const xx=Math.fround(hoverPlot._fullLayout.xaxis.l2p(x[i]));
+                const yy=Math.fround(hoverPlot._fullLayout.yaxis.l2p(y[i]));
+                if(xx<0||xx>800||yy<0||yy>600) continue;
+                const d=(xx-px)**2+(yy-py)**2;
+                if(d<distance||(d===distance&&i>best)) {best=i;distance=d;}
+            }
+            if(app.findSpatial2dHoverPoint(index,px,py)!==best) mismatches++;
+        }
+        const tie=app.findSpatial2dHoverPoint(index,400,300);
+        hoverPlot._fullLayout.xaxis.range=[20,80];
+        const zoom=app.spatial2dHoverIndex(hoverPlot);
+        hoverPlot.data[0]={x:new Float32Array([50]),y:new Float32Array([50])};
+        const filtered=app.spatial2dHoverIndex(hoverPlot);
+        console.log(JSON.stringify({mismatches,reused,tie,zoomChanged:zoom!==index,
+            filteredChanged:filtered!==zoom,n:filtered.next.length,
+            outside:app.findSpatial2dHoverPoint(filtered,-1,10),
+            center:app.findSpatial2dHoverPoint(filtered,400,300)}));
+    """)
+    assert result == {"mismatches": 0, "reused": True, "tie": 3, "zoomChanged": True,
+                      "filteredChanged": True, "n": 1, "outside": -1, "center": 0}
+
+
+def test_spatial2d_hover_cancels_pending_frames_and_ignores_plotly_events(run_js):
+    result = run_js("""
+        const frames=new Map(); let serial=0, shown=0, hidden=0;
+        global.requestAnimationFrame=fn=>{frames.set(++serial,fn);return serial;};
+        global.cancelAnimationFrame=id=>frames.delete(id);
+        const flush=()=>{const f=[...frames.values()]; frames.clear();f.forEach(fn=>fn());};
+        const events={}, dom={}, win={};
+        window.addEventListener=(name,fn)=>win[name]=fn;
+        const trace={x:[50],y:[50],meta:{hoverContextKey:'key'}};
+        const axis={range:[0,100],_length:100,_offset:0,l2p:v=>v};
+        const hoverPlot={data:[trace],_fullLayout:{xaxis:axis,yaxis:axis},
+            getClientRects:()=>[{}],getBoundingClientRect:()=>({left:0,top:0}),
+            addEventListener:(name,fn)=>dom[name]=fn,on:(name,fn)=>events[name]=fn};
+        app._pointHoverContexts.key={};
+        app.showPointHoverTooltip=()=>shown++;
+        app.hidePointHoverTooltip=()=>hidden++;
+        app.bindSpatial2dHover(hoverPlot); app.bindSpatial2dHover(hoverPlot);
+        const p={clientX:50.2,clientY:50.5,buttons:0};
+        dom.pointermove(p);dom.pointermove(p);flush();
+        const once=shown;
+        dom.pointermove(p);dom.pointerleave();flush();
+        dom.pointermove(p);dom.pointerdown();flush();
+        dom.pointermove(p);win.scroll();flush();
+        dom.pointermove(p);events.plotly_beforeplot();flush();
+        app.loadingSampleData=true;dom.pointermove(p);flush();app.loadingSampleData=false;
+        dom.pointermove({...p,buttons:1});flush();
+        const canceled=shown;
+        dom.pointermove(p);flush();
+        win.blur();
+        console.log(JSON.stringify({once,canceled,shown,hidden,pending:frames.size,
+            nativeHoverBound:!!events.plotly_hover,owner:app._pointHoverOwner}));
+    """)
+    assert result["once"] == result["canceled"] == 1
+    assert result["shown"] == result["hidden"] == 2
+    assert result["pending"] == 0
+    assert result["nativeHoverBound"] is False
+    assert result["owner"] is None
+
+
 def test_hover_cleanup_rejects_stale_events_and_respects_panel_owner(run_js):
     result = run_js("""
         const blur = [];

@@ -4950,6 +4950,111 @@
                     return maximum > 0 ? maximum : 1;
                 },
 
+                // Cache a compact point index outside Alpine's reactive state.
+                spatial2dHoverIndex(plot) {
+                    const trace = plot.data?.[0], layout = plot._fullLayout;
+                    const xa = layout?.xaxis, ya = layout?.yaxis;
+                    if (!trace || !xa || !ya || !(xa._length > 0 && ya._length > 0)) return null;
+                    const signature = [...xa.range, ...ya.range, xa._length, ya._length].join(',');
+                    const old = plot.__gsMapSpatialHoverIndex;
+                    if (old?.x === trace.x && old?.y === trace.y && old.signature === signature) return old;
+                    // Screen-space buckets contain every visible point, not a sample.
+                    // Unlike Plotly's range search, lookup touches only nearby buckets.
+                    const cell = 8, width = xa._length, height = ya._length;
+                    const columns = Math.ceil(width / cell) + 1, rows = Math.ceil(height / cell) + 1;
+                    const heads = new Int32Array(columns * rows).fill(-1);
+                    const next = new Int32Array(trace.x.length);
+                    const px = new Float32Array(trace.x.length), py = new Float32Array(trace.x.length);
+                    const x0 = xa.l2p(xa.range[0]), y0 = ya.l2p(ya.range[0]);
+                    const dx = (xa.l2p(xa.range[1]) - x0) / (xa.range[1] - xa.range[0]);
+                    const dy = (ya.l2p(ya.range[1]) - y0) / (ya.range[1] - ya.range[0]);
+                    for (let i = 0; i < trace.x.length; i++) {
+                        const x = (trace.x[i] - xa.range[0]) * dx + x0;
+                        const y = (trace.y[i] - ya.range[0]) * dy + y0;
+                        if (!Number.isFinite(x) || !Number.isFinite(y) ||
+                            x < 0 || x > width || y < 0 || y > height) continue;
+                        px[i] = x; py[i] = y;
+                        const bucket = Math.floor(y / cell) * columns + Math.floor(x / cell);
+                        next[i] = heads[bucket]; heads[bucket] = i;
+                    }
+                    const index = {x: trace.x, y: trace.y, signature, cell, width, height,
+                        columns, rows, heads, next, px, py};
+                    plot.__gsMapSpatialHoverIndex = index;
+                    return index;
+                },
+
+                findSpatial2dHoverPoint(index, x, y, radius = 5) {
+                    if (!index || x < 0 || y < 0 || x > index.width || y > index.height) return -1;
+                    const {cell, columns, rows, heads, next, px, py} = index;
+                    let best = -1, distance = radius * radius;
+                    for (let row = Math.max(0, Math.floor((y - radius) / cell));
+                        row <= Math.min(rows - 1, Math.floor((y + radius) / cell)); row++) {
+                        for (let column = Math.max(0, Math.floor((x - radius) / cell));
+                            column <= Math.min(columns - 1, Math.floor((x + radius) / cell)); column++) {
+                            for (let i = heads[row * columns + column]; i !== -1; i = next[i]) {
+                                const d = (px[i] - x) ** 2 + (py[i] - y) ** 2;
+                                // Last-drawn point wins exact overlap ties.
+                                if (d < distance || (d === distance && i > best)) {
+                                    best = i; distance = d;
+                                }
+                            }
+                        }
+                    }
+                    return best;
+                },
+
+                bindSpatial2dHover(plot) {
+                    if (plot.__gsMapSpatialHoverBound) return;
+                    plot.__gsMapSpatialHoverBound = true;
+                    let pointer = null, frame = null;
+                    const hide = () => {
+                        if (this._pointHoverOwner === plot) {
+                            this._pointHoverOwner = null;
+                            this.hidePointHoverTooltip();
+                        }
+                    };
+                    const cancel = () => {
+                        pointer = null;
+                        if (frame !== null) cancelAnimationFrame(frame);
+                        frame = null;
+                        hide();
+                    };
+                    const show = () => {
+                        frame = null;
+                        const event = pointer, trace = plot.data?.[0];
+                        const key = trace?.meta?.hoverContextKey;
+                        if (!event || event.buttons || plot._dragging ||
+                            this.loadingSampleData || this.loadingSpatial2dTraitData ||
+                            !key || !this._pointHoverContexts[key] || !plot.getClientRects().length) {
+                            hide(); return;
+                        }
+                        const box = plot.getBoundingClientRect(), axes = plot._fullLayout;
+                        const index = this.spatial2dHoverIndex(plot);
+                        const pointNumber = this.findSpatial2dHoverPoint(index,
+                            event.clientX - box.left - axes.xaxis._offset,
+                            event.clientY - box.top - axes.yaxis._offset);
+                        if (pointNumber < 0) { hide(); return; }
+                        this._pointHoverOwner = plot;
+                        this.showPointHoverTooltip({event, points: [{data: trace, pointNumber,
+                            x: trace.x[pointNumber], y: trace.y[pointNumber]}]});
+                    };
+                    plot.addEventListener('pointermove', event => {
+                        if (event.buttons) { cancel(); return; }
+                        pointer = event;
+                        if (frame === null) frame = requestAnimationFrame(show);
+                    });
+                    for (const name of ['pointerleave', 'pointercancel', 'pointerdown']) {
+                        plot.addEventListener(name, cancel);
+                    }
+                    plot.addEventListener('wheel', cancel, {passive: true});
+                    window.addEventListener('blur', cancel);
+                    // Scrolling or replotting must not leave a tooltip at an old position.
+                    window.addEventListener('scroll', cancel, {passive: true, capture: true});
+                    plot.on('plotly_beforeplot', cancel);
+                    plot.on('plotly_afterplot', () => this.spatial2dHoverIndex(plot));
+                    this.spatial2dHoverIndex(plot);
+                },
+
                 // Render one compact 2D payload. Large categorical data remain a single WebGL trace.
                 renderSpatial2DPlotSingle(divId, plotType) {
                     const plotDiv = document.getElementById(divId);
@@ -5133,12 +5238,14 @@
                             showticklabels: false,
                             autorange: (this.reportMeta.plot_origin === 'upper') ? 'reversed' : true
                         },
-                        hovermode: 'closest',
+                        // Tooltip picking is independent of Plotly's expensive
+                        // scattergl hover search; Plotly still handles pan/zoom.
+                        hovermode: false,
                         dragmode: 'pan',
-                        margin: { l: 12, r: plotType === 'trait' ? 62 : 12, t: 8, b: 12 },
-                        // Keep hit testing local for dense maps. Plotly's
-                        // default 20px search can block the UI on large grids.
-                        hoverdistance: 5,
+                        // Reserve colorbar space explicitly. Fixed margins avoid
+                        // automatic colorbar/aspect-ratio margin redraw cycles.
+                        margin: { l: 12, r: plotType === 'trait' || this.spatial2dViewMode === 'compare'
+                            ? 84 : 12, t: 8, b: 12, autoexpand: false },
                         paper_bgcolor: '#ffffff',
                         plot_bgcolor: '#ffffff',
                         showlegend: false,
@@ -5151,7 +5258,7 @@
                         Promise.resolve(Plotly.react(plotDiv, traces, layout, config)).then(() => {
                             this.bindSpatial2dPointSizing(plotDiv, data, plotType);
                             this.updateSpatial2dPointSize(plotDiv);
-                            this.bindPointHoverTooltip(plotDiv);
+                            this.bindSpatial2dHover(plotDiv);
                             if (this.spatial2dViewMode === 'compare') {
                                 const targetId = plotType === 'trait'
                                     ? 'spatial2dPlotAnnotation' : 'spatial2dPlotTrait';

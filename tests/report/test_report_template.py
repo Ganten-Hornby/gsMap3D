@@ -206,6 +206,16 @@ def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
     assert "tooltip.style.background = background" in report_template
 
 
+def test_spatial2d_disables_native_hover_and_automatic_margin_redraws(report_template: str) -> None:
+    renderer = report_template.split("renderSpatial2DPlotSingle(divId, plotType) {", 1)[1].split(
+        "bindSpatial2dViewportSync(sourceId, targetId)", 1
+    )[0]
+    assert "hovermode: false" in renderer
+    assert "autoexpand: false" in renderer
+    assert "this.bindSpatial2dHover(plotDiv)" in renderer
+    assert "this.bindPointHoverTooltip(plotDiv)" not in renderer
+
+
 def test_shared_annotation_selection_filters_all_point_maps(report_template: str) -> None:
     assert "visibleUmapPointIndices()" in report_template
     assert "const annotation = this.spatial3dAnnotationCache?.[annotationName]" in report_template
