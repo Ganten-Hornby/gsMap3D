@@ -16,6 +16,56 @@ from gsMap.report.report_data import _read_report_csv, _render_single_sample_gen
 from gsMap.report.table_io import read_metadata_companion, write_metadata
 
 
+@pytest.mark.parametrize("recorded_limit", [10, 50, None, "corrupt", []])
+def test_manhattan_cache_tracks_top_gene_limit(tmp_path, monkeypatch, recorded_limit):
+    import json
+    from types import SimpleNamespace
+
+    from gsMap.report import report_data
+
+    manager = report_data.ReportDataManager.__new__(report_data.ReportDataManager)
+    manager.report_data_dir = tmp_path / "data"
+    manager.web_report_dir = tmp_path / "web"
+    manager.js_data_dir = manager.web_report_dir / "js_data"
+    manager.report_data_dir.mkdir()
+    manager.js_data_dir.mkdir(parents=True)
+    manager.report_config = SimpleNamespace(
+        top_corr_genes=10, snp_gene_weight_adata_path=tmp_path / "weights.h5ad"
+    )
+    manager.force_re_run = False
+    manager.traits = ["IQ"]
+    data = manager.report_data_dir / "manhattan_data"
+    data.mkdir()
+    (data / "IQ_manhattan.csv").write_text("cached")
+    (manager.js_data_dir / "manhattan_IQ.js").write_text("cached")
+    if recorded_limit is not None:
+        contents = (
+            "{"
+            if recorded_limit == "corrupt"
+            else json.dumps(
+                recorded_limit if isinstance(recorded_limit, list)
+                else {"top_corr_genes": recorded_limit}
+            )
+        )
+        (manager.web_report_dir / "report_meta.json").write_text(contents)
+    monkeypatch.setattr(report_data, "_load_chrom_tick_positions", lambda _: {1: 1.0})
+    monkeypatch.setattr(report_data, "_manhattan_js_has_embedded_ticks", lambda _: True)
+
+    class RebuildRequested(Exception):
+        pass
+
+    def load_weights(_):
+        raise RebuildRequested
+
+    monkeypatch.setattr(report_data.ad, "read_h5ad", load_weights)
+    if recorded_limit == 10:
+        manager.prepare_manhattan_data()
+        assert manager.chrom_tick_positions == {"IQ": {1: 1.0}}
+    else:
+        with pytest.raises(RebuildRequested):
+            manager.prepare_manhattan_data()
+
+
 def test_metadata_csv_parquet_roundtrip_and_stale_cache(tmp_path):
     frame = pd.DataFrame(
         {

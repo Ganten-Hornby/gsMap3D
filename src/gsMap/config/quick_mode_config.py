@@ -158,6 +158,7 @@ def _report_visualization_config_matches(config: QuickModeConfig, verbose: bool 
         "downsampling_n_spots_umap": config.downsampling_n_spots_umap,
         "downsampling_n_spots_2d": config.downsampling_n_spots_2d,
         "downsampling_n_spots_3d": config.downsampling_n_spots_3d,
+        "top_corr_genes": config.top_corr_genes,
     }
     mismatches = {
         key: (report_meta.get(key), value)

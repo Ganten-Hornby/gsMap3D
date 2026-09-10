@@ -1805,7 +1805,7 @@
                 traits: [],
                 samples: [],
                 annotations: [],
-                topCorrGenes: 50,
+                topCorrGenes: 10,
 
                 // Section collapse state
                 sections: {
@@ -2348,7 +2348,7 @@
                         this.traits = this.reportMeta.traits || [];
                         this.samples = this.reportMeta.samples || [];
                         this.annotations = this.reportMeta.annotations || [];
-                        this.topCorrGenes = this.reportMeta.top_corr_genes || 50;
+                        this.topCorrGenes = this.reportMeta.top_corr_genes || 10;
                         console.log("Loaded report meta:", this.traits.length, "traits,", this.samples.length, "samples");
                     } else {
                         console.warn("GSMAP_REPORT_META not found!");

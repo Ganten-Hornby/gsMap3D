@@ -70,6 +70,23 @@ def test_spatial_maps_start_in_compare_without_2d_signal_fading(run_js):
     assert result["camera"]["eye"] == pytest.approx({"x": 1.8, "y": 1.8, "z": 1.8})
 
 
+def test_report_top_gene_default_keeps_complete_correlation_list(run_js):
+    result = run_js("""
+        const initial = app.topCorrGenes;
+        app.loadGenePccData = async () => Array.from({length: 60}, (_, i) =>
+            ({gene: 'gene' + i, PCC: 1 - i / 100}));
+        app.selectedTrait = 'IQ';
+        await app.updateGeneList('IQ');
+        const top10 = app.topGenesList.filter(g => g.isTop).length;
+        const full10 = app.topGenesList.length;
+        app.topCorrGenes = 50;
+        await app.updateGeneList('IQ');
+        console.log(JSON.stringify({initial, top10, full10,
+            top50: app.topGenesList.filter(g => g.isTop).length, full50: app.topGenesList.length}));
+    """)
+    assert result == {"initial": 10, "top10": 10, "full10": 60, "top50": 50, "full50": 60}
+
+
 def test_spatial2d_hover_index_matches_exact_nearest_point_and_rebuilds(run_js):
     result = run_js("""
         let seed = 7123;

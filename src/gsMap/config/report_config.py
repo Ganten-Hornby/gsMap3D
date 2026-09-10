@@ -72,8 +72,13 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     ] = 300000
 
     top_corr_genes: Annotated[
-        int, typer.Option(help="Number of top correlated genes to display", min=1, max=500)
-    ] = 50
+        int,
+        typer.Option(
+            help="Number of top correlated genes per trait for expression/GSS diagnostic plots and Manhattan highlights",
+            min=1,
+            max=500,
+        ),
+    ] = 10
 
     # Advanced visualization parameters
     single_sample_multi_trait_max_cols: int = 5

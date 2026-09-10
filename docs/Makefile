@@ -5,6 +5,7 @@
 # from the environment for the first two.
 SPHINXOPTS    ?=
 SPHINXBUILD   ?= sphinx-build
+PYTHON        ?= python
 SOURCEDIR     = source
 BUILDDIR      = build
 
@@ -14,9 +15,9 @@ help:
 
 .PHONY: help Makefile cli-docs
 
-# Generate CLI reference documentation from typer
+# Generate CLI reference with the same tool used by docs/tools/README.md.
 cli-docs:
-	python -m typer gsMap.cli utils docs --name gsmap --output $(SOURCEDIR)/cli_reference.md
+	cd .. && $(PYTHON) -m docs.tools.generate_cli_reference
 
 # Build HTML with CLI docs generation
 html: cli-docs

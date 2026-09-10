@@ -50,6 +50,22 @@ def test_report_3d_display_default_balances_density_and_interaction():
     assert field.default == 200_000
 
 
+def test_report_gene_plot_limit_defaults_to_ten_in_both_interfaces():
+    from click import Context
+    from typer.main import get_command
+
+    from gsMap.cli import app
+    from gsMap.config import QuickModeConfig
+
+    assert ReportConfig.__dataclass_fields__["top_corr_genes"].default == 10
+    assert QuickModeConfig.__dataclass_fields__["top_corr_genes"].default == 10
+    command = get_command(app).commands["quick-mode"]
+    option = next(param for param in command.params if param.name == "top_corr_genes")
+    assert option.default == 10
+    # Users can still request the former breadth (and other valid limits).
+    assert option.type.convert("50", option, Context(command)) == 50
+
+
 def test_report_umap_and_2d_defaults_prioritize_visual_density():
     umap_field = ReportConfig.__dataclass_fields__["downsampling_n_spots_umap"]
     spatial_2d_field = ReportConfig.__dataclass_fields__["downsampling_n_spots_2d"]
@@ -144,6 +160,7 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
         downsampling_n_spots_umap=50_000,
         downsampling_n_spots_2d=100_000,
         downsampling_n_spots_3d=100_000,
+        top_corr_genes=10,
     )
     (tmp_path / "report_meta.json").write_text(
         json.dumps(
@@ -151,6 +168,7 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
                 "downsampling_n_spots_umap": 50_000,
                 "downsampling_n_spots_2d": 100_000,
                 "downsampling_n_spots_3d": 100_000,
+                "top_corr_genes": 10,
             }
         )
     )
@@ -158,6 +176,9 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
     assert _report_visualization_config_matches(config)
 
     config.downsampling_n_spots_2d = 50_000
+    assert not _report_visualization_config_matches(config)
+    config.downsampling_n_spots_2d = 100_000
+    config.top_corr_genes = 50
     assert not _report_visualization_config_matches(config)
 
 

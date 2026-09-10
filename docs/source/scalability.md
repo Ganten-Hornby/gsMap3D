@@ -315,6 +315,12 @@ enter spatial LDSC.
 | `--downsampling-n-spots-3d` | `200000` | Displayed spots in the combined 3D view. |
 | `--downsampling-n-spots-umap` | `50000` | Spots used for each report UMAP. |
 | `--downsampling-n-spots-pcc` | `20000` | Sampled spots for GSS correlations. |
+| `--top-corr-genes` | `10` | Top correlated genes per trait for expression/GSS diagnostic plots and Manhattan highlights. |
+
+The default generates diagnostic plots for the top 10 correlated genes per
+trait. Use `--top-corr-genes 50` (Python: `top_corr_genes=50`) for more gene
+plots at a higher report-generation cost. This limit does not change spatial
+LDSC, enrichment results, or the complete gene-correlation tables.
 
 The defaults display all analyzed E16.5 E1S1 spots. A lower 2D cap of 150,000
 also covers this example and reduces browser load for larger datasets. Leave

@@ -88,11 +88,12 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--marker-score-h5ad-path FILE` | Path to marker score h5ad file |
 | `--marker-score-format [memmap\|feather\|h5ad]` | Format of marker scores |
 | `--cauchy-annotations TEXT` | List of annotations in adata.obs to use |
+| `--export-spatialvista / --no-export-spatialvista` | Also export all 3D result spots to a lightweight SpatialVista H5AD with trait metadata  \[default: no-export-spatialvista] |
 | `--downsampling-n-spots-pcc INTEGER RANGE` | Number of spots to downsample for PCC calculation if n_spots > this value  \[default: 20000; 1000<=x<=100000] |
 | `--downsampling-n-spots-umap INTEGER RANGE` | Maximum representative spots used to calculate and display each report UMAP. Valid precomputed UMAP coordinates are sampled to the same limit.  \[default: 50000; 1000<=x<=500000] |
 | `--downsampling-n-spots-3d INTEGER RANGE` | Maximum representative spots rendered in the browser's 3D view. Larger datasets use deterministic annotation-aware sampling.  \[default: 200000; 1000<=x<=2000000] |
 | `--downsampling-n-spots-2d INTEGER RANGE` | Maximum representative spots per sample in the browser's 2D view. Larger samples use deterministic annotation-aware sampling.  \[default: 300000; 10000<=x<=500000] |
-| `--top-corr-genes INTEGER RANGE` | Number of top correlated genes to display  \[default: 50; 1<=x<=500] |
+| `--top-corr-genes INTEGER RANGE` | Number of top correlated genes per trait for expression/GSS diagnostic plots and Manhattan highlights  \[default: 10; 1<=x<=500] |
 | `--plot-origin TEXT` | Plot origin for spatial plots ('upper' or 'lower'). 'upper' will flip the y-axis (standard for images).  \[default: upper] |
 | `--start-step TEXT` | Step to start execution from (find_latent, latent2gene, spatial_ldsc, cauchy, report)  \[default: find_latent] |
 | `--stop-step TEXT` | Step to stop execution at (inclusive) |
@@ -321,6 +322,20 @@ This command:
 | `--info-min FLOAT` | Minimum INFO score.  \[default: 0.9] |
 | `--maf-min FLOAT` | Minimum MAF.  \[default: 0.01] |
 | `--keep-chr-pos / --no-keep-chr-pos` | Keep SNP chromosome and position columns in the output data  \[default: no-keep-chr-pos] |
+| `--help` | Show this message and exit. |
+
+## `gsmap export-spatialvista`
+
+Export coordinates, annotations and trait -log10(P) for SpatialVista.
+
+| Option | Description |
+|---|---|
+| `PROJECT_DIR` | Completed gsMap project containing report_data and gsmap_web_report  \[required] |
+| `--output PATH` | Output .h5ad (defaults to <project>/<project>.spatialvista.h5ad) |
+| `--trait TEXT` | Trait to include; repeat to select several (default: all) |
+| `--annotation TEXT` | Annotation to include; repeat to select several (default: all) |
+| `--max-spots INTEGER RANGE` | Optional deterministic sampling limit; default exports all spots  \[x>=1] |
+| `--overwrite / --no-overwrite` | Replace an existing export  \[default: no-overwrite] |
 | `--help` | Show this message and exit. |
 
 ## `gsmap report-view`

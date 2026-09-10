@@ -432,13 +432,23 @@ class ReportDataManager:
         manhattan_dir = self.report_data_dir / "manhattan_data"
         manhattan_dir.mkdir(exist_ok=True)
 
+        # The cached SNP highlighter depends on the requested top-gene limit.
+        # Only this stage needs invalidation; full PCC tables remain reusable.
+        try:
+            previous = json.loads((self.web_report_dir / "report_meta.json").read_text())
+            top_genes_current = isinstance(previous, dict) and previous.get(
+                "top_corr_genes"
+            ) == self.report_config.top_corr_genes
+        except (OSError, ValueError):
+            top_genes_current = False
+
         # Determine which traits need Manhattan data
         traits_to_run = []
         chrom_tick_positions = {}
         for trait in self.traits:
             csv_path = manhattan_dir / f"{trait}_manhattan.csv"
             js_path = self.js_data_dir / f"manhattan_{trait}.js"
-            if not self._is_step_complete([csv_path, js_path]):
+            if not top_genes_current or not self._is_step_complete([csv_path, js_path]):
                 traits_to_run.append(trait)
             else:
                 ticks = _load_chrom_tick_positions(csv_path)
@@ -2068,7 +2078,7 @@ def _prepare_manhattan_for_trait(
         gwas_plot_data["GENE"] = gene_map
 
         if trait_pcc_df is not None:
-            top_n = getattr(report_config, "top_corr_genes", 50)
+            top_n = getattr(report_config, "top_corr_genes", 10)
             trait_top_genes = (
                 trait_pcc_df.sort_values("PCC", ascending=False).head(top_n)["gene"].tolist()
             )
