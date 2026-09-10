@@ -371,6 +371,7 @@ def estimate_matplotlib_scatter_marker_size(
     coordinates: np.ndarray,
     x_limits: tuple | None = None,
     y_limits: tuple | None = None,
+    nearest_neighbor_radius: float | None = None,
 ) -> float:
     """
     Estimates the appropriate marker size to make adjacent markers touch.
@@ -418,9 +419,12 @@ def estimate_matplotlib_scatter_marker_size(
     # 2. Calculate the required marker radius in data units.
     # We find the average distance to the nearest neighbor for all points.
     # The desired radius is half of this distance.
-    tree = KDTree(coordinates)
-    distances, _ = tree.query(coordinates, k=2)
-    radius_data = np.mean(distances[:, 1]) / 2
+    if nearest_neighbor_radius is None:
+        tree = KDTree(coordinates)
+        distances, _ = tree.query(coordinates, k=2)
+        radius_data = np.mean(distances[:, 1]) / 2
+    else:
+        radius_data = nearest_neighbor_radius
 
     # 3. Convert the data radius to display units (points).
     # This requires transforming the axes' bounding box from data coordinates

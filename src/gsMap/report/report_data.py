@@ -31,10 +31,10 @@ from joblib.externals.loky.backend.context import get_context
 
 from gsMap.config import QuickModeConfig
 from gsMap.config.latent2gene_config import DatasetType
-from gsMap.find_latent.st_process import setup_data_layer
 from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
+from gsMap.report.diagnostic_io import read_diagnostic_expression
 from gsMap.report.spatial_payload import (
     SPATIAL_PAYLOAD_VERSION,
     _categorical_schema,
@@ -42,6 +42,7 @@ from gsMap.report.spatial_payload import (
     export_spatial_3d_payloads,
     safe_name,
 )
+from gsMap.report.table_io import read_metadata_companion, write_metadata
 from gsMap.report.visualize import (
     estimate_plotly_point_size,
 )
@@ -65,6 +66,10 @@ CAUCHY_HEATMAP_METRICS = (
 
 def _read_report_csv(path: Path, *, labels=(), **kwargs) -> pd.DataFrame:
     """Keep identifiers categorical, including '01', 'NA' and numeric labels."""
+    if Path(path).name == "spot_metadata.csv" and not kwargs:
+        cached = read_metadata_companion(Path(path), labels=labels)
+        if cached is not None:
+            return cached
     return pd.read_csv(
         path,
         converters={label: lambda value: value if value else np.nan for label in labels},
@@ -842,7 +847,8 @@ def _render_single_sample_gene_plot_task(task_data: dict):
 
     from gsMap.report.visualize import estimate_matplotlib_scatter_marker_size
 
-    point_size = estimate_matplotlib_scatter_marker_size(ax, coords)
+    geometry = task_data.get("geometry", {})
+    point_size = estimate_matplotlib_scatter_marker_size(ax, coords, **geometry)
     point_size = min(max(point_size, 1), 200)
 
     vmin = 0
@@ -884,7 +890,22 @@ def _render_single_sample_gene_plot_task(task_data: dict):
     temporary = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp.png")
     temporary.unlink(missing_ok=True)
     try:
-        fig.savefig(temporary, dpi=dpi, bbox_inches="tight", facecolor="white")
+        # A scatter is clipped to its axes and cannot enlarge the tight bbox.
+        # Lay out labels/colorbar without drawing millions of markers twice.
+        fig.set_dpi(dpi)
+        scatter.set_visible(False)
+        fig.canvas.draw()
+        tight_bbox = fig.get_tightbbox(fig.canvas.get_renderer()).padded(
+            matplotlib.rcParams["savefig.pad_inches"]
+        )
+        scatter.set_visible(True)
+        fig.savefig(
+            temporary,
+            dpi=dpi,
+            bbox_inches=tight_bbox,
+            facecolor="white",
+            pil_kwargs={"compress_level": 1},
+        )
         os.replace(temporary, output_path)
     finally:
         plt.close(fig)
@@ -902,6 +923,7 @@ def _render_single_sample_gene_pair_task(task_data: dict):
         "plot_origin": task_data.get("plot_origin", "upper"),
         "fig_width": task_data.get("fig_width", 6.0),
         "dpi": task_data.get("dpi", 150),
+        "geometry": task_data.get("geometry", {}),
     }
     _render_single_sample_gene_plot_task(
         {
@@ -919,6 +941,24 @@ def _render_single_sample_gene_pair_task(task_data: dict):
             "output_path": task_data["gss_output_path"],
         }
     )
+    return True
+
+
+def _render_sample_gene_batch_task(task_data: dict):
+    """Send shared coordinates once per gene batch, not once per figure pair."""
+    for index, request in enumerate(task_data["requests"]):
+        _render_single_sample_gene_pair_task(
+            {
+                **request,
+                "coords": task_data["coords"],
+                "geometry": task_data["geometry"],
+                "plot_origin": task_data["plot_origin"],
+                "fig_width": task_data.get("fig_width", 6.0),
+                "dpi": task_data.get("dpi", 150),
+                "exp_values": task_data["expression"][:, index],
+                "gss_values": task_data["markers"][:, index],
+            }
+        )
     gc.collect()
     return True
 
@@ -1840,7 +1880,7 @@ def _save_metadata(
     metadata.index.name = "spot"
     metadata = metadata.reset_index()
     metadata = metadata.loc[:, ~metadata.columns.duplicated()]
-    _atomic_to_csv(metadata, report_dir / "spot_metadata.csv", index=False)
+    write_metadata(metadata, report_dir / "spot_metadata.csv")
 
     return metadata
 
@@ -1956,19 +1996,26 @@ def _prepare_manhattan_for_trait(
     gwas_data = load_gwas_data(
         sumstats_file,
         calculate_p=False,
+        snp_filter=weight_context.snp_index,
     )
     if gwas_data.empty:
+        if gwas_data.attrs.get("source_rows", 0):
+            raise ValueError(f"No common SNPs between GWAS and weight data for {trait}")
         raise ValueError(f"GWAS file contains no rows: {sumstats_file}")
 
-    if gwas_data["SNP"].duplicated().any():
-        duplicate_count = int(gwas_data["SNP"].duplicated().sum())
+    # Reuse this Index's hash table for the join instead of hashing millions
+    # of IDs once for Series.duplicated() and again for Index.get_indexer().
+    gwas_snp_index = pd.Index(gwas_data["SNP"])
+    if not gwas_snp_index.is_unique:
+        duplicate_mask = gwas_snp_index.duplicated(keep="first")
+        duplicate_count = int(duplicate_mask.sum())
         logger.warning(
             f"Dropping {duplicate_count:,} duplicate SNP rows before Manhattan processing for "
             f"{trait}"
         )
-        gwas_data = gwas_data.drop_duplicates("SNP", keep="first")
+        gwas_data = gwas_data.loc[~duplicate_mask]
+        gwas_snp_index = pd.Index(gwas_data["SNP"])
 
-    gwas_snp_index = pd.Index(gwas_data["SNP"])
     gwas_positions = gwas_snp_index.get_indexer(weight_context.snp_index)
     common_mask = gwas_positions >= 0
     weight_rows = np.flatnonzero(common_mask)
@@ -2157,7 +2204,10 @@ def _render_gene_diagnostic_plots_refactored(
 
     sample_names_sorted = list(report_config.sample_h5ad_dict.keys())
 
-    metadata_common = metadata[metadata["spot"].isin(common_spots)]
+    # Plotters only need row IDs and coordinates, never the full trait matrix.
+    metadata_common = metadata.loc[
+        metadata["spot"].isin(common_spots), ["spot", "sample_name", "sx", "sy"]
+    ]
 
     logger.info("Checking completeness for diagnostic plots...")
 
@@ -2255,73 +2305,62 @@ def _render_gene_diagnostic_plots_refactored(
             sample_spots = sample_metadata["spot"].values
             coords = sample_metadata[["sx", "sy"]].values
 
-            adata_rep = ad.read_h5ad(h5ad_path)
-            suffix = f"|{sample_name}"
-            if adata_rep.n_obs and not str(adata_rep.obs_names[0]).endswith(suffix):
-                adata_rep.obs_names = adata_rep.obs_names.astype(str) + suffix
-
-            if "log1p" in adata_rep.uns and adata_rep.X is not None:
-                is_count = False
-            else:
-                is_count, _ = setup_data_layer(adata_rep, report_config.data_layer, verbose=False)
-
-            if is_count:
-                sc.pp.normalize_total(adata_rep, target_sum=1e4)
-                sc.pp.log1p(adata_rep)
-
             unique_sample_genes = sorted({request["gene"] for request in sample_requests})
-            available_genes = [gene for gene in unique_sample_genes if gene in adata_rep.var_names]
+            available_genes, exp_matrix = read_diagnostic_expression(
+                h5ad_path,
+                sample_spots,
+                unique_sample_genes,
+                sample_name,
+                report_config.data_layer,
+            )
             unavailable_genes = sorted(set(unique_sample_genes).difference(available_genes))
             if unavailable_genes:
                 with missing_genes_lock:
                     missing_genes.extend((sample_name, gene) for gene in unavailable_genes)
 
             if not available_genes:
-                del adata_rep
-                gc.collect()
                 return
-
-            adata_sample_exp = adata_rep[sample_spots, available_genes].copy()
             expression_ready = time.perf_counter()
             gss_matrix = _read_diagnostic_marker_values(gss_adata, sample_spots, available_genes)
             markers_ready = time.perf_counter()
-            del adata_rep
-            gc.collect()
+            geometry_started = time.perf_counter()
+            from scipy.spatial import KDTree
 
-            exp_matrix = adata_sample_exp.X
+            distances, _ = KDTree(coords).query(coords, k=2)
+            geometry = {
+                "nearest_neighbor_radius": float(np.mean(distances[:, 1]) / 2),
+                "x_limits": (float(coords[:, 0].min()), float(coords[:, 0].max())),
+                "y_limits": (float(coords[:, 1].min()), float(coords[:, 1].max())),
+            }
+            logger.info(
+                f"Diagnostic geometry cached: {sample_name}; "
+                f"{time.perf_counter() - geometry_started:.2f}s"
+            )
             gene_positions = {gene: index for index, gene in enumerate(available_genes)}
-
-            for request in sample_requests:
-                gene = request["gene"]
-                if gene not in available_genes:
-                    continue
-
-                gene_index = gene_positions[gene]
-                exp_column = exp_matrix[:, gene_index]
-                gss_column = gss_matrix[:, gene_index]
-                exp_vals = (
-                    np.asarray(exp_column.toarray() if sp.issparse(exp_column) else exp_column)
-                    .ravel()
-                    .astype(np.float32, copy=False)
-                )
-                gss_vals = (
-                    np.asarray(gss_column.toarray() if sp.issparse(gss_column) else gss_column)
-                    .ravel()
-                    .astype(np.float32, copy=False)
-                )
-
+            requests = [r for r in sample_requests if r["gene"] in gene_positions]
+            for start in range(0, len(requests), 8):
+                batch = requests[start : start + 8]
+                columns = [gene_positions[r["gene"]] for r in batch]
                 task_semaphore.acquire()
                 try:
                     future = executor.submit(
-                        _render_single_sample_gene_pair_task,
+                        _render_sample_gene_batch_task,
                         {
-                            "gene": gene,
-                            "sample_name": sample_name,
-                            "coords": coords.copy(),
-                            "exp_values": exp_vals,
-                            "gss_values": gss_vals,
-                            "exp_output_path": request["source_exp"],
-                            "gss_output_path": request["source_gss"],
+                            "requests": [
+                                {
+                                    "gene": r["gene"],
+                                    "sample_name": sample_name,
+                                    "exp_output_path": r["source_exp"],
+                                    "gss_output_path": r["source_gss"],
+                                }
+                                for r in batch
+                            ],
+                            "coords": coords,
+                            "geometry": geometry,
+                            "expression": np.ascontiguousarray(exp_matrix[:, columns]),
+                            "markers": np.ascontiguousarray(
+                                gss_matrix[:, columns], dtype=np.float32
+                            ),
                             "plot_origin": report_config.plot_origin,
                             "fig_width": 6.0,
                             "dpi": 150,
@@ -2329,7 +2368,7 @@ def _render_gene_diagnostic_plots_refactored(
                     )
                     future.add_done_callback(lambda _: task_semaphore.release())
                     with futures_lock:
-                        all_futures[future] = request
+                        all_futures[future] = batch
                 except Exception:
                     task_semaphore.release()
                     raise
@@ -2341,28 +2380,27 @@ def _render_gene_diagnostic_plots_refactored(
                 f"marker read={markers_ready - expression_ready:.2f}s, "
                 f"render enqueue={time.perf_counter() - markers_ready:.2f}s"
             )
-            del adata_sample_exp, gss_matrix
+            del exp_matrix, gss_matrix
             gc.collect()
 
         with ThreadPoolExecutor(max_workers=max_loading_threads) as loader:
             list(loader.map(process_sample, requests_by_sample))
 
-        logger.info(f"Waiting for {len(all_futures):,} unique diagnostic tasks to complete...")
+        logger.info(f"Finishing {len(all_futures):,} diagnostic gene batches...")
         completed = 0
-        progress_interval = max(1, len(all_futures) // 10)
+        progress_interval = max(1, render_pairs // 10)
         for future in as_completed(all_futures):
-            request = all_futures[future]
+            batch = all_futures[future]
             future.result()
-            source_exp = request["source_exp"]
-            source_gss = request["source_gss"]
-            for exp_path, gss_path in request["targets"]:
-                _materialize_plot_alias(source_exp, exp_path)
-                _materialize_plot_alias(source_gss, gss_path)
-            completed += 1
-            if completed % progress_interval == 0 or completed == len(all_futures):
+            for request in batch:
+                for exp_path, gss_path in request["targets"]:
+                    _materialize_plot_alias(request["source_exp"], exp_path)
+                    _materialize_plot_alias(request["source_gss"], gss_path)
+            completed += len(batch)
+            if completed % progress_interval < len(batch) or completed == render_pairs:
                 elapsed = time.perf_counter() - started
                 logger.info(
-                    f"Diagnostic plot progress: {completed:,}/{len(all_futures):,} unique "
+                    f"Diagnostic plot progress: {completed:,}/{render_pairs:,} unique "
                     f"pairs ({completed / max(elapsed, 1e-9):.1f} pairs/s)"
                 )
 
