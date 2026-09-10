@@ -106,6 +106,17 @@
             background-color: #f8fafc;
         }
 
+        .heatmap-page-button {
+            min-width: 2rem;
+            min-height: 2rem;
+            border: 1px solid var(--report-border);
+            border-radius: 0.5rem;
+            background: white;
+            color: #2563eb;
+        }
+        .heatmap-page-button:hover:not(:disabled) { background: #eff6ff; }
+        .heatmap-page-button:disabled { opacity: 0.35; cursor: not-allowed; }
+
         .gradient-header {
             background:
                 radial-gradient(circle at 72% -100%, rgba(255, 255, 255, 0.20), transparent 22rem),
@@ -472,7 +483,7 @@
                     <label for="trait-selector" class="control-label">GWAS trait</label>
                     <div class="relative">
                         <input id="trait-selector" x-ref="traitSearchInput" type="search" x-model="traitSearchQuery"
-                            @focus="openTraitSearch()" @input="traitComboboxOpen = true; traitActiveIndex = 0"
+                            @focus="openTraitSearch()" @input="traitComboboxOpen = true; traitActiveIndex = 0; traitChoiceLimit = 80"
                             @keydown.down.prevent="moveTraitSearch(1)" @keydown.up.prevent="moveTraitSearch(-1)"
                             @keydown.enter.prevent="selectActiveTrait()" @keydown.escape.prevent="closeTraitSearch()"
                             @keydown.tab="closeTraitSearch()"
@@ -491,7 +502,7 @@
                         class="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl custom-scrollbar">
                         <div class="sticky top-0 z-10 bg-white px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400"
                             x-text="filteredTraits.length.toLocaleString() + ' matching traits'"></div>
-                        <template x-for="(trait, index) in filteredTraits" :key="trait">
+                        <template x-for="(trait, index) in visibleTraitChoices" :key="trait">
                             <button type="button" role="option" :id="'trait-option-' + index"
                                 :aria-selected="(trait === selectedTrait).toString()"
                                 @mouseenter="traitActiveIndex = index" @mousedown.prevent
@@ -504,6 +515,9 @@
                         <p x-show="filteredTraits.length === 0" class="px-3 py-5 text-center text-sm text-slate-500">
                             No matching trait. Try a shorter name or abbreviation.
                         </p>
+                        <button type="button" x-show="filteredTraits.length > traitChoiceLimit"
+                            @mousedown.prevent @click="traitChoiceLimit += 80"
+                            class="w-full px-3 py-2 text-left text-xs font-medium text-primary-700">Show more traits</button>
                     </div>
                 </div>
 
@@ -514,7 +528,7 @@
                     <div class="relative">
                         <input id="sample-selector" x-ref="sampleSearchInput" type="search"
                             x-model="sampleSearchQuery" @focus="openSampleSearch()"
-                            @input="sampleComboboxOpen = true; sampleActiveIndex = 0"
+                            @input="sampleComboboxOpen = true; sampleActiveIndex = 0; sampleChoiceLimit = 80"
                             @keydown.down.prevent="moveSampleSearch(1)"
                             @keydown.up.prevent="moveSampleSearch(-1)"
                             @keydown.enter.prevent="selectActiveSample()"
@@ -536,7 +550,7 @@
                         class="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl custom-scrollbar">
                         <div class="sticky top-0 z-10 bg-white px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400"
                             x-text="filteredSamples.length.toLocaleString() + ' matching samples'"></div>
-                        <template x-for="(sample, index) in filteredSamples" :key="sample">
+                        <template x-for="(sample, index) in visibleSampleChoices" :key="sample">
                             <button type="button" role="option" :id="'sample-option-' + index"
                                 :aria-selected="(sample === selectedSample).toString()"
                                 @mouseenter="sampleActiveIndex = index" @mousedown.prevent
@@ -550,6 +564,9 @@
                             class="px-3 py-5 text-center text-sm text-slate-500">
                             No matching sample. Try a shorter name.
                         </p>
+                        <button type="button" x-show="filteredSamples.length > sampleChoiceLimit"
+                            @mousedown.prevent @click="sampleChoiceLimit += 80"
+                            class="w-full px-3 py-2 text-left text-xs font-medium text-primary-700">Show more samples</button>
                     </div>
                 </div>
 
@@ -581,9 +598,13 @@
                         </button>
                     </div>
                     <p class="mt-2 text-[10px] leading-4 text-slate-500">Click to hide; double-click to isolate in point maps.</p>
+                    <input x-show="currentAnnotationLegend.length > 12" type="search"
+                        aria-label="Search annotation colors" placeholder="Find annotation…"
+                        x-model.debounce.150ms="annotationLegendQuery" @input="annotationLegendLimit = 80"
+                        class="mt-2 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs">
                     <div class="mt-2 max-h-44 space-y-0.5 overflow-y-auto pr-1 custom-scrollbar"
                         role="group" :aria-label="selectedAnnotationCategory + ' shared color legend'">
-                        <template x-for="entry in currentAnnotationLegend" :key="entry.category">
+                        <template x-for="entry in visibleAnnotationLegend" :key="entry.category">
                             <button type="button" @click="scheduleAnnotationLegendToggle(entry.category)"
                                 @dblclick.prevent.stop="isolateAnnotationCategory(entry.category)"
                                 :aria-pressed="entry.visible.toString()"
@@ -601,6 +622,11 @@
                             </button>
                         </template>
                     </div>
+                    <button type="button" x-show="filteredAnnotationLegend.length > annotationLegendLimit"
+                        @click="annotationLegendLimit += 80" class="mt-2 text-left text-xs font-medium text-primary-700">
+                        Show more annotations
+                    </button>
+                    <p x-show="annotationLegendQuery && !filteredAnnotationLegend.length" class="mt-2 text-xs text-slate-500">No matching annotations.</p>
                 </div>
 
                 <!-- Gene Selector (only top genes) -->
@@ -1375,6 +1401,12 @@
                         </div>
                     </div>
 
+                    <div x-show="cauchyActivated && !loadingCauchyData" class="px-4 py-3">
+                        <label for="enrichment-table-search" class="sr-only">Search enrichment table</label>
+                        <input id="enrichment-table-search" type="search" placeholder="Find an annotation or sample in this table…"
+                            x-model.debounce.150ms="cauchyTableQuery" @input="cauchyTablePage = 0"
+                            class="w-full max-w-lg rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                    </div>
                     <!-- Cauchy Table -->
                     <div x-show="cauchyError" role="alert" class="m-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
                         <p x-text="cauchyError"></p>
@@ -1385,18 +1417,54 @@
                             <thead class="bg-gray-50 sticky top-0">
                                 <tr>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('trait')">Trait</th>
+                                        :aria-sort="cauchySortKey === 'trait' ? (cauchySortAsc ? 'ascending' : 'descending') : 'none'">
+                                        <button type="button" @click="sortCauchyBy('trait')" title="Sort by Trait"
+                                            class="inline-flex w-full items-center justify-between gap-2 text-left uppercase">
+                                            Trait<span aria-hidden="true" :class="cauchySortKey === 'trait' ? 'text-primary-700' : 'text-slate-400'"
+                                                x-text="cauchySortKey === 'trait' ? (cauchySortAsc ? '↑' : '↓') : '↕'"></span>
+                                        </button>
+                                    </th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('annotation')">Annotation</th>
+                                        :aria-sort="cauchySortKey === 'annotation' ? (cauchySortAsc ? 'ascending' : 'descending') : 'none'">
+                                        <button type="button" @click="sortCauchyBy('annotation')" title="Sort by Annotation"
+                                            class="inline-flex w-full items-center justify-between gap-2 text-left uppercase">
+                                            Annotation<span aria-hidden="true" :class="cauchySortKey === 'annotation' ? 'text-primary-700' : 'text-slate-400'"
+                                                x-text="cauchySortKey === 'annotation' ? (cauchySortAsc ? '↑' : '↓') : '↕'"></span>
+                                        </button>
+                                    </th>
                                     <th x-show="cauchyViewMode === 'sample'"
                                         class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('sample_name')">Sample</th>
+                                        :aria-sort="cauchySortKey === 'sample_name' ? (cauchySortAsc ? 'ascending' : 'descending') : 'none'">
+                                        <button type="button" @click="sortCauchyBy('sample_name')" title="Sort by Sample"
+                                            class="inline-flex w-full items-center justify-between gap-2 text-left uppercase">
+                                            Sample<span aria-hidden="true" :class="cauchySortKey === 'sample_name' ? 'text-primary-700' : 'text-slate-400'"
+                                                x-text="cauchySortKey === 'sample_name' ? (cauchySortAsc ? '↑' : '↓') : '↕'"></span>
+                                        </button>
+                                    </th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('mlog10_p_cauchy')">-log10P (Cauchy)</th>
+                                        :aria-sort="cauchySortKey === 'mlog10_p_cauchy' ? (cauchySortAsc ? 'ascending' : 'descending') : 'none'">
+                                        <button type="button" @click="sortCauchyBy('mlog10_p_cauchy')" title="Sort by -log10P (Cauchy)"
+                                            class="inline-flex w-full items-center justify-between gap-2 text-left uppercase">
+                                            -log10P (Cauchy)<span aria-hidden="true" :class="cauchySortKey === 'mlog10_p_cauchy' ? 'text-primary-700' : 'text-slate-400'"
+                                                x-text="cauchySortKey === 'mlog10_p_cauchy' ? (cauchySortAsc ? '↑' : '↓') : '↕'"></span>
+                                        </button>
+                                    </th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('mlog10_p_median')">-log10P (Median)</th>
+                                        :aria-sort="cauchySortKey === 'mlog10_p_median' ? (cauchySortAsc ? 'ascending' : 'descending') : 'none'">
+                                        <button type="button" @click="sortCauchyBy('mlog10_p_median')" title="Sort by -log10P (Median)"
+                                            class="inline-flex w-full items-center justify-between gap-2 text-left uppercase">
+                                            -log10P (Median)<span aria-hidden="true" :class="cauchySortKey === 'mlog10_p_median' ? 'text-primary-700' : 'text-slate-400'"
+                                                x-text="cauchySortKey === 'mlog10_p_median' ? (cauchySortAsc ? '↑' : '↓') : '↕'"></span>
+                                        </button>
+                                    </th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                                        @click="sortCauchyBy('top_95_quantile')">95% Quantile (-log10P)</th>
+                                        :aria-sort="cauchySortKey === 'top_95_quantile' ? (cauchySortAsc ? 'ascending' : 'descending') : 'none'">
+                                        <button type="button" @click="sortCauchyBy('top_95_quantile')" title="Sort by 95% Quantile (-log10P)"
+                                            class="inline-flex w-full items-center justify-between gap-2 text-left uppercase">
+                                            95% Quantile (-log10P)<span aria-hidden="true" :class="cauchySortKey === 'top_95_quantile' ? 'text-primary-700' : 'text-slate-400'"
+                                                x-text="cauchySortKey === 'top_95_quantile' ? (cauchySortAsc ? '↑' : '↓') : '↕'"></span>
+                                        </button>
+                                    </th>
                                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Total
                                         Spots</th>
                                 </tr>
@@ -1457,75 +1525,150 @@
                         </div>
                     </div>
 
-                    <!-- Cauchy Heatmap -->
-                    <div x-show="cauchyActivated && (!loadingCauchyData || cauchyHeatmapSelectionMatches)" class="border-t border-gray-200">
-                        <div
-                            class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap justify-between items-center gap-4">
+                    <!-- Enrichment matrix: bounded viewport, complete data. -->
+                    <div x-show="cauchyActivated && (!loadingCauchyData || cauchyHeatmapSelectionMatches)" class="border-t border-slate-200">
+                        <div class="flex flex-wrap items-start justify-between gap-3 bg-slate-50/80 p-4">
                             <div>
-                                <h3 class="font-medium text-gray-700" x-text="'Cauchy enrichment heatmap (' + (
-                                    cauchyHeatmapMetric === 'mlog10_p_cauchy' ? 'Cauchy P-Value' :
-                                    cauchyHeatmapMetric === 'mlog10_p_median' ? 'Median P-Value' : 'Q95'
-                                ) + ')'"></h3>
-                                <p class="text-xs text-gray-500 mt-1" x-text="
-                                    cauchyViewMode === 'sample' ? 'Median across per-sample results; not a pooled Cauchy test.' :
-                                    cauchyHeatmapMetric === 'mlog10_p_cauchy' ? 'Aggregated significance across all spots.' :
-                                    cauchyHeatmapMetric === 'mlog10_p_median' ? 'Median spot significance in the annotation.' :
-                                    'The 95th percentile of significance (-log10p) across spots.'
-                                "></p>
+                                <h3 class="text-sm font-semibold text-slate-800">Enrichment heatmap</h3>
+                                <p class="mt-1 text-xs text-slate-500" x-text="cauchyViewMode === 'sample'
+                                    ? 'Median across samples; not a pooled Cauchy test.'
+                                    : 'Annotation-level significance across traits.'"></p>
                             </div>
-                            <div class="flex flex-wrap items-center gap-4">
-                                <div class="flex items-center gap-2">
-                                    <label class="text-sm font-medium text-gray-700">Metric:</label>
-                                    <select x-model="cauchyHeatmapMetric" @change="renderCauchyHeatmap()"
-                                        class="rounded-lg border-gray-300 shadow-sm text-sm p-2 border bg-white">
-                                        <option value="mlog10_p_cauchy">Cauchy P-Value</option>
-                                        <option value="mlog10_p_median">Median P-Value</option>
-                                        <option value="top_95_quantile">Q95 (-log10P)</option>
+                            <div class="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                                <label class="inline-flex items-center gap-2">Metric
+                                    <select aria-label="Heatmap metric" x-model="cauchyHeatmapMetric" @change="scheduleCauchyHeatmap()"
+                                        class="rounded-lg border border-slate-300 bg-white p-2 text-xs">
+                                        <option value="mlog10_p_cauchy">Cauchy −log10(P)</option>
+                                        <option value="mlog10_p_median">Median −log10(P)</option>
+                                        <option value="top_95_quantile">Q95 −log10(P)</option>
                                     </select>
+                                </label>
+                                <label class="inline-flex items-center gap-1.5">
+                                    <input type="checkbox" x-model="cauchyHeatmapCluster" @change="scheduleCauchyHeatmap()" class="accent-primary-600">
+                                    Group patterns
+                                </label>
+                                <label class="inline-flex items-center gap-1.5" title="Scale each trait over all annotations, not only the current page">
+                                    <input type="checkbox" x-model="cauchyHeatmapNormalize" @change="scheduleCauchyHeatmap()" class="accent-primary-600">
+                                    Scale each trait 0–1
+                                </label>
+                                <label class="inline-flex items-center gap-1.5">
+                                    <input type="checkbox" x-model="cauchyHeatmapTranspose" @change="scheduleCauchyHeatmap(false)" class="accent-primary-600">
+                                    Swap axes
+                                </label>
+                            </div>
+                        </div>
+                        <div class="grid gap-3 border-y border-slate-200 bg-white p-4 sm:grid-cols-2">
+                            <div>
+                                <label for="heatmap-trait-search" class="mb-1 block text-xs font-medium text-slate-600">Traits</label>
+                                <input id="heatmap-trait-search" type="search" placeholder="Find traits, e.g. IQ, SCZ"
+                                    x-model="cauchyHeatmapTraitQuery" @input.debounce.200ms="scheduleCauchyHeatmap()"
+                                    @keydown.enter.prevent="toggleHeatmapSubset('trait', heatmapSubsetChoices('trait')[0])"
+                                    @keydown.escape="cauchyHeatmapTraitQuery = ''; scheduleCauchyHeatmap()"
+                                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                                <div x-show="cauchyHeatmapTraitQuery.trim()" class="mt-1 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-1">
+                                    <template x-for="label in heatmapSubsetChoices('trait')" :key="label">
+                                        <button type="button" @click="toggleHeatmapSubset('trait', label)"
+                                            :aria-pressed="cauchyHeatmapSelectedTraits.includes(label).toString()"
+                                            :title="(cauchyHeatmapSelectedTraits.includes(label) ? 'Remove ' : 'Add ') + label"
+                                            class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-primary-100">
+                                            <span aria-hidden="true" x-text="cauchyHeatmapSelectedTraits.includes(label) ? '✓' : '+'"></span>
+                                            <span class="truncate" x-text="label"></span>
+                                        </button>
+                                    </template>
+                                    <p x-show="!heatmapSubsetChoices('trait').length" class="px-2 py-1 text-xs text-slate-500">No matches.</p>
                                 </div>
-                                <div class="flex items-center gap-2">
-                                    <label class="inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" x-model="cauchyHeatmapCluster"
-                                            @change="renderCauchyHeatmap()"
-                                            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                        <span class="ml-2 text-sm text-gray-700">Cluster</span>
-                                    </label>
+                                <div class="mt-2 flex max-h-28 flex-wrap gap-1 overflow-y-auto" x-show="cauchyHeatmapSelectedTraits.length">
+                                    <template x-for="label in cauchyHeatmapSelectedTraits" :key="label">
+                                        <button type="button" @click="toggleHeatmapSubset('trait', label)" :aria-label="'Remove trait ' + label"
+                                            :title="label + ' — remove from subset'" class="inline-flex max-w-full items-center gap-1 rounded-full border border-primary-200 bg-primary-50 px-2 py-1 text-xs text-primary-800">
+                                            <span class="truncate" x-text="label"></span><span aria-hidden="true">×</span>
+                                        </button>
+                                    </template>
+                                    <button type="button" @click="cauchyHeatmapSelectedTraits = []; cauchyHeatmapTraitQuery = ''; scheduleCauchyHeatmap()"
+                                        class="px-1 text-xs text-primary-700" aria-label="Clear trait subset">Clear subset</button>
                                 </div>
-                                <div class="flex items-center gap-2">
-                                    <label class="inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" x-model="cauchyHeatmapNormalize"
-                                            @change="renderCauchyHeatmap()"
-                                            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 h-4 w-4">
-                                        <span class="ml-2 text-sm text-gray-700">0-1 Normalize</span>
+                                <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                                    <label>Per page
+                                        <select aria-label="Traits per page" x-model.number="cauchyHeatmapTraitsPerPage" @change="scheduleCauchyHeatmap()"
+                                            class="ml-1 rounded border border-slate-200 bg-white p-1">
+                                            <option>12</option><option>24</option><option>40</option><option>60</option>
+                                        </select>
                                     </label>
+                                    <div class="inline-flex items-center gap-2">
+                                        <button type="button" aria-label="Previous trait page" @click="cauchyHeatmapTraitPage--; scheduleCauchyHeatmap(false)"
+                                            :disabled="cauchyHeatmapTraitPage === 0" class="heatmap-page-button">←</button>
+                                        <span x-text="(cauchyHeatmapTraitPage + 1) + ' / ' + cauchyHeatmapTraitPages"></span>
+                                        <button type="button" aria-label="Next trait page" @click="cauchyHeatmapTraitPage++; scheduleCauchyHeatmap(false)"
+                                            :disabled="cauchyHeatmapTraitPage + 1 >= cauchyHeatmapTraitPages" class="heatmap-page-button">→</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label for="heatmap-annotation-search" class="mb-1 block text-xs font-medium text-slate-600">Annotations</label>
+                                <input id="heatmap-annotation-search" type="search" placeholder="Find annotations, e.g. brain"
+                                    x-model="cauchyHeatmapAnnotationQuery" @input.debounce.200ms="scheduleCauchyHeatmap()"
+                                    @keydown.enter.prevent="toggleHeatmapSubset('annotation', heatmapSubsetChoices('annotation')[0])"
+                                    @keydown.escape="cauchyHeatmapAnnotationQuery = ''; scheduleCauchyHeatmap()"
+                                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                                <div x-show="cauchyHeatmapAnnotationQuery.trim()" class="mt-1 max-h-40 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-1">
+                                    <template x-for="label in heatmapSubsetChoices('annotation')" :key="label">
+                                        <button type="button" @click="toggleHeatmapSubset('annotation', label)"
+                                            :aria-pressed="cauchyHeatmapSelectedAnnotations.includes(label).toString()"
+                                            :title="(cauchyHeatmapSelectedAnnotations.includes(label) ? 'Remove ' : 'Add ') + label"
+                                            class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-primary-100">
+                                            <span aria-hidden="true" x-text="cauchyHeatmapSelectedAnnotations.includes(label) ? '✓' : '+'"></span>
+                                            <span class="truncate" x-text="label"></span>
+                                        </button>
+                                    </template>
+                                    <p x-show="!heatmapSubsetChoices('annotation').length" class="px-2 py-1 text-xs text-slate-500">No matches.</p>
+                                </div>
+                                <div class="mt-2 flex max-h-28 flex-wrap gap-1 overflow-y-auto" x-show="cauchyHeatmapSelectedAnnotations.length">
+                                    <template x-for="label in cauchyHeatmapSelectedAnnotations" :key="label">
+                                        <button type="button" @click="toggleHeatmapSubset('annotation', label)" :aria-label="'Remove annotation ' + label"
+                                            :title="label + ' — remove from subset'" class="inline-flex max-w-full items-center gap-1 rounded-full border border-primary-200 bg-primary-50 px-2 py-1 text-xs text-primary-800">
+                                            <span class="truncate" x-text="label"></span><span aria-hidden="true">×</span>
+                                        </button>
+                                    </template>
+                                    <button type="button" @click="cauchyHeatmapSelectedAnnotations = []; cauchyHeatmapAnnotationQuery = ''; scheduleCauchyHeatmap()"
+                                        class="px-1 text-xs text-primary-700" aria-label="Clear annotation subset">Clear subset</button>
+                                </div>
+                                <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                                    <label>Per page
+                                        <select aria-label="Annotations per page" x-model.number="cauchyHeatmapAnnotationsPerPage" @change="scheduleCauchyHeatmap()"
+                                            class="ml-1 rounded border border-slate-200 bg-white p-1">
+                                            <option>20</option><option>40</option><option>60</option><option>80</option>
+                                        </select>
+                                    </label>
+                                    <div class="inline-flex items-center gap-2">
+                                        <button type="button" aria-label="Previous annotation page" @click="cauchyHeatmapAnnotationPage--; scheduleCauchyHeatmap(false)"
+                                            :disabled="cauchyHeatmapAnnotationPage === 0" class="heatmap-page-button">←</button>
+                                        <span x-text="(cauchyHeatmapAnnotationPage + 1) + ' / ' + cauchyHeatmapAnnotationPages"></span>
+                                        <button type="button" aria-label="Next annotation page" @click="cauchyHeatmapAnnotationPage++; scheduleCauchyHeatmap(false)"
+                                            :disabled="cauchyHeatmapAnnotationPage + 1 >= cauchyHeatmapAnnotationPages" class="heatmap-page-button">→</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-                        <div class="flex items-center gap-3 px-4 py-2 bg-gray-50 border-b border-gray-200">
-                            <label class="text-xs font-medium text-gray-500 whitespace-nowrap">Height:</label>
-                            <input id="cauchyHeatmapHeightSlider" type="range" min="300" max="3000" step="20"
-                                class="flex-1 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-primary-600"
-                                @input="
-                                    const h = parseInt($event.target.value);
-                                    document.getElementById('cauchyHeatmapHeightLabel').textContent = h + 'px';
-                                    this._cauchyUserHeight = h;
-                                    const plotDiv = document.getElementById('cauchyHeatmap');
-                                    if (plotDiv && plotDiv.data) Plotly.relayout(plotDiv, { height: h });
-                                ">
-                            <span id="cauchyHeatmapHeightLabel" class="text-xs text-gray-500 w-12 text-right">450px</span>
-                            <button class="text-xs text-primary-600 hover:text-primary-800 underline"
-                                @click="
-                                    this._cauchyUserHeight = null;
-                                    this.renderCauchyHeatmap();
-                                ">Auto</button>
+                        <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-slate-600">
+                            <span aria-live="polite" x-text="cauchyHeatmapStatus"></span>
+                            <div class="flex items-center gap-3">
+                                <button type="button" @click="cauchyHeatmapSelectedTraits = [selectedTrait]; cauchyHeatmapTraitQuery = ''; scheduleCauchyHeatmap()"
+                                    class="font-medium text-primary-700">Selected trait</button>
+                                <button type="button" @click="resetCauchyHeatmapFilters()" class="font-medium text-primary-700">Reset filters</button>
+                            </div>
                         </div>
-                        <div id="cauchyHeatmap" class="w-full"></div>
-                        <p x-show="!cauchyHeatmapData?.length && !cauchyError" class="p-4 text-sm text-gray-500">
-                            No enrichment heatmap data for this selection.
+                        <div class="overflow-x-auto custom-scrollbar" tabindex="0" role="region" aria-label="Enrichment heatmap; scroll horizontally on small screens">
+                            <div id="cauchyHeatmap" style="min-width:640px" class="w-full"></div>
+                        </div>
+                        <p x-show="cauchyHeatmapEmpty && !cauchyError" class="px-4 py-6 text-center text-sm text-slate-500">
+                            No matching results. Try another search or reset the filters.
                         </p>
-                        <p x-show="cauchyHeatmapData?.length" class="px-4 pb-3 text-xs text-gray-500">
-                            Blank cells indicate missing results. Normalization changes colors only; hover values retain the original scale.
-                        </p>
+                        <div x-show="!cauchyHeatmapEmpty" class="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
+                            <span x-text="cauchyHeatmapOrdering"></span>
+                            <span>Color limits stay fixed across pages and searches.</span>
+                            <span>Click + in search results to keep a subset; × removes an item.</span>
+                            <span>Gray = missing. Hover shows full names and original values.</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1630,6 +1773,10 @@
 
     <script>
         function gsMapApp() {
+            // Large derived matrices stay outside Alpine's deep reactive proxy.
+            // Cache one active selection; changing a page never rebuilds it.
+            let enrichmentModel = null;
+            let enrichmentTimer = null;
             return {
                 // Data loaded flag
                 dataLoaded: false,
@@ -1640,9 +1787,11 @@
                 traitSearchQuery: '',
                 traitComboboxOpen: false,
                 traitActiveIndex: 0,
+                traitChoiceLimit: 80,
                 sampleSearchQuery: '',
                 sampleComboboxOpen: false,
                 sampleActiveIndex: 0,
+                sampleChoiceLimit: 80,
                 selectedAnnotationCategory: '',
                 selectedGene: '',
                 isLoading: false,
@@ -1833,6 +1982,17 @@
                     return this.currentAnnotationLegend.filter(entry => entry.visible).length;
                 },
 
+                get filteredAnnotationLegend() {
+                    const query = this.annotationLegendQuery.trim().toLowerCase();
+                    return this.currentAnnotationLegend.filter(entry =>
+                        !query || String(entry.category).toLowerCase().includes(query)
+                    );
+                },
+
+                get visibleAnnotationLegend() {
+                    return this.filteredAnnotationLegend.slice(0, this.annotationLegendLimit);
+                },
+
                 get pointMapAnnotationSelectionActive() {
                     return this.hasHiddenAnnotationCategories();
                 },
@@ -1869,6 +2029,14 @@
                         .filter(match => match.score !== null)
                         .sort((left, right) => left.score - right.score || left.sample.localeCompare(right.sample))
                         .map(match => match.sample);
+                },
+
+                get visibleTraitChoices() {
+                    return this.filteredTraits.slice(0, this.traitChoiceLimit);
+                },
+
+                get visibleSampleChoices() {
+                    return this.filteredSamples.slice(0, this.sampleChoiceLimit);
                 },
 
                 get spatial3dAssociationThresholdMaximum() {
@@ -2014,9 +2182,25 @@
                 cauchyHeatmapMetric: 'mlog10_p_cauchy',
                 cauchyHeatmapCluster: true,
                 cauchyHeatmapNormalize: false,
+                cauchyHeatmapTraitQuery: '',
+                cauchyHeatmapAnnotationQuery: '',
+                cauchyHeatmapSelectedTraits: [],
+                cauchyHeatmapSelectedAnnotations: [],
+                cauchyHeatmapTraitPage: 0,
+                cauchyHeatmapAnnotationPage: 0,
+                cauchyHeatmapTraitsPerPage: 24,
+                cauchyHeatmapAnnotationsPerPage: 40,
+                cauchyHeatmapTranspose: false,
+                cauchyHeatmapStatus: '',
+                cauchyHeatmapOrdering: '',
+                cauchyHeatmapEmpty: false,
+                cauchyHeatmapTraitPages: 1,
+                cauchyHeatmapAnnotationPages: 1,
+                cauchyTableQuery: '',
+                annotationLegendQuery: '',
+                annotationLegendLimit: 80,
                 cauchyTablePage: 0,
                 cauchyTablePageSize: 200,
-                _cauchyUserHeight: null,
 
                 // Memoized: filtered gene table
                 get filteredGeneTable() {
@@ -2033,9 +2217,11 @@
                     const sortKey = this.geneSortKey, asc = this.geneSortAsc;
                     const result = [...data].sort((a, b) => {
                         let va = a[sortKey], vb = b[sortKey];
-                        if (va == null) return 1;
+                        if (va == null) return vb == null ? 0 : 1;
                         if (vb == null) return -1;
-                        if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb || '').toLowerCase(); }
+                        if (typeof va === 'string' || typeof vb === 'string') {
+                            va = String(va).toLowerCase(); vb = String(vb).toLowerCase();
+                        }
                         if (va < vb) return asc ? -1 : 1;
                         if (va > vb) return asc ? 1 : -1;
                         return 0;
@@ -2069,7 +2255,8 @@
 
                 // Memoized: filtered cauchy table
                 get filteredCauchyTable() {
-                    const key = `${this.selectedTrait}|${this.selectedAnnotationCategory}|${this.cauchyViewMode}|${this.cauchySortKey}|${this.cauchySortAsc}`;
+                    const key = JSON.stringify([this.selectedTrait, this.selectedAnnotationCategory,
+                        this.cauchyViewMode, this.cauchySortKey, this.cauchySortAsc, this.cauchyTableQuery]);
                     if (this._cauchyFilterKey === key && this._cauchyFilterCache) {
                         return this._cauchyFilterCache;
                     }
@@ -2080,12 +2267,22 @@
                         r.trait === this.selectedTrait &&
                         r.annotation_name === this.selectedAnnotationCategory
                     );
+                    const query = this.cauchyTableQuery.trim().toLowerCase();
+                    if (query) data = data.filter(row =>
+                        String(row.annotation ?? '').toLowerCase().includes(query) ||
+                        String(row.sample_name ?? '').toLowerCase().includes(query)
+                    );
                     const sortKey = this.cauchySortKey, asc = this.cauchySortAsc;
+                    const labelSort = ['trait', 'annotation', 'sample_name'].includes(sortKey)
+                        ? new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'}) : null;
                     const result = [...data].sort((a, b) => {
                         let va = a[sortKey], vb = b[sortKey];
-                        if (va == null) return 1;
+                        if (va == null) return vb == null ? 0 : 1;
                         if (vb == null) return -1;
-                        if (typeof va === 'string') { va = (va || '').toLowerCase(); vb = (vb || '').toLowerCase(); }
+                        if (labelSort) return labelSort.compare(String(va), String(vb)) * (asc ? 1 : -1);
+                        if (typeof va === 'string' || typeof vb === 'string') {
+                            va = String(va).toLowerCase(); vb = String(vb).toLowerCase();
+                        }
                         if (va < vb) return asc ? -1 : 1;
                         if (va > vb) return asc ? 1 : -1;
                         return 0;
@@ -2515,7 +2712,6 @@
                 },
 
                 onCauchyViewChange() {
-                    this._cauchyUserHeight = null;
                     this.loadActiveCauchyData().catch(error => {
                         console.error('Failed to change enrichment view:', error);
                     });
@@ -2997,8 +3193,9 @@
 
                 renderAnnotationCategoryViews() {
                     requestAnimationFrame(() => {
-                        if (this.spatial3dViewMode !== 'annotation') this.renderSpatial3dTrait();
-                        if (this.spatial3dViewMode !== 'trait') this.renderSpatial3dAnnotation();
+                        this.renderSpatial3dViews().catch(error => {
+                            this.spatial3dError = `Unable to render the 3D view: ${error.message}`;
+                        });
                         if (this.currentSampleData) {
                             if (this.spatial2dViewMode !== 'annotation') {
                                 this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
@@ -3431,11 +3628,10 @@
                         this.spatial3dLayout(plot),
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
-                    Promise.resolve(rendered).then(() => {
+                    return Promise.resolve(rendered).then(() => {
                         this.bindSpatial3dHover(plot);
                         this.bindSpatial3dCameraSync('spatial3dPlotTrait', 'spatial3dPlotAnnotation');
                     });
-                    return rendered;
                 },
 
                 renderSpatial3dAnnotation() {
@@ -3487,18 +3683,19 @@
                         this.spatial3dLayout(plot),
                         { ...this.getPlotlyConfig(true), scrollZoom: true }
                     );
-                    Promise.resolve(rendered).then(() => {
+                    return Promise.resolve(rendered).then(() => {
                         this.bindSpatial3dHover(plot);
                         this.bindSpatial3dCameraSync('spatial3dPlotAnnotation', 'spatial3dPlotTrait');
                     });
-                    return rendered;
                 },
 
                 async renderSpatial3dViews({ traitOnly = false } = {}) {
                     if (!this.spatial3dBase) return;
                     const renders = [];
                     if (this.spatial3dViewMode !== 'annotation') renders.push(this.renderSpatial3dTrait());
-                    if (!traitOnly && this.spatial3dViewMode !== 'trait') renders.push(this.renderSpatial3dAnnotation());
+                    const refreshAnnotation = !traitOnly ||
+                        (this.spatial3dViewMode === 'compare' && Number(this.spatial3dAssociationMinLogP) > 0);
+                    if (refreshAnnotation && this.spatial3dViewMode !== 'trait') renders.push(this.renderSpatial3dAnnotation());
                     await Promise.all(renders.filter(Boolean).map(render => Promise.resolve(render)));
                 },
 
@@ -3506,14 +3703,81 @@
                     const source = document.getElementById(sourceId);
                     if (!source?.on || source.__gsMapCameraSyncBound) return;
                     source.__gsMapCameraSyncBound = true;
-                    source.on('plotly_relayout', event => {
-                        const camera = event?.['scene.camera'];
+                    let frame = null, latest = null, previousCamera = '', stableFrames = 0;
+                    const sync = (event, preview = false) => {
+                        let camera = event?.['scene.camera'];
+                        // gl3d emits its move event before camera controls finish.
+                        // Read the current camera at the frame boundary when available;
+                        // all writes still use public relayout, with the event as fallback.
+                        if (preview) {
+                            try { camera = source._fullLayout?.scene?._scene?.getCamera?.() || camera; }
+                            catch (_) { /* The scene may be rebuilding; retain the event camera. */ }
+                        }
                         const target = document.getElementById(targetId);
-                        if (!camera || !target?.data || this._spatial3dSyncing || this.spatial3dViewMode !== 'compare') return;
-                        this._spatial3dSyncing = true;
-                        Promise.resolve(Plotly.relayout(target, { 'scene.camera': camera }))
-                            .finally(() => { this._spatial3dSyncing = false; });
+                        if (!camera || !target?.data || this._spatial3dSyncing || source.__gsMapApplyingCamera ||
+                            this.spatial3dViewMode !== 'compare') return false;
+                        if (preview) {
+                            const signature = ['eye', 'center', 'up'].flatMap(key =>
+                                ['x', 'y', 'z'].map(axis => Number(camera[key]?.[axis]).toFixed(10))).join(',');
+                            if (signature === previousCamera) { stableFrames++; return true; }
+                            previousCamera = signature; stableFrames = 0;
+                        }
+                        this.queueSpatial3dCamera(target, camera);
+                        return true;
+                    };
+                    const followCamera = () => {
+                        frame = null;
+                        // Pan/zoom controls can keep interpolating after mousemove.
+                        // Follow that short tail too, stopping once the camera settles.
+                        if (latest && sync(latest, true) && stableFrames < 2) {
+                            frame = requestAnimationFrame(followCamera);
+                        }
+                    };
+                    const cancel = () => {
+                        if (frame !== null) cancelAnimationFrame(frame);
+                        frame = null; latest = null;
+                    };
+                    const startFollowing = event => {
+                        // Camera-only relayout is already cheap in Plotly. Keep its
+                        // public API, with one latest update per animation frame.
+                        if (source.__gsMapApplyingCamera || this._spatial3dSyncing) return;
+                        latest = event;
+                        if (frame !== null) return;
+                        previousCamera = ''; stableFrames = 0;
+                        frame = requestAnimationFrame(followCamera);
+                    };
+                    source.on('plotly_relayouting', startFollowing);
+                    // Native wheel events can emit an empty relayout before the
+                    // wheel controller updates its camera; read it on the next frame.
+                    source.addEventListener?.('wheel', () => startFollowing({}), {passive: true});
+                    source.on('plotly_relayout', event => {
+                        cancel();
+                        sync(event);
                     });
+                    window.addEventListener?.('pointerup', () => {
+                        if (latest) sync(latest, true);
+                        cancel();
+                    });
+                    window.addEventListener?.('pointercancel', cancel);
+                    window.addEventListener?.('blur', cancel);
+                },
+
+                async queueSpatial3dCamera(target, camera) {
+                    target.__gsMapPendingCamera = JSON.parse(JSON.stringify(camera));
+                    if (target.__gsMapApplyingCamera) return;
+                    target.__gsMapApplyingCamera = true;
+                    try {
+                        while (target.__gsMapPendingCamera && target.data && this.spatial3dViewMode === 'compare') {
+                            const next = target.__gsMapPendingCamera;
+                            target.__gsMapPendingCamera = null;
+                            await Plotly.relayout(target, {'scene.camera': next});
+                        }
+                    } catch (error) {
+                        console.warn('Unable to synchronize 3D cameras:', error);
+                    } finally {
+                        target.__gsMapPendingCamera = null;
+                        target.__gsMapApplyingCamera = false;
+                    }
                 },
 
                 fittedSpatial3dCamera(current = null) {
@@ -3581,6 +3845,7 @@
                 },
 
                 openSampleSearch() {
+                    this.sampleChoiceLimit = 80;
                     this.sampleSearchQuery = '';
                     this.sampleActiveIndex = 0;
                     this.sampleComboboxOpen = true;
@@ -3597,6 +3862,7 @@
                     const count = this.filteredSamples.length;
                     if (!count) return;
                     this.sampleActiveIndex = (this.sampleActiveIndex + delta + count) % count;
+                    this.sampleChoiceLimit = Math.max(this.sampleChoiceLimit, this.sampleActiveIndex + 1);
                     this.$nextTick(() => {
                         document.getElementById(`sample-option-${this.sampleActiveIndex}`)
                             ?.scrollIntoView({ block: 'nearest' });
@@ -3620,6 +3886,7 @@
                 },
 
                 openTraitSearch() {
+                    this.traitChoiceLimit = 80;
                     this.traitSearchQuery = '';
                     this.traitActiveIndex = 0;
                     this.traitComboboxOpen = true;
@@ -3636,6 +3903,7 @@
                     const count = this.filteredTraits.length;
                     if (!count) return;
                     this.traitActiveIndex = (this.traitActiveIndex + delta + count) % count;
+                    this.traitChoiceLimit = Math.max(this.traitChoiceLimit, this.traitActiveIndex + 1);
                     this.$nextTick(() => {
                         document.getElementById(`trait-option-${this.traitActiveIndex}`)
                             ?.scrollIntoView({ block: 'nearest' });
@@ -3733,13 +4001,12 @@
 
                 async onAnnotationChange() {
                     this._cauchyFilterCache = null;
+                    this.cauchyHeatmapSelectedAnnotations = [];
+                    this.cauchyHeatmapAnnotationQuery = '';
 
                     // Invalidate annotation-specific caches
                     this._umapAnnoColorCache = null;
                     this._spatial2dAnnoTracesCache = null;
-
-                    // Reset user height override — new annotation may have different row count
-                    this._cauchyUserHeight = null;
 
                     if (this.has3dWidget) {
                         await this.loadSpatial3dAnnotation(this.selectedAnnotationCategory);
@@ -3750,7 +4017,7 @@
                     requestAnimationFrame(() => {
                         if (this.umapActivated) try { this.renderUmapPlots(); } catch(e) { console.error('UMAP render:', e); }
                         try { this.renderSpatial2DPlot(); } catch(e) { console.error('2D render:', e); }
-                        try { this.renderSpatial3dViews(); } catch(e) { console.error('3D render:', e); }
+                        this.renderSpatial3dViews().catch(e => console.error('3D render:', e));
                         if (this.cauchyActivated) {
                             this.loadActiveCauchyData().catch(e => console.error('Cauchy annotation load:', e));
                         }
@@ -4168,212 +4435,305 @@
                     }
                 },
 
-                // Cauchy Heatmap
+                // Sparse, non-reactive model; paging/search never rebuilds it.
+                scheduleCauchyHeatmap(resetPages = true) {
+                    if (resetPages) {
+                        this.cauchyHeatmapTraitPage = 0;
+                        this.cauchyHeatmapAnnotationPage = 0;
+                    }
+                    clearTimeout(enrichmentTimer);
+                    enrichmentTimer = setTimeout(() => this.renderCauchyHeatmap(), 80);
+                },
+
+                resetCauchyHeatmapFilters() {
+                    this.cauchyHeatmapTraitQuery = '';
+                    this.cauchyHeatmapAnnotationQuery = '';
+                    this.cauchyHeatmapSelectedTraits = [];
+                    this.cauchyHeatmapSelectedAnnotations = [];
+                    this.scheduleCauchyHeatmap();
+                },
+
+                heatmapSearchMatches(label, query) {
+                    return !query.trim() || query.split(',').some(term => term.trim() &&
+                        this.scoreTraitMatch(label, term.trim()) !== null);
+                },
+
+                heatmapSubsetChoices(kind) {
+                    const trait = kind === 'trait';
+                    const query = trait ? this.cauchyHeatmapTraitQuery : this.cauchyHeatmapAnnotationQuery;
+                    if (!query.trim()) return [];
+                    const labels = this.cauchyHeatmapModel()[trait ? 'traits' : 'annotations'];
+                    return labels.filter(label => this.heatmapSearchMatches(label, query)).slice(0, 30);
+                },
+
+                toggleHeatmapSubset(kind, label) {
+                    if (label == null) return;
+                    const key = kind === 'trait' ? 'cauchyHeatmapSelectedTraits' : 'cauchyHeatmapSelectedAnnotations';
+                    const values = this[key];
+                    this[key] = values.includes(label) ? values.filter(value => value !== label) : [...values, label];
+                    this[kind === 'trait' ? 'cauchyHeatmapTraitQuery' : 'cauchyHeatmapAnnotationQuery'] = '';
+                    this.scheduleCauchyHeatmap();
+                },
+
+                cauchyHeatmapModel() {
+                    const rows = window.Alpine?.raw
+                        ? window.Alpine.raw(this.cauchyHeatmapData) : this.cauchyHeatmapData;
+                    const key = JSON.stringify([this.cauchyHeatmapMetric, this.cauchyHeatmapNormalize,
+                        this.cauchyHeatmapCluster, this._cauchyHeatmapSelectionKey]);
+                    if (enrichmentModel?.source === rows && enrichmentModel.key === key) return enrichmentModel;
+                    const values = new Map(), traitSet = new Set();
+                    const metric = this.cauchyHeatmapMetric;
+                    for (const row of rows || []) {
+                        if (row.annotation == null || row.trait == null) continue;
+                        const annotation = String(row.annotation), trait = String(row.trait);
+                        if (!values.has(annotation)) values.set(annotation, new Map());
+                        const value = row[metric];
+                        values.get(annotation).set(trait,
+                            value != null && Number.isFinite(Number(value)) ? Number(value) : null);
+                        traitSet.add(trait);
+                    }
+                    let annotations = [...values.keys()].sort(), traits = [...traitSet].sort();
+                    const limits = new Map(traits.map(trait => [trait, {min: Infinity, max: -Infinity}]));
+                    let maximum = 0;
+                    for (const row of values.values()) for (const [trait, value] of row) {
+                        if (value == null) continue;
+                        const bound = limits.get(trait);
+                        bound.min = Math.min(bound.min, value);
+                        bound.max = Math.max(bound.max, value);
+                        maximum = Math.max(maximum, value);
+                    }
+                    const normalized = this.cauchyHeatmapNormalize;
+                    const raw = (annotation, trait) => values.get(annotation)?.get(trait) ?? null;
+                    const color = (annotation, trait) => {
+                        const value = raw(annotation, trait);
+                        if (value == null || !normalized) return value;
+                        const bound = limits.get(trait), range = bound.max - bound.min;
+                        return range > 0 ? (value - bound.min) / range : 0;
+                    };
+                    let ordering = 'Mean signal';
+                    if (traits.length === 1) {
+                        annotations.sort((a, b) => (color(a, traits[0]) ?? -Infinity) -
+                            (color(b, traits[0]) ?? -Infinity));
+                        ordering = 'Signal';
+                    } else if (this.cauchyHeatmapCluster && annotations.length &&
+                        Math.max(annotations.length, traits.length) <= 180 &&
+                        annotations.length * traits.length <= 20_000) {
+                        // Exact clustering has bounded dimension AND pair work.
+                        // Imputation is only for distance, never displayed values.
+                        const z = annotations.map(a => traits.map(t => color(a, t)));
+                        const means = traits.map((_, j) => {
+                            const finite = z.map(row => row[j]).filter(v => v != null);
+                            return finite.length ? finite.reduce((a, b) => a + b, 0) / finite.length : 0;
+                        });
+                        const dense = z.map(row => row.map((v, j) => v ?? means[j]));
+                        const rowOrder = this.clusterData(dense);
+                        const colOrder = this.clusterData(traits.map((_, j) => rowOrder.map(i => dense[i][j])));
+                        annotations = rowOrder.map(i => annotations[i]);
+                        traits = colOrder.map(j => traits[j]);
+                        ordering = 'Average-linkage clustering';
+                    } else {
+                        // No large dense Cartesian product or quadratic distances.
+                        // Peak locations group similar profiles deterministically.
+                        const traitIndex = new Map(traits.map((t, i) => [t, i]));
+                        const annotationIndex = new Map(annotations.map((a, i) => [a, i]));
+                        const columnStats = new Map(traits.map(t => [t, {peak: 0, max: -Infinity, sum: 0, n: 0}]));
+                        const rowStats = new Map();
+                        for (const annotation of annotations) {
+                            const stats = {peak: 0, max: -Infinity, sum: 0, n: 0};
+                            for (const trait of values.get(annotation).keys()) {
+                                const v = color(annotation, trait);
+                                if (v == null) continue;
+                                stats.sum += v; stats.n++;
+                                if (v > stats.max || (v === stats.max && traitIndex.get(trait) < stats.peak)) {
+                                    stats.max = v; stats.peak = traitIndex.get(trait);
+                                }
+                                const col = columnStats.get(trait);
+                                col.sum += v; col.n++;
+                                if (v > col.max || (v === col.max && annotationIndex.get(annotation) < col.peak)) {
+                                    col.max = v; col.peak = annotationIndex.get(annotation);
+                                }
+                            }
+                            rowStats.set(annotation, stats);
+                        }
+                        const mean = s => s.n ? s.sum / s.n : -Infinity;
+                        const order = (stats, patterns) => (a, b) => {
+                            const left = stats.get(a), right = stats.get(b);
+                            return (patterns ? left.peak - right.peak : 0) ||
+                                mean(left) - mean(right) || a.localeCompare(b);
+                        };
+                        annotations.sort(order(rowStats, this.cauchyHeatmapCluster));
+                        if (this.cauchyHeatmapCluster) {
+                            traits.sort(order(columnStats, true));
+                            ordering = 'Fast pattern order (large matrix)';
+                        }
+                    }
+                    enrichmentModel = {source: rows, key, annotations, traits, raw, color,
+                        maximum: normalized ? 1 : Math.max(1, maximum), ordering};
+                    this.cauchyHeatmapTraitPage = 0;
+                    this.cauchyHeatmapAnnotationPage = 0;
+                    return enrichmentModel;
+                },
+
                 renderCauchyHeatmap() {
                     const plotDiv = document.getElementById('cauchyHeatmap');
                     if (!plotDiv) return;
-
-                    const data = (this.cauchyHeatmapData || []).filter(row =>
-                        row.annotation != null && row.trait != null
-                    );
-                    if (data.length === 0) {
-                        Plotly.purge(plotDiv);
-                        plotDiv.replaceChildren();
+                    const model = this.cauchyHeatmapModel();
+                    // Once pinned, typing searches candidates without replacing the displayed subset.
+                    const chosenTraits = new Set(this.cauchyHeatmapSelectedTraits);
+                    const chosenAnnotations = new Set(this.cauchyHeatmapSelectedAnnotations);
+                    const allTraits = model.traits.filter(t => chosenTraits.size ? chosenTraits.has(t) :
+                        this.heatmapSearchMatches(t, this.cauchyHeatmapTraitQuery));
+                    const allAnnotations = model.annotations.filter(a => chosenAnnotations.size ? chosenAnnotations.has(a) :
+                        this.heatmapSearchMatches(a, this.cauchyHeatmapAnnotationQuery));
+                    const traitSize = Math.max(1, Math.min(60, Number(this.cauchyHeatmapTraitsPerPage) || 24));
+                    const annotationSize = Math.max(1, Math.min(80, Number(this.cauchyHeatmapAnnotationsPerPage) || 40));
+                    this.cauchyHeatmapTraitPages = Math.max(1, Math.ceil(allTraits.length / traitSize));
+                    this.cauchyHeatmapAnnotationPages = Math.max(1, Math.ceil(allAnnotations.length / annotationSize));
+                    this.cauchyHeatmapTraitPage = Math.max(0, Math.min(this.cauchyHeatmapTraitPages - 1, this.cauchyHeatmapTraitPage));
+                    this.cauchyHeatmapAnnotationPage = Math.max(0, Math.min(this.cauchyHeatmapAnnotationPages - 1, this.cauchyHeatmapAnnotationPage));
+                    const tStart = this.cauchyHeatmapTraitPage * traitSize;
+                    const aEnd = allAnnotations.length - this.cauchyHeatmapAnnotationPage * annotationSize;
+                    const finalTraits = allTraits.slice(tStart, tStart + traitSize);
+                    const finalAnnotations = allAnnotations.slice(Math.max(0, aEnd - annotationSize), aEnd);
+                    this.cauchyHeatmapOrdering = model.ordering;
+                    this.cauchyHeatmapEmpty = !finalTraits.length || !finalAnnotations.length;
+                    this.cauchyHeatmapStatus = this.cauchyHeatmapEmpty ? 'No matching traits or annotations.' :
+                        'Traits ' + (tStart + 1) + '–' + (tStart + finalTraits.length) + ' of ' + allTraits.length.toLocaleString() +
+                        ' · Annotations ' + (allAnnotations.length - aEnd + 1) + '–' + (allAnnotations.length - aEnd + finalAnnotations.length) +
+                        ' of ' + allAnnotations.length.toLocaleString() +
+                        (allTraits.length !== model.traits.length || allAnnotations.length !== model.annotations.length
+                            ? ' (filtered from ' + model.traits.length.toLocaleString() + ' × ' + model.annotations.length.toLocaleString() + ')' : '');
+                    if (this.cauchyHeatmapEmpty) {
+                        this.clearCauchyHeatmap(plotDiv);
                         return;
                     }
-
-                    const metric = this.cauchyHeatmapMetric;
-                    const annotationValues = [...new Set(data.map(r => String(r.annotation)))].sort();
-                    const traitValues = [...new Set(data.map(r => String(r.trait)))].sort();
-
-                    const rowByKey = new Map(data.map(row => [
-                        JSON.stringify([String(row.annotation), String(row.trait)]),
-                        row
-                    ]));
-                    let zData = annotationValues.map(anno => traitValues.map(trait => {
-                        const match = rowByKey.get(JSON.stringify([anno, trait]));
-                        const value = match?.[metric];
-                        return value != null && Number.isFinite(Number(value)) ? Number(value) : null;
-                    }));
-
-                    // Deep copy for hover labels
-                    let hoverZData = zData.map(row => [...row]);
-
-                    // Normalize column-wise (trait-wise)
-                    if (this.cauchyHeatmapNormalize) {
-                        for (let j = 0; j < traitValues.length; j++) {
-                            const colValues = zData.map(row => row[j]).filter(value => value != null);
-                            if (!colValues.length) continue;
-                            const minVal = Math.min(...colValues);
-                            const maxVal = Math.max(...colValues);
-                            const range = maxVal - minVal;
-                            for (let i = 0; i < annotationValues.length; i++) {
-                                if (zData[i][j] == null) continue;
-                                if (range > 0) {
-                                    zData[i][j] = (zData[i][j] - minVal) / range;
-                                } else {
-                                    zData[i][j] = 0;
-                                }
-                            }
-                        }
-                    }
-
-                    let finalAnnotations = annotationValues;
-                    let finalTraits = traitValues;
-
-                    // Reorder rows and columns based on data
-                    // Note: Plotly heatmap y-axis goes bottom→top, so last array element = top of chart
-                    if (traitValues.length === 1) {
-                        // Single trait: sort ascending so highest value is last → appears at top
-                        const indices = annotationValues.map((_, i) => i);
-                        indices.sort((a, b) => (zData[a][0] ?? -Infinity) - (zData[b][0] ?? -Infinity));
-                        zData = indices.map(i => zData[i]);
-                        hoverZData = indices.map(i => hoverZData[i]);
-                        finalAnnotations = indices.map(i => annotationValues[i]);
-                    } else if (this.cauchyHeatmapCluster) {
-                        // Multiple traits with clustering enabled
-                        try {
-                            // Cluster rows (Annotations)
-                            // Missing cells stay blank. Mean imputation is only for
-                            // the distance calculation, never the displayed values.
-                            const means = traitValues.map((_, j) => {
-                                const values = zData.map(row => row[j]).filter(value => value != null);
-                                return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-                            });
-                            let clusteringData = zData.map(row => row.map((value, j) => value ?? means[j]));
-                            const rowOrder = this.clusterData(clusteringData);
-                            clusteringData = rowOrder.map(i => clusteringData[i]);
-                            zData = rowOrder.map(i => zData[i]);
-                            hoverZData = rowOrder.map(i => hoverZData[i]);
-                            finalAnnotations = rowOrder.map(i => annotationValues[i]);
-
-                            // Cluster columns (Traits)
-                            const transposed = traitValues.map((_, j) => clusteringData.map(row => row[j]));
-                            const colOrder = this.clusterData(transposed);
-                            zData = zData.map(row => colOrder.map(j => row[j]));
-                            hoverZData = hoverZData.map(row => colOrder.map(j => row[j]));
-                            finalTraits = colOrder.map(j => traitValues[j]);
-                        } catch (e) {
-                            console.error("Clustering failed, using default order:", e);
-                        }
-                    } else {
-                        // Multiple traits, no clustering: sort ascending by mean so highest at top
-                        const indices = annotationValues.map((_, i) => i);
-                        indices.sort((a, b) => {
-                            const finiteMean = row => {
-                                const values = row.filter(value => value != null);
-                                return values.length ? values.reduce((s, v) => s + v, 0) / values.length : -Infinity;
-                            };
-                            const meanA = finiteMean(zData[a]);
-                            const meanB = finiteMean(zData[b]);
-                            return meanA - meanB;
-                        });
-                        zData = indices.map(i => zData[i]);
-                        hoverZData = indices.map(i => hoverZData[i]);
-                        finalAnnotations = indices.map(i => annotationValues[i]);
-                    }
-
-                    const metricLabel = {
-                        'mlog10_p_cauchy': '-log10(p_cauchy)',
-                        'mlog10_p_median': '-log10(p_median)',
-                        'top_95_quantile': 'Q95 (-log10P)'
-                    }[metric] || metric;
-
-                    const colorscale = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
-
-                    const nAnnotations = finalAnnotations.length;
-                    const nTraits = finalTraits.length;
-                    const autoHeight = Math.min(3000, Math.max(450, nAnnotations * 28 + 230));
-                    const tickFontSize = Math.min(12, Math.max(8, Math.round(300 / nAnnotations)));
-
-                    // Use user-specified height if set, otherwise auto-calculate
-                    const plotHeight = this._cauchyUserHeight || autoHeight;
-
-                    // Sync slider to current height
-                    const slider = document.getElementById('cauchyHeatmapHeightSlider');
-                    const label = document.getElementById('cauchyHeatmapHeightLabel');
-                    if (slider) {
-                        slider.value = plotHeight;
-                        slider.max = Math.max(3000, autoHeight + 500);
-                    }
-                    if (label) label.textContent = plotHeight + 'px';
-
-                    // Build heatmap trace
+                    const transpose = this.cauchyHeatmapTranspose;
+                    const xs = transpose ? finalAnnotations : finalTraits;
+                    const ys = transpose ? finalTraits : finalAnnotations;
+                    const matrix = get => ys.map(y => xs.map(x => transpose ? get(x, y) : get(y, x)));
+                    const hoverZData = matrix(model.raw);
+                    const metricLabel = {mlog10_p_cauchy: '−log10(P), Cauchy',
+                        mlog10_p_median: '−log10(P), median', top_95_quantile: 'Q95 (−log10P)'}[this.cauchyHeatmapMetric];
+                    const colors = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
                     const heatmapTrace = {
-                        z: zData,
-                        x: finalTraits,
-                        y: finalAnnotations,
-                        type: 'heatmap',
-                        colorscale: colorscale.map((c, i) => [i / (colorscale.length - 1), c]),
-                        reversescale: false,
-                        zmin: 0,
-                        zmax: this.cauchyHeatmapNormalize ? 1 : undefined,
-                        hoverongaps: false,
-                        connectgaps: false,
-                        customdata: hoverZData,
-                        hovertemplate: `Annotation: %{y}<br>Trait: %{x}<br>${metricLabel}: %{customdata:.2f}<extra></extra>`,
-                        colorbar: {
-                            title: { text: this.cauchyHeatmapNormalize ? 'Within-trait scale (0–1)' : metricLabel, side: 'top', font: { size: 11 } },
-                            thickness: 14,
-                            len: 0.62,
-                            x: 1.035,
-                            outlinewidth: 0
-                        }
+                        type: 'heatmap', x: xs, y: ys, z: matrix(model.color), customdata: hoverZData,
+                        colorscale: colors.map((c, i) => [i / (colors.length - 1), c]),
+                        zmin: 0, zmax: model.maximum, xgap: xs.length <= 40 ? 1 : 0, ygap: 1,
+                        hoverongaps: false, connectgaps: false, hoverinfo: 'none',
+                        meta: {heatmapRole: 'matrix', transpose, metricLabel,
+                            annotationName: this.selectedAnnotationCategory},
+                        colorbar: {title: {text: this.cauchyHeatmapNormalize ? 'Within-trait<br>scale (0–1)' : metricLabel.replace(', ', '<br>'),
+                            font: {size: 10}}, thickness: 12, len: 0.7, x: 1.025, outlinewidth: 0}
                     };
-
-                    const annotationColors = finalAnnotations.map(annotation =>
-                        this.getAnnotationColor(annotation, this.selectedAnnotationCategory)
-                    );
-                    const annotationColorTrace = {
-                        z: finalAnnotations.map((_, index) => [index]),
-                        x: ['Annotation color'],
-                        y: finalAnnotations,
-                        type: 'heatmap',
-                        xaxis: 'x2',
-                        yaxis: 'y',
-                        colorscale: this.discreteColorScale(annotationColors),
-                        zmin: -0.5,
-                        zmax: Math.max(0.5, finalAnnotations.length - 0.5),
-                        showscale: false,
-                        hovertemplate: '<b>%{y}</b><br>Same color as spatial and UMAP views<extra></extra>'
-                    };
-
-                    // Add text annotations on cells when small enough
-                    if (nAnnotations * nTraits <= 100) {
-                        heatmapTrace.text = hoverZData.map(row => row.map(v => v != null ? v.toFixed(1) : ''));
+                    if (xs.length * ys.length <= 100) {
+                        heatmapTrace.text = hoverZData.map(row => row.map(v => v == null ? '' : v.toFixed(1)));
                         heatmapTrace.texttemplate = '%{text}';
-                        heatmapTrace.textfont = { size: Math.min(11, Math.max(7, Math.round(200 / Math.max(nAnnotations, nTraits)))) };
+                        heatmapTrace.textfont = {size: 11};
                     }
-
+                    const annotationColors = finalAnnotations.map(a => this.getAnnotationColor(a, this.selectedAnnotationCategory));
+                    const annotationColorTrace = {
+                        type: 'heatmap',
+                        z: transpose ? [finalAnnotations.map((_, i) => i)] : finalAnnotations.map((_, i) => [i]),
+                        x: transpose ? finalAnnotations : ['Annotation color'],
+                        y: transpose ? ['Annotation color'] : finalAnnotations,
+                        xaxis: transpose ? 'x' : 'x2', yaxis: transpose ? 'y2' : 'y',
+                        colorscale: this.discreteColorScale(annotationColors),
+                        zmin: -0.5, zmax: Math.max(0.5, finalAnnotations.length - 0.5), showscale: false,
+                        hoverinfo: 'none',
+                        meta: {heatmapRole: 'annotation', transpose,
+                            annotationName: this.selectedAnnotationCategory}
+                    };
+                    const shorten = label => {
+                        const text = String(label).replace(/_/g, ' ');
+                        return text.length > 26 ? text.slice(0, 24) + '…' : text;
+                    };
                     return Promise.resolve(Plotly.react(plotDiv, [heatmapTrace, annotationColorTrace], {
-                        title: { text: `Cauchy Enrichment Heatmap: ${metricLabel}`, font: { size: 16 } },
-                        xaxis: {
-                            title: 'Trait', type: 'category', categoryorder: 'array', categoryarray: finalTraits,
-                            tickangle: 45, automargin: true, domain: [0, 0.925]
-                        },
-                        xaxis2: {
-                            domain: [0.95, 0.975],
-                            type: 'category',
-                            anchor: 'y',
-                            showgrid: false,
-                            zeroline: false,
-                            showticklabels: false,
-                            fixedrange: true
-                        },
-                        yaxis: {
-                            title: 'Annotation', type: 'category', categoryorder: 'array', categoryarray: finalAnnotations,
-                            automargin: true, tickfont: { size: tickFontSize }
-                        },
-                        margin: { l: 150, r: 90, t: 80, b: 150 },
-                        height: plotHeight,
-                        paper_bgcolor: '#ffffff',
-                        plot_bgcolor: '#ffffff'
-                    }, this.getPlotlyConfig())).catch(error => {
-                        Plotly.purge(plotDiv);
-                        plotDiv.replaceChildren();
+                        autosize: true, height: Math.min(1150, Math.max(490, ys.length * 23 + 190)),
+                        xaxis: {type: 'category', categoryorder: 'array', categoryarray: xs,
+                            tickmode: 'array', tickvals: xs, ticktext: xs.map(shorten), tickangle: -55,
+                            tickfont: {size: 10}, automargin: false, domain: transpose ? [0, 1] : [0, 0.96]},
+                        yaxis: {type: 'category', categoryorder: 'array', categoryarray: ys,
+                            tickmode: 'array', tickvals: ys, ticktext: ys.map(shorten),
+                            tickfont: {size: 11}, automargin: false, domain: transpose ? [0, 0.945] : [0, 1]},
+                        xaxis2: {type: 'category', domain: [0.978, 1], anchor: 'y',
+                            showticklabels: false, showgrid: false, zeroline: false, fixedrange: true},
+                        // Keep the annotation strip above the matrix when transposed,
+                        // away from the bottom x-axis tick labels.
+                        yaxis2: {type: 'category', domain: [0.975, 1], anchor: 'x',
+                            showticklabels: false, showgrid: false, zeroline: false, fixedrange: true},
+                        margin: {l: 172, r: 96, t: 22, b: 168}, dragmode: 'pan',
+                        paper_bgcolor: '#ffffff', plot_bgcolor: '#f1f5f9',
+                        hoverlabel: {font: {family: 'Arial, sans-serif', size: 12}, align: 'left'},
+                        uirevision: JSON.stringify([model.key, tStart, aEnd, traitSize, annotationSize, transpose,
+                            finalTraits, finalAnnotations])
+                    }, this.getPlotlyConfig())).then(() => this.bindHeatmapHover(plotDiv)).catch(error => {
+                        this.clearCauchyHeatmap(plotDiv);
                         this.cauchyError = error?.message || 'Could not draw the enrichment heatmap.';
                         console.error('Enrichment heatmap failed:', error);
                     });
+                },
+
+                heatmapHoverDetails(point) {
+                    const meta = point?.data?.meta;
+                    if (!meta?.heatmapRole) return null;
+                    const annotation = String(meta.transpose ? point.x : point.y);
+                    const trait = String(meta.transpose ? point.y : point.x);
+                    const escape = value => this.escapeSpatial2dHoverValue(value);
+                    const lines = [`<b>${escape(annotation)}</b>`];
+                    if (meta.heatmapRole === 'matrix') {
+                        lines.push(escape(trait));
+                        const value = point.customdata;
+                        lines.push(`${escape(meta.metricLabel)}: ${value != null && Number.isFinite(Number(value))
+                            ? Number(value).toFixed(2) : 'N/A'}`);
+                    } else lines.push('Same color as spatial and UMAP views');
+                    return {html: lines.join('<br>'), background: this.getAnnotationColor(annotation, meta.annotationName)};
+                },
+
+                clearCauchyHeatmap(plot) {
+                    plot.__gsMapHeatmapHoverCleanup?.();
+                    Plotly.purge(plot);
+                    plot.replaceChildren();
+                },
+
+                bindHeatmapHover(plot) {
+                    if (!plot?.on || plot.__gsMapHeatmapHoverBound) return;
+                    plot.__gsMapHeatmapHoverBound = true;
+                    const hide = () => {
+                        if (this._pointHoverOwner === plot) {
+                            this._pointHoverOwner = null;
+                            this.hidePointHoverTooltip();
+                        }
+                    };
+                    const hover = event => {
+                        const details = this.heatmapHoverDetails(event?.points?.[0]);
+                        if (!details || !event.event) return;
+                        const tooltip = this.getPointHoverTooltip();
+                        this._pointHoverOwner = plot;
+                        tooltip.innerHTML = details.html;
+                        tooltip.style.background = details.background;
+                        tooltip.style.color = this.hoverTextColor(details.background);
+                        tooltip.style.display = 'block';
+                        this.positionReportTooltip(tooltip, event.event);
+                    };
+                    plot.on('plotly_hover', hover);
+                    plot.on('plotly_unhover', hide);
+                    plot.on('plotly_beforeplot', hide);
+                    plot.addEventListener('pointerleave', hide);
+                    plot.addEventListener('pointerdown', hide);
+                    window.addEventListener('scroll', hide, {passive: true, capture: true});
+                    window.addEventListener('blur', hide);
+                    plot.__gsMapHeatmapHoverCleanup = () => {
+                        hide();
+                        plot.removeListener?.('plotly_hover', hover);
+                        plot.removeListener?.('plotly_unhover', hide);
+                        plot.removeListener?.('plotly_beforeplot', hide);
+                        plot.removeEventListener('pointerleave', hide);
+                        plot.removeEventListener('pointerdown', hide);
+                        window.removeEventListener('scroll', hide, true);
+                        window.removeEventListener('blur', hide);
+                        delete plot.__gsMapHeatmapHoverBound;
+                        delete plot.__gsMapHeatmapHoverCleanup;
+                    };
                 },
 
                 // Hierarchical clustering (UPGMA / average linkage). A heap avoids
@@ -4797,7 +5157,10 @@
                     tooltip.style.background = background;
                     tooltip.style.color = this.hoverTextColor(background);
                     tooltip.style.display = 'block';
+                    this.positionReportTooltip(tooltip, pointer);
+                },
 
+                positionReportTooltip(tooltip, pointer) {
                     const gap = 16;
                     const padding = 8;
                     const bounds = tooltip.getBoundingClientRect();
@@ -5047,7 +5410,9 @@
                     if (this.spatial2dViewMode !== 'annotation') {
                         this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
                     }
-                    if (!traitOnly && this.spatial2dViewMode !== 'trait') {
+                    const refreshAnnotation = !traitOnly ||
+                        (this.spatial2dViewMode === 'compare' && Number(this.spatial2dAssociationMinLogP) > 0);
+                    if (refreshAnnotation && this.spatial2dViewMode !== 'trait') {
                         this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
                     }
                 },
@@ -5172,8 +5537,7 @@
                     // Scrolling or replotting must not leave a tooltip at an old position.
                     window.addEventListener('scroll', cancel, {passive: true, capture: true});
                     plot.on('plotly_beforeplot', cancel);
-                    plot.on('plotly_afterplot', () => this.spatial2dHoverIndex(plot));
-                    this.spatial2dHoverIndex(plot);
+                    // Build lazily at the next hover, not on the critical pan/zoom path.
                 },
 
                 // Render one compact 2D payload. Large categorical data remain a single WebGL trace.
@@ -5397,8 +5761,9 @@
                     const source = document.getElementById(sourceId);
                     if (!source?.on || source.__gsMapViewportSyncBound) return;
                     source.__gsMapViewportSyncBound = true;
-                    source.on('plotly_relayout', event => {
-                        if (this._spatial2dSyncing || this.spatial2dViewMode !== 'compare') return;
+                    let frame = null;
+                    const sync = (event, preview = false) => {
+                        if (source.__gsMapApplyingViewport || this.spatial2dViewMode !== 'compare') return;
                         const target = document.getElementById(targetId);
                         if (!target?.data) return;
                         const viewport = {};
@@ -5409,10 +5774,116 @@
                             if (Object.hasOwn(event, key)) viewport[key] = event[key];
                         }
                         if (Object.keys(viewport).length === 0) return;
-                        this._spatial2dSyncing = true;
-                        Promise.resolve(Plotly.relayout(target, viewport))
-                            .finally(() => { this._spatial2dSyncing = false; });
+                        if (!target.__gsMapApplyingViewport && this.applySpatial2dPanViewport(target, viewport)) return;
+                        // Never launch expensive full redraws for every drag frame.
+                        if (!preview) this.queueSpatial2dViewport(target, viewport);
+                    };
+                    source.on('plotly_relayouting', event => {
+                        if (frame !== null) cancelAnimationFrame(frame);
+                        frame = requestAnimationFrame(() => { frame = null; sync(event, true); });
                     });
+                    source.on('plotly_relayout', event => {
+                        if (frame !== null) cancelAnimationFrame(frame);
+                        frame = null;
+                        sync(event);
+                    });
+                },
+
+                queueSpatial2dViewport(target, viewport) {
+                    // Coalesce bursts, but retain the latest range while a redraw is in flight.
+                    const pending = {...target.__gsMapPendingViewport};
+                    const incoming = {...viewport};
+                    for (const axis of ['xaxis', 'yaxis']) {
+                        const rangeKeys = [axis + '.range', axis + '.range[0]', axis + '.range[1]'];
+                        if (Object.hasOwn(incoming, axis + '.autorange') && incoming[axis + '.autorange'] !== false) {
+                            rangeKeys.forEach(key => delete pending[key]);
+                        } else if (rangeKeys.some(key => Object.hasOwn(incoming, key))) {
+                            delete pending[axis + '.autorange'];
+                        }
+                        if (!Object.hasOwn(incoming, axis + '.range') && Array.isArray(pending[axis + '.range']) &&
+                            rangeKeys.slice(1).some(key => Object.hasOwn(incoming, key))) {
+                            incoming[axis + '.range'] = pending[axis + '.range'].map((value, i) =>
+                                incoming[axis + '.range[' + i + ']'] ?? value);
+                            delete incoming[axis + '.range[0]']; delete incoming[axis + '.range[1]'];
+                        }
+                        if (Object.hasOwn(incoming, axis + '.range')) {
+                            delete pending[axis + '.range[0]']; delete pending[axis + '.range[1]'];
+                        }
+                    }
+                    target.__gsMapPendingViewport = {...pending, ...incoming};
+                    if (target.__gsMapApplyingViewport) return;
+                    const flush = async () => {
+                        target.__gsMapApplyingViewport = true;
+                        try {
+                            while (target.__gsMapPendingViewport && target.data && this.spatial2dViewMode === 'compare') {
+                                const next = target.__gsMapPendingViewport;
+                                target.__gsMapPendingViewport = null;
+                                await Plotly.relayout(target, next);
+                            }
+                        } catch (error) {
+                            console.warn('Unable to synchronize 2D viewports:', error);
+                        } finally {
+                            target.__gsMapPendingViewport = null;
+                            target.__gsMapApplyingViewport = false;
+                        }
+                    };
+                    return flush();
+                },
+
+                applySpatial2dPanViewport(plot, viewport) {
+                    // Narrow adapter for the bundled Plotly 3.6 scattergl drag API.
+                    // Updating only the WebGL range avoids recoloring/reuploading 500k
+                    // unchanged points. Other versions and zoom/autorange use relayout.
+                    const layout = plot?._fullLayout, scene = layout?._plots?.xy?._scene;
+                    if (!/^3\.6\./.test(Plotly.version || '') || plot.data?.length !== 1 ||
+                        plot.data[0].type !== 'scattergl' || scene?.count !== 1 || scene.dirty ||
+                        typeof scene.update !== 'function' || typeof scene.draw !== 'function' ||
+                        typeof layout?._glcanvas?.each !== 'function' ||
+                        Object.keys(viewport).some(key => !/^[xy]axis\.range(?:\[[01]\])?$/.test(key))) return false;
+                    const ranges = {}, previous = {};
+                    for (const name of ['xaxis', 'yaxis']) {
+                        const axis = layout[name];
+                        if (axis?.type !== 'linear' || typeof axis.setScale !== 'function' ||
+                            axis.showticklabels || axis.showgrid || axis.zeroline || !plot.layout?.[name]) return false;
+                        const range = [0, 1].map(i => Number(viewport[name + '.range[' + i + ']'] ??
+                            viewport[name + '.range']?.[i] ?? axis.range[i]));
+                        const span = axis.range[1] - axis.range[0];
+                        if (!range.every(Number.isFinite) || !Number.isFinite(span) || span === 0 ||
+                            Math.abs((range[1] - range[0]) - span) > Math.abs(span) * 1e-8) return false;
+                        ranges[name] = range;
+                        previous[name] = {range: axis.range.slice(), r: axis._r, rl: axis._rl, autorange: axis.autorange,
+                            inputRange: plot.layout[name].range, inputAutorange: plot.layout[name].autorange};
+                    }
+                    if ((scene.selectBatch || []).some(values => values.length) ||
+                        (scene.unselectBatch || []).some(values => values.length)) return false;
+                    if (['xaxis', 'yaxis'].every(name => ranges[name].every((v, i) => v === layout[name].range[i]))) return true;
+                    try {
+                        for (const name of ['xaxis', 'yaxis']) {
+                            layout[name].range = ranges[name].slice();
+                            layout[name].autorange = false;
+                            plot.layout[name].range = ranges[name].slice();
+                            plot.layout[name].autorange = false;
+                            layout[name].setScale();
+                            // Plotly's next native drag starts from the last drawn range.
+                            layout[name]._r = ranges[name].slice();
+                            layout[name]._rl = ranges[name].slice();
+                        }
+                        scene.update({range: [ranges.xaxis[0], ranges.yaxis[0], ranges.xaxis[1], ranges.yaxis[1]]});
+                        layout._glcanvas.each(function(layer) { layer.regl?.clear({color: true, depth: true}); });
+                        scene.draw();
+                        return true;
+                    } catch (_) {
+                        for (const name of ['xaxis', 'yaxis']) {
+                            layout[name].range = previous[name].range;
+                            layout[name]._r = previous[name].r;
+                            layout[name]._rl = previous[name].rl;
+                            layout[name].autorange = previous[name].autorange;
+                            plot.layout[name].range = previous[name].inputRange;
+                            plot.layout[name].autorange = previous[name].inputAutorange;
+                            layout[name].setScale();
+                        }
+                        return false;
+                    }
                 },
 
                 resolveSpatial2dPointSize(data, plot, plotType = 'trait') {

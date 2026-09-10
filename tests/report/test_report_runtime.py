@@ -42,8 +42,9 @@ def run_js():
             input=app_code + setup + body,
             text=True,
             capture_output=True,
-            check=True,
+            check=False,
         )
+        assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
 
     return run
@@ -403,6 +404,382 @@ def test_empty_selection_clears_old_heatmap(run_js):
     assert result["cleared"]
 
 
+def test_heatmap_paging_and_search_reuse_model_and_global_scale(run_js):
+    result = run_js("""
+        app.cauchyHeatmapNormalize = true;
+        app.cauchyHeatmapAnnotationsPerPage = 1;
+        app.cauchyHeatmapData = [
+            {annotation: 'lowest', trait: 'IQ', mlog10_p_cauchy: 0},
+            {annotation: 'middle', trait: 'IQ', mlog10_p_cauchy: 5},
+            {annotation: 'highest', trait: 'IQ', mlog10_p_cauchy: 10},
+        ];
+        await app.renderCauchyHeatmap();
+        const model = app.cauchyHeatmapModel();
+        const first = plot.traces[0].z;
+        app.cauchyHeatmapAnnotationPage = 1;
+        await app.renderCauchyHeatmap();
+        const second = {z: plot.traces[0].z, raw: plot.traces[0].customdata};
+        app.cauchyHeatmapAnnotationQuery = 'lowest';
+        await app.renderCauchyHeatmap();
+        console.log(JSON.stringify({first, second, last: plot.traces[0].z,
+            max: plot.traces[0].zmax, reused: model === app.cauchyHeatmapModel(),
+            annotationPage: app.cauchyHeatmapAnnotationPage}));
+    """)
+    assert result == dict(first=[[1]], second=dict(z=[[0.5]], raw=[[5]]),
+                          last=[[0]], max=1, reused=True, annotationPage=0)
+
+
+def test_large_sparse_heatmap_never_materializes_full_cartesian_matrix(run_js):
+    result = run_js("""
+        app.clusterData = () => {throw new Error('Unbounded exact clustering');};
+        app.cauchyHeatmapData = Array.from({length: 10000}, (_, i) => ({
+            annotation: 'annotation_' + i, trait: 'trait_' + i, mlog10_p_cauchy: i
+        }));
+        await app.renderCauchyHeatmap();
+        const model = app.cauchyHeatmapModel();
+        console.log(JSON.stringify({rows: plot.traces[0].z.length,
+            cols: plot.traces[0].z[0].length, ordering: model.ordering,
+            annotations: model.annotations.length, traits: model.traits.length,
+            max: plot.traces[0].zmax, pages: app.cauchyHeatmapTraitPages}));
+    """)
+    assert result == dict(rows=40, cols=24, ordering="Fast pattern order (large matrix)",
+                          annotations=10000, traits=10000, max=9999, pages=417)
+
+
+def test_heatmap_all_pages_cover_every_label_and_transpose_preserves_values(run_js):
+    result = run_js("""
+        app.cauchyHeatmapCluster = false;
+        app.cauchyHeatmapTraitsPerPage = 2;
+        app.cauchyHeatmapAnnotationsPerPage = 2;
+        app.cauchyHeatmapData = Array.from({length: 15}, (_, i) => ({
+            annotation: 'a' + Math.floor(i / 5), trait: 't' + (i % 5),
+            mlog10_p_cauchy: i
+        }));
+        await app.renderCauchyHeatmap();
+        const seen = [];
+        for (let a = 0; a < app.cauchyHeatmapAnnotationPages; a++) {
+            for (let t = 0; t < app.cauchyHeatmapTraitPages; t++) {
+                app.cauchyHeatmapAnnotationPage = a; app.cauchyHeatmapTraitPage = t;
+                await app.renderCauchyHeatmap();
+                seen.push(...plot.traces[0].z.flat());
+            }
+        }
+        app.cauchyHeatmapTranspose = true;
+        await app.renderCauchyHeatmap();
+        console.log(JSON.stringify({seen: seen.sort((a,b) => a-b),
+            x: plot.traces[0].x, y: plot.traces[0].y, z: plot.traces[0].z,
+            colorAxis: plot.traces[1].yaxis}));
+    """)
+    assert result == dict(seen=list(range(15)), x=["a0"], y=["t4"], z=[[4]], colorAxis="y2")
+
+
+def test_heatmap_search_has_no_effect_on_enrichment_table_or_point_map_selection(run_js):
+    result = run_js("""
+        app.selectedTrait = 'IQ'; app.selectedAnnotationCategory = 'celltype';
+        app.cauchyData = [{trait: 'IQ', type: 'aggregated', annotation_name: 'celltype',
+            annotation: 'Brain', mlog10_p_median: 2}];
+        app.cauchyHeatmapData = [{trait: 'IQ', annotation: 'Brain', mlog10_p_cauchy: 5}];
+        app.cauchyHeatmapTraitQuery = 'missing';
+        await app.renderCauchyHeatmap();
+        console.log(JSON.stringify({table: app.filteredCauchyTable.length,
+            empty: app.cauchyHeatmapEmpty, cleared: plot.cleared, trait: app.selectedTrait}));
+    """)
+    assert result == dict(table=1, empty=True, cleared=True, trait="IQ")
+
+
+def test_large_trait_and_sample_selectors_are_bounded_but_keyboard_reaches_all(run_js):
+    result = run_js("""
+        app.traits = Array.from({length: 2000}, (_, i) => 'Trait_' + i);
+        app.samples = Array.from({length: 1000}, (_, i) => 'Slice_' + i);
+        const before = [app.visibleTraitChoices.length, app.visibleSampleChoices.length];
+        app.traitActiveIndex = 79; app.moveTraitSearch(1);
+        app.sampleActiveIndex = 79; app.moveSampleSearch(1);
+        const next = [app.visibleTraitChoices.length, app.visibleSampleChoices.length];
+        app.traitSearchQuery = 'Trait_1999';
+        console.log(JSON.stringify({before, next, found: app.filteredTraits[0]}));
+    """)
+    assert result == dict(before=[80, 80], next=[81, 81], found="Trait_1999")
+
+
+def test_numeric_annotation_table_sort_search_and_legend_window(run_js):
+    result = run_js("""
+        app.selectedTrait = 'IQ'; app.selectedAnnotationCategory = 'domain';
+        app.cauchyData = [0, 2, 10].map(annotation => ({trait: 'IQ', type: 'aggregated',
+            annotation_name: 'domain', annotation, mlog10_p_median: annotation}));
+        app.cauchyTableQuery = '10';
+        app.getAnnotationSchema = () => ({categories: Array.from({length: 2000},
+            (_, i) => 'domain' + i), colors: []});
+        const initial = app.visibleAnnotationLegend.length;
+        app.annotationLegendQuery = 'domain1999';
+        console.log(JSON.stringify({table: app.filteredCauchyTable.map(r => r.annotation),
+            initial, legend: app.visibleAnnotationLegend.map(r => r.category)}));
+    """)
+    assert result == dict(table=[10], initial=80, legend=["domain1999"])
+
+
+def test_heatmap_page_size_change_resets_plotly_zoom(run_js):
+    result = run_js("""
+        app.cauchyHeatmapData = Array.from({length: 80}, (_, i) => ({
+            annotation: 'Brain', trait: 'Trait_' + i, mlog10_p_cauchy: i}));
+        await app.renderCauchyHeatmap();
+        const first = plot.layout.uirevision;
+        app.cauchyHeatmapTraitsPerPage = 40;
+        await app.renderCauchyHeatmap();
+        console.log(JSON.stringify({reset: first !== plot.layout.uirevision,
+            traits: plot.traces[0].x.length}));
+    """)
+    assert result == dict(reset=True, traits=40)
+
+
+def test_enrichment_annotation_sort_accepts_mixed_numeric_and_text_labels(run_js):
+    result = run_js("""
+        app.selectedTrait = 'IQ'; app.selectedAnnotationCategory = 'domain';
+        app.cauchyData = [2, 10, '11', '01', 'Brain', null, null].map(annotation => ({
+            trait: 'IQ', type: 'aggregated', annotation_name: 'domain', annotation}));
+        app.cauchySortKey = 'annotation'; app.cauchySortAsc = true;
+        const ascending = app.filteredCauchyTable.map(r => r.annotation);
+        app.cauchySortAsc = false;
+        console.log(JSON.stringify({ascending, descending: app.filteredCauchyTable.map(r => r.annotation)}));
+    """)
+    assert result == dict(
+        ascending=["01", 2, 10, "11", "Brain", None, None],
+        descending=["Brain", "11", 10, 2, "01", None, None],
+    )
+
+
+def test_heatmap_incremental_trait_and_annotation_subsets_are_independent(run_js):
+    result = run_js("""
+        app.scheduleCauchyHeatmap = () => {};
+        app.cauchyHeatmapData = ['IQ','SCZ','Height'].flatMap((trait, i) =>
+            ['Brain','Heart'].map((annotation,j) => ({trait,annotation,mlog10_p_cauchy:i+j})));
+        app.cauchyHeatmapTraitQuery='IQ'; app.toggleHeatmapSubset('trait', app.heatmapSubsetChoices('trait')[0]);
+        app.cauchyHeatmapTraitQuery='SCZ'; await app.renderCauchyHeatmap();
+        const duringSearch=plot.traces[0].x.slice();
+        app.toggleHeatmapSubset('trait','SCZ'); app.toggleHeatmapSubset('annotation','Brain');
+        await app.renderCauchyHeatmap();
+        const subset={traits:plot.traces[0].x.slice().sort(),annotations:plot.traces[0].y.slice()};
+        app.cauchyHeatmapAnnotationQuery='Heart'; await app.renderCauchyHeatmap();
+        const kept=plot.traces[0].y.slice();
+        app.toggleHeatmapSubset('trait','IQ'); await app.renderCauchyHeatmap();
+        const removed=plot.traces[0].x.slice();
+        app.resetCauchyHeatmapFilters(); await app.renderCauchyHeatmap();
+        console.log(JSON.stringify({duringSearch,subset,kept,removed,reset:[plot.traces[0].x.length,plot.traces[0].y.length]}));
+    """)
+    assert result == dict(duringSearch=["IQ"], subset=dict(traits=["IQ", "SCZ"], annotations=["Brain"]),
+                          kept=["Brain"], removed=["SCZ"], reset=[3, 2])
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_heatmap_hover_uses_annotation_color_and_original_value(run_js, transpose):
+    result = run_js("""
+        app.getAnnotationColor=(value,category) => value==='01' && category==='domain' ? '#00ff00' : '#000000';
+        const transpose=""" + json.dumps(transpose) + """;
+        const details=app.heatmapHoverDetails({x:transpose?'01':'IQ <test>',y:transpose?'IQ <test>':'01',
+            z:0.5,customdata:20,data:{meta:{heatmapRole:'matrix',transpose,metricLabel:'P',annotationName:'domain'}}});
+        app.cauchyHeatmapTranspose=transpose;
+        app.cauchyHeatmapData=[{trait:'IQ',annotation:'01',mlog10_p_cauchy:20}];
+        await app.renderCauchyHeatmap();
+        console.log(JSON.stringify({details,stripAbove:plot.layout.yaxis2.domain[0]>plot.layout.yaxis.domain[1]}));
+    """)
+    assert result["details"] == dict(html="<b>01</b><br>IQ &lt;test&gt;<br>P: 20.00", background="#00ff00")
+    assert result["stripAbove"] is transpose
+
+
+def test_heatmap_hover_survives_empty_search_and_does_not_leak_listeners(run_js):
+    result = run_js("""
+        const events=new Map(),dom=new Set(),globalEvents=new Set();
+        plot.on=(name,fn)=>events.set(name,fn);
+        plot.removeListener=(name,fn)=>{if(events.get(name)===fn)events.delete(name);};
+        plot.addEventListener=(name,fn)=>dom.add(fn);
+        plot.removeEventListener=(name,fn)=>dom.delete(fn);
+        window.addEventListener=(name,fn)=>globalEvents.add(fn);
+        window.removeEventListener=(name,fn)=>globalEvents.delete(fn);
+        Plotly.purge=p=>{events.clear();delete p.data;};
+        app.cauchyHeatmapData=[{trait:'IQ',annotation:'Brain',mlog10_p_cauchy:2}];
+        await app.renderCauchyHeatmap();
+        const initial={events:events.size,dom:dom.size,global:globalEvents.size};
+        for(let i=0;i<3;i++) {
+            app.cauchyHeatmapTraitQuery='no_match';await app.renderCauchyHeatmap();
+            app.cauchyHeatmapTraitQuery='';await app.renderCauchyHeatmap();
+        }
+        console.log(JSON.stringify({initial,final:{events:events.size,dom:dom.size,global:globalEvents.size}}));
+    """)
+    assert result["initial"]["events"] == 3
+    assert result["final"] == result["initial"]
+
+
+def test_spatial2d_pan_adapter_preserves_data_and_updates_native_drag_ranges(run_js):
+    result = run_js("""
+        Plotly.version='3.6.0';
+        const calls=[];
+        const axis=range=>({type:'linear',range,autorange:false,setScale(){},_r:range.slice(),_rl:range.slice()});
+        const scene={count:1,dirty:false,update:o=>calls.push(o),draw:()=>calls.push('draw'),selectBatch:[[]],unselectBatch:[[]]};
+        const p={
+            data:[{type:'scattergl',x:[1,2],y:[3,4],marker:{color:[0,1]}}],
+            layout:{xaxis:{range:[0,10]},yaxis:{range:[10,0]}},
+            _fullLayout:{
+                xaxis:axis([0,10]),yaxis:axis([10,0]),_plots:{xy:{_scene:scene}},
+                _glcanvas:{each:fn=>fn({regl:{clear:o=>calls.push(o)}})}
+            }
+        };
+        const original=JSON.stringify(p.data);
+        const moved=app.applySpatial2dPanViewport(p,{'xaxis.range':[5,15],'yaxis.range':[12,2]});
+        const saved=p._fullLayout.xaxis._r.slice();
+        const zoom=app.applySpatial2dPanViewport(p,{'xaxis.range':[5,10]});
+        const reset=app.applySpatial2dPanViewport(p,{'xaxis.autorange':true});
+        Plotly.version='4.0.0'; const unsupported=app.applySpatial2dPanViewport(p,{'xaxis.range':[6,16]});
+        console.log(JSON.stringify({moved,saved,zoom,reset,unsupported,unchanged:original===JSON.stringify(p.data),calls}));
+    """)
+    assert result == dict(moved=True, saved=[5, 15], zoom=False, reset=False, unsupported=False, unchanged=True,
+                          calls=[dict(range=[5, 12, 15, 2]), dict(color=True, depth=True), "draw"])
+
+
+def test_spatial2d_pan_adapter_restores_axes_on_failure(run_js):
+    result = run_js("""
+        Plotly.version='3.6.0';
+        let attempted=false;
+        const axis=()=>({type:'linear',range:[0,10],_r:[0,10],_rl:[0,10],autorange:true,setScale(){}});
+        const p={data:[{type:'scattergl'}],layout:{xaxis:{autorange:true},yaxis:{autorange:true}},
+            _fullLayout:{xaxis:axis(),yaxis:axis(),_plots:{xy:{_scene:{count:1,draw(){},update(){attempted=true;throw Error('changed API')}}}},_glcanvas:{each(){}}}};
+        const ok=app.applySpatial2dPanViewport(p,{'xaxis.range':[2,12]});
+        console.log(JSON.stringify({ok,attempted,x:p._fullLayout.xaxis.range,r:p._fullLayout.xaxis._r,auto:p.layout.xaxis.autorange}));
+    """)
+    assert result == dict(ok=False, attempted=True, x=[0, 10], r=[0, 10], auto=True)
+
+
+def test_spatial2d_sync_keeps_latest_request_during_slow_relayout(run_js):
+    result = run_js("""
+        const waiting=[],calls=[]; const target={data:[{}]};
+        Plotly.relayout=(p,v)=>{calls.push(v); return new Promise(resolve=>waiting.push(resolve));};
+        const first=app.queueSpatial2dViewport(target,{'xaxis.range':[1,11]});
+        app.queueSpatial2dViewport(target,{'xaxis.autorange':true});
+        app.queueSpatial2dViewport(target,{'xaxis.range':[3,13]});
+        waiting.shift()(); await Promise.resolve();
+        waiting.shift()(); await first;
+        console.log(JSON.stringify({calls,busy:target.__gsMapApplyingViewport,pending:target.__gsMapPendingViewport}));
+    """)
+    assert result == dict(calls=[{"xaxis.range": [1, 11]}, {"xaxis.range": [3, 13]}], busy=False, pending=None)
+
+
+def test_spatial2d_sync_merges_partial_ranges_without_conflicting_plotly_keys(run_js):
+    result = run_js("""
+        const waiting=[],calls=[]; const target={data:[{}]};
+        Plotly.relayout=(p,v)=>{calls.push(v);return new Promise(resolve=>waiting.push(resolve));};
+        const first=app.queueSpatial2dViewport(target,{'xaxis.range':[0,10]});
+        app.queueSpatial2dViewport(target,{'xaxis.range':[1,11]});
+        app.queueSpatial2dViewport(target,{'xaxis.range[0]':2});
+        app.queueSpatial2dViewport(target,{'xaxis.autorange':false});
+        waiting.shift()();await Promise.resolve();waiting.shift()();await first;
+        console.log(JSON.stringify(calls));
+    """)
+    assert result == [{"xaxis.range": [0, 10]}, {"xaxis.range": [2, 11], "xaxis.autorange": False}]
+
+
+def test_spatial3d_sync_reads_current_camera_and_preserves_last_frame(run_js):
+    result = run_js("""
+        const frames=new Map(),calls=[];let frameId=0;
+        global.requestAnimationFrame=fn=>{frames.set(++frameId,fn);return frameId;};
+        global.cancelAnimationFrame=id=>frames.delete(id);
+        const tick=()=>{const batch=[...frames.values()];frames.clear();batch.forEach(fn=>fn());};
+        const panel=id=>({id,data:[{}],handlers:{},on(name,fn){this.handlers[name]=fn;}});
+        const a=panel('a'),b=panel('b');document.getElementById=id=>({a,b}[id]);
+        const currentScene={getCamera:()=>({eye:{x:7}})};
+        a._fullLayout={scene:{_scene:currentScene}};
+        app.queueSpatial3dCamera=(p,v)=>calls.push({target:p.id,camera:v});
+        app.bindSpatial3dCameraSync('a','b');app.bindSpatial3dCameraSync('b','a');
+        a.handlers.plotly_relayouting({'scene.camera':{eye:{x:1}}});
+        a.handlers.plotly_relayouting({'scene.camera':{eye:{x:2}}});
+        const frameCount=frames.size;tick();
+        b.handlers.plotly_relayouting({'scene.camera':{eye:{x:3}}});tick();
+        a.handlers.plotly_relayouting({'scene.camera':{eye:{x:4}}});
+        a.handlers.plotly_relayout({'scene.camera':{eye:{x:5}}});tick();
+        a.__gsMapApplyingCamera=true;a.handlers.plotly_relayout({'scene.camera':{eye:{x:100}}});
+        a.__gsMapApplyingCamera=false;app._spatial3dSyncing=true;
+        a.handlers.plotly_relayouting({'scene.camera':{eye:{x:101}}});tick();
+        app._spatial3dSyncing=false;app.spatial3dViewMode='trait';
+        a.handlers.plotly_relayout({'scene.camera':{eye:{x:102}}});
+        console.log(JSON.stringify({frameCount,calls}));
+    """)
+    assert result == dict(frameCount=1,calls=[
+        {"target":"b","camera":{"eye":{"x":7}}},
+        {"target":"a","camera":{"eye":{"x":3}}},
+        {"target":"b","camera":{"eye":{"x":5}}},
+    ])
+
+
+def test_spatial3d_camera_queue_coalesces_slow_updates_and_recovers_on_error(run_js):
+    result = run_js("""
+        const waiting=[],calls=[],target={data:[{}]};
+        Plotly.relayout=(p,v)=>{calls.push(v);return new Promise(resolve=>waiting.push(resolve));};
+        const first=app.queueSpatial3dCamera(target,{eye:{x:1}});
+        app.queueSpatial3dCamera(target,{eye:{x:2}});
+        const camera={eye:{x:3}};app.queueSpatial3dCamera(target,camera);camera.eye.x=99;
+        waiting.shift()();await Promise.resolve();waiting.shift()();await first;
+        Plotly.relayout=()=>Promise.reject(new Error('context lost'));
+        await app.queueSpatial3dCamera(target,{eye:{x:4}});
+        const failedClean=!target.__gsMapApplyingCamera && !target.__gsMapPendingCamera;
+        Plotly.relayout=async(p,v)=>calls.push(v);
+        await app.queueSpatial3dCamera(target,{eye:{x:5}});
+        console.log(JSON.stringify({calls,failedClean,busy:target.__gsMapApplyingCamera}));
+    """)
+    assert result == dict(calls=[{"scene.camera":{"eye":{"x":value}}} for value in [1,3,5]],
+                          failedClean=True,busy=False)
+
+
+def test_spatial3d_empty_wheel_event_tracks_camera_tail_then_stops(run_js):
+    result = run_js("""
+        const frames=new Map(),events={},dom={},calls=[];let frameId=0,x=9;
+        global.requestAnimationFrame=fn=>{frames.set(++frameId,fn);return frameId;};
+        global.cancelAnimationFrame=id=>frames.delete(id);
+        const tick=()=>{const batch=[...frames.values()];frames.clear();batch.forEach(fn=>fn());};
+        const scene={getCamera:()=>({eye:{x,y:0,z:1},center:{x:0,y:0,z:0},up:{x:0,y:0,z:1}})};
+        const source={on:(k,f)=>events[k]=f,addEventListener:(k,f)=>dom[k]=f,
+            _fullLayout:{scene:{_scene:scene}}};
+        const target={data:[{}]};document.getElementById=id=>id==='source'?source:target;
+        app.queueSpatial3dCamera=(p,c)=>calls.push(c.eye.x);
+        app.bindSpatial3dCameraSync('source','target');
+        events.plotly_relayout({});dom.wheel();tick();x=10;tick();tick();tick();
+        console.log(JSON.stringify({calls,pendingFrames:frames.size}));
+    """)
+    assert result == dict(calls=[9,10],pendingFrames=0)
+
+
+def test_spatial2d_pan_sync_is_live_bidirectional_and_coalesces_frames(run_js):
+    result = run_js("""
+        const frames=new Map(),calls=[],queued=[];let frameId=0;
+        global.requestAnimationFrame=fn=>{frames.set(++frameId,fn);return frameId;};
+        global.cancelAnimationFrame=id=>frames.delete(id);
+        const tick=()=>{const batch=[...frames.values()];frames.clear();batch.forEach(fn=>fn());};
+        const panel=id=>({id,data:[{}],handlers:{},on(name,fn){this.handlers[name]=fn;}});
+        const a=panel('a'),b=panel('b');document.getElementById=id=>({a,b}[id]);
+        app.applySpatial2dPanViewport=(p,v)=>{calls.push({target:p.id,viewport:v});return !v['xaxis.autorange'];};
+        app.queueSpatial2dViewport=(p,v)=>queued.push({target:p.id,viewport:v});
+        app.bindSpatial2dViewportSync('a','b');app.bindSpatial2dViewportSync('b','a');
+        a.handlers.plotly_relayouting({'xaxis.range':[1,11]});
+        a.handlers.plotly_relayouting({'xaxis.range':[2,12]});
+        const queuedFrames=frames.size;tick();const beforeRelease=calls.length;
+        b.handlers.plotly_relayouting({'xaxis.range':[3,13]});tick();
+        a.handlers.plotly_relayouting({'xaxis.range':[4,14]});
+        a.handlers.plotly_relayout({'xaxis.range':[5,15]});tick();
+        a.handlers.plotly_relayouting({'xaxis.autorange':true});tick();const previewQueued=queued.length;
+        a.handlers.plotly_relayout({'xaxis.autorange':true});
+        a.__gsMapApplyingViewport=true;a.handlers.plotly_relayout({'xaxis.range':[99,109]});
+        a.__gsMapApplyingViewport=false;app.spatial2dViewMode='annotation';
+        a.handlers.plotly_relayouting({'xaxis.range':[100,110]});tick();
+        console.log(JSON.stringify({queuedFrames,beforeRelease,previewQueued,calls,queued}));
+    """)
+    assert result["queuedFrames"] == result["beforeRelease"] == 1
+    assert result["previewQueued"] == 0
+    assert result["calls"] == [
+        {"target": "b", "viewport": {"xaxis.range": [2, 12]}},
+        {"target": "a", "viewport": {"xaxis.range": [3, 13]}},
+        {"target": "b", "viewport": {"xaxis.range": [5, 15]}},
+        {"target": "b", "viewport": {"xaxis.autorange": True}},
+        {"target": "b", "viewport": {"xaxis.autorange": True}},
+    ]
+    assert result["queued"] == [{"target": "b", "viewport": {"xaxis.autorange": True}}]
+
+
 def test_discrete_scale_matches_half_integer_color_limits(run_js):
     scales = run_js("""
         console.log(JSON.stringify(Array.from({length: 64}, (_, i) =>
@@ -539,3 +916,17 @@ def test_trait_only_render_leaves_annotation_panels_unchanged(run_js, mode):
         if mode == "compare" or kind == mode
     ]
     assert result["all"] == expected
+
+
+def test_trait_change_refreshes_threshold_filtered_annotation_comparison(run_js):
+    result = run_js("""
+        app.plotlyReady=true;app.currentSampleData={};app.spatial3dBase={};
+        app.spatial2dAssociationMinLogP=app.spatial3dAssociationMinLogP=5;
+        const calls=[];
+        app.renderSpatial2DPlotSingle=(div,type)=>calls.push('2d-'+type);
+        app.renderSpatial3dTrait=()=>calls.push('3d-trait');
+        app.renderSpatial3dAnnotation=()=>calls.push('3d-annotation');
+        app.renderSpatial2DPlot({traitOnly:true});await app.renderSpatial3dViews({traitOnly:true});
+        console.log(JSON.stringify(calls));
+    """)
+    assert result == ['2d-trait', '2d-annotation', '3d-trait', '3d-annotation']

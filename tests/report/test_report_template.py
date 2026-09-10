@@ -221,7 +221,7 @@ def test_shared_annotation_selection_filters_all_point_maps(report_template: str
     assert "const annotation = this.spatial3dAnnotationCache?.[annotationName]" in report_template
     assert "this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait')" in report_template
     assert (
-        "if (this.spatial3dViewMode !== 'annotation') this.renderSpatial3dTrait()"
+        "this.renderSpatial3dViews().catch(error => {"
         in report_template
     )
 
@@ -258,7 +258,9 @@ def test_enrichment_is_sharded_paginated_and_uses_bounded_browser_caches(
     assert "get visibleCauchyTable()" in report_template
     assert "_cauchyShardPromises" in report_template
     assert "setBoundedCache(cache, order, entry.key, rows, 4)" in report_template
-    assert "const rowByKey = new Map" in report_template
+    assert "const values = new Map(), traitSet = new Set()" in report_template
+    assert "enrichmentModel?.source === rows" in report_template
+    assert "cauchyHeatmapTraitsPerPage: 24" in report_template
     assert "window.GSMAP_CAUCHY =" not in report_template
     assert "fetch(" not in report_template
 
@@ -269,7 +271,11 @@ def test_spatial3d_keeps_full_display_payload_during_camera_interaction(
     assert "spatial3dInteractionPointLimit" not in report_template
     assert "configureSpatial3dInteractionLod" not in report_template
     assert "applySpatial3dInteractionLod" not in report_template
-    assert "plotly_relayouting" not in report_template
+    camera_sync = report_template.split("bindSpatial3dCameraSync(sourceId, targetId) {", 1)[1].split(
+        "fittedSpatial3dCamera(current = null)", 1
+    )[0]
+    assert "plotly_relayouting" in camera_sync
+    assert "queueSpatial3dCamera(target, camera)" in camera_sync
 
 
 def test_spatial_association_views_have_independent_q95_opacity_controls(
