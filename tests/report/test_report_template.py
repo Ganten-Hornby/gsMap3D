@@ -207,7 +207,7 @@ def test_spatial2d_uses_plane_labels_and_point_colored_offset_tooltips(
 
 
 def test_spatial2d_disables_native_hover_and_automatic_margin_redraws(report_template: str) -> None:
-    renderer = report_template.split("renderSpatial2DPlotSingle(divId, plotType) {", 1)[1].split(
+    renderer = report_template.split("renderSpatial2DPlotSingle(divId, plotType, options = {}) {", 1)[1].split(
         "bindSpatial2dViewportSync(sourceId, targetId)", 1
     )[0]
     assert "hovermode: false" in renderer

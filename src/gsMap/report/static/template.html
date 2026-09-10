@@ -138,7 +138,7 @@
             text-transform: uppercase;
         }
 
-        .control-select {
+        .control-select, .form-select, .form-input {
             width: 100%;
             border: 1px solid #cbd5e1;
             border-radius: 0.65rem;
@@ -150,11 +150,11 @@
             box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
 
-        .control-select:hover {
+        .control-select:hover, .form-select:hover, .form-input:hover {
             border-color: #94a3b8;
         }
 
-        .control-select:focus {
+        .control-select:focus, .form-select:focus, .form-input:focus {
             border-color: #3b82f6;
             outline: 3px solid rgba(59, 130, 246, 0.16);
             outline-offset: 1px;
@@ -256,6 +256,8 @@
             background: #fff;
             padding: 0.5rem;
         }
+
+        .plot-panel h3 { overflow-wrap: anywhere; }
 
         .plot-frame-3d {
             width: 100%;
@@ -879,7 +881,7 @@
                     <div class="min-w-0">
                         <h2 class="truncate text-base font-semibold text-slate-900 sm:text-lg">
                             <span x-text="getSectionTitle('sec-gsmap')"></span> -
-                            <span x-text="selectedSample"></span>
+                            <span x-text="spatial2dComparisonActive ? 'Comparison' : selectedSample"></span>
                         </h2>
                         <p class="mt-0.5 text-sm text-slate-500">Trait and annotation signals in the selected section.</p>
                     </div>
@@ -919,7 +921,7 @@
                                     @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
                                     aria-label="2D point-size multiplier">
                             </label>
-                            <label x-show="spatial2dViewMode !== 'annotation'">
+                            <label x-show="spatial2dViewMode !== 'annotation' && !spatialComparisonIsAnnotation">
                                 <span class="control-label flex justify-between gap-3">
                                     <span>Signal cutoff</span>
                                     <span x-text="Number(spatial2dAssociationMinLogP).toFixed(1)"></span>
@@ -929,7 +931,7 @@
                                     @input.debounce.80ms="renderSpatial2DPlot()" class="w-full accent-blue-600"
                                     aria-label="Minimum 2D association minus log10 P">
                             </label>
-                            <label x-show="spatial2dViewMode !== 'annotation'">
+                            <label x-show="spatial2dViewMode !== 'annotation' && !spatialComparisonIsAnnotation">
                                 <span class="control-label flex justify-between gap-3">
                                     <span>Signal emphasis</span>
                                     <span x-text="spatial2dAssociationOpacityLabel"></span>
@@ -944,7 +946,82 @@
                                 Reset view
                             </button>
                         </div>
-                        <div x-show="currentSampleData" class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500">
+                        <div x-show="spatial2dViewMode === 'compare'" class="mt-4 space-y-3" id="spatial-comparison-controls">
+                            <label class="block">
+                                <span class="control-label">Compare</span>
+                                <select aria-label="Comparison type" :value="spatial2dCompareKind"
+                                    @change="setSpatial2dCompareKind($event.target.value)" class="form-select w-full sm:w-auto">
+                                    <option value="annotation">Trait and annotation</option>
+                                    <option value="traits" :disabled="traits.length < 2">Two traits · same sample</option>
+                                    <option value="samples" :disabled="samples.length < 2">Two samples · same trait</option>
+                                    <option value="sample_annotations" :disabled="samples.length < 2">Two samples · annotation</option>
+                                </select>
+                            </label>
+                            <div x-show="spatial2dComparisonActive" class="space-y-3">
+                                <div class="grid gap-3 md:grid-cols-3">
+                                    <template x-for="field in spatialComparisonFields" :key="field.key">
+                                        <div class="relative min-w-0" @click.outside="closeSpatialComparisonSearch(field.key)">
+                                            <label :for="'comparison-search-' + field.key" class="control-label" x-text="field.label"></label>
+                                            <input :id="'comparison-search-' + field.key" type="search" :aria-label="field.label" placeholder="Search…"
+                                                :value="spatialComparisonSearchField === field.key ? spatialComparisonQueries[field.key] : spatialComparisonValue(field.key)"
+                                                @focus="openSpatialComparisonSearch(field.key)"
+                                                @input="spatialComparisonQueries[field.key] = $event.target.value; spatialComparisonSearchField = field.key; spatialComparisonActiveIndex = 0; spatialComparisonChoiceLimit = 80"
+                                                @keydown.down.prevent="moveSpatialComparisonSearch(field, 1)"
+                                                @keydown.up.prevent="moveSpatialComparisonSearch(field, -1)"
+                                                @keydown.enter.prevent="selectActiveSpatialComparisonChoice(field)"
+                                                @keydown.escape.prevent="closeSpatialComparisonSearch(field.key)"
+                                                @keydown.tab="closeSpatialComparisonSearch(field.key)"
+                                                class="control-select" autocomplete="off" role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+                                                :aria-controls="'comparison-list-' + field.key"
+                                                :aria-expanded="(spatialComparisonSearchField === field.key).toString()"
+                                                :aria-activedescendant="spatialComparisonSearchField === field.key && spatialComparisonChoices(field).length ? 'comparison-option-' + field.key + '-' + spatialComparisonActiveIndex : null">
+                                            <div :id="'comparison-list-' + field.key" x-show="spatialComparisonSearchField === field.key" role="listbox"
+                                                class="absolute z-50 mt-1 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl custom-scrollbar">
+                                                <div class="px-2 py-1.5 text-xs text-slate-400" x-text="spatialComparisonChoices(field).length + ' matches'"></div>
+                                                <template x-for="(name, index) in spatialComparisonChoices(field).slice(0, spatialComparisonChoiceLimit)" :key="name">
+                                                    <button type="button" role="option" :id="'comparison-option-' + field.key + '-' + index"
+                                                        :aria-selected="(name === spatialComparisonValue(field.key)).toString()"
+                                                        @mouseenter="spatialComparisonActiveIndex = index" @mousedown.prevent
+                                                        @click="selectSpatialComparisonChoice(field.key, name)"
+                                                        class="block w-full rounded-lg px-2.5 py-2 text-left text-sm"
+                                                        :class="index === spatialComparisonActiveIndex ? 'bg-primary-50 text-primary-800' : 'text-slate-600 hover:bg-slate-50'">
+                                                        <span class="block truncate" :title="name" x-text="name"></span>
+                                                    </button>
+                                                </template>
+                                                <p x-show="spatialComparisonChoices(field).length === 0" class="px-3 py-5 text-sm text-slate-500">No matches. Try a shorter name or abbreviation.</p>
+                                                <button type="button" x-show="spatialComparisonChoices(field).length > spatialComparisonChoiceLimit"
+                                                    @mousedown.prevent @click="spatialComparisonChoiceLimit += 80"
+                                                    class="w-full px-3 py-2 text-left text-xs font-medium text-primary-700">Show more</button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                                    <label class="flex items-center gap-2"><input type="checkbox" x-model="spatialComparisonLinked"
+                                        @change="alignSpatialComparison()" class="accent-blue-600">Link pan / zoom</label>
+                                    <label x-show="!spatialComparisonIsAnnotation" class="flex items-center gap-2">Color maximum
+                                        <input type="number" min="0" step="0.1" x-model.number="spatialComparisonColorMax"
+                                            @change="renderSpatial2DPlot()" aria-label="Comparison color maximum"
+                                            class="form-input w-24" placeholder="Auto">
+                                        <span>(0 = each trait's default)</span>
+                                    </label>
+                                    <button type="button" @click="saveSpatialComparison()" :disabled="spatialComparisonBusy || !!spatial2dError"
+                                        class="rounded-md border border-slate-300 bg-white px-3 py-2 font-semibold">Save view</button>
+                                    <button type="button" @click="$refs.comparisonFile.click()"
+                                        class="rounded-md border border-slate-300 bg-white px-3 py-2 font-semibold">Load view</button>
+                                    <input x-ref="comparisonFile" type="file" accept=".json,application/json" class="hidden"
+                                        @change="loadSpatialComparisonFile($event.target.files[0]); $event.target.value = ''">
+                                    <button type="button" @click="exportSpatialComparison()" :disabled="spatialComparisonBusy || spatialComparisonExporting || !!spatial2dError"
+                                        class="rounded-md border border-slate-300 bg-white px-3 py-2 font-semibold"
+                                        x-text="spatialComparisonExporting ? 'Exporting…' : 'Export comparison PNG'"></button>
+                                </div>
+                                <p class="text-xs text-slate-500" x-text="spatialComparisonDescription"></p>
+                                <p x-show="!spatialComparisonIsAnnotation" class="text-xs text-slate-500">Trait and sample choices are independent of the sidebar. Different GWAS sample sizes can affect −log10(P); colors are not a statistical test of differences.</p>
+                                <p x-show="spatialComparisonIsAnnotation" class="text-xs text-slate-500">Annotation category and legend selection are shared with the other maps. No GWAS cutoff is applied.</p>
+                                <p role="status" class="text-xs text-slate-600" x-text="spatialComparisonNotice"></p>
+                            </div>
+                        </div>
+                        <div x-show="currentSampleData && !spatial2dComparisonActive" class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500">
                             <span>
                                 Rendering <strong class="text-slate-700" x-text="(currentSampleData?.n_points || 0).toLocaleString()"></strong>
                                 of <strong class="text-slate-700" x-text="(currentSampleData?.n_points_original || currentSampleData?.n_points || 0).toLocaleString()"></strong> spots
@@ -983,16 +1060,17 @@
                         <p x-show="spatial2dError" class="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
                             x-text="spatial2dError" role="alert"></p>
                         <!-- Trait, annotation, or synchronized comparison -->
-                        <div x-show="!loadingSampleData"
+                        <p x-show="spatialComparisonBusy" role="status" class="px-4 py-3 text-sm text-slate-500">Loading comparison…</p>
+                        <div x-show="!loadingSampleData" :style="spatial2dError ? 'visibility:hidden;pointer-events:none' : spatialComparisonBusy ? 'pointer-events:none' : ''"
                             :class="spatial2dViewMode === 'compare' ? 'plot-grid' : 'grid grid-cols-1'">
                             <!-- Left: Trait -log10(p) -->
                             <div x-show="spatial2dViewMode !== 'annotation'" class="plot-panel relative"
                                 :class="spatial2dViewMode === 'compare' ? '' : 'mx-auto w-full max-w-5xl'">
                                 <h3 class="mb-2 text-center text-sm font-semibold text-slate-700">
-                                    −log10(P) · <span x-text="selectedTrait"></span>
+                                    <span x-text="spatial2dComparisonActive ? spatialComparisonPanelTitle(0) : '−log10(P) · ' + selectedTrait"></span>
                                 </h3>
                                 <!-- Loading Overlay for Trait plot -->
-                                <div x-show="loadingSpatial2dTraitData"
+                                <div x-show="loadingSpatial2dTraitData && !spatial2dComparisonActive"
                                     class="absolute inset-0 top-8 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center rounded-lg">
                                     <div class="flex flex-col items-center gap-3">
                                         <svg class="spinner h-10 w-10 text-primary-600"
@@ -1005,8 +1083,9 @@
                                         <span class="text-sm font-medium text-gray-600">Loading trait data...</span>
                                     </div>
                                 </div>
-                                <div id="spatial2dPlotTrait" class="spatial-2d-plot"></div>
-                                <p x-show="currentSpatial2dTraitPayload?.n_clipped" class="px-2 pb-1 text-center text-[11px] text-slate-500">
+                                <div id="spatial2dPlotTrait" class="spatial-2d-plot" :style="spatialComparisonPanelBusy[0] ? 'visibility:hidden' : ''"></div>
+                                <p x-show="spatial2dComparisonActive" class="px-2 pb-1 text-center text-xs text-slate-500" x-text="spatialComparisonPanelNotes[0]"></p>
+                                <p x-show="!spatial2dComparisonActive && currentSpatial2dTraitPayload?.n_clipped" class="px-2 pb-1 text-center text-[11px] text-slate-500">
                                     <span x-text="currentSpatial2dTraitPayload?.n_clipped?.toLocaleString()"></span>
                                     spots exceed the robust shared color limit and use the top color.
                                 </p>
@@ -1015,9 +1094,10 @@
                             <div x-show="spatial2dViewMode !== 'trait'" class="plot-panel"
                                 :class="spatial2dViewMode === 'compare' ? '' : 'mx-auto w-full max-w-5xl'">
                                 <h3 class="mb-2 text-center text-sm font-semibold text-slate-700">
-                                    Annotation · <span x-text="selectedAnnotationCategory"></span>
+                                    <span x-text="spatial2dComparisonActive ? spatialComparisonPanelTitle(1) : 'Annotation · ' + selectedAnnotationCategory"></span>
                                 </h3>
-                                <div id="spatial2dPlotAnnotation" class="spatial-2d-plot"></div>
+                                <div id="spatial2dPlotAnnotation" class="spatial-2d-plot" :style="spatialComparisonPanelBusy[1] ? 'visibility:hidden' : ''"></div>
+                                <p x-show="spatial2dComparisonActive" class="px-2 pb-1 text-center text-xs text-slate-500" x-text="spatialComparisonPanelNotes[1]"></p>
                             </div>
                         </div>
                     </div>
@@ -1777,6 +1857,9 @@
             // Cache one active selection; changing a page never rebuilds it.
             let enrichmentModel = null;
             let enrichmentTimer = null;
+            // Serialize comparison redraws; stale script loads cannot replace a newer selection.
+            let comparisonRender = null;
+            let comparisonRevision = 0;
             return {
                 // Data loaded flag
                 dataLoaded: false,
@@ -1875,6 +1958,20 @@
                 spatial2dPlotAnnotationInitialized: false,
                 spatial2dActivated: false,
                 spatial2dViewMode: 'compare',
+                spatial2dCompareKind: 'annotation',
+                spatialComparisonSelection: {sampleA: '', sampleB: '', traitA: '', traitB: ''},
+                spatialComparisonQueries: {},
+                spatialComparisonSearchField: '',
+                spatialComparisonActiveIndex: 0,
+                spatialComparisonChoiceLimit: 80,
+                spatialComparisonLinked: true,
+                spatialComparisonColorMax: 0,
+                spatialComparisonResolvedMax: 1,
+                spatialComparisonBusy: false,
+                spatialComparisonPanelBusy: [false, false],
+                spatialComparisonExporting: false,
+                spatialComparisonNotice: '',
+                spatialComparisonPanelNotes: ['', ''],
                 spatial2dPointScale: 1.0,
                 spatial2dPointSizePixels: 1.5,
                 spatial2dError: '',
@@ -2045,7 +2142,8 @@
                 },
 
                 get spatial2dAssociationThresholdMaximum() {
-                    const maximum = Number(this.currentSpatial2dTraitPayload?.cmax);
+                    const maximum = Number(this.spatial2dComparisonActive
+                        ? this.spatialComparisonResolvedMax : this.currentSpatial2dTraitPayload?.cmax);
                     return Math.max(1, Math.ceil((Number.isFinite(maximum) ? maximum : 10) * 10) / 10);
                 },
 
@@ -3196,14 +3294,7 @@
                         this.renderSpatial3dViews().catch(error => {
                             this.spatial3dError = `Unable to render the 3D view: ${error.message}`;
                         });
-                        if (this.currentSampleData) {
-                            if (this.spatial2dViewMode !== 'annotation') {
-                                this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
-                            }
-                            if (this.spatial2dViewMode !== 'trait') {
-                                this.renderSpatial2DPlotSingle('spatial2dPlotAnnotation', 'annotation');
-                            }
-                        }
+                        if (this.currentSampleData) this.renderSpatial2DPlot();
                         if (this.umapActivated) this.renderUmapPlots();
                     });
                 },
@@ -5136,7 +5227,13 @@
                         );
                     }
                     this.appendPointAnnotationLines(lines, context, sourceIndex);
-                    if (context.hoverKind === 'trait') {
+                    if (context.comparisonTraits) {
+                        for (const entry of context.comparisonTraits) {
+                            const value = Number(entry.values?.[sourceIndex]);
+                            lines.push(`<b>${this.escapeSpatial2dHoverValue(entry.trait)} −log10(P):</b> ` +
+                                (Number.isFinite(value) ? value.toFixed(1) : 'Unavailable'));
+                        }
+                    } else if (context.hoverKind === 'trait') {
                         const value = Number(this.pointMarkerColorValue(point));
                         if (Number.isFinite(value)) lines.push(`<b>−log10(P):</b> ${value.toFixed(1)}`);
                     }
@@ -5377,8 +5474,449 @@
                 },
 
                 // Spatial 2D Plot rendering (uses per-sample data loaded on-demand)
-                setSpatial2dViewMode(mode) {
+                get spatial2dComparisonActive() {
+                    return this.spatial2dViewMode === 'compare' && this.spatial2dCompareKind !== 'annotation';
+                },
+
+                get spatialComparisonFields() {
+                    if (this.spatialComparisonIsAnnotation) return [
+                        {key: 'annotation', label: 'Shared annotation', values: this.annotations},
+                        {key: 'sampleA', label: 'Sample A', values: this.samples},
+                        {key: 'sampleB', label: 'Sample B', values: this.samples}];
+                    return this.spatial2dCompareKind === 'samples'
+                        ? [{key: 'traitA', label: 'Shared trait', values: this.traits},
+                           {key: 'sampleA', label: 'Sample A', values: this.samples},
+                           {key: 'sampleB', label: 'Sample B', values: this.samples}]
+                        : [{key: 'sampleA', label: 'Shared sample', values: this.samples},
+                           {key: 'traitA', label: 'Trait A', values: this.traits},
+                           {key: 'traitB', label: 'Trait B', values: this.traits}];
+                },
+
+                spatialComparisonChoices(field) {
+                    const query = (this.spatialComparisonQueries[field.key] || '').trim();
+                    if (!query) return field.values;
+                    return field.values.map(name => ({name, score: this.scoreTraitMatch(name, query)}))
+                        .filter(item => item.score !== null)
+                        .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))
+                        .map(item => item.name);
+                },
+
+                get spatialComparisonIsAnnotation() {
+                    return this.spatial2dComparisonActive && this.spatial2dCompareKind === 'sample_annotations';
+                },
+
+                get spatialComparisonDescription() {
+                    if (this.spatialComparisonIsAnnotation) return 'Both samples use the same annotation colors. Samples are centered independently; only link registered sections.';
+                    const scale = Number(this.spatialComparisonColorMax) > 0
+                        ? 'Both panels use your color maximum.'
+                        : 'Each trait uses its own default color limits; compare the colorbar values.';
+                    return scale + (this.spatial2dCompareKind === 'traits'
+                        ? ' Both panels use the same displayed spots. A positive cutoff keeps spots passing in either trait; hover shows both values.'
+                        : ' Samples are centered independently; only link registered sections.');
+                },
+
+                spatialComparisonValue(key) {
+                    return key === 'annotation' ? this.selectedAnnotationCategory : this.spatialComparisonSelection[key];
+                },
+
+                openSpatialComparisonSearch(key) {
+                    this.spatialComparisonSearchField = key;
+                    this.spatialComparisonQueries[key] = '';
+                    this.spatialComparisonActiveIndex = 0;
+                    this.spatialComparisonChoiceLimit = 80;
+                },
+
+                closeSpatialComparisonSearch(key) {
+                    if (this.spatialComparisonSearchField !== key) return;
+                    this.spatialComparisonSearchField = '';
+                    this.spatialComparisonQueries[key] = '';
+                    this.spatialComparisonActiveIndex = 0;
+                },
+
+                moveSpatialComparisonSearch(field, delta) {
+                    if (this.spatialComparisonSearchField !== field.key) this.openSpatialComparisonSearch(field.key);
+                    const count = this.spatialComparisonChoices(field).length;
+                    if (!count) return;
+                    this.spatialComparisonActiveIndex = (this.spatialComparisonActiveIndex + delta + count) % count;
+                    this.spatialComparisonChoiceLimit = Math.max(this.spatialComparisonChoiceLimit, this.spatialComparisonActiveIndex + 1);
+                    this.$nextTick(() => document.getElementById(`comparison-option-${field.key}-${this.spatialComparisonActiveIndex}`)
+                        ?.scrollIntoView({block: 'nearest'}));
+                },
+
+                selectActiveSpatialComparisonChoice(field) {
+                    const name = this.spatialComparisonChoices(field)[this.spatialComparisonActiveIndex];
+                    if (name) return this.selectSpatialComparisonChoice(field.key, name);
+                },
+
+                selectSpatialComparisonChoice(key, name) {
+                    this.closeSpatialComparisonSearch(key);
+                    document.getElementById('comparison-search-' + key)?.blur();
+                    return this.setSpatialComparisonChoice(key, name);
+                },
+
+                spatialComparisonPanels() {
+                    const s = this.spatialComparisonSelection;
+                    if (this.spatialComparisonIsAnnotation) return [s.sampleA, s.sampleB].map(sample => ({sample, trait: null}));
+                    return [{sample: s.sampleA, trait: s.traitA}, {
+                        sample: this.spatial2dCompareKind === 'traits' ? s.sampleA : s.sampleB,
+                        trait: this.spatial2dCompareKind === 'samples' ? s.traitA : s.traitB
+                    }];
+                },
+
+                spatialComparisonPanelTitle(index) {
+                    const panel = this.spatialComparisonPanels()[index];
+                    return `${index === 0 ? 'A' : 'B'} · ${panel.sample} · ${this.spatialComparisonIsAnnotation ? this.selectedAnnotationCategory : panel.trait}`;
+                },
+
+                async setSpatial2dCompareKind(kind) {
+                    if (!['annotation', 'traits', 'samples', 'sample_annotations'].includes(kind)) return;
+                    this.closeSpatialComparisonSearch(this.spatialComparisonSearchField);
+                    this.spatial2dCompareKind = kind;
+                    this.spatialComparisonLinked = kind === 'traits' || kind === 'annotation';
+                    this.spatialComparisonNotice = '';
+                    const s = this.spatialComparisonSelection;
+                    if (!this.samples.includes(s.sampleA)) s.sampleA = this.selectedSample || this.samples[0];
+                    if (!this.samples.includes(s.sampleB)) s.sampleB = this.samples.find(x => x !== s.sampleA) || s.sampleA;
+                    if (!this.traits.includes(s.traitA)) s.traitA = this.selectedTrait || this.traits[0];
+                    if (!this.traits.includes(s.traitB)) s.traitB = this.traits.find(x => x !== s.traitA) || s.traitA;
+                    // Mark the transition before waiting for layout, so old panels cannot
+                    // be saved/exported or presented under the newly selected labels.
+                    this.spatialComparisonBusy = this.spatial2dComparisonActive;
+                    this.spatialComparisonPanelBusy = [this.spatial2dComparisonActive, this.spatial2dComparisonActive];
+                    comparisonRevision++;
+                    if (comparisonRender) await comparisonRender;
+                    this.spatialComparisonBusy = this.spatial2dComparisonActive;
+                    this.spatialComparisonPanelBusy = [this.spatial2dComparisonActive, this.spatial2dComparisonActive];
+                    await this.waitForLayoutPaint();
+                    return this.renderSpatial2DPlot();
+                },
+
+                async setSpatialComparisonChoice(key, value) {
+                    const field = this.spatialComparisonFields.find(item => item.key === key);
+                    if (!field?.values.includes(value)) return;
+                    if (value === this.spatialComparisonValue(key)) return;
+                    if (key === 'annotation') {
+                        this.selectedAnnotationCategory = value;
+                        await this.onAnnotationChange();
+                        return this.renderSpatial2DPlot();
+                    }
+                    this.spatialComparisonSelection = {...this.spatialComparisonSelection, [key]: value};
+                    this.spatialComparisonNotice = '';
+                    return this.renderSpatial2DPlot();
+                },
+
+                spatialComparisonRequestKey(panel) {
+                    const categorical = this.spatialComparisonIsAnnotation;
+                    return JSON.stringify([this.spatial2dCompareKind, panel.sample, panel.trait,
+                        this.selectedAnnotationCategory, this.annotationVisibilityKey(), Number(this.spatial2dPointScale),
+                        this.reportMeta.plot_origin, categorical ? null : [Number(this.spatialComparisonColorMax),
+                            Number(this.spatial2dAssociationMinLogP), Number(this.spatial2dAssociationOpacityStrength),
+                            this.spatial2dCompareKind === 'traits' && Number(this.spatial2dAssociationMinLogP) > 0
+                                ? this.spatialComparisonPanels().map(item => item.trait) : null]]);
+                },
+
+                renderSpatialComparison() {
+                    comparisonRevision++;
+                    const ids = ['spatial2dPlotTrait', 'spatial2dPlotAnnotation'];
+                    this.spatialComparisonPanelBusy = this.spatialComparisonPanels().map((panel, i) =>
+                        document.getElementById(ids[i])?.__gsMapComparisonRender?.key !== this.spatialComparisonRequestKey(panel));
+                    if (comparisonRender) return comparisonRender;
+                    this.spatialComparisonBusy = true;
+                    this.spatial2dError = '';
+                    comparisonRender = (async () => {
+                        let revision;
+                        do {
+                            revision = comparisonRevision;
+                            const panels = this.spatialComparisonPanels();
+                            const categorical = this.spatialComparisonIsAnnotation;
+                            const loaded = [];
+                            let loadError = null;
+                            // Two bounded, shared caches. Never duplicate a sample's geometry per trait.
+                            for (const panel of panels) {
+                                try {
+                                    const data = await this.loadSampleData(panel.sample);
+                                    const payload = categorical ? null : await this.loadSampleTraitData(panel.sample, panel.trait);
+                                    const values = ArrayBuffer.isView(payload) || Array.isArray(payload) ? payload : payload?.values;
+                                    const annotationValues = data?.annotations?.[this.selectedAnnotationCategory]?.codes || data?.[this.selectedAnnotationCategory];
+                                    if (!data?.sx?.length || data.sy?.length !== data.sx.length ||
+                                        (categorical ? annotationValues?.length : values?.length) !== data.sx.length) {
+                                        throw new Error(`Missing or misaligned values for ${panel.sample} / ${categorical ? this.selectedAnnotationCategory : panel.trait}`);
+                                    }
+                                    loaded.push({...panel, data, payload, values});
+                                } catch (error) {
+                                    loadError = error; break;
+                                }
+                            }
+                            if (!this.spatial2dComparisonActive) return;
+                            if (revision !== comparisonRevision) continue;
+                            if (loadError) throw loadError;
+                            const requested = categorical ? 0 : Number(this.spatialComparisonColorMax);
+                            if (!Number.isFinite(requested) || requested < 0) throw new Error('Color maximum must be zero (auto) or positive.');
+                            const limits = loaded.map(item => ({
+                                cmax: categorical ? null : requested || this.resolveContinuousColorMaximum(item.values, item.payload?.cmax),
+                                q95: categorical ? null : item.payload?.q95 != null && Number.isFinite(Number(item.payload.q95))
+                                    ? Number(item.payload.q95) : this.resolveContinuousColorMaximum(item.values, item.payload?.cmax)
+                            }));
+                            this.spatialComparisonResolvedMax = Math.max(1, ...limits.map(item => item.cmax || 0));
+                            let selectionValues = null;
+                            if (this.spatial2dCompareKind === 'traits' && Number(this.spatial2dAssociationMinLogP) > 0) {
+                                // OR, not two independent filters: preserve identical plotted source rows.
+                                selectionValues = Float32Array.from(loaded[0].values,
+                                    (value, i) => Math.max(Number.isFinite(value) ? value : -Infinity,
+                                        Number.isFinite(loaded[1].values[i]) ? loaded[1].values[i] : -Infinity));
+                            }
+                            await this.waitForLayoutPaint();
+                            if (revision !== comparisonRevision || !this.spatial2dComparisonActive) continue;
+                            const comparisons = this.spatial2dCompareKind === 'traits'
+                                ? loaded.map(({trait, values}) => ({trait, values})) : null;
+                            const keys = loaded.map(item => this.spatialComparisonRequestKey(item));
+                            // Serialize Plotly calls so changes never overlap on one WebGL scene.
+                            for (let i = 0; i < 2; i++) {
+                                if (revision !== comparisonRevision || !this.spatial2dComparisonActive) break;
+                                const item = loaded[i];
+                                const plot = document.getElementById(ids[i]);
+                                const {cmax, q95} = limits[i];
+                                const key = keys[i];
+                                const refs = [item.data.sx, item.data.sy, item.data.annotations, item.values,
+                                    ...(selectionValues ? loaded.map(entry => entry.values) : [])];
+                                const previous = plot?.__gsMapComparisonRender;
+                                const unchanged = previous?.key === key && previous.cmax === cmax && previous.q95 === q95 &&
+                                    previous.trace === plot?.data?.[0] && refs.every((ref, index) => ref === previous.refs[index]);
+                                if (!unchanged) {
+                                    this.spatialComparisonPanelBusy[i] = true;
+                                    await this.renderSpatial2DPlotSingle(ids[i], categorical ? 'annotation' : 'trait', {
+                                        ...item, cmax, q95, selectionValues, comparisonTraits: comparisons,
+                                        comparison: true
+                                    });
+                                    if (plot) plot.__gsMapComparisonRender = {key, cmax, q95, refs, trace: plot.data?.[0]};
+                                }
+                                // A new partner trait changes the paired tooltip, not the kept panel's WebGL buffers.
+                                const context = this._pointHoverContexts[plot?.data?.[0]?.meta?.hoverContextKey];
+                                if (context) context.comparisonTraits = comparisons;
+                                if (revision === comparisonRevision) this.spatialComparisonPanelBusy[i] = false;
+                                const values = plot?.data?.[0]?.marker?.color || [];
+                                let clipped = 0;
+                                if (!categorical) for (const value of values) if (value > cmax) clipped++;
+                                this.spatialComparisonPanelNotes[i] = `${values.length.toLocaleString()} displayed / ` +
+                                    `${(item.data.n_points_original || item.data.n_points || item.data.sx.length).toLocaleString()} total spots · ` +
+                                    (categorical ? 'shared annotation colors' :
+                                        `scale 0–${cmax.toFixed(2)} · ${clipped.toLocaleString()} displayed above color limit`);
+                            }
+                            if (revision === comparisonRevision) await this.alignSpatialComparison(true);
+                        } while (revision !== comparisonRevision && this.spatial2dComparisonActive);
+                    })().catch(error => {
+                        this.spatial2dError = `Unable to load comparison: ${error.message}`;
+                    }).finally(() => {
+                        this.spatialComparisonBusy = false;
+                        this.spatialComparisonPanelBusy = [false, false];
+                        comparisonRender = null;
+                    });
+                    return comparisonRender;
+                },
+
+                spatial2dViewportLinked() {
+                    return this.spatial2dViewMode === 'compare' &&
+                        (!this.spatial2dComparisonActive || this.spatialComparisonLinked);
+                },
+
+                async alignSpatialComparison(afterRender = false) {
+                    if (!this.spatial2dViewportLinked() || (!afterRender && this.spatialComparisonBusy)) return;
+                    const source = document.getElementById('spatial2dPlotTrait');
+                    const target = document.getElementById('spatial2dPlotAnnotation');
+                    if (!source?._fullLayout || !target?.data) return;
+                    const viewport = Object.fromEntries(['xaxis', 'yaxis'].map(axis =>
+                        [axis + '.range', source._fullLayout[axis].range.slice()]));
+                    if (!this.applySpatial2dPanViewport(target, viewport)) await this.queueSpatial2dViewport(target, viewport);
+                },
+
+                spatialComparisonReportKey() {
+                    // Dataset identity guards against restoring a view into a different report.
+                    return JSON.stringify([this.reportMeta.configuration?.analysis?.project_name ||
+                        this.reportMeta.project_name || this.reportMeta.project || '',
+                        this.samples.map(name => [name, window.GSMAP_SAMPLE_INDEX?.[name]?.n_spots_original || 0]), this.traits]);
+                },
+
+                spatialComparisonBookmark() {
+                    return {
+                        format: 'gsmap-spatial-comparison', version: 1, report: this.spatialComparisonReportKey(),
+                        kind: this.spatial2dCompareKind, selection: {...this.spatialComparisonSelection},
+                        linked: this.spatialComparisonLinked, colorMax: Number(this.spatialComparisonColorMax),
+                        pointScale: Number(this.spatial2dPointScale), cutoff: Number(this.spatial2dAssociationMinLogP),
+                        emphasis: Number(this.spatial2dAssociationOpacityStrength), annotation: this.selectedAnnotationCategory,
+                        hidden: Object.keys(this.annotationHiddenCategories[this.selectedAnnotationCategory] || {})
+                            .filter(key => this.annotationHiddenCategories[this.selectedAnnotationCategory][key]),
+                        ranges: ['spatial2dPlotTrait', 'spatial2dPlotAnnotation'].map(id => {
+                            const plot = document.getElementById(id);
+                            return ['xaxis', 'yaxis'].map(axis => plot?._fullLayout?.[axis]?.range?.slice() || null);
+                        })
+                    };
+                },
+
+                downloadReportBlob(blob, filename) {
+                    const url = URL.createObjectURL(blob), link = document.createElement('a');
+                    link.href = url; link.download = filename; document.body.appendChild(link);
+                    link.click(); link.remove();
+                    setTimeout(() => URL.revokeObjectURL(url), 30000);
+                },
+
+                saveSpatialComparison() {
+                    if (!this.spatial2dComparisonActive || this.spatialComparisonBusy || this.spatial2dError) return;
+                    this.downloadReportBlob(new Blob([JSON.stringify(this.spatialComparisonBookmark(), null, 2)],
+                        {type: 'application/json'}), 'gsmap-comparison-view.json');
+                    this.spatialComparisonNotice = 'View saved. Load this JSON with the same report to restore selections and zoom.';
+                },
+
+                validateSpatialComparisonBookmark(view) {
+                    const invalid = message => { throw new Error(message); };
+                    if (view?.format !== 'gsmap-spatial-comparison' || view.version !== 1) invalid('Unsupported view file.');
+                    if (view.report !== this.spatialComparisonReportKey()) invalid('This view belongs to a different dataset or trait collection.');
+                    if (!['traits', 'samples', 'sample_annotations'].includes(view.kind) || typeof view.linked !== 'boolean') invalid('Invalid comparison mode.');
+                    for (const key of ['sampleA', 'sampleB', 'traitA', 'traitB']) {
+                        if (!(key.startsWith('sample') ? this.samples : this.traits).includes(view.selection?.[key])) invalid(`Unknown ${key}.`);
+                    }
+                    if (!this.annotations.includes(view.annotation)) invalid('Unknown annotation.');
+                    const schema = this.getAnnotationSchema(view.annotation);
+                    if (!Array.isArray(view.hidden) || view.hidden.some(name => !schema?.categories?.map(String).includes(name))) invalid('Unknown annotation category.');
+                    for (const [key, min, max] of [['colorMax', 0, 1e6], ['pointScale', 0.5, 12], ['cutoff', 0, 1e6], ['emphasis', 0, 1]]) {
+                        if (typeof view[key] !== 'number' || !Number.isFinite(view[key]) || view[key] < min || view[key] > max) invalid(`Invalid ${key}.`);
+                    }
+                    if (!Array.isArray(view.ranges) || view.ranges.length !== 2 || view.ranges.some(panel =>
+                        !Array.isArray(panel) || panel.length !== 2 || panel.some(range =>
+                            !Array.isArray(range) || range.length !== 2 || !range.every(Number.isFinite) || range[0] === range[1]))) invalid('Invalid viewport.');
+                    return view;
+                },
+
+                async loadSpatialComparisonFile(file) {
+                    if (!file) return;
+                    try {
+                        if (file.size > 1024 * 1024) throw new Error('View file is too large (maximum 1 MB).');
+                        await this.restoreSpatialComparison(JSON.parse(await file.text()));
+                    } catch (error) {
+                        this.spatialComparisonNotice = `Could not load view: ${error.message}`;
+                    }
+                },
+
+                async restoreSpatialComparison(input) {
+                    const view = this.validateSpatialComparisonBookmark(input);
+                    const annotationChanged = view.annotation !== this.selectedAnnotationCategory;
+                    comparisonRevision++;
+                    if (comparisonRender) await comparisonRender;
+                    this.spatial2dViewMode = 'compare'; this.spatial2dCompareKind = view.kind;
+                    this.spatialComparisonSelection = Object.fromEntries(
+                        ['sampleA', 'sampleB', 'traitA', 'traitB'].map(key => [key, view.selection[key]]));
+                    this.spatialComparisonQueries = {};
+                    this.spatialComparisonSearchField = '';
+                    this.spatialComparisonLinked = view.linked;
+                    this.spatialComparisonColorMax = view.colorMax;
+                    this.spatial2dPointScale = view.pointScale;
+                    this.spatial2dAssociationMinLogP = view.cutoff;
+                    this.spatial2dAssociationOpacityStrength = view.emphasis;
+                    this.selectedAnnotationCategory = view.annotation;
+                    this.annotationHiddenCategories = {...this.annotationHiddenCategories,
+                        [view.annotation]: Object.fromEntries(view.hidden.map(name => [name, true]))};
+                    await this.waitForLayoutPaint();
+                    await this.renderSpatialComparison();
+                    if (this.spatial2dError) throw new Error(this.spatial2dError);
+                    for (const [i, id] of ['spatial2dPlotTrait', 'spatial2dPlotAnnotation'].entries()) {
+                        const plot = document.getElementById(id);
+                        plot.__gsMapApplyingViewport = true;
+                        try {
+                            await Plotly.relayout(plot, {'xaxis.range': view.ranges[i][0], 'yaxis.range': view.ranges[i][1]});
+                        } finally { plot.__gsMapApplyingViewport = false; }
+                    }
+                    // Shared annotation selection also drives the existing 3D/UMAP views.
+                    if (annotationChanged) {
+                        await this.onAnnotationChange();
+                    } else {
+                        // Hiding categories must not clear enrichment-table/heatmap selections.
+                        await this.renderSpatial3dViews();
+                        if (this.umapActivated) this.renderUmapPlots();
+                    }
+                    this.spatialComparisonNotice = 'View restored, including annotation selection and zoom.';
+                },
+
+                async exportSpatialComparison() {
+                    if (!this.spatial2dComparisonActive || this.spatialComparisonBusy || this.spatialComparisonExporting || this.spatial2dError) return;
+                    this.spatialComparisonExporting = true;
+                    const revision = comparisonRevision;
+                    const viewKey = JSON.stringify(this.spatialComparisonBookmark());
+                    const titles = [0, 1].map(i => this.spatialComparisonPanelTitle(i));
+                    const notes = [...this.spatialComparisonPanelNotes];
+                    try {
+                        const images = [];
+                        for (const id of ['spatial2dPlotTrait', 'spatial2dPlotAnnotation']) {
+                            const url = await Plotly.toImage(document.getElementById(id), {format: 'png', scale: 2});
+                            const img = new Image(); img.src = url; await img.decode(); images.push(img);
+                        }
+                        if (revision !== comparisonRevision || viewKey !== JSON.stringify(this.spatialComparisonBookmark())) {
+                            throw new Error('View changed during export; please export again.');
+                        }
+                        const width = Math.max(...images.map(img => img.width)), padding = 32;
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        const wrap = (text, maxWidth, font) => {
+                            ctx.font = font;
+                            let line = ''; const lines = [];
+                            for (const ch of text) {
+                                if (ctx.measureText(line + ch).width > maxWidth) {lines.push(line); line = '';}
+                                line += ch;
+                            }
+                            lines.push(line); return lines;
+                        };
+                        const headingFont = '600 20px sans-serif', detailFont = '16px sans-serif';
+                        const titleLines = titles.map(text => wrap(text, width, headingFont));
+                        const noteLines = notes.map(text => wrap(text, width, detailFont));
+                        const legend = this.currentAnnotationLegend.filter(entry => entry.visible);
+                        const visible = legend.map(entry => entry.category);
+                        const filter = this.hasHiddenAnnotationCategories() ? visible.join(', ') || 'none' : 'all categories';
+                        const footer = wrap(`gsMap · ${this.selectedAnnotationCategory}: ${filter} · ` +
+                            (this.spatialComparisonIsAnnotation ? 'shared annotation colors; displayed spots only' :
+                                `cutoff ${this.spatial2dAssociationMinLogP} · absolute −log10(P); displayed spots only`),
+                            2 * width + padding, detailFont);
+                        const imageY = padding + Math.max(...titleLines.map(lines => lines.length)) * 26;
+                        const noteY = imageY + Math.max(...images.map(img => img.height)) + padding;
+                        const footerY = noteY + Math.max(...noteLines.map(lines => lines.length)) * 26 + padding;
+                        const legendRows = [];
+                        let legendX = padding, legendY = footerY + footer.length * 26 + padding;
+                        if (this.spatialComparisonIsAnnotation) for (const entry of legend) {
+                            const lines = wrap(String(entry.category), width - 28, detailFont);
+                            const cellWidth = Math.max(...lines.map(line => ctx.measureText(line).width)) + 52;
+                            if (legendX + cellWidth > 2 * width + 2 * padding) {legendX = padding; legendY += 26;}
+                            legendRows.push({entry, lines, x: legendX, y: legendY});
+                            if (lines.length > 1) {legendX = padding; legendY += lines.length * 26;}
+                            else legendX += cellWidth;
+                        }
+                        canvas.width = 2 * width + 3 * padding;
+                        canvas.height = legendRows.length ? legendY + 26 + padding : footerY + footer.length * 26 + padding;
+                        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.fillStyle = '#334155';
+                        const textLines = (lines, x, y, font) => {
+                            ctx.font = font; lines.forEach((line, i) => ctx.fillText(line, x, y + i * 26));
+                        };
+                        for (let i = 0; i < 2; i++) {
+                            const x = padding + i * (width + padding);
+                            textLines(titleLines[i], x, padding, headingFont);
+                            ctx.drawImage(images[i], x, imageY);
+                            textLines(noteLines[i], x, noteY, detailFont);
+                        }
+                        textLines(footer, padding, footerY, detailFont);
+                        for (const row of legendRows) {
+                            ctx.fillStyle = row.entry.color; ctx.fillRect(row.x, row.y - 13, 14, 14);
+                            ctx.fillStyle = '#334155'; textLines(row.lines, row.x + 22, row.y, detailFont);
+                        }
+                        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                        if (!blob) throw new Error('PNG encoding failed.');
+                        this.downloadReportBlob(blob, 'gsmap-comparison.png');
+                        this.spatialComparisonNotice = 'Comparison exported with panel labels and the displayed colors.';
+                    } catch (error) {
+                        this.spatialComparisonNotice = `Could not export: ${error.message}`;
+                    } finally { this.spatialComparisonExporting = false; }
+                },
+
+                async setSpatial2dViewMode(mode) {
                     this.spatial2dViewMode = mode;
+                    comparisonRevision++;
+                    if (comparisonRender) await comparisonRender;
                     this.$nextTick(() => {
                         this.renderSpatial2DPlot();
                         setTimeout(() => {
@@ -5390,22 +5928,28 @@
                     });
                 },
 
-                resetSpatial2dView() {
+                async resetSpatial2dView() {
                     const yAutorange = this.reportMeta.plot_origin === 'upper' ? 'reversed' : true;
-                    for (const id of ['spatial2dPlotTrait', 'spatial2dPlotAnnotation']) {
-                        const plot = document.getElementById(id);
-                        if (plot?.data) {
-                            Plotly.relayout(plot, {
+                    const plots = ['spatial2dPlotTrait', 'spatial2dPlotAnnotation']
+                        .map(id => document.getElementById(id)).filter(plot => plot?.data);
+                    // Reset each sample independently before choosing the linked viewport.
+                    // Forwarding autorange alone would fit different bounds in each sample.
+                    plots.forEach(plot => { plot.__gsMapApplyingViewport = true; });
+                    try {
+                        await Promise.all(plots.map(plot => Plotly.relayout(plot, {
                                 'xaxis.autorange': true,
                                 'yaxis.autorange': yAutorange
-                            });
-                        }
+                            })));
+                    } finally {
+                        plots.forEach(plot => { plot.__gsMapApplyingViewport = false; });
                     }
+                    await this.alignSpatialComparison();
                 },
 
                 // Render only the visible 2D views; comparison mode keeps both viewports synchronized.
                 renderSpatial2DPlot({ traitOnly = false } = {}) {
                     if (!this.plotlyReady || !this.currentSampleData) return;
+                    if (this.spatial2dComparisonActive) return this.renderSpatialComparison();
                     this.spatial2dError = '';
                     if (this.spatial2dViewMode !== 'annotation') {
                         this.renderSpatial2DPlotSingle('spatial2dPlotTrait', 'trait');
@@ -5510,7 +6054,7 @@
                         const event = pointer, trace = plot.data?.[0];
                         const key = trace?.meta?.hoverContextKey;
                         if (!event || event.buttons || plot._dragging ||
-                            this.loadingSampleData || this.loadingSpatial2dTraitData ||
+                            this.loadingSampleData || this.loadingSpatial2dTraitData || this.spatialComparisonBusy ||
                             !key || !this._pointHoverContexts[key] || !plot.getClientRects().length) {
                             hide(); return;
                         }
@@ -5541,16 +6085,17 @@
                 },
 
                 // Render one compact 2D payload. Large categorical data remain a single WebGL trace.
-                renderSpatial2DPlotSingle(divId, plotType) {
+                renderSpatial2DPlotSingle(divId, plotType, options = {}) {
                     const plotDiv = document.getElementById(divId);
                     if (!plotDiv) return;
+                    plotDiv.__gsMapComparisonRender = null;
                     plotDiv.__gsMapHoverNotBefore = performance.now();
                     this.hidePointHoverTooltip();
                     this.clearPointHoverContexts(`spatial2d\u001f${divId}\u001f`);
 
-                    const data = this.currentSampleData;
+                    const data = options.data || this.currentSampleData;
                     if (!data) return;
-                    const sample = this.selectedSample;
+                    const sample = options.sample || this.selectedSample;
 
                     // Data is already filtered per sample, no need to filter
                     const x = data.sx;
@@ -5569,18 +6114,18 @@
                     let traces = [];
 
                     if (plotType === 'trait') {
-                        const trait = this.selectedTrait;
-                        const rawTraitPayload = data.traits?.[trait];
+                        const trait = options.trait || this.selectedTrait;
+                        const rawTraitPayload = options.payload || data.traits?.[trait];
                         const compactTraitPayload = rawTraitPayload &&
                             !ArrayBuffer.isView(rawTraitPayload) && !Array.isArray(rawTraitPayload)
                             ? rawTraitPayload : null;
                         const colorValues = compactTraitPayload?.values || rawTraitPayload || data[trait]
                             || new Float32Array(x.length);
                         const colorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
-                        const cmin = Number(compactTraitPayload?.cmin || 0);
+                        const cmin = options.comparison ? 0 : Number(compactTraitPayload?.cmin || 0);
                         const cmax = this.resolveContinuousColorMaximum(
                             colorValues,
-                            compactTraitPayload?.cmax
+                            options.cmax ?? compactTraitPayload?.cmax
                         );
                         const colorLimits = { cmin, cmax };
                         const threshold = this.spatial2dAssociationMinLogP;
@@ -5593,9 +6138,14 @@
                             )
                             : { x, y, indices: null };
                         const pointValues = this.selectPointValues(colorValues, points.indices);
-                        const associationPoints = this.filterAssociationPlotPoints(
-                            points, pointValues, threshold
-                        );
+                        let associationPoints;
+                        if (options.selectionValues) {
+                            associationPoints = this.filterAssociationPlotPoints(points,
+                                this.selectPointValues(options.selectionValues, points.indices), threshold);
+                            associationPoints.values = this.selectPointValues(colorValues, associationPoints.indices);
+                        } else {
+                            associationPoints = this.filterAssociationPlotPoints(points, pointValues, threshold);
+                        }
                         const baseAnnotationCodes = Object.fromEntries(
                             Object.entries(data.annotations || {}).map(
                                 ([name, payload]) => [name, payload.codes]
@@ -5605,6 +6155,8 @@
                             `spatial2d\u001f${divId}\u001ftrait\u001f${sample}\u001f${trait}\u001f${annotationName}`,
                             {
                                 hoverKind: 'trait',
+                                comparisonTraits: options.comparisonTraits,
+                                hoverPrefix: options.comparison ? `${sample} · ${trait}` : null,
                                 indices: associationPoints.indices,
                                 compactAnnotations: baseAnnotationCodes,
                                 annotationSchemas: data.annotations || {},
@@ -5630,10 +6182,10 @@
                                 opacity: this.associationOpacityArray(
                                     associationPoints.values,
                                     cmin,
-                                    compactTraitPayload?.q95,
+                                    options.q95 ?? compactTraitPayload?.q95,
                                     opacity,
                                     emphasis,
-                                    threshold
+                                    options.selectionValues ? 0 : threshold
                                 ),
                                 showscale: true,
                                 colorbar: {
@@ -5660,6 +6212,13 @@
                                 colors: categories.map((value, index) => umapColorMap?.[value] || defaults[index % defaults.length])
                             };
                         }
+                        // Match categories by label, never by sample-local integer code.
+                        const schema = this.getAnnotationSchema(anno);
+                        if (schema?.categories?.length && schema.colors?.length) {
+                            const colors = new Map(schema.categories.map((name, i) => [String(name), schema.colors[i]]));
+                            annotation = {...annotation, colors: annotation.categories.map((name, i) =>
+                                colors.get(String(name)) || annotation.colors[i])};
+                        }
                         let points = this.filterCategoricalPlotPoints(
                             x,
                             y,
@@ -5668,7 +6227,7 @@
                             anno
                         );
                         const comparisonTrait = data.traits?.[this.selectedTrait];
-                        if (this.spatial2dViewMode === 'compare' && comparisonTrait?.values) {
+                        if (!options.comparison && this.spatial2dViewMode === 'compare' && comparisonTrait?.values) {
                             const comparisonValues = this.selectPointValues(
                                 comparisonTrait.values, points.indices
                             );
@@ -5685,6 +6244,7 @@
                             `spatial2d\u001f${divId}\u001fannotation\u001f${sample}\u001f${anno}`,
                             {
                                 hoverKind: 'annotation',
+                                hoverPrefix: options.comparison ? `${sample} · ${anno}` : null,
                                 indices: points.indices,
                                 compactAnnotations: baseAnnotationCodes,
                                 annotationSchemas: data.annotations || {},
@@ -5729,31 +6289,33 @@
                         dragmode: 'pan',
                         // Reserve colorbar space explicitly. Fixed margins avoid
                         // automatic colorbar/aspect-ratio margin redraw cycles.
-                        margin: { l: 12, r: plotType === 'trait' || this.spatial2dViewMode === 'compare'
+                        margin: { l: 12, r: plotType === 'trait' || (this.spatial2dViewMode === 'compare' && !this.spatialComparisonIsAnnotation)
                             ? 84 : 12, t: 8, b: 12, autoexpand: false },
                         paper_bgcolor: '#ffffff',
                         plot_bgcolor: '#ffffff',
                         showlegend: false,
-                        uirevision: `spatial2d-${sample}`
+                        uirevision: options.comparison ? `spatial2d-${sample}-${this.spatial2dCompareKind}` : `spatial2d-${sample}`
                     };
 
                     const config = this.getPlotlyConfig();
 
                     try {
-                        Promise.resolve(Plotly.react(plotDiv, traces, layout, config)).then(() => {
-                            this.bindSpatial2dPointSizing(plotDiv, data, plotType);
+                        return Promise.resolve(Plotly.react(plotDiv, traces, layout, config)).then(() => {
+                            this.bindSpatial2dPointSizing(plotDiv, data, plotType, Boolean(options.comparison));
                             this.updateSpatial2dPointSize(plotDiv);
                             this.bindSpatial2dHover(plotDiv);
                             if (this.spatial2dViewMode === 'compare') {
-                                const targetId = plotType === 'trait'
+                                const targetId = divId === 'spatial2dPlotTrait'
                                     ? 'spatial2dPlotAnnotation' : 'spatial2dPlotTrait';
                                 this.bindSpatial2dViewportSync(divId, targetId);
                             }
                         }).catch(error => {
                             this.spatial2dError = `Unable to render the 2D view: ${error.message}`;
+                            if (options.comparison) throw error;
                         });
                     } catch (error) {
                         this.spatial2dError = `Unable to render the 2D view: ${error.message}`;
+                        if (options.comparison) throw error;
                     }
                 },
 
@@ -5763,7 +6325,7 @@
                     source.__gsMapViewportSyncBound = true;
                     let frame = null;
                     const sync = (event, preview = false) => {
-                        if (source.__gsMapApplyingViewport || this.spatial2dViewMode !== 'compare') return;
+                        if (source.__gsMapApplyingViewport || !this.spatial2dViewportLinked() || this.spatialComparisonBusy) return;
                         const target = document.getElementById(targetId);
                         if (!target?.data) return;
                         const viewport = {};
@@ -5815,7 +6377,7 @@
                     const flush = async () => {
                         target.__gsMapApplyingViewport = true;
                         try {
-                            while (target.__gsMapPendingViewport && target.data && this.spatial2dViewMode === 'compare') {
+                            while (target.__gsMapPendingViewport && target.data && this.spatial2dViewportLinked()) {
                                 const next = target.__gsMapPendingViewport;
                                 target.__gsMapPendingViewport = null;
                                 await Plotly.relayout(target, next);
@@ -5916,7 +6478,8 @@
 
                 updateSpatial2dPointSize(plot, refinements = 2) {
                     const context = plot?.__gsMapPointSizing;
-                    if (!context || !plot.data?.length || context.data !== this.currentSampleData) return;
+                    if (!context || !plot.data?.length ||
+                        (!context.comparison && context.data !== this.currentSampleData)) return;
                     const size = this.resolveSpatial2dPointSize(context.data, plot, context.plotType);
                     if (context.plotType === 'trait' || this.spatial2dViewMode === 'annotation') {
                         this.spatial2dPointSizePixels = size;
@@ -5936,8 +6499,8 @@
                     }
                 },
 
-                bindSpatial2dPointSizing(plot, data, plotType) {
-                    plot.__gsMapPointSizing = {data, plotType};
+                bindSpatial2dPointSizing(plot, data, plotType, comparison = false) {
+                    plot.__gsMapPointSizing = {data, plotType, comparison};
                     if (!plot.on || plot.__gsMapPointSizingBound) return;
                     plot.__gsMapPointSizingBound = true;
                     plot.on('plotly_relayout', () => this.updateSpatial2dPointSize(plot));
