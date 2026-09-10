@@ -30,6 +30,7 @@ from joblib.externals.loky import ProcessPoolExecutor
 from joblib.externals.loky.backend.context import get_context
 
 from gsMap.config import QuickModeConfig
+from gsMap.config.gwas import trait_labels
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
@@ -41,8 +42,10 @@ from gsMap.report.spatial_payload import (
     export_sample_spatial_payloads,
     export_spatial_3d_payloads,
     safe_name,
+    trait_file_token,
 )
 from gsMap.report.table_io import read_metadata_companion, write_metadata
+from gsMap.report.trait_metadata import trait_payload_current, trait_payload_js
 from gsMap.report.visualize import (
     estimate_plotly_point_size,
 )
@@ -287,6 +290,10 @@ class ReportDataManager:
             js_path = self.js_data_dir / "gss_stats" / f"gene_trait_correlation_{trait}.js"
             if not self._is_step_complete([csv_path, js_path]):
                 traits_to_run.append(trait)
+            elif not trait_payload_current(js_path, "GSMAP_GENE_TRAIT_CORRELATION"):
+                self._export_single_pcc_js(
+                    trait, _read_report_csv(csv_path, labels=["gene", "trait"])
+                )
 
         if not traits_to_run and self._is_step_complete([gene_list_file]):
             logger.info("GSS statistics (PCC) already complete for all traits. Skipping.")
@@ -421,10 +428,7 @@ class ReportDataManager:
         gss_js_dir.mkdir(exist_ok=True)
 
         data_json = df.to_json(orient="records")
-        var_name = (
-            f"GSMAP_GENE_TRAIT_CORRELATION_{''.join(c if c.isalnum() else '_' for c in trait)}"
-        )
-        js_content = f"window.{var_name} = {data_json};"
+        js_content = trait_payload_js("GSMAP_GENE_TRAIT_CORRELATION", trait, data_json)
         _atomic_write_text(gss_js_dir / f"gene_trait_correlation_{trait}.js", js_content)
 
     def prepare_manhattan_data(self):
@@ -454,7 +458,9 @@ class ReportDataManager:
                 ticks = _load_chrom_tick_positions(csv_path)
                 if ticks:
                     chrom_tick_positions[trait] = ticks
-                    if not _manhattan_js_has_embedded_ticks(js_path):
+                    if not _manhattan_js_has_embedded_ticks(js_path) or not trait_payload_current(
+                        js_path, "GSMAP_MANHATTAN"
+                    ):
                         logger.info(f"Updating cached Manhattan payload metadata for {trait}...")
                         _export_single_manhattan_js(trait, csv_path, self.js_data_dir)
                 else:
@@ -592,19 +598,31 @@ class ReportDataManager:
             trait_plot_dir = spatial_plot_dir / "by_trait"
             sample_plot_dir = spatial_plot_dir / "by_sample"
             trait_paths = {
-                trait: trait_plot_dir / f"ldsc_{safe_name(trait)}.png" for trait in self.traits
+                trait: trait_plot_dir / f"ldsc_{trait_file_token(trait)}.png"
+                for trait in self.traits
             }
             sample_paths = {
                 sample: sample_plot_dir / f"sample_{safe_name(sample)}.png"
                 for sample in self.sample_names
             }
+            try:
+                previous_meta = json.loads((self.web_report_dir / "report_meta.json").read_text())
+            except (OSError, ValueError):
+                previous_meta = {}
+            if not isinstance(previous_meta, dict):
+                previous_meta = {}
+            labels_changed = previous_meta.get(
+                "trait_labels", {trait: trait for trait in self.traits}
+            ) != trait_labels(self.report_config, self.traits)
             missing_trait_plots = {
-                trait for trait, path in trait_paths.items() if not self._is_step_complete([path])
+                trait
+                for trait, path in trait_paths.items()
+                if labels_changed or not self._is_step_complete([path])
             }
             missing_sample_plots = {
                 sample
                 for sample, path in sample_paths.items()
-                if not self._is_step_complete([path])
+                if labels_changed or not self._is_step_complete([path])
             }
             if missing_trait_plots or missing_sample_plots:
                 overview_cache = MultiSampleSpatialRasterCache(obs_data, self.sample_names)
@@ -1854,8 +1872,7 @@ def _export_single_manhattan_js(trait: str, csv_path: Path, js_data_dir: Path):
     }
 
     json_str = json.dumps(data_struct, separators=(",", ":"))
-    safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-    js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
+    js_content = trait_payload_js("GSMAP_MANHATTAN", trait, json_str)
 
     _atomic_write_text(js_data_dir / f"manhattan_{trait}.js", js_content)
 
@@ -2644,6 +2661,8 @@ def _save_report_metadata(
     report_meta.update(
         {
             "traits": traits,
+            "trait_labels": trait_labels(report_config, traits),
+            "trait_payload_version": 2,
             "samples": sample_names,
             "annotations": report_config.annotation_list,
             "top_corr_genes": report_config.top_corr_genes,
@@ -2654,7 +2673,7 @@ def _save_report_metadata(
             "downsampling_n_spots_umap": report_config.downsampling_n_spots_umap,
             "generate_multi_sample_plots": report_config.generate_multi_sample_plots,
             "multi_sample_trait_plots": (
-                {trait: f"by_trait/ldsc_{safe_name(trait)}.png" for trait in traits}
+                {trait: f"by_trait/ldsc_{trait_file_token(trait)}.png" for trait in traits}
                 if report_config.generate_multi_sample_plots
                 else {}
             ),
@@ -3184,8 +3203,7 @@ def _export_manhattan_js(data_dir: Path, js_data_dir: Path):
             }
 
             json_str = json.dumps(data_struct, separators=(",", ":"))
-            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
-            js_content = f"window.GSMAP_MANHATTAN_{safe_trait} = {json_str};"
+            js_content = trait_payload_js("GSMAP_MANHATTAN", trait, json_str)
 
             _atomic_write_text(js_data_dir / f"manhattan_{trait}.js", js_content)
 

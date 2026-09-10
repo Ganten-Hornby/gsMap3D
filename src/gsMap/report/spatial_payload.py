@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from gsMap.config.gwas import trait_file_token
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-SPATIAL_PAYLOAD_VERSION = 10
+SPATIAL_PAYLOAD_VERSION = 11
 P_VALUE_COLORS = [
     "#313695",
     "#4575b4",
@@ -514,7 +516,7 @@ def export_spatial_3d_payloads(
             "q95": _trait_q95(values),
             "scale_scope": "all_spots",
         }
-        filename = f"trait_{safe_name(trait)}.js"
+        filename = f"trait_{trait_file_token(trait)}.js"
         relative = f"js_data/spatial_3d/{filename}"
         _write_keyed_payload(web_report_dir / relative, "GSMAP_SPATIAL_3D_TRAITS", trait, payload)
         trait_index[trait] = {"file": relative}
@@ -737,7 +739,7 @@ def export_sample_spatial_payloads(
                 "n_clipped": int(np.count_nonzero(sample_values > shared_cmax)),
                 "scale_scope": "all_samples",
             }
-            filename = f"sample_{safe_name(sample_name)}_trait_{safe_name(trait)}.js"
+            filename = f"sample_{safe_name(sample_name)}_trait_{trait_file_token(trait)}.js"
             relative = f"spatial_2d/{filename}"
             compound_key = f"{sample_name}\x1f{trait}"
             _write_keyed_payload(

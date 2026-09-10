@@ -50,6 +50,7 @@ def test_manhattan_cache_tracks_top_gene_limit(tmp_path, monkeypatch, recorded_l
         (manager.web_report_dir / "report_meta.json").write_text(contents)
     monkeypatch.setattr(report_data, "_load_chrom_tick_positions", lambda _: {1: 1.0})
     monkeypatch.setattr(report_data, "_manhattan_js_has_embedded_ticks", lambda _: True)
+    monkeypatch.setattr(report_data, "trait_payload_current", lambda *_: True)
 
     class RebuildRequested(Exception):
         pass

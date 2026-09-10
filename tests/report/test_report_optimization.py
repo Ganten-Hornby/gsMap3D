@@ -157,6 +157,7 @@ def test_overview_tile_store_generates_both_foldable_plot_directions(tmp_path):
 def test_report_completion_detects_changed_visualization_limits(tmp_path):
     config = SimpleNamespace(
         web_report_dir=tmp_path,
+        trait_name_list=["IQ"],
         downsampling_n_spots_umap=50_000,
         downsampling_n_spots_2d=100_000,
         downsampling_n_spots_3d=100_000,
@@ -169,6 +170,8 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
                 "downsampling_n_spots_2d": 100_000,
                 "downsampling_n_spots_3d": 100_000,
                 "top_corr_genes": 10,
+                "trait_labels": {"IQ": "IQ"},
+                "trait_payload_version": 2,
             }
         )
     )
@@ -256,7 +259,7 @@ def test_manhattan_payload_carries_its_own_chromosome_ticks(tmp_path):
     _export_single_manhattan_js("trait", csv_path, tmp_path)
 
     payload = json.loads(
-        (tmp_path / "manhattan_trait.js").read_text().split("=", 1)[1].rstrip(";")
+        (tmp_path / "manhattan_trait.js").read_text().splitlines()[1].split("=", 1)[1].rstrip(";")
     )
     assert payload["chrom_ticks"] == {"1": 15.0, "2": 50.0}
 

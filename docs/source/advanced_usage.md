@@ -41,6 +41,40 @@ checksum-listed bundle files unchanged and make separate configuration copies
 when customizing an example.
 ```
 
+## GWAS names in reports
+
+Use stable trait IDs as the keys in `gwas.yaml`. An optional `label` provides a
+readable name in report selectors, titles, heatmaps and tables:
+
+```yaml
+IQ:
+  path: ../example-traits/IQ.sumstats.gz
+  label: "Intelligence — cognitive performance"
+SCZ:
+  path: /data/GWAS/SCZ.sumstats.gz
+  label: "Schizophrenia"
+```
+
+Pass this file with `--sumstats-config-file gwas.yaml`, or
+`sumstats_config_file="gwas.yaml"` in Python. Relative `path` values are resolved
+from the YAML file's directory. Searches match both the ID and its label; spaces
+and punctuation in labels are fine. IDs remain unchanged in results and caches.
+After editing a label, regenerate the report with `--start-step report`; LDSC
+does not need to run again. Use unique IDs, without path separators.
+
+The original path-only format is still supported, including mixed entries:
+
+```yaml
+IQ: ../example-traits/IQ.sumstats.gz
+SCZ:
+  path: /data/GWAS/SCZ.sumstats.gz
+  label: "Schizophrenia"
+```
+
+Without a label, the report displays the ID. In the Python API,
+`sumstats_config_dict` also accepts these entries, or use a path dictionary with
+`trait_labels={"IQ": "Intelligence"}`.
+
 ## Customize SNP-to-gene linking
 
 Current tutorials use GENCODE v50 / 1000G high-coverage EUR. For custom gene BED

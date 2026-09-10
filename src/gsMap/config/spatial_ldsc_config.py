@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
-import yaml
 
 from gsMap.config.base import ConfigWithAutoPaths
+from gsMap.config.gwas import load_gwas_mapping, normalize_gwas_mapping
 
 logger = logging.getLogger("gsMap.config")
 
@@ -91,6 +91,11 @@ class GWASSumstatsConfig:
     ] = None
 
     sumstats_config_dict: dict[str, Path] = field(default_factory=dict)
+    trait_labels: dict[str, str] = field(default_factory=dict)
+
+    def trait_label(self, trait_id: str) -> str:
+        """Human-readable report label; never an output filename or data key."""
+        return self.trait_labels.get(trait_id, trait_id)
 
     @property
     def trait_name_list(self) -> list[str]:
@@ -110,12 +115,9 @@ class GWASSumstatsConfig:
         """
         # If the caller already built the dict, validate and accept it directly.
         if self.sumstats_config_dict:
-            self.sumstats_config_dict = {k: Path(v) for k, v in self.sumstats_config_dict.items()}
-            for sumstats_file in self.sumstats_config_dict.values():
-                if not Path(sumstats_file).is_file():
-                    raise FileNotFoundError(
-                        f"Summary-statistics file does not exist: {sumstats_file}"
-                    )
+            self.sumstats_config_dict, self.trait_labels = normalize_gwas_mapping(
+                self.sumstats_config_dict, labels=self.trait_labels
+            )
             return
 
         sumstats_config_dict = {}
@@ -136,29 +138,17 @@ class GWASSumstatsConfig:
             )
         # load the sumstats config file
         if self.sumstats_config_file is not None:
-            # get the directory of the config file to resolve relative paths
-            config_dir = Path(self.sumstats_config_file).parent
-            with open(self.sumstats_config_file) as f:
-                config_loaded = yaml.safe_load(f)
-            if not isinstance(config_loaded, dict) or not config_loaded:
-                raise ValueError(
-                    f"Summary-statistics config must be a non-empty mapping: "
-                    f"{self.sumstats_config_file}"
-                )
-            for _trait_name, sumstats_file in config_loaded.items():
-                s_path = Path(sumstats_file)
-                if not s_path.is_absolute():
-                    s_path = config_dir / s_path
-                sumstats_config_dict[_trait_name] = s_path.resolve()
+            self.sumstats_config_dict, self.trait_labels = load_gwas_mapping(
+                self.sumstats_config_file, labels=self.trait_labels
+            )
+            return
         # load the sumstats file
         else:
             sumstats_config_dict[self.trait_name] = Path(self.sumstats_file)
 
-        for sumstats_file in sumstats_config_dict.values():
-            if not Path(sumstats_file).is_file():
-                raise FileNotFoundError(f"Summary-statistics file does not exist: {sumstats_file}")
-
-        self.sumstats_config_dict = sumstats_config_dict
+        self.sumstats_config_dict, self.trait_labels = normalize_gwas_mapping(
+            sumstats_config_dict, labels=self.trait_labels
+        )
 
 
 @dataclass

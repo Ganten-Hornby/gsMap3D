@@ -511,7 +511,7 @@
                                 @click="selectTraitFromSearch(trait)"
                                 class="block w-full rounded-lg px-2.5 py-2 text-left text-sm"
                                 :class="index === traitActiveIndex ? 'bg-primary-50 text-primary-800' : (trait === selectedTrait ? 'font-semibold text-slate-900' : 'text-slate-600 hover:bg-slate-50')">
-                                <span class="block truncate" x-text="trait" :title="trait"></span>
+                                <span class="block truncate" x-text="traitLabel(trait)" :title="traitLabel(trait) + ' [' + trait + ']'"></span>
                             </button>
                         </template>
                         <p x-show="filteredTraits.length === 0" class="px-3 py-5 text-center text-sm text-slate-500">
@@ -707,11 +707,11 @@
                 <div class="relative z-10 flex flex-col justify-between gap-5 xl:flex-row xl:items-center">
                     <div class="min-w-0">
                         <p class="text-[11px] font-bold uppercase tracking-[0.17em] text-primary-700">Active analysis</p>
-                        <h2 id="report-overview-title" class="mt-1 truncate text-xl font-semibold tracking-tight text-slate-950 sm:text-2xl"
-                            x-text="selectedTrait || 'Spatial genetic association report'"></h2>
+                        <h2 id="report-overview-title" class="mt-1 break-words text-xl font-semibold tracking-tight text-slate-950 sm:text-2xl"
+                            x-text="traitLabel(selectedTrait) || 'Spatial genetic association report'"></h2>
                         <p class="mt-1 max-w-3xl text-sm text-slate-600">Explore trait association, gene specificity, embeddings, and enrichment using one synchronized selection.</p>
                         <div class="mt-3 flex flex-wrap gap-2">
-                            <span class="context-chip"><span>Trait</span><strong x-text="selectedTrait"></strong></span>
+                            <span class="context-chip"><span>Trait</span><strong x-text="traitLabel(selectedTrait)"></strong></span>
                             <span x-show="currentSections.show2dDistribution" class="context-chip"><span>Sample</span><strong x-text="selectedSample"></strong></span>
                             <span class="context-chip"><span>Annotation</span><strong x-text="selectedAnnotationCategory"></strong></span>
                             <span class="context-chip"><span>Gene</span><strong x-text="selectedGene || 'Loading…'"></strong></span>
@@ -838,7 +838,7 @@
                         <div class="plot-grid" :class="spatial3dViewMode === 'compare' ? '' : 'lg:!grid-cols-1'">
                             <div x-show="spatial3dViewMode !== 'annotation'" class="plot-panel relative">
                                 <h3 class="mb-1 text-center text-sm font-semibold text-slate-700">
-                                    −log10(P) · <span x-text="selectedTrait"></span>
+                                    −log10(P) · <span x-text="traitLabel(selectedTrait)"></span>
                                 </h3>
                                 <div x-show="spatial3dTraitLoading"
                                     class="absolute inset-2 top-8 z-10 flex items-center justify-center rounded-lg bg-white/75 backdrop-blur-[1px]">
@@ -963,7 +963,7 @@
                                         <div class="relative min-w-0" @click.outside="closeSpatialComparisonSearch(field.key)">
                                             <label :for="'comparison-search-' + field.key" class="control-label" x-text="field.label"></label>
                                             <input :id="'comparison-search-' + field.key" type="search" :aria-label="field.label" placeholder="Search…"
-                                                :value="spatialComparisonSearchField === field.key ? spatialComparisonQueries[field.key] : spatialComparisonValue(field.key)"
+                                                :value="spatialComparisonSearchField === field.key ? spatialComparisonQueries[field.key] : spatialComparisonChoiceLabel(field.key, spatialComparisonValue(field.key))"
                                                 @focus="openSpatialComparisonSearch(field.key)"
                                                 @input="spatialComparisonQueries[field.key] = $event.target.value; spatialComparisonSearchField = field.key; spatialComparisonActiveIndex = 0; spatialComparisonChoiceLimit = 80"
                                                 @keydown.down.prevent="moveSpatialComparisonSearch(field, 1)"
@@ -985,7 +985,7 @@
                                                         @click="selectSpatialComparisonChoice(field.key, name)"
                                                         class="block w-full rounded-lg px-2.5 py-2 text-left text-sm"
                                                         :class="index === spatialComparisonActiveIndex ? 'bg-primary-50 text-primary-800' : 'text-slate-600 hover:bg-slate-50'">
-                                                        <span class="block truncate" :title="name" x-text="name"></span>
+                                                        <span class="block truncate" :title="spatialComparisonChoiceLabel(field.key, name)" x-text="spatialComparisonChoiceLabel(field.key, name)"></span>
                                                     </button>
                                                 </template>
                                                 <p x-show="spatialComparisonChoices(field).length === 0" class="px-3 py-5 text-sm text-slate-500">No matches. Try a shorter name or abbreviation.</p>
@@ -1067,7 +1067,7 @@
                             <div x-show="spatial2dViewMode !== 'annotation'" class="plot-panel relative"
                                 :class="spatial2dViewMode === 'compare' ? '' : 'mx-auto w-full max-w-5xl'">
                                 <h3 class="mb-2 text-center text-sm font-semibold text-slate-700">
-                                    <span x-text="spatial2dComparisonActive ? spatialComparisonPanelTitle(0) : '−log10(P) · ' + selectedTrait"></span>
+                                    <span x-text="spatial2dComparisonActive ? spatialComparisonPanelTitle(0) : '−log10(P) · ' + traitLabel(selectedTrait)"></span>
                                 </h3>
                                 <!-- Loading Overlay for Trait plot -->
                                 <div x-show="loadingSpatial2dTraitData && !spatial2dComparisonActive"
@@ -1109,7 +1109,7 @@
                             @toggle="setTraitOverviewOpen($event.target.open)">
                             <summary class="cursor-pointer px-4 py-3">
                                 <span class="font-semibold text-slate-800">One trait across all samples</span>
-                                <span class="ml-2 text-xs text-slate-500" x-text="selectedTrait"></span>
+                                <span class="ml-2 text-xs text-slate-500" x-text="traitLabel(selectedTrait)"></span>
                             </summary>
                             <div class="border-t border-slate-200 p-3">
                                 <div class="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-end">
@@ -1122,7 +1122,7 @@
                                 <template x-if="allSampleTraitOverviewOpen && multiSamplePlotStatus !== 'error'">
                                     <img :key="'trait-' + selectedTrait"
                                         :src="multiSampleTraitPlotUrl"
-                                        :alt="selectedTrait + ' across all tissue samples'" decoding="async"
+                                        :alt="traitLabel(selectedTrait) + ' across all tissue samples'" decoding="async"
                                         class="mx-auto h-auto max-h-[80vh] w-full object-contain"
                                         @load="multiSamplePlotStatus = 'loaded'"
                                         @error="multiSamplePlotStatus = 'error'">
@@ -1345,7 +1345,7 @@
                     </div>
                     <!-- UMAP context -->
                     <div x-show="umapData" class="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50/80 p-4">
-                        <span class="context-chip">Trait <strong x-text="selectedTrait"></strong></span>
+                        <span class="context-chip">Trait <strong x-text="traitLabel(selectedTrait)"></strong></span>
                         <span class="context-chip">Annotation <strong x-text="selectedAnnotationCategory"></strong></span>
                         <span class="context-chip">
                             <strong x-text="umapData ? umapData.spot.length.toLocaleString() : 0"></strong> plotted spots
@@ -1365,7 +1365,7 @@
                                 <!-- Left: Trait -log10(p) -->
                                 <div class="plot-panel">
                                     <h4 class="mb-2 text-center text-sm font-semibold text-slate-600">
-                                        −log10(P) · <span x-text="selectedTrait"></span>
+                                        −log10(P) · <span x-text="traitLabel(selectedTrait)"></span>
                                     </h4>
                                     <div id="umapCellPlotTrait" class="umap-frame"></div>
                                 </div>
@@ -1389,7 +1389,7 @@
                                 <!-- Left: Trait -log10(p) -->
                                 <div class="plot-panel">
                                     <h4 class="mb-2 text-center text-sm font-semibold text-slate-600">
-                                        −log10(P) · <span x-text="selectedTrait"></span>
+                                        −log10(P) · <span x-text="traitLabel(selectedTrait)"></span>
                                     </h4>
                                     <div id="umapNichePlotTrait" class="umap-frame"></div>
                                 </div>
@@ -1553,7 +1553,7 @@
                                 <template x-for="(row, idx) in visibleCauchyTable"
                                     :key="row.annotation + '\u001f' + (row.sample_name || '') + '\u001f' + idx">
                                     <tr class="table-row-hover">
-                                        <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="row.trait"></td>
+                                        <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="traitLabel(row.trait)" :title="row.trait"></td>
                                         <td class="px-4 py-2 text-sm">
                                             <button type="button" @click="toggleAnnotationFromEnrichment(row.annotation, row.annotation_name)"
                                                 :aria-pressed="isPointMapAnnotationSelected(row.annotation, row.annotation_name).toString()"
@@ -1649,19 +1649,19 @@
                                     <template x-for="label in heatmapSubsetChoices('trait')" :key="label">
                                         <button type="button" @click="toggleHeatmapSubset('trait', label)"
                                             :aria-pressed="cauchyHeatmapSelectedTraits.includes(label).toString()"
-                                            :title="(cauchyHeatmapSelectedTraits.includes(label) ? 'Remove ' : 'Add ') + label"
+                                            :title="(cauchyHeatmapSelectedTraits.includes(label) ? 'Remove ' : 'Add ') + traitLabel(label)"
                                             class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-primary-100">
                                             <span aria-hidden="true" x-text="cauchyHeatmapSelectedTraits.includes(label) ? '✓' : '+'"></span>
-                                            <span class="truncate" x-text="label"></span>
+                                            <span class="truncate" x-text="traitLabel(label)" :title="traitLabel(label)"></span>
                                         </button>
                                     </template>
                                     <p x-show="!heatmapSubsetChoices('trait').length" class="px-2 py-1 text-xs text-slate-500">No matches.</p>
                                 </div>
                                 <div class="mt-2 flex max-h-28 flex-wrap gap-1 overflow-y-auto" x-show="cauchyHeatmapSelectedTraits.length">
                                     <template x-for="label in cauchyHeatmapSelectedTraits" :key="label">
-                                        <button type="button" @click="toggleHeatmapSubset('trait', label)" :aria-label="'Remove trait ' + label"
+                                        <button type="button" @click="toggleHeatmapSubset('trait', label)" :aria-label="'Remove trait ' + traitLabel(label)"
                                             :title="label + ' — remove from subset'" class="inline-flex max-w-full items-center gap-1 rounded-full border border-primary-200 bg-primary-50 px-2 py-1 text-xs text-primary-800">
-                                            <span class="truncate" x-text="label"></span><span aria-hidden="true">×</span>
+                                            <span class="truncate" x-text="traitLabel(label)" :title="traitLabel(label)"></span><span aria-hidden="true">×</span>
                                         </button>
                                     </template>
                                     <button type="button" @click="cauchyHeatmapSelectedTraits = []; cauchyHeatmapTraitQuery = ''; scheduleCauchyHeatmap()"
@@ -2112,7 +2112,7 @@
                     const query = this.traitSearchQuery.trim();
                     if (!query) return this.traits;
                     return this.traits
-                        .map(trait => ({ trait, score: this.scoreTraitMatch(trait, query) }))
+                        .map(trait => ({ trait, score: this.scoreTraitIdMatch(trait, query) }))
                         .filter(match => match.score !== null)
                         .sort((left, right) => left.score - right.score || left.trait.localeCompare(right.trait))
                         .map(match => match.trait);
@@ -2478,7 +2478,7 @@
                     if (this.traits.length > 0) {
                         // Initialize selections
                         this.selectedTrait = this.traits[0];
-                        this.traitSearchQuery = this.selectedTrait;
+                        this.traitSearchQuery = this.traitLabel(this.selectedTrait);
                         if (this.annotations.length > 0) {
                             this.selectedAnnotationCategory = this.annotations[0];
                         }
@@ -3910,9 +3910,19 @@
                     return Number.isFinite(numeric) ? `${numeric.toLocaleString()} spots` : 'Not recorded';
                 },
 
+                traitLabel(trait) {
+                    return this.reportMeta?.trait_labels?.[trait] || trait || '';
+                },
+
+                scoreTraitIdMatch(trait, query) {
+                    const scores = [trait, this.traitLabel(trait)]
+                        .map(text => this.scoreTraitMatch(text, query)).filter(score => score !== null);
+                    return scores.length ? Math.min(...scores) : null;
+                },
+
                 scoreTraitMatch(label, query) {
-                    const normalizedLabel = label.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-                    const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+                    const normalizedLabel = label.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+                    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
                     let score = 0;
                     for (const token of tokens) {
                         const directIndex = normalizedLabel.indexOf(token);
@@ -3985,7 +3995,7 @@
 
                 closeTraitSearch() {
                     this.traitComboboxOpen = false;
-                    this.traitSearchQuery = this.selectedTrait;
+                    this.traitSearchQuery = this.traitLabel(this.selectedTrait);
                     this.traitActiveIndex = 0;
                 },
 
@@ -4007,7 +4017,7 @@
                 },
 
                 selectTraitFromSearch(trait) {
-                    this.traitSearchQuery = trait;
+                    this.traitSearchQuery = this.traitLabel(trait);
                     this.traitComboboxOpen = false;
                     this.$refs.traitSearchInput?.blur();
                     this.handleTraitSelect(trait);
@@ -4030,7 +4040,7 @@
                     this._geneFilterCache = null;
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
-                    this.traitSearchQuery = newTrait;
+                    this.traitSearchQuery = this.traitLabel(newTrait);
                     this.multiSamplePlotStatus = this.allSampleTraitOverviewOpen
                         ? 'loading' : 'idle';
 
@@ -4254,28 +4264,27 @@
                         return this.topGenesPccCache[trait];
                     }
 
-                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, '_');
-                    const varName = `GSMAP_GENE_TRAIT_CORRELATION_${safeTrait}`;
+                    const registry = () => window.GSMAP_GENE_TRAIT_CORRELATION?.[trait];
 
                     // Check if already loaded in window
-                    if (this.topGenesPccLoadedTraits[trait] && window[varName]) {
-                        this.topGenesPccCache[trait] = window[varName];
+                    if (this.topGenesPccLoadedTraits[trait] && registry()) {
+                        this.topGenesPccCache[trait] = registry();
                         return this.topGenesPccCache[trait];
                     }
 
                     // Load script dynamically from gss_stats subfolder
                     return new Promise((resolve, reject) => {
                         const script = document.createElement('script');
-                        script.src = `js_data/gss_stats/gene_trait_correlation_${trait}.js`;
+                        script.src = `js_data/gss_stats/gene_trait_correlation_${encodeURIComponent(trait)}.js`;
 
                         script.onload = () => {
                             this.topGenesPccLoadedTraits[trait] = true;
-                            if (window[varName]) {
-                                this.topGenesPccCache[trait] = window[varName];
-                                console.log(`Loaded gene PCC data for ${trait}:`, window[varName].length, 'genes');
+                            if (registry()) {
+                                this.topGenesPccCache[trait] = registry();
+                                console.log(`Loaded gene PCC data for ${trait}:`, registry().length, 'genes');
                                 resolve(this.topGenesPccCache[trait]);
                             } else {
-                                console.warn(`Gene PCC variable ${varName} not found after loading script`);
+                                console.warn(`Gene PCC data for ${trait} not found after loading script`);
                                 resolve([]);
                             }
                         };
@@ -4361,13 +4370,12 @@
 
                     this.isLoading = true;
                     this.loadingManhattanData = true;
-                    const safeTrait = trait.replace(/[^a-zA-Z0-9]/g, "_");
-                    const varName = `GSMAP_MANHATTAN_${safeTrait}`;
+                    const registry = () => window.GSMAP_MANHATTAN?.[trait];
 
                     // Check if already loaded
-                    if (this.manhattanLoadedTraits[trait] && window[varName]) {
+                    if (this.manhattanLoadedTraits[trait] && registry()) {
                         if (trait === this.selectedTrait) {
-                            this.manhattanData = window[varName];
+                            this.manhattanData = registry();
                             this.renderManhattanPlot();
                         }
                         this.isLoading = false;
@@ -4376,10 +4384,10 @@
                     }
 
                     try {
-                        await this.loadScript(`js_data/manhattan_${trait}.js`);
+                        await this.loadScript(`js_data/manhattan_${encodeURIComponent(trait)}.js`);
                         this.manhattanLoadedTraits[trait] = true;
-                        if (trait === this.selectedTrait && window[varName]) {
-                            this.manhattanData = window[varName];
+                        if (trait === this.selectedTrait && registry()) {
+                            this.manhattanData = registry();
                             this.renderManhattanPlot();
                         }
                     } catch (error) {
@@ -4493,7 +4501,7 @@
                     const ticktext = Object.keys(chromTicks);
 
                     const layout = {
-                        title: { text: `Manhattan Plot: ${trait}`, font: { size: 16 } },
+                        title: { text: `Manhattan Plot: ${this.escapeSpatial2dHoverValue(this.traitLabel(trait))}`, font: { size: 16 } },
                         xaxis: {
                             title: 'Chromosome',
                             showgrid: false,
@@ -4554,7 +4562,13 @@
                     const query = trait ? this.cauchyHeatmapTraitQuery : this.cauchyHeatmapAnnotationQuery;
                     if (!query.trim()) return [];
                     const labels = this.cauchyHeatmapModel()[trait ? 'traits' : 'annotations'];
-                    return labels.filter(label => this.heatmapSearchMatches(label, query)).slice(0, 30);
+                    return labels.filter(label => trait ? this.heatmapTraitSearchMatches(label, query)
+                        : this.heatmapSearchMatches(label, query)).slice(0, 30);
+                },
+
+                heatmapTraitSearchMatches(trait, query) {
+                    return !query.trim() || query.split(',').some(term => term.trim() &&
+                        this.scoreTraitIdMatch(trait, term.trim()) !== null);
                 },
 
                 toggleHeatmapSubset(kind, label) {
@@ -4673,7 +4687,7 @@
                     const chosenTraits = new Set(this.cauchyHeatmapSelectedTraits);
                     const chosenAnnotations = new Set(this.cauchyHeatmapSelectedAnnotations);
                     const allTraits = model.traits.filter(t => chosenTraits.size ? chosenTraits.has(t) :
-                        this.heatmapSearchMatches(t, this.cauchyHeatmapTraitQuery));
+                        this.heatmapTraitSearchMatches(t, this.cauchyHeatmapTraitQuery));
                     const allAnnotations = model.annotations.filter(a => chosenAnnotations.size ? chosenAnnotations.has(a) :
                         this.heatmapSearchMatches(a, this.cauchyHeatmapAnnotationQuery));
                     const traitSize = Math.max(1, Math.min(60, Number(this.cauchyHeatmapTraitsPerPage) || 24));
@@ -4736,15 +4750,15 @@
                     };
                     const shorten = label => {
                         const text = String(label).replace(/_/g, ' ');
-                        return text.length > 26 ? text.slice(0, 24) + '…' : text;
+                        return this.escapeSpatial2dHoverValue(text.length > 26 ? text.slice(0, 24) + '…' : text);
                     };
                     return Promise.resolve(Plotly.react(plotDiv, [heatmapTrace, annotationColorTrace], {
                         autosize: true, height: Math.min(1150, Math.max(490, ys.length * 23 + 190)),
                         xaxis: {type: 'category', categoryorder: 'array', categoryarray: xs,
-                            tickmode: 'array', tickvals: xs, ticktext: xs.map(shorten), tickangle: -55,
+                            tickmode: 'array', tickvals: xs, ticktext: xs.map(v => shorten(transpose ? v : this.traitLabel(v))), tickangle: -55,
                             tickfont: {size: 10}, automargin: false, domain: transpose ? [0, 1] : [0, 0.96]},
                         yaxis: {type: 'category', categoryorder: 'array', categoryarray: ys,
-                            tickmode: 'array', tickvals: ys, ticktext: ys.map(shorten),
+                            tickmode: 'array', tickvals: ys, ticktext: ys.map(v => shorten(transpose ? this.traitLabel(v) : v)),
                             tickfont: {size: 11}, automargin: false, domain: transpose ? [0, 0.945] : [0, 1]},
                         xaxis2: {type: 'category', domain: [0.978, 1], anchor: 'y',
                             showticklabels: false, showgrid: false, zeroline: false, fixedrange: true},
@@ -4772,7 +4786,7 @@
                     const escape = value => this.escapeSpatial2dHoverValue(value);
                     const lines = [`<b>${escape(annotation)}</b>`];
                     if (meta.heatmapRole === 'matrix') {
-                        lines.push(escape(trait));
+                        lines.push(escape(this.traitLabel(trait)));
                         const value = point.customdata;
                         lines.push(`${escape(meta.metricLabel)}: ${value != null && Number.isFinite(Number(value))
                             ? Number(value).toFixed(2) : 'N/A'}`);
@@ -4956,7 +4970,7 @@
 
                     const trait = this.selectedTrait;
                     const traitColorMap = ['#313695', '#4575b4', '#74add1', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'];
-                    const traitColorLabel = `-log10(p) ${trait}`;
+                    const traitColorLabel = `-log10(p) ${this.traitLabel(trait)}`;
 
                     // Get or compute trait color values
                     let traitColorValues;
@@ -5230,7 +5244,7 @@
                     if (context.comparisonTraits) {
                         for (const entry of context.comparisonTraits) {
                             const value = Number(entry.values?.[sourceIndex]);
-                            lines.push(`<b>${this.escapeSpatial2dHoverValue(entry.trait)} −log10(P):</b> ` +
+                            lines.push(`<b>${this.escapeSpatial2dHoverValue(this.traitLabel(entry.trait))} −log10(P):</b> ` +
                                 (Number.isFinite(value) ? value.toFixed(1) : 'Unavailable'));
                         }
                     } else if (context.hoverKind === 'trait') {
@@ -5495,7 +5509,7 @@
                 spatialComparisonChoices(field) {
                     const query = (this.spatialComparisonQueries[field.key] || '').trim();
                     if (!query) return field.values;
-                    return field.values.map(name => ({name, score: this.scoreTraitMatch(name, query)}))
+                    return field.values.map(name => ({name, score: field.key.startsWith('trait') ? this.scoreTraitIdMatch(name, query) : this.scoreTraitMatch(name, query)}))
                         .filter(item => item.score !== null)
                         .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))
                         .map(item => item.name);
@@ -5517,6 +5531,10 @@
 
                 spatialComparisonValue(key) {
                     return key === 'annotation' ? this.selectedAnnotationCategory : this.spatialComparisonSelection[key];
+                },
+
+                spatialComparisonChoiceLabel(key, value) {
+                    return key.startsWith('trait') ? this.traitLabel(value) : value;
                 },
 
                 openSpatialComparisonSearch(key) {
@@ -5565,7 +5583,7 @@
 
                 spatialComparisonPanelTitle(index) {
                     const panel = this.spatialComparisonPanels()[index];
-                    return `${index === 0 ? 'A' : 'B'} · ${panel.sample} · ${this.spatialComparisonIsAnnotation ? this.selectedAnnotationCategory : panel.trait}`;
+                    return `${index === 0 ? 'A' : 'B'} · ${panel.sample} · ${this.spatialComparisonIsAnnotation ? this.selectedAnnotationCategory : this.traitLabel(panel.trait)}`;
                 },
 
                 async setSpatial2dCompareKind(kind) {
@@ -5640,7 +5658,7 @@
                                     const annotationValues = data?.annotations?.[this.selectedAnnotationCategory]?.codes || data?.[this.selectedAnnotationCategory];
                                     if (!data?.sx?.length || data.sy?.length !== data.sx.length ||
                                         (categorical ? annotationValues?.length : values?.length) !== data.sx.length) {
-                                        throw new Error(`Missing or misaligned values for ${panel.sample} / ${categorical ? this.selectedAnnotationCategory : panel.trait}`);
+                                        throw new Error(`Missing or misaligned values for ${panel.sample} / ${categorical ? this.selectedAnnotationCategory : this.traitLabel(panel.trait)}`);
                                     }
                                     loaded.push({...panel, data, payload, values});
                                 } catch (error) {
@@ -6156,7 +6174,7 @@
                             {
                                 hoverKind: 'trait',
                                 comparisonTraits: options.comparisonTraits,
-                                hoverPrefix: options.comparison ? `${sample} · ${trait}` : null,
+                                hoverPrefix: options.comparison ? `${sample} · ${this.traitLabel(trait)}` : null,
                                 indices: associationPoints.indices,
                                 compactAnnotations: baseAnnotationCodes,
                                 annotationSchemas: data.annotations || {},

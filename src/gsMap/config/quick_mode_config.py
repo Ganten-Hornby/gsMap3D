@@ -11,6 +11,7 @@ from typing import Annotated
 import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
+from gsMap.config.gwas import trait_file_token, trait_labels
 
 from .cauchy_config import CauchyCombinationConfig
 
@@ -159,6 +160,8 @@ def _report_visualization_config_matches(config: QuickModeConfig, verbose: bool 
         "downsampling_n_spots_2d": config.downsampling_n_spots_2d,
         "downsampling_n_spots_3d": config.downsampling_n_spots_3d,
         "top_corr_genes": config.top_corr_genes,
+        "trait_labels": trait_labels(config, config.trait_name_list),
+        "trait_payload_version": 2,
     }
     mismatches = {
         key: (report_meta.get(key), value)
@@ -250,7 +253,7 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
                 if not sample_base.exists():
                     missing_web_files.append(sample_base)
                 for trait in traits:
-                    safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+                    safe_trait = trait_file_token(trait)
                     trait_payload = (
                         sample_payload_dir / f"sample_{safe_name}_trait_{safe_trait}.js"
                     )
@@ -282,7 +285,7 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
                 missing_web_files.append(web_file)
 
         for trait in traits:
-            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+            safe_trait = trait_file_token(trait)
             trait_payload = three_d_payload_dir / f"trait_{safe_trait}.js"
             if not trait_payload.exists():
                 missing_web_files.append(trait_payload)
@@ -298,7 +301,7 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         spatial_plot_dir = web_report_dir / "spatial_plots"
 
         for trait in traits:
-            safe_trait = "".join(c if c.isalnum() else "_" for c in trait)
+            safe_trait = trait_file_token(trait)
             plot_path = spatial_plot_dir / "by_trait" / f"ldsc_{safe_trait}.png"
             if not plot_path.exists():
                 missing_web_files.append(plot_path)

@@ -23,6 +23,8 @@ from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial import KDTree
 from tqdm import tqdm
 
+from gsMap.config.gwas import trait_label
+
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
@@ -831,7 +833,13 @@ class VisualizeRunner:
         tick_font = _overview_font(9)
         trait = tile_store.trait_names[trait_index]
         _draw_centered_overview_text(
-            draw, trait, margin, 10, image_width - 2 * margin, title_font, "#0f172a"
+            draw,
+            trait_label(self.config, trait),
+            margin,
+            10,
+            image_width - 2 * margin,
+            title_font,
+            "#0f172a",
         )
         lookup = _overview_color_lut(self.custom_colors_list)
 
@@ -918,7 +926,7 @@ class VisualizeRunner:
             x = margin + column * cell_width
             y = header_height + row * cell_height
             _draw_centered_overview_text(
-                draw, trait, x, y + 2, resolution, trait_font, "#334155"
+                draw, trait_label(self.config, trait), x, y + 2, resolution, trait_font, "#334155"
             )
             tile_y = y + title_height
             tile = Image.fromarray(lookup[np.asarray(tile_store.tiles[sample_index, trait_index])])
@@ -989,7 +997,9 @@ class VisualizeRunner:
             squeeze=False,
         )
         figure.patch.set_facecolor("white")
-        figure.suptitle(trait_abbreviation, fontsize=13, fontweight="bold", y=0.992)
+        figure.suptitle(
+            trait_label(self.config, trait_abbreviation), fontsize=13, fontweight="bold", y=0.992
+        )
 
         axes_flat = axes.ravel()
         image_origin = "upper" if self.config.plot_origin == "upper" else "lower"
@@ -1088,7 +1098,9 @@ class VisualizeRunner:
         fig = plt.figure(figsize=(fig_width, fig_height))
 
         # Add main title
-        fig.suptitle(trait_abbreviation, fontsize=24, fontweight="bold", y=0.98)
+        fig.suptitle(
+            trait_label(self.config, trait_abbreviation), fontsize=24, fontweight="bold", y=0.98
+        )
 
         # Create grid of subplots
         grid_specs = fig.add_gridspec(nrows=n_rows, ncols=n_cols, wspace=0.1, hspace=0.1)
@@ -1281,7 +1293,7 @@ class VisualizeRunner:
                 rasterized=True if output_pdf_path is not None and enable_pdf_output else False,
             )
 
-            ax.set_title(trait, fontsize=16, pad=10, fontweight="bold")
+            ax.set_title(trait_label(self.config, trait), fontsize=16, pad=10, fontweight="bold")
             ax.set_aspect("equal", adjustable="box")
 
             if self.config.plot_origin == "upper":
