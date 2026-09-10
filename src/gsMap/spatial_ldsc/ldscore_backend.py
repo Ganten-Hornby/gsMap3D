@@ -98,7 +98,18 @@ class TorchLDScoreBackend(LDScoreBackend):
             dtype=self.torch.float32,
             device=self.device,
         )
-        ldscore_gpu = self.torch.sparse.mm(self.sparse_weight, marker_score_gpu)
+        # beta=0 overwrites every output entry without reading its old value.
+        # Avoid the zero-filled output allocated by the sparse.mm path. Keep a
+        # fresh tensor per batch: an earlier result may still be used by JAX.
+        # This SNP x cell product is independent of the baseline column count.
+        ldscore_gpu = self.torch.empty(
+            (self.sparse_weight.shape[0], marker_score_gpu.shape[1]),
+            dtype=self.torch.float32,
+            device=self.device,
+        )
+        self.torch.addmm(
+            ldscore_gpu, self.sparse_weight, marker_score_gpu, beta=0, out=ldscore_gpu
+        )
         # The DLPack object protocol passes JAX's consumer stream to PyTorch,
         # which inserts an event dependency on its producer stream. A device-
         # wide barrier here needlessly waits for the previous JAX regression.

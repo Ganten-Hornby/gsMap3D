@@ -25,12 +25,28 @@ def test_torch_compute_uses_dlpack_object_without_device_barrier(monkeypatch):
     producer_output = object()
     backend = ldscore_backend.TorchLDScoreBackend.__new__(ldscore_backend.TorchLDScoreBackend)
     backend.device = "cuda:0"
-    backend.sparse_weight = object()
+    backend.sparse_weight = SimpleNamespace(shape=(5, 2))
+    calls = []
+
+    def empty(shape, **kwargs):
+        assert shape == (5, 3)
+        assert kwargs == {"dtype": np.float32, "device": "cuda:0"}
+        return producer_output
+
+    def addmm(input_tensor, matrix, dense, *, beta, out):
+        assert input_tensor is out is producer_output
+        assert matrix is backend.sparse_weight
+        assert dense is source
+        assert beta == 0
+        calls.append("addmm")
+        return out
+
     # No cuda.synchronize method: compute must rely on the DLPack object protocol.
     backend.torch = SimpleNamespace(
         float32=np.float32,
         as_tensor=lambda array, **kwargs: array,
-        sparse=SimpleNamespace(mm=lambda matrix, dense: producer_output),
+        empty=empty,
+        addmm=addmm,
     )
     imported = []
     monkeypatch.setattr(
@@ -40,6 +56,40 @@ def test_torch_compute_uses_dlpack_object_without_device_barrier(monkeypatch):
     )
     assert backend.compute(source) == "jax-result"
     assert imported == [producer_output]
+    assert calls == ["addmm"]
+
+
+@pytest.mark.parametrize("n_cells", [0, 1, 17, 100])
+@pytest.mark.parametrize("all_zero", [False, True])
+def test_torch_addmm_overwrites_poisoned_output_and_preserves_previous_batch(
+    monkeypatch, n_cells, all_zero
+):
+    """Exercise the real CSR operation on CPU, including empty SNP rows.
+
+    NaNs emulate arbitrary uninitialized output: beta=0 must not read them.
+    GPU stream/lifetime behavior is covered by the CUDA test below.
+    """
+    torch = pytest.importorskip("torch")
+    weight = np.array([[1, 0, 2], [0, 0, 0], [0, -3, 0]], dtype=np.float32)
+    if all_zero:
+        weight[:] = 0
+    backend = ldscore_backend.TorchLDScoreBackend.__new__(ldscore_backend.TorchLDScoreBackend)
+    backend.device = torch.device("cpu")
+    backend.sparse_weight = torch.tensor(weight).to_sparse_csr()
+    backend._last_output = None
+    backend.torch = SimpleNamespace(
+        float32=torch.float32,
+        as_tensor=torch.as_tensor,
+        addmm=torch.addmm,
+        empty=lambda shape, **kwargs: torch.full(shape, float("nan"), **kwargs),
+    )
+    monkeypatch.setattr(ldscore_backend.jax.dlpack, "from_dlpack", lambda tensor: tensor)
+    marker = np.arange(3 * n_cells, dtype=np.float32).reshape(3, n_cells)
+    first = backend.compute(marker)
+    second = backend.compute(marker + 1)
+    assert first is not second
+    np.testing.assert_allclose(first.numpy(), weight @ marker, rtol=2e-6, atol=2e-6)
+    np.testing.assert_allclose(second.numpy(), weight @ (marker + 1), rtol=2e-6, atol=2e-6)
 
 
 def test_torch_dlpack_gpu_stream_dependency_and_lifetime():
