@@ -8,6 +8,33 @@ import jax.numpy as jnp
 import numpy as np
 
 logger = logging.getLogger("gsMap.spatial_ldsc.trait_data")
+PARAMETER_KEYS = ("baseline_sum", "chisq", "N", "baseline", "w_ld", "Nbar")
+
+
+def prepare_shared_trait_arrays(data: dict, *, name: str, filename: str, n_ref: int) -> dict:
+    """Normalize an already block-truncated trait without recomputing Nbar.
+
+    Baseline annotations are scaled by N/Nbar and the unit intercept is last.
+    Positions remain in the trait's original order until SNP-union indexing.
+    """
+    positions = np.asarray(data["snp_positions"], dtype=np.int64)
+    if np.any(positions < 0) or np.any(positions >= n_ref):
+        raise ValueError("Trait SNPs are missing from the LD reference")
+    n = np.asarray(data["N"], dtype=np.float32)
+    nbar = np.float32(data["Nbar"])
+    baseline = data["baseline_ld"].values.astype(np.float32) * n[:, None] / nbar
+    baseline = np.concatenate([baseline, np.ones((len(n), 1), dtype=np.float32)], axis=1)
+    return dict(
+        name=name,
+        filename=filename,
+        positions=positions,
+        baseline_sum=np.asarray(data["baseline_ld_sum"], dtype=np.float32),
+        chisq=np.asarray(data["chisq"], dtype=np.float32),
+        N=n,
+        Nbar=nbar,
+        baseline=baseline,
+        w_ld=np.asarray(data["w_ld"], dtype=np.float32),
+    )
 
 
 def prepare_snp_data_for_blocks(data: dict, n_blocks: int) -> dict:

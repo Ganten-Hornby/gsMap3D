@@ -1,7 +1,8 @@
-"""Shared SNP-union LD construction with trait-specific regressions.
+"""Shared-LD orchestration: prepare traits, dispatch chunks, publish in order.
 
-The union is used only for sparse multiplication. Every regression retains its
-own SNP order, sample sizes, filtering, baseline annotations and jackknife blocks.
+Numerical/backend policy lives in regression_backend; bounded input scheduling
+lives in prefetch. The SNP union is only for LD construction: each regression
+retains its own SNP order, sample sizes, filtering and jackknife blocks.
 """
 
 from __future__ import annotations
@@ -9,88 +10,21 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import ExitStack, closing
 
 import numpy as np
 
 from .chunk_source import SpatialLDChunkSource
 from .io import prepare_trait_data
+from .prefetch import prefetched_chunks as _prefetched_chunks
+from .regression_backend import SharedRegressionBackend
+from .regression_backend import select_moment_backend as _select_moments
 from .result_writer import ResultWriter, result_filename
-from .trait_data import prepare_snp_data_for_blocks
+from .trait_data import PARAMETER_KEYS as PARAMETER_KEYS
+from .trait_data import prepare_shared_trait_arrays, prepare_snp_data_for_blocks
 
 logger = logging.getLogger("gsMap.spatial_ldsc.multitrait")
-PARAMETER_KEYS = ("baseline_sum", "chisq", "N", "baseline", "w_ld", "Nbar")
-
-
-def _select_moments(config, sparse, prepared, ld_backend, platform):
-    """Choose a supported fast path without hiding native execution failures."""
-    from .moment_design import supports_moments
-
-    requested = getattr(config, "ldsc_regression_backend", "auto")
-    if requested not in ("auto", "jax", "moments"):
-        raise ValueError("Unknown LDSC regression backend")
-    if not 1 <= config.ldsc_trait_batch_size <= 16:
-        raise ValueError("ldsc_trait_batch_size must be 1..16")
-    if requested == "jax":
-        return None
-    if supports_moments(sparse, prepared):
-        if platform == "cpu":
-            from .moment_cpu import CPUMomentRegression
-
-            return CPUMomentRegression(
-                sparse,
-                prepared,
-                config.n_blocks,
-                threads=getattr(config, "ldsc_compute_workers", 10),
-                trait_batch=config.ldsc_trait_batch_size,
-            )
-        if ld_backend is not None and hasattr(ld_backend, "compute_torch"):
-            try:
-                from .moment_gpu import GPUMomentRegression
-            except ImportError:
-                logger.warning("Optional Triton moment backend unavailable; using JAX")
-            else:
-                return GPUMomentRegression(
-                    sparse,
-                    prepared,
-                    config.n_blocks,
-                    ld_backend,
-                    trait_batch=config.ldsc_trait_batch_size,
-                )
-    if requested == "moments":
-        raise ValueError(
-            "Moments require float32 CSR marker mode, two baseline annotations "
-            "and a supported CPU or CUDA/Triton backend"
-        )
-    logger.info("Using general JAX regression for this input/backend")
-    return None
-
-
-def _prefetched_chunks(source, config):
-    # Array reads have no mutable reader cursor. HDF5 and file-reader wrappers
-    # keep a single worker; never issue concurrent reads on a shared HDF5 handle.
-    marker = getattr(source, "marker_score_adata", None)
-    parallel = marker is not None and isinstance(marker.X, np.ndarray)
-    workers = min(4, max(1, getattr(config, "ldsc_read_workers", 4))) if parallel else 1
-    depth = 2 * workers
-    count = len(source.chunk_starts)
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ldsc-shared-reader") as pool:
-        futures = deque()
-        next_chunk = 0
-        try:
-            while next_chunk < min(depth, count):
-                futures.append(pool.submit(source.fetch_chunk, next_chunk, True))
-                next_chunk += 1
-            while futures:
-                chunk = futures.popleft().result()
-                if next_chunk < count:
-                    futures.append(pool.submit(source.fetch_chunk, next_chunk, True))
-                    next_chunk += 1
-                yield chunk
-        finally:
-            for future in futures:
-                future.cancel()
+_INFLIGHT_PREVIOUS_BATCHES = 2
 
 
 def prepare_shared_traits(engine, traits):
@@ -110,25 +44,8 @@ def prepare_shared_traits(engine, traits):
                 engine.config, name, path, engine.baseline_ld, engine.w_ld, ref
             )
             data = prepare_snp_data_for_blocks(data, engine.config.n_blocks)
-            positions = np.asarray(data["snp_positions"], dtype=np.int64)
-            if np.any(positions < 0) or np.any(positions >= ref.n_obs):
-                raise ValueError("Trait SNPs are missing from the LD reference")
-            n = np.asarray(data["N"], dtype=np.float32)
-            nbar = np.float32(data["Nbar"])  # original mean BEFORE block truncation
-            baseline = data["baseline_ld"].values.astype(np.float32) * n[:, None] / nbar
-            baseline = np.concatenate([baseline, np.ones((len(n), 1), dtype=np.float32)], axis=1)
             prepared.append(
-                dict(
-                    name=name,
-                    filename=filename,
-                    positions=positions,
-                    baseline_sum=np.asarray(data["baseline_ld_sum"], dtype=np.float32),
-                    chisq=np.asarray(data["chisq"], dtype=np.float32),
-                    N=n,
-                    Nbar=nbar,
-                    baseline=baseline,
-                    w_ld=np.asarray(data["w_ld"], dtype=np.float32),
-                )
+                prepare_shared_trait_arrays(data, name=name, filename=filename, n_ref=ref.n_obs)
             )
         except Exception as error:
             logger.exception("Could not prepare trait %s", name)
@@ -164,120 +81,85 @@ def make_shared_source(engine, union):
     )
 
 
+def _abort_if_open(writer: ResultWriter) -> None:
+    if not writer.closed:
+        writer.abort()
+
+
+def _wait_inflight(inflight: deque) -> None:
+    """Hold producer owners until asynchronous regression consumers finish."""
+    for _, _, batch in inflight:
+        batch.wait()
+
+
+def _write_batch(item: tuple, writers: list[ResultWriter]) -> None:
+    index, chunk, batch = item
+    result = batch.to_host()
+    for k, writer in enumerate(writers):
+        writer.add_chunk_result(index, result[k, 0], result[k, 1], chunk[1], chunk[2], chunk[3])
+
+
 def run_shared_chunks(source, config, prepared, sparse, output_dir, n_spots, *, emit_header=True):
-    """Bounded reader → shared LD → grouped JAX → per-trait ordered writers.
+    """Run a bounded reader → regression → per-trait writer pipeline.
 
-    Two prior batches may remain in flight; each owns its DLPack LD array until
-    all consumers finish. Writer failures invalidate the run and discard partials.
-    Four-column marker models use fused moments on CPU/CUDA when available.
-    Custom baselines and direct LD scores retain the general JAX regression.
+    Up to two prior batches remain in flight, retaining their DLPack owners.
+    Readers are joined and consumers drained before backends/sources close,
+    including on preparation, read, compute or write failure.
     """
-    import jax
-    import jax.numpy as jnp
-
-    from .ldscore_backend import select_gpu_ldscore_backend
-    from .multitrait_kernel import mean_regression, prepare_mean_design, shared_hsq
-
-    backend = None
-    moments = None
+    started = time.monotonic()
     writers = []
     inflight = deque()
-    started = time.monotonic()
-    try:
-        if sparse is not None and jax.default_backend() == "gpu":
-            backend = select_gpu_ldscore_backend(sparse)
-        moments = _select_moments(config, sparse, prepared, backend, jax.default_backend())
-        cpu_moments = moments is not None and jax.default_backend() == "cpu"
-        params = (
-            []
-            if moments is not None
-            else [
-                (jnp.asarray(d["indices"]), tuple(jnp.asarray(d[key]) for key in PARAMETER_KEYS))
-                for d in prepared
-            ]
-        )
-        design = (
-            None
-            if moments is not None
-            else prepare_mean_design(
+    with ExitStack() as resources:
+        resources.callback(source.close_sequential_marker_access)
+        backend = resources.enter_context(
+            SharedRegressionBackend(
+                config,
+                sparse,
+                prepared,
                 len(source.ldscore_snp_positions),
-                [d["indices"] for d in prepared],
-                [d["N"] for d in prepared],
-                [d["baseline_sum"] for d in prepared],
-                [d["chisq"] for d in prepared],
+                moment_selector=_select_moments,
             )
         )
-        group_size = config.ldsc_trait_batch_size
-        groups = [
-            (i, tuple(params[i : i + group_size])) for i in range(0, len(params), group_size)
-        ]
-        logger.info("Shared regression backend: %s", type(moments).__name__ if moments else "JAX")
+        logger.info("Shared regression backend: %s", backend.name)
         expected = source.cell_end - source.chunk_starts[0]
         for data in prepared:
-            writers.append(
-                ResultWriter(
-                    config,
-                    data["name"],
-                    output_dir,
-                    n_spots,
-                    len(source.chunk_starts),
-                    expected,
-                    emit_header=emit_header,
-                )
+            writer = ResultWriter(
+                config,
+                data["name"],
+                output_dir,
+                n_spots,
+                len(source.chunk_starts),
+                expected,
+                emit_header=emit_header,
             )
-
-        def finish(item):
-            index, chunk, results, owner = item
-            result = np.concatenate(jax.device_get(results), axis=0)
-            if moments is not None and (
-                not np.isfinite(result).all() or np.any(result[:, 1] <= 0)
-            ):
-                raise FloatingPointError("Singular or invalid spatial LDSC moment regression")
-            for k, writer in enumerate(writers):
-                writer.add_chunk_result(
-                    index, result[k, 0], result[k, 1], chunk[1], chunk[2], chunk[3]
-                )
-
+            writers.append(writer)
+            resources.callback(_abort_if_open, writer)
+        # ExitStack runs these in reverse: join readers, restore thread limits,
+        # drain consumers, abort incomplete writers, close backends, close source.
+        resources.callback(_wait_inflight, inflight)
+        resources.enter_context(backend.thread_context())
+        chunks = resources.enter_context(closing(_prefetched_chunks(source, config)))
         last_log = started
-        # The projection is small; avoid BLAS oversubscription alongside Numba.
-        if cpu_moments:
-            from threadpoolctl import threadpool_limits
-        with threadpool_limits(limits=1, user_api="blas") if cpu_moments else nullcontext():
-            for i, chunk in enumerate(_prefetched_chunks(source, config)):
-                for writer in writers:
-                    writer.check_errors()
-                if moments is not None:
-                    if cpu_moments:
-                        results, owner = [moments.compute(chunk[4])], None
-                    else:
-                        results, owner = moments.compute(chunk[4])
-                else:
-                    if sparse is None:
-                        ld = jnp.asarray(chunk[0])
-                    elif backend is not None:
-                        ld = backend.compute(chunk[4])
-                    else:
-                        ld = jnp.asarray(sparse @ chunk[4])
-                    hsq = shared_hsq(ld, *design)
-                    results = [
-                        mean_regression(config.n_blocks, ld, group, hsq[lo : lo + len(group)])
-                        for lo, group in groups
-                    ]
-                    owner = ld
-                inflight.append((i, chunk, results, owner))
-                if len(inflight) > 2:
-                    finish(inflight.popleft())
-                now = time.monotonic()
-                if now - last_log >= 30:
-                    logger.info(
-                        "Shared LDSC dispatched %d/%d chunks (%d traits)",
-                        i + 1,
-                        len(source.chunk_starts),
-                        len(prepared),
-                    )
-                    last_log = now
-            while inflight:
-                finish(inflight.popleft())
+        for i, chunk in enumerate(chunks):
+            for writer in writers:
+                writer.check_errors()
+            batch = backend.compute(
+                marker=chunk[4] if sparse is not None else None, ldscore=chunk[0]
+            )
+            inflight.append((i, chunk, batch))
+            if len(inflight) > _INFLIGHT_PREVIOUS_BATCHES:
+                _write_batch(inflight.popleft(), writers)
+            now = time.monotonic()
+            if now - last_log >= 30:
+                logger.info(
+                    "Shared LDSC dispatched %d/%d chunks (%d traits)",
+                    i + 1,
+                    len(source.chunk_starts),
+                    len(prepared),
+                )
+                last_log = now
+        while inflight:
+            _write_batch(inflight.popleft(), writers)
         paths = [writer.finalize() for writer in writers]
         seconds = time.monotonic() - started
         logger.info(
@@ -288,21 +170,6 @@ def run_shared_chunks(source, config, prepared, sparse, output_dir, n_spots, *, 
             expected * len(prepared) / seconds,
         )
         return paths
-    finally:
-        for writer in writers:
-            if not writer.closed:
-                writer.abort()
-        # Even on output/read failure, asynchronous consumers must finish before
-        # their DLPack producers can be released.
-        try:
-            for item in inflight:
-                jax.block_until_ready(item[2])
-        finally:
-            source.close_sequential_marker_access()
-            if moments is not None:
-                moments.close()
-            if backend is not None:
-                backend.close()
 
 
 def run_shared_engine(engine, traits):
