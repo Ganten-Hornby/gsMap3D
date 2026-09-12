@@ -123,6 +123,16 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             )
 
         try:
+            num_gpus = getattr(config, "ldsc_num_gpus", 1)
+            if num_gpus > 1 or (
+                getattr(config, "ldsc_share_ld", False)
+                and len(traits_to_process) > 1
+                and jax.default_backend() == "gpu"
+            ):
+                from .multitrait import run_shared_engine
+
+                run_shared_engine(processor, traits_to_process)
+                return
             for idx, (trait_name, sumstats_file) in enumerate(traits_to_process):
                 try:
                     with stage_logging(config, "spatial_ldsc", trait=trait_name):
@@ -200,6 +210,8 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                 # If it's backed AnnData, close the file
                 if config.marker_score_format == "h5ad" and marker_score_adata.isbacked:
                     marker_score_adata.file.close()
+            if config.ldscore_h5ad_path is not None and getattr(ldscore_adata, "isbacked", False):
+                ldscore_adata.file.close()
 
     except Exception as error:
         logger.error(f"Spatial LDSC execution failed: {error}")

@@ -24,6 +24,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger("gsMap.spatial_ldsc.result_writer")
 
 
+def result_filename(config, trait_name, n_spots, start, end) -> str:
+    """Canonical result name for a validated selection of source rows."""
+    base = f"{config.project_name}_{trait_name}"
+    if config.cell_indices_range:
+        left, right = config.cell_indices_range
+        return f"{base}_cells_{max(start, left)}_{min(end, right)}.csv.gz"
+    if start == 0 and end == n_spots:
+        return f"{base}.csv.gz"
+    if config.sample_filter:
+        base += f"_{config.sample_filter}"
+    return f"{base}_start{start}_end{end}_total{n_spots}.csv.gz"
+
+
 @dataclass(slots=True)
 class ChunkResult:
     """Regression output for one cell chunk."""
@@ -58,6 +71,7 @@ class ResultWriter:
         expected_cells: int,
         output_batch_rows: int = 50_000,
         max_pending_chunks: int = 64,
+        emit_header: bool = True,
     ):
         self.config = config
         self.trait_name = trait_name
@@ -91,7 +105,9 @@ class ResultWriter:
         os.close(descriptor)
         self.temporary_path = Path(temporary_name)
         self.handle: TextIO | None = None
-        self.header_written = False
+        # Private multi-GPU shards after rank zero are headerless gzip members.
+        # Completeness is independently checked using chunk and row counts.
+        self.header_written = not emit_header
         self.final_path: Path | None = None
         self.closed = False
         self._closing = False
@@ -339,26 +355,12 @@ class ResultWriter:
                     break
 
     def _generate_output_filename(self) -> str:
-        base_name = f"{self.config.project_name}_{self.trait_name}"
-
-        if self.config.cell_indices_range:
-            start_cell, end_cell = self.config.cell_indices_range
-            actual_start = max(int(self.min_spot_start), start_cell)
-            actual_end = min(self.max_spot_end, end_cell)
-            return f"{base_name}_cells_{actual_start}_{actual_end}.csv.gz"
-
-        if self.min_spot_start == 0 and self.max_spot_end == self.n_spots:
-            return f"{base_name}.csv.gz"
-
-        if self.config.sample_filter:
-            return (
-                f"{base_name}_{self.config.sample_filter}_start{self.min_spot_start}"
-                f"_end{self.max_spot_end}_total{self.n_spots}.csv.gz"
-            )
-
-        return (
-            f"{base_name}_start{self.min_spot_start}_end{self.max_spot_end}"
-            f"_total{self.n_spots}.csv.gz"
+        return result_filename(
+            self.config,
+            self.trait_name,
+            self.n_spots,
+            int(self.min_spot_start),
+            self.max_spot_end,
         )
 
     def _fdr_significant_count(self, alpha: float = 0.001) -> int:

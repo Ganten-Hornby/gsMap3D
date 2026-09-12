@@ -3,6 +3,7 @@ Configuration for spatial LD score regression.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Literal
@@ -28,6 +29,29 @@ class SpatialLDSCComputeConfig:
         ),
         {"__display_in_quick_mode_cli__": True},
     ] = True
+
+    ldsc_num_gpus: Annotated[
+        int,
+        typer.Option(
+            help="Number of visible GPUs for spatial LDSC on this node. Cells are split "
+            "between GPUs; each GPU processes all traits. Requires --use-gpu.",
+            min=1,
+        ),
+        {"__display_in_quick_mode_cli__": True},
+    ] = 1
+
+    ldsc_share_ld: Annotated[
+        bool,
+        typer.Option(
+            "--ldsc-share-ld/--no-ldsc-share-ld",
+            help="Share each GPU LD-score chunk across GWAS traits. CPU execution retains "
+            "the single-trait pipeline. Required for multiple GPUs.",
+        ),
+    ] = True
+
+    ldsc_trait_batch_size: Annotated[
+        int, typer.Option(help="Traits per JAX dispatch in shared-LD mode.", min=1, max=16)
+    ] = 4
 
     memmap_tmp_dir: Annotated[
         Path | None,
@@ -258,8 +282,16 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
         # Import here to avoid circular imports
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape
 
-        # Configure JAX platform if use_gpu is enabled
-        configure_jax_platform(self.use_gpu)
+        if self.ldsc_num_gpus < 1 or not 1 <= self.ldsc_trait_batch_size <= 16:
+            raise ValueError("ldsc_num_gpus must be positive; ldsc_trait_batch_size must be 1..16")
+        if self.ldsc_num_gpus > 1 and (not self.use_gpu or not self.ldsc_share_ld):
+            raise ValueError("Multiple LDSC GPUs require use_gpu=True and ldsc_share_ld=True")
+        # Multi-GPU children select their allocated device before initializing
+        # either framework. The coordinator must not allocate GPU contexts.
+        if self.ldsc_num_gpus == 1:
+            if self.use_gpu and self.ldsc_share_ld:
+                os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+            configure_jax_platform(self.use_gpu)
 
         # Auto-detect marker_score_format if not specified
         if self.marker_score_format is None:

@@ -315,7 +315,7 @@ def test_noncontiguous_rows_retain_correct_fallback(tmp_path, rows):
         marker_memmap._mmap.close()
 
 
-def test_ldscore_stream_uses_sequential_marker_windows(tmp_path):
+def test_ldscore_stream_uses_sequential_marker_windows(tmp_path, monkeypatch):
     marker_path = tmp_path / "marker_scores.dat"
     marker_scores = np.arange(24, dtype=np.float16).reshape(6, 4)
     marker_memmap = np.memmap(
@@ -344,18 +344,28 @@ def test_ldscore_stream_uses_sequential_marker_windows(tmp_path):
         chunk_size = 2
         defer_ldscore_to_compute = True
 
+    opened = []
+    advise = source.advise_sequential_marker_access
+
+    def record_open():
+        result = advise()
+        opened.append(source._matrix_reader is not None and source._matrix_reader.fd is not None)
+        return result
+
+    monkeypatch.setattr(source, "advise_sequential_marker_access", record_open)
     stream = LDScoreStream(Processor(), num_workers=2)
     try:
         assert stream.uses_sequential_windows
         assert not hasattr(stream, "read_queue")
         assert stream.batch_queue.maxsize < stream.total_chunks + 256
         stream.start()
-        assert source._matrix_reader is not None
-        assert source._matrix_reader.fd is not None
         with pytest.raises(RuntimeError, match="already been started"):
             stream.start()
 
         results = [stream.get_result() for _ in range(3)]
+        # The tiny source may already have finished and closed its descriptor
+        # by the time start() returns; verify opening, not thread timing.
+        assert opened == [True]
         assert [result["chunk_idx"] for result in results] == [0, 1, 2]
         for chunk_idx, result in enumerate(results):
             assert result["success"]
