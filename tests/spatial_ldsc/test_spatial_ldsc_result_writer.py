@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from gsMap.spatial_ldsc.result_writer import ResultWriter
+from gsMap.spatial_ldsc.data.writer import ResultWriter
 
 
 def _config():

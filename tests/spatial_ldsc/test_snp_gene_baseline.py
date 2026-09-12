@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-from gsMap.spatial_ldsc.io import construct_baseline_ld_from_snp_gene_weights
+from gsMap.spatial_ldsc.data.loading import construct_baseline_ld_from_snp_gene_weights
 
 
 def _weight_adata(matrix, var_names):

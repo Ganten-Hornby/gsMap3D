@@ -28,7 +28,7 @@ def supports_moments(sparse, prepared):
 
 def prepare_moment_design(sparse, prepared, n_blocks):
     """Prepare contiguous host arrays; fail before unchecked native indexing."""
-    from .cpu_sparse import _validate_csr
+    from gsMap.spatial_ldsc.backends.cpu_sparse import _validate_csr
 
     if not supports_moments(sparse, prepared):
         raise ValueError("Moment backend requires float32 CSR and two baseline annotations")

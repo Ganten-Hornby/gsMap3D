@@ -22,14 +22,13 @@ from rich.progress import (
 )
 
 from gsMap.config import SpatialLDSCConfig
-
-from .chunk_source import SpatialLDChunkSource
-from .cpu_sparse import available_cpu_count
-from .io import prepare_trait_data
-from .pipeline import LDScoreComputePool, LDScoreStream
-from .regression_kernel import process_spatial_ldsc_batch
-from .result_writer import ResultWriter
-from .trait_data import prepare_snp_data_for_blocks
+from gsMap.spatial_ldsc.backends.cpu_sparse import available_cpu_count
+from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
+from gsMap.spatial_ldsc.data.loading import prepare_trait_data
+from gsMap.spatial_ldsc.data.traits import prepare_snp_data_for_blocks
+from gsMap.spatial_ldsc.data.writer import ResultWriter
+from gsMap.spatial_ldsc.execution.pipeline import LDScoreComputePool, LDScoreStream
+from gsMap.spatial_ldsc.kernels.jax_regression import process_spatial_ldsc_batch
 
 logger = logging.getLogger("gsMap.spatial_ldsc.engine")
 

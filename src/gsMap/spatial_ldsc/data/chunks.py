@@ -7,9 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from gsMap.spatial_ldsc.backends.cpu_sparse import CPUSparseLDScore
 from gsMap.utils.matrix_io import MatrixRowReader
-
-from .cpu_sparse import CPUSparseLDScore
 
 
 @dataclass(slots=True)

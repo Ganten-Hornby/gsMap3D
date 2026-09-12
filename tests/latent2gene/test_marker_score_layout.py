@@ -22,14 +22,14 @@ from gsMap.latent2gene.memmap_io import (
     _automatic_lustre_stripe_count,
     _should_use_tmp_storage,
 )
-from gsMap.spatial_ldsc.io import (
+from gsMap.spatial_ldsc.data.loading import (
     _acquire_shared_marker_cache,
     load_marker_scores_memmap_format,
 )
 
 
 def _hold_marker_cache_lease(marker_path, cache_dir, metadata, ready, release):
-    from gsMap.spatial_ldsc import io as spatial_io
+    from gsMap.spatial_ldsc.data import loading as spatial_io
 
     spatial_io._paths_share_storage_device = lambda *_: False
     spatial_io.shutil.disk_usage = lambda _path: SimpleNamespace(free=10 * 1024**3)
@@ -75,9 +75,11 @@ def test_shared_marker_read_cache_is_reused_then_removed_by_final_reader(
     marker_values.tofile(marker_path)
     metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
 
@@ -158,7 +160,9 @@ def test_shared_marker_read_cache_can_be_reused_without_populating(tmp_path, mon
     marker_path = source_dir / "marker_scores.dat"
     np.arange(12, dtype=np.float16).tofile(marker_path)
     metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
 
     marker_lease = _acquire_shared_marker_cache(
         marker_path,
@@ -182,9 +186,11 @@ def test_invalid_same_key_cache_is_removed_before_capacity_check(tmp_path, monke
     marker_values.tofile(marker_path)
     metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
     initial_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
@@ -209,7 +215,7 @@ def test_invalid_same_key_cache_is_removed_before_capacity_check(tmp_path, monke
         return SimpleNamespace(free=10 * 1024**3)
 
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         disk_usage_after_cleanup,
     )
     recovered_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
@@ -232,9 +238,11 @@ def test_nonpopulating_reader_removes_invalid_same_key_cache(tmp_path, monkeypat
     np.arange(12, dtype=np.float16).tofile(marker_path)
     metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
     initial_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
@@ -272,9 +280,11 @@ def test_invalid_cache_is_removed_even_when_regeneration_does_not_fit(tmp_path, 
     np.arange(12, dtype=np.float16).tofile(marker_path)
     metadata = {"shape": [4, 3], "dtype": "float16", "complete": True}
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
     initial_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
@@ -295,7 +305,7 @@ def test_invalid_cache_is_removed_even_when_regeneration_does_not_fit(tmp_path, 
         return SimpleNamespace(free=0)
 
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         insufficient_capacity_after_cleanup,
     )
     fallback_lease = _acquire_shared_marker_cache(marker_path, cache_dir, metadata)
@@ -324,9 +334,11 @@ def test_marker_cache_acquisition_removes_inactive_orphan(tmp_path, monkeypatch)
     orphan_base.with_suffix(".meta.json").write_text('{"complete": true}\n')
     orphan_base.with_suffix(".lock").touch()
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
 
@@ -494,9 +506,11 @@ def test_loader_removes_scratch_cache_when_memmap_manager_closes(tmp_path, monke
     scratch_dir = tmp_path / "scratch"
     scratch_dir.mkdir()
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
     monkeypatch.setattr(
-        "gsMap.spatial_ldsc.io.shutil.disk_usage",
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading.shutil.disk_usage",
         lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
     config = SimpleNamespace(
@@ -526,7 +540,9 @@ def test_report_style_loader_does_not_populate_full_scratch_cache(tmp_path, monk
     scratch_dir = tmp_path / "scratch"
     scratch_dir.mkdir()
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.io._paths_share_storage_device", lambda *_: False)
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.data.loading._paths_share_storage_device", lambda *_: False
+    )
     config = SimpleNamespace(
         marker_scores_memmap_path=marker_path,
         concatenated_latent_adata_path=source_path,

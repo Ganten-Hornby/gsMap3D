@@ -10,10 +10,11 @@ import jax
 import numpy as np
 import pytest
 
-from gsMap.spatial_ldsc import ldscore_backend, multitrait
-from gsMap.spatial_ldsc.moment_cpu import CPUMomentRegression
-from gsMap.spatial_ldsc.prefetch import prefetched_chunks
-from gsMap.spatial_ldsc.regression_backend import RegressionBatch, SharedRegressionBackend
+from gsMap.spatial_ldsc.backends import ldscore as ldscore_backend
+from gsMap.spatial_ldsc.backends.cpu_moments import CPUMomentRegression
+from gsMap.spatial_ldsc.backends.regression import RegressionBatch, SharedRegressionBackend
+from gsMap.spatial_ldsc.execution import shared as multitrait
+from gsMap.spatial_ldsc.execution.prefetch import prefetched_chunks
 
 from .test_moments import compare, fixture_data, reference
 

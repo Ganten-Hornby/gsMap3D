@@ -10,10 +10,14 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-from gsMap.spatial_ldsc import multitrait
-from gsMap.spatial_ldsc.chunk_source import SpatialLDChunkSource
-from gsMap.spatial_ldsc.multitrait_kernel import mean_regression, prepare_mean_design, shared_hsq
-from gsMap.spatial_ldsc.regression_kernel import process_spatial_ldsc_batch
+from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
+from gsMap.spatial_ldsc.execution import shared as multitrait
+from gsMap.spatial_ldsc.kernels.jax_multitrait import (
+    mean_regression,
+    prepare_mean_design,
+    shared_hsq,
+)
+from gsMap.spatial_ldsc.kernels.jax_regression import process_spatial_ldsc_batch
 
 
 @pytest.mark.parametrize("cells", [3, 7])

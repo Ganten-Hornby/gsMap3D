@@ -9,14 +9,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from gsMap.spatial_ldsc.multi_gpu import (
+from gsMap.spatial_ldsc.data.writer import ResultWriter
+from gsMap.spatial_ldsc.execution.multi_gpu import (
     merge_gzip_members,
     partition_cells,
     visible_gpu_tokens,
     wait_workers,
     worker_environment,
 )
-from gsMap.spatial_ldsc.result_writer import ResultWriter
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,7 @@
 """Shared-LD orchestration: prepare traits, dispatch chunks, publish in order.
 
-Numerical/backend policy lives in regression_backend; bounded input scheduling
-lives in prefetch. The SNP union is only for LD construction: each regression
+Backend policy lives in backends.regression; bounded input scheduling lives in
+execution.prefetch. The SNP union is only for LD construction: each regression
 retains its own SNP order, sample sizes, filtering and jackknife blocks.
 """
 
@@ -14,14 +14,14 @@ from contextlib import ExitStack, closing
 
 import numpy as np
 
-from .chunk_source import SpatialLDChunkSource
-from .io import prepare_trait_data
-from .prefetch import prefetched_chunks as _prefetched_chunks
-from .regression_backend import SharedRegressionBackend
-from .regression_backend import select_moment_backend as _select_moments
-from .result_writer import ResultWriter, result_filename
-from .trait_data import PARAMETER_KEYS as PARAMETER_KEYS
-from .trait_data import prepare_shared_trait_arrays, prepare_snp_data_for_blocks
+from gsMap.spatial_ldsc.backends.regression import SharedRegressionBackend
+from gsMap.spatial_ldsc.backends.regression import select_moment_backend as _select_moments
+from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
+from gsMap.spatial_ldsc.data.loading import prepare_trait_data
+from gsMap.spatial_ldsc.data.traits import PARAMETER_KEYS as PARAMETER_KEYS
+from gsMap.spatial_ldsc.data.traits import prepare_shared_trait_arrays, prepare_snp_data_for_blocks
+from gsMap.spatial_ldsc.data.writer import ResultWriter, result_filename
+from gsMap.spatial_ldsc.execution.prefetch import prefetched_chunks as _prefetched_chunks
 
 logger = logging.getLogger("gsMap.spatial_ldsc.multitrait")
 _INFLIGHT_PREVIOUS_BATCHES = 2
@@ -176,7 +176,7 @@ def run_shared_engine(engine, traits):
     union, sparse, prepared, failures = prepare_shared_traits(engine, traits)
     if prepared:
         if engine.config.ldsc_num_gpus > 1:
-            from .multi_gpu import run_multi_gpu
+            from gsMap.spatial_ldsc.execution.multi_gpu import run_multi_gpu
 
             run_multi_gpu(engine, union, sparse, prepared)
         else:

@@ -13,7 +13,7 @@ guard here (without real JAX):
 import queue
 import threading
 
-from gsMap.spatial_ldsc.pipeline import LDScoreComputePool
+from gsMap.spatial_ldsc.execution.pipeline import LDScoreComputePool
 
 
 def _make_worker(depth):

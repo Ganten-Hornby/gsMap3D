@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from gsMap.cli import app
-from gsMap.spatial_ldsc.chunk_source import SpatialLDChunkSource
+from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -139,7 +139,7 @@ def test_direct_chunk_uses_np_take_and_preserves_snp_order(monkeypatch):
         calls.append((array.shape, np.asarray(indices).copy(), axis))
         return original_take(array, indices, axis=axis)
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.chunk_source.np.take", tracked_take)
+    monkeypatch.setattr("gsMap.spatial_ldsc.data.chunks.np.take", tracked_take)
     observed = source._fetch_direct_ldscore_chunk(1, 3)
 
     expected = matrix[:, 1:3][positions, :]

@@ -11,8 +11,7 @@ import jax
 
 from gsMap.config import SpatialLDSCConfig
 from gsMap.logging_config import logged_stage, stage_logging
-
-from .io import (
+from gsMap.spatial_ldsc.data.loading import (
     FeatherAnnData,
     generate_expected_output_filename,
     load_common_resources,
@@ -20,7 +19,7 @@ from .io import (
     load_marker_scores_memmap_format,
     log_existing_result_statistics,
 )
-from .ldscore_quick_mode import SpatialLDSCEngine
+from gsMap.spatial_ldsc.execution.engine import SpatialLDSCEngine
 
 logger = logging.getLogger("gsMap.spatial_ldsc_jax")
 
@@ -131,7 +130,7 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
                     or (len(traits_to_process) > 1 and jax.default_backend() == "gpu")
                 )
             ):
-                from .multitrait import run_shared_engine
+                from gsMap.spatial_ldsc.execution.shared import run_shared_engine
 
                 run_shared_engine(processor, traits_to_process)
                 return

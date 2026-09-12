@@ -122,7 +122,7 @@ def worker_environment(token: str, cpu_count: int):
         MKL_NUM_THREADS="1",
         NUMBA_NUM_THREADS=str(cpu_count),
     )
-    source_root = str(Path(__file__).resolve().parents[2])
+    source_root = str(Path(__file__).resolve().parents[3])
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [source_root, env.get("PYTHONPATH")]))
     return env
 
@@ -260,7 +260,7 @@ def run_multi_gpu(engine, union, sparse, prepared):
                         [
                             sys.executable,
                             "-m",
-                            "gsMap.spatial_ldsc.multi_gpu_worker",
+                            "gsMap.spatial_ldsc.execution.multi_gpu_worker",
                             str(request_path),
                         ],
                         env=env,

@@ -11,7 +11,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .regression_kernel import _packed_block_equations, process_spatial_ldsc_batch
+from gsMap.spatial_ldsc.kernels.jax_regression import (
+    _packed_block_equations,
+    process_spatial_ldsc_batch,
+)
 
 
 def prepare_mean_design(n_union, indices, sample_sizes, baseline_sums, responses):

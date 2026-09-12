@@ -11,7 +11,7 @@ import numpy as np
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from .chunk_source import SpatialLDChunkSource
+    from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
 
 
 def prefetched_chunks(source: SpatialLDChunkSource, config) -> Iterator[tuple]:

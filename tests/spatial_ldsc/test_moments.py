@@ -8,9 +8,13 @@ import pytest
 from scipy import sparse
 from scipy.special import log_ndtr
 
-from gsMap.spatial_ldsc.moment_cpu import CPUMomentRegression
-from gsMap.spatial_ldsc.moment_design import gene_hsq, prepare_moment_design, supports_moments
-from gsMap.spatial_ldsc.multitrait import _select_moments
+from gsMap.spatial_ldsc.backends.cpu_moments import CPUMomentRegression
+from gsMap.spatial_ldsc.backends.moment_design import (
+    gene_hsq,
+    prepare_moment_design,
+    supports_moments,
+)
+from gsMap.spatial_ldsc.execution.shared import _select_moments
 
 
 def fixture_data(blocks=7, cells=17, traits=3):
@@ -49,8 +53,8 @@ def reference(a, marker, prepared, blocks):
     import jax
     import jax.numpy as jnp
 
-    from gsMap.spatial_ldsc.multitrait import PARAMETER_KEYS
-    from gsMap.spatial_ldsc.regression_kernel import process_spatial_ldsc_batch
+    from gsMap.spatial_ldsc.execution.shared import PARAMETER_KEYS
+    from gsMap.spatial_ldsc.kernels.jax_regression import process_spatial_ldsc_batch
 
     ld = np.asarray(a @ marker, dtype=np.float32)
     return np.asarray(
@@ -168,7 +172,7 @@ def test_moment_cli_controls():
 def test_prefetch_is_bounded_ordered_and_joins_on_close():
     import threading
 
-    from gsMap.spatial_ldsc.multitrait import _prefetched_chunks
+    from gsMap.spatial_ldsc.execution.shared import _prefetched_chunks
 
     calls = []
     lock = threading.Lock()
@@ -196,8 +200,8 @@ def test_prefetch_is_bounded_ordered_and_joins_on_close():
 
 
 def test_failure_discards_partial_results(tmp_path, monkeypatch):
-    from gsMap.spatial_ldsc import multitrait
-    from gsMap.spatial_ldsc.chunk_source import SpatialLDChunkSource
+    from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
+    from gsMap.spatial_ldsc.execution import shared as multitrait
 
     a, marker, prepared = fixture_data(blocks=3, cells=7, traits=1)
     prepared[0]["name"] = "trait"
@@ -245,8 +249,8 @@ def test_gpu_moments(blocks, cells, traits):
     import jax
     import torch
 
-    from gsMap.spatial_ldsc.ldscore_backend import TorchLDScoreBackend
-    from gsMap.spatial_ldsc.moment_gpu import GPUMomentRegression
+    from gsMap.spatial_ldsc.backends.gpu_moments import GPUMomentRegression
+    from gsMap.spatial_ldsc.backends.ldscore import TorchLDScoreBackend
 
     assert jax.default_backend() == "gpu"
     a, marker, prepared = fixture_data(blocks, cells, traits)

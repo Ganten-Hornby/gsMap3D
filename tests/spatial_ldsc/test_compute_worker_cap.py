@@ -12,7 +12,7 @@ import types
 
 import pytest
 
-from gsMap.spatial_ldsc.ldscore_quick_mode import SpatialLDSCEngine
+from gsMap.spatial_ldsc.execution.engine import SpatialLDSCEngine
 
 
 @pytest.fixture(autouse=True)

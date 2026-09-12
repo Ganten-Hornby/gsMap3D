@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gsMap.spatial_ldsc.regression_kernel import process_spatial_ldsc_batch
+from gsMap.spatial_ldsc.kernels.jax_regression import process_spatial_ldsc_batch
 
 
 def _direct_per_spot_reference(

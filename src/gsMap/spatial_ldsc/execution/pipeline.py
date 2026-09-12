@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .ldscore_backend import is_gpu_memory_error, select_gpu_ldscore_backend
+from gsMap.spatial_ldsc.backends.ldscore import is_gpu_memory_error, select_gpu_ldscore_backend
 
 logger = logging.getLogger("gsMap.spatial_ldsc.pipeline")
 

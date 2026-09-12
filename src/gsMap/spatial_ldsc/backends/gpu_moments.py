@@ -13,7 +13,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .moment_design import prepare_moment_design
+from gsMap.spatial_ldsc.backends.moment_design import prepare_moment_design
 
 
 @triton.jit

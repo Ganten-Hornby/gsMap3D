@@ -8,9 +8,10 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-from gsMap.spatial_ldsc import ldscore_backend, pipeline
-from gsMap.spatial_ldsc.chunk_source import SpatialLDChunkSource
-from gsMap.spatial_ldsc.pipeline import LDScoreComputePool, LDScoreStream
+from gsMap.spatial_ldsc.backends import ldscore as ldscore_backend
+from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
+from gsMap.spatial_ldsc.execution import pipeline
+from gsMap.spatial_ldsc.execution.pipeline import LDScoreComputePool, LDScoreStream
 
 
 class _FakeTorchBackend:
@@ -505,7 +506,7 @@ def test_prepare_ldscore_backend_follows_shared_use_gpu(monkeypatch):
     computer = LDScoreComputePool.__new__(LDScoreComputePool)
     computer.processor = processor
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.pipeline.jax.default_backend", lambda: "cpu")
+    monkeypatch.setattr("gsMap.spatial_ldsc.execution.pipeline.jax.default_backend", lambda: "cpu")
     computer._prepare_ldscore_backend()
     assert computer.ldscore_backend is None
     assert processor.defer_ldscore_to_compute is False
@@ -514,8 +515,10 @@ def test_prepare_ldscore_backend_follows_shared_use_gpu(monkeypatch):
         assert sparse_weight is processor.snp_gene_weight_sparse
         return _FakeTorchBackend(sparse_weight)
 
-    monkeypatch.setattr("gsMap.spatial_ldsc.pipeline.jax.default_backend", lambda: "gpu")
-    monkeypatch.setattr("gsMap.spatial_ldsc.pipeline.select_gpu_ldscore_backend", fake_select)
+    monkeypatch.setattr("gsMap.spatial_ldsc.execution.pipeline.jax.default_backend", lambda: "gpu")
+    monkeypatch.setattr(
+        "gsMap.spatial_ldsc.execution.pipeline.select_gpu_ldscore_backend", fake_select
+    )
 
     computer._prepare_ldscore_backend()
 

@@ -28,9 +28,9 @@ def main():
     import torch
     from scipy import sparse as sp
 
-    from .chunk_source import SpatialLDChunkSource
-    from .io import FeatherAnnData
-    from .multitrait import run_shared_chunks
+    from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
+    from gsMap.spatial_ldsc.data.loading import FeatherAnnData
+    from gsMap.spatial_ldsc.execution.shared import run_shared_chunks
 
     if jax.default_backend() != "gpu" or torch.cuda.device_count() != 1:
         raise RuntimeError("Each LDSC worker requires exactly one allocated CUDA GPU")

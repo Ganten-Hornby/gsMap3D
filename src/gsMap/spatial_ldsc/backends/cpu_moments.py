@@ -4,8 +4,8 @@ import numpy as np
 from numba import config as numba_config
 from numba import get_num_threads, njit, prange, set_num_threads
 
-from .cpu_sparse import available_cpu_count
-from .moment_design import gene_hsq, prepare_moment_design
+from gsMap.spatial_ldsc.backends.cpu_sparse import available_cpu_count
+from gsMap.spatial_ldsc.backends.moment_design import gene_hsq, prepare_moment_design
 
 
 @njit(nogil=True, parallel=True, cache=True)

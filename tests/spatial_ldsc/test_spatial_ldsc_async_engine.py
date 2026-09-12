@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from gsMap.spatial_ldsc import ldscore_quick_mode as module
+from gsMap.spatial_ldsc.execution import engine as module
 
 
 @pytest.mark.parametrize("failure", [None, "writer", "source_init", "compute_init"])

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .trait_data import PARAMETER_KEYS
+from gsMap.spatial_ldsc.data.traits import PARAMETER_KEYS
 
 if TYPE_CHECKING:
     from typing import Any
@@ -24,7 +24,7 @@ logger = logging.getLogger("gsMap.spatial_ldsc.regression_backend")
 
 def select_moment_backend(config, sparse, prepared, ld_backend, platform):
     """Choose a supported fast path without hiding native execution failures."""
-    from .moment_design import supports_moments
+    from gsMap.spatial_ldsc.backends.moment_design import supports_moments
 
     requested = getattr(config, "ldsc_regression_backend", "auto")
     if requested not in ("auto", "jax", "moments"):
@@ -35,7 +35,7 @@ def select_moment_backend(config, sparse, prepared, ld_backend, platform):
         return None
     if supports_moments(sparse, prepared):
         if platform == "cpu":
-            from .moment_cpu import CPUMomentRegression
+            from gsMap.spatial_ldsc.backends.cpu_moments import CPUMomentRegression
 
             return CPUMomentRegression(
                 sparse,
@@ -46,7 +46,7 @@ def select_moment_backend(config, sparse, prepared, ld_backend, platform):
             )
         if ld_backend is not None and hasattr(ld_backend, "compute_torch"):
             try:
-                from .moment_gpu import GPUMomentRegression
+                from gsMap.spatial_ldsc.backends.gpu_moments import GPUMomentRegression
             except ImportError:
                 logger.warning("Optional Triton moment backend unavailable; using JAX")
             else:
@@ -96,8 +96,8 @@ class SharedRegressionBackend(AbstractContextManager):
         import jax
         import jax.numpy as jnp
 
-        from .ldscore_backend import select_gpu_ldscore_backend
-        from .multitrait_kernel import prepare_mean_design
+        from gsMap.spatial_ldsc.backends.ldscore import select_gpu_ldscore_backend
+        from gsMap.spatial_ldsc.kernels.jax_multitrait import prepare_mean_design
 
         self.config = config
         self.sparse = sparse
@@ -155,7 +155,7 @@ class SharedRegressionBackend(AbstractContextManager):
         """Submit one ordinary chunk without waiting for previous GPU batches."""
         import jax.numpy as jnp
 
-        from .multitrait_kernel import mean_regression, shared_hsq
+        from gsMap.spatial_ldsc.kernels.jax_multitrait import mean_regression, shared_hsq
 
         if self._closed:
             raise RuntimeError("Shared regression backend is closed")

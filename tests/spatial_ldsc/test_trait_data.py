@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from gsMap.spatial_ldsc.trait_data import prepare_snp_data_for_blocks
+from gsMap.spatial_ldsc.data.traits import prepare_snp_data_for_blocks
 
 
 def test_prepare_snp_blocks_requires_at_least_two_blocks():

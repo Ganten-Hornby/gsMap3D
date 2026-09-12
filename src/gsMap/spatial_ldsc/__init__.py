@@ -1,14 +1,13 @@
 """Spatial LDSC data, numerical kernels, and execution orchestration.
 
-Module map:
-    io / trait_data                 input loading and trait-specific SNP design
-    chunk_source / prefetch         marker/LD access and bounded ordered reads
-    regression_backend             shared backend policy and result ownership
-    moment_* / regression_kernel /
-        multitrait_kernel          numerical implementations
-    multitrait / multi_gpu*        shared dispatch and cell-sharded workers
-    result_writer                  ordered, atomic per-trait output
-    pipeline / ldscore_quick_mode  independent-trait execution and engine setup
+Subpackages:
+    data        input alignment, marker/LD chunks and atomic result output
+    backends    sparse LD construction and CPU/GPU regression implementations
+    kernels     general JAX regression mathematics
+    execution   engines, bounded prefetch and cell-sharded multi-GPU workers
+
+``spatial_ldsc_jax.run_spatial_ldsc_jax`` remains the CLI/Python entrypoint.
+``io`` retains the marker-score reader interface used by report generation.
 
 The package initializer intentionally does not import CUDA/compute backends.
 """

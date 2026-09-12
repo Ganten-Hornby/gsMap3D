@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-from gsMap.spatial_ldsc.ldscore_quick_mode import (
+from gsMap.spatial_ldsc.execution.engine import (
     SpatialLDSCEngine,
     _align_marker_score_genes,
     _canonicalize_sparse_weight_matrix,

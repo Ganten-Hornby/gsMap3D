@@ -7,7 +7,7 @@ import pytest
 from numba import get_num_threads
 from scipy import sparse
 
-from gsMap.spatial_ldsc.cpu_sparse import CPUSparseLDScore
+from gsMap.spatial_ldsc.backends.cpu_sparse import CPUSparseLDScore
 
 
 @pytest.mark.parametrize("batch", [0, 1, 7, 50, 100])
@@ -105,7 +105,7 @@ def test_row_parallel_matches_serial_and_restores_thread_mask():
 
 
 def test_thread_budget_never_exceeds_explicit_job_or_affinity(monkeypatch):
-    from gsMap.spatial_ldsc import cpu_sparse
+    from gsMap.spatial_ldsc.backends import cpu_sparse
 
     monkeypatch.setattr(cpu_sparse.numba_config, "NUMBA_NUM_THREADS", 128)
     monkeypatch.setattr(cpu_sparse.os, "sched_getaffinity", lambda _: set(range(64)))
@@ -120,7 +120,7 @@ def test_thread_budget_never_exceeds_explicit_job_or_affinity(monkeypatch):
 
 
 def test_thread_budget_falls_back_when_affinity_query_fails(monkeypatch):
-    from gsMap.spatial_ldsc import cpu_sparse
+    from gsMap.spatial_ldsc.backends import cpu_sparse
 
     def unavailable(_pid):
         raise OSError("Affinity is unavailable")
@@ -138,8 +138,8 @@ def test_thread_budget_falls_back_when_affinity_query_fails(monkeypatch):
 def test_cpu_stream_cooperates_on_one_batch_but_gpu_keeps_transform_pool(monkeypatch):
     from types import SimpleNamespace
 
-    from gsMap.spatial_ldsc import pipeline
-    from gsMap.spatial_ldsc.pipeline import LDScoreStream
+    from gsMap.spatial_ldsc.execution import pipeline
+    from gsMap.spatial_ldsc.execution.pipeline import LDScoreStream
 
     backend = CPUSparseLDScore(sparse.eye(3, dtype=np.float32, format="csr"))
     source = SimpleNamespace(
