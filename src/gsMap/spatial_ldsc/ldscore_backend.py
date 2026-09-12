@@ -93,6 +93,11 @@ class TorchLDScoreBackend(LDScoreBackend):
         )
 
     def compute(self, marker_score_chunk: np.ndarray):
+        ldscore_gpu, _ = self.compute_torch(marker_score_chunk)
+        return jax.dlpack.from_dlpack(ldscore_gpu)
+
+    def compute_torch(self, marker_score_chunk: np.ndarray):
+        """Return fresh LD and marker tensors for same-stream fused consumers."""
         marker_score_gpu = self.torch.as_tensor(
             marker_score_chunk,
             dtype=self.torch.float32,
@@ -115,7 +120,7 @@ class TorchLDScoreBackend(LDScoreBackend):
         # wide barrier here needlessly waits for the previous JAX regression.
         # Do not replace this with a raw capsule: that loses stream negotiation.
         self._last_output = ldscore_gpu
-        return jax.dlpack.from_dlpack(ldscore_gpu)
+        return ldscore_gpu, marker_score_gpu
 
     def close(self):
         self._last_output = None

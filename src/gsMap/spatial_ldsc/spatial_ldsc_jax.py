@@ -126,8 +126,10 @@ def run_spatial_ldsc_jax(config: SpatialLDSCConfig):
             num_gpus = getattr(config, "ldsc_num_gpus", 1)
             if num_gpus > 1 or (
                 getattr(config, "ldsc_share_ld", False)
-                and len(traits_to_process) > 1
-                and jax.default_backend() == "gpu"
+                and (
+                    getattr(config, "ldsc_regression_backend", "auto") != "jax"
+                    or (len(traits_to_process) > 1 and jax.default_backend() == "gpu")
+                )
             ):
                 from .multitrait import run_shared_engine
 

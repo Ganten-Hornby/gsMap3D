@@ -44,10 +44,17 @@ class SpatialLDSCComputeConfig:
         bool,
         typer.Option(
             "--ldsc-share-ld/--no-ldsc-share-ld",
-            help="Share each GPU LD-score chunk across GWAS traits. CPU execution retains "
-            "the single-trait pipeline. Required for multiple GPUs.",
+            help="Share each LD-score chunk across GWAS traits. Required for multiple GPUs.",
         ),
     ] = True
+
+    ldsc_regression_backend: Annotated[
+        Literal["auto", "jax", "moments"],
+        typer.Option(
+            help="Regression backend: auto uses fused moments for two baseline "
+            "annotations plus intercept, otherwise JAX. jax disables this fast path."
+        ),
+    ] = "auto"
 
     ldsc_trait_batch_size: Annotated[
         int, typer.Option(help="Traits per JAX dispatch in shared-LD mode.", min=1, max=16)
@@ -282,6 +289,10 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
         # Import here to avoid circular imports
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape
 
+        if self.ldsc_regression_backend not in ("auto", "jax", "moments"):
+            raise ValueError("ldsc_regression_backend must be auto, jax, or moments")
+        if self.ldsc_regression_backend == "moments" and not self.ldsc_share_ld:
+            raise ValueError("The moments backend requires ldsc_share_ld=True")
         if self.ldsc_num_gpus < 1 or not 1 <= self.ldsc_trait_batch_size <= 16:
             raise ValueError("ldsc_num_gpus must be positive; ldsc_trait_batch_size must be 1..16")
         if self.ldsc_num_gpus > 1 and (not self.use_gpu or not self.ldsc_share_ld):

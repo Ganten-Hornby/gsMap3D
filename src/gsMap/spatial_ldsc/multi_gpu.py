@@ -241,6 +241,8 @@ def run_multi_gpu(engine, union, sparse, prepared):
             n_blocks=engine.config.n_blocks,
             batch=engine.chunk_size,
             trait_batch=engine.config.ldsc_trait_batch_size,
+            regression_backend=getattr(engine.config, "ldsc_regression_backend", "auto"),
+            read_workers=getattr(engine.config, "ldsc_read_workers", 4),
             ranges=ranges,
         )
         (staging / "inputs.json").write_text(json.dumps(metadata))

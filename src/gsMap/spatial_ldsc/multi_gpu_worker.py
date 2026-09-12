@@ -47,6 +47,8 @@ def main():
         cell_indices_range=None,
         n_blocks=meta["n_blocks"],
         ldsc_trait_batch_size=meta["trait_batch"],
+        ldsc_regression_backend=meta.get("regression_backend", "auto"),
+        ldsc_read_workers=meta.get("read_workers", 4),
     )
     source_info = meta["source"]
     marker, direct, matrix, sparse = None, None, None, None
