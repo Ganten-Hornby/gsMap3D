@@ -44,6 +44,7 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--graph-radius FLOAT RANGE` | Physical radius for radius graph modes  \[x>=0.0] |
 | `--graph-sigma FLOAT RANGE` | Gaussian sigma for weighted-radius edges  \[x>=0.0] |
 | `--graph-z-scale FLOAT RANGE` | Multiplier converting the stored z coordinate to the physical XY units for section_aware_3d graphs  \[default: 1.0; x>=0.0] |
+| `--training-feature-chunk-size INTEGER RANGE` | Genes per full-density non-section training graph propagation block; does not change the graph or sampled cells  \[default: 128; x>=1] |
 | `--inference-chunk-size INTEGER RANGE` | Target number of focal spots per section-aligned inference chunk. Physical sections remain intact, all spots are retained, and section-aware chunks include graph halos.  \[default: 250000; x>=1] |
 | `--two-stage / --single-stage` | Tune the cell embeddings based on the provided annotation  \[default: single-stage] |
 | `--n-cell-training INTEGER RANGE` | Number of cells used for training  \[default: 100000; 1000<=x<=1000000] |
@@ -92,7 +93,8 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--marker-score-h5ad-path FILE` | Path to marker score h5ad file |
 | `--marker-score-format [memmap\|feather\|h5ad]` | Format of marker scores |
 | `--cauchy-annotations TEXT` | List of annotations in adata.obs to use |
-| `--export-spatialvista / --no-export-spatialvista` | Also export all 3D result spots to a lightweight SpatialVista H5AD with trait metadata  \[default: no-export-spatialvista] |
+| `--export-spatialvista / --no-export-spatialvista` | Automatically export a SpatialVista H5AD for spatial3D reports; ignored for spatial2D and scRNA  \[default: export-spatialvista] |
+| `--spatialvista-max-spots INTEGER RANGE` | Optional deterministic sampling limit for the SpatialVista H5AD; default exports all result spots, independently of HTML sampling  \[x>=1] |
 | `--downsampling-n-spots-pcc INTEGER RANGE` | Number of spots to downsample for PCC calculation if n_spots > this value  \[default: 20000; 1000<=x<=100000] |
 | `--downsampling-n-spots-umap INTEGER RANGE` | Maximum representative spots used to calculate and display each report UMAP. Valid precomputed UMAP coordinates are sampled to the same limit.  \[default: 50000; 1000<=x<=500000] |
 | `--downsampling-n-spots-3d INTEGER RANGE` | Maximum representative spots rendered in the browser's 3D view. Larger datasets use deterministic annotation-aware sampling.  \[default: 200000; 1000<=x<=2000000] |
@@ -135,6 +137,7 @@ This step:
 | `--graph-sigma FLOAT RANGE` | Gaussian sigma for weighted-radius edges  \[x>=0.0] |
 | `--graph-z-scale FLOAT RANGE` | Multiplier converting the stored z coordinate to the physical XY units for section_aware_3d graphs  \[default: 1.0; x>=0.0] |
 | `--k INTEGER RANGE` | Graph convolution depth for LGCN  \[default: 3; 1<=x<=10] |
+| `--training-feature-chunk-size INTEGER RANGE` | Genes per full-density non-section training graph propagation block; does not change the graph or sampled cells  \[default: 128; x>=1] |
 | `--inference-chunk-size INTEGER RANGE` | Target number of focal spots per section-aligned inference chunk. Physical sections remain intact, all spots are retained, and section-aware chunks include graph halos.  \[default: 250000; x>=1] |
 | `--hidden-size INTEGER RANGE` | Units in the first hidden layer  \[default: 128; 32<=x<=512] |
 | `--embedding-size INTEGER RANGE` | Size of the latent embedding layer  \[default: 32; 8<=x<=128] |
@@ -330,20 +333,6 @@ This command:
 | `--info-min FLOAT` | Minimum INFO score.  \[default: 0.9] |
 | `--maf-min FLOAT` | Minimum MAF.  \[default: 0.01] |
 | `--keep-chr-pos / --no-keep-chr-pos` | Keep SNP chromosome and position columns in the output data  \[default: no-keep-chr-pos] |
-| `--help` | Show this message and exit. |
-
-## `gsmap export-spatialvista`
-
-Export coordinates, annotations and trait -log10(P) for SpatialVista.
-
-| Option | Description |
-|---|---|
-| `PROJECT_DIR` | Completed gsMap project containing report_data and gsmap_web_report  \[required] |
-| `--output PATH` | Output .h5ad (defaults to <project>/<project>.spatialvista.h5ad) |
-| `--trait TEXT` | Trait to include; repeat to select several (default: all) |
-| `--annotation TEXT` | Annotation to include; repeat to select several (default: all) |
-| `--max-spots INTEGER RANGE` | Optional deterministic sampling limit; default exports all spots  \[x>=1] |
-| `--overwrite / --no-overwrite` | Replace an existing export  \[default: no-overwrite] |
 | `--help` | Show this message and exit. |
 
 ## `gsmap report-view`

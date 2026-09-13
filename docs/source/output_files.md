@@ -16,6 +16,7 @@ After running `gsMap3D`, the output is organized under `{workdir}/{project_name}
 ├── cauchy_combination/             # Step 4: Region-level statistics
 ├── report_data/                    # Processed data for analysis
 ├── gsmap_web_report/               # Interactive web report
+├── {project_name}.spatialvista.h5ad # SpatialVista viewer input (spatial3D only)
 └── logs/                           # Per-run diagnostic logs and manifests
 ```
 
@@ -407,6 +408,31 @@ Contains comprehensive metadata about the analysis:
 ______________________________________________________________________
 
 ## Viewing the Report
+
+### SpatialVista H5AD
+
+For `spatial3D` datasets, report generation automatically saves
+`{project_name}.spatialvista.h5ad` beside `gsmap_web_report/`. It contains:
+
+- `obsm["spatial"]`: 3D coordinates.
+- `obs`: section IDs, annotations and trait −log10(P) values.
+- `uns["gsmap"]`: metadata for automatic detection and the **Query Traits** view.
+
+Expression and marker matrices are not duplicated. All result spots are included,
+independently of HTML display sampling. Use `spatialvista_max_spots` /
+`--spatialvista-max-spots` to limit this export, or `export_spatialvista=False` /
+`--no-export-spatialvista` to disable it. No SpatialVista file is generated for
+`spatial2D` or scRNA datasets.
+
+Install the [gsMap-enabled viewer](https://github.com/Ganten-Hornby/spatial-vista-py/tree/feature/gsmap-trait-discovery)
+and open the file:
+
+```bash
+spatialvista --input results/e11-ordinal/e11-ordinal.spatialvista.h5ad
+```
+
+Both the gsMap report-view command and the SpatialVista command are printed at
+report completion and saved in the report log.
 
 ### Option 1: Local Viewing
 

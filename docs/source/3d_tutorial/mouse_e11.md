@@ -144,3 +144,28 @@ gsmap report-view results/e11-ordinal/gsmap_web_report --port 8080 --no-browser
 Open the printed HTTP address to explore IQ, AF and LDL association maps and
 annotation-level enrichment. Outputs and logs are in `results/e11-ordinal/`;
 see {doc}`../output_files` for file details.
+
+### Open in SpatialVista
+
+The report also creates `results/e11-ordinal/e11-ordinal.spatialvista.h5ad`
+automatically. It contains 3D coordinates, section IDs, both annotations and
+IQ, AF and LDL −log10(P) values; no separate export command is needed.
+
+With the [gsMap-enabled SpatialVista viewer](https://github.com/Ganten-Hornby/spatial-vista-py/tree/feature/gsmap-trait-discovery)
+installed:
+
+```bash
+spatialvista --input results/e11-ordinal/e11-ordinal.spatialvista.h5ad
+```
+
+Select **Query Traits** to search IQ, AF or LDL. Coordinates, annotations and
+sections are detected automatically. For remote use, add
+`--no-browser --port 8765` and forward the port to your computer.
+
+```{tip}
+The H5AD includes all result cells by default, independently of HTML sampling.
+For a smaller E11.5 preview, add `--spatialvista-max-spots 20000` to the
+quick-mode command, or `spatialvista_max_spots=20000` to `QuickModeConfig`.
+This samples only the viewer export, not the analysis. To disable the H5AD
+output, use `--no-export-spatialvista` or `export_spatialvista=False`.
+```

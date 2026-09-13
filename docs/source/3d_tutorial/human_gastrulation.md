@@ -119,3 +119,18 @@ gsmap report-view results/human-gastrulation/gsmap_web_report --port 8080 --no-b
 Open the printed HTTP address. Select a trait to explore its spatial association
 map and annotation-level enrichment. Outputs and logs are in
 `results/human-gastrulation/`; see {doc}`../output_files` for file details.
+
+### Open in SpatialVista
+
+The report automatically creates a SpatialVista H5AD with all result spots,
+annotations and trait −log10(P) values. With the
+[gsMap-enabled SpatialVista viewer](https://github.com/Ganten-Hornby/spatial-vista-py/tree/feature/gsmap-trait-discovery)
+installed, open it directly:
+
+```bash
+spatialvista --input results/human-gastrulation/human-gastrulation.spatialvista.h5ad
+```
+
+Select **Query Traits** to search IQ, Height or MCHC. No coordinate or
+annotation flags are needed. For remote use, add `--no-browser --port 8765`
+and forward the port to your computer.
