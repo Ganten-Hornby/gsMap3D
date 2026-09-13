@@ -294,10 +294,14 @@ def test_report_completion_requires_lazy_cauchy_index_and_manifest(tmp_path):
     _, missing_web = get_report_missing_files(config)
     assert js_data_dir / "cauchy_index.js" in missing_web
     assert js_data_dir / "cauchy_manifest.json" in missing_web
+    assert js_data_dir / "association_overview_index.js" in missing_web
+    assert js_data_dir / "association_overview_manifest.json" in missing_web
     assert js_data_dir / "cauchy_results.js" not in missing_web
 
     (js_data_dir / "cauchy_index.js").touch()
     (js_data_dir / "cauchy_manifest.json").touch()
+    (js_data_dir / "association_overview_index.js").touch()
+    (js_data_dir / "association_overview_manifest.json").touch()
     missing_data, missing_web = get_report_missing_files(config)
     assert missing_data == []
     assert missing_web == []

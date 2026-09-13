@@ -232,9 +232,9 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
     assert "getAnnotationColor(row.annotation, row.annotation_name)" in report_template
     assert "annotationColorTrace" in report_template
     assert "Same color as spatial and UMAP views" in report_template
-    assert "toggleAnnotationFromEnrichment(row.annotation, row.annotation_name)" in report_template
-    assert "showAllAnnotationCategories()" in report_template
-    assert "Point maps:" in report_template
+    assert "toggleAnnotationFromEnrichment" not in report_template
+    assert "clearAnnotationSelection()" in report_template
+    assert "Filtered by sidebar annotation selection." in report_template
 
     table_filter = report_template[
         report_template.index("get filteredCauchyTable()") : report_template.index(
@@ -246,9 +246,9 @@ def test_enrichment_uses_shared_annotation_color_reference(report_template: str)
             "// Hierarchical clustering"
         )
     ]
-    assert "isAnnotationCategoryVisible" not in table_filter
+    assert "isAnnotationCategoryVisible" in table_filter
     assert "cauchyFocusedAnnotation" not in table_filter
-    assert "isAnnotationCategoryVisible" not in heatmap
+    assert "isAnnotationCategoryVisible" in heatmap
 
 
 def test_enrichment_is_sharded_paginated_and_uses_bounded_browser_caches(
@@ -335,26 +335,33 @@ def test_spatial_widgets_do_not_repeat_outer_panel_titles(report_template: str) 
     assert "this.spatial3dLayout(`Annotation:" not in report_template
 
 
-def test_enrichment_annotation_badges_support_point_map_multi_selection(
+def test_sidebar_is_the_single_annotation_selection_control(
     report_template: str,
 ) -> None:
-    assert "pointMapAnnotationSelectionActive" in report_template
-    assert "pointMapAnnotationSelectionLabel" in report_template
-    assert "isPointMapAnnotationSelected(row.annotation, row.annotation_name)" in report_template
+    assert "selectedAnnotationCategories" in report_template
+    assert 'id="association-overview"' in report_template
+    assert 'aria-label="Clear annotation selection"' in report_template
+    assert "toggleAnnotationFromEnrichment" not in report_template
+    sidebar = report_template.split('id="report-sidebar"', 1)[1].split('</aside>', 1)[0]
+    assert 'id="association-overview"' in sidebar
+    assert report_template.count('id="association-overview"') == 1
+    assert sidebar.count('name="overview-scope"') == 2
+    assert sidebar.count('name="overview-sort"') == 5
+    assert 'x-model="overviewScope"' in sidebar
+    assert 'x-model="overviewSort"' in sidebar
+    assert 'aria-label="Sort annotation overview"' in sidebar
 
     toggle_start = report_template.index(
-        "                toggleAnnotationFromEnrichment(category, annotationName) {"
+        "                toggleAnnotationCategory(category) {"
     )
     toggle_handler = report_template[
         toggle_start : report_template.index(
-            "                showAllAnnotationCategories() {", toggle_start
+            "                clearAnnotationSelection() {", toggle_start
         )
     ]
-    assert "if (!selectionActive)" in toggle_handler
-    assert "delete hidden[categoryKey]" in toggle_handler
-    assert "if (visibleCount <= 1)" in toggle_handler
-    assert "hidden[categoryKey] = true" in toggle_handler
-    assert "for (const key of Object.keys(hidden)) delete hidden[key]" in toggle_handler
+    assert "this.selectedAnnotationCategories.filter(value => value !== key)" in toggle_handler
+    assert "[...this.selectedAnnotationCategories, key]" in toggle_handler
+    assert "annotationHiddenCategories" not in report_template
 
 
 def test_annotation_first_layout_and_shared_interactive_legend(report_template: str) -> None:
@@ -370,9 +377,12 @@ def test_annotation_first_layout_and_shared_interactive_legend(report_template: 
     assert 'style="order: 2"' in report_template
     assert 'style="order: 3"' in report_template
     assert 'style="order: 4"' in report_template
-    assert "Click to hide; double-click to isolate in point maps." in report_template
-    assert "scheduleAnnotationLegendToggle(entry.category)" in report_template
-    assert "isolateAnnotationCategory(entry.category)" in report_template
+    assert 'id="annotation-selection-help"' in report_template
+    assert 'aria-describedby="annotation-selection-help"' in report_template
+    for keyword in ["Click", "select", "remove", "Clear"]:
+        assert f'<strong class="font-semibold text-primary-700">{keyword}</strong>' in report_template
+    assert "toggleAnnotationCategory(row.category)" in report_template
+    assert "scheduleAnnotationLegendToggle" not in report_template
     assert "filterCategoricalPlotPoints" in report_template
     assert "visible: this.isAnnotationCategoryVisible(val, annoName)" in report_template
 

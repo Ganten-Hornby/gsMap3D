@@ -236,6 +236,7 @@ class ReportDataManager:
                 ("Manhattan data", self.prepare_manhattan_data),
                 ("static plots", self.render_static_plots),
                 ("Cauchy results", self.collect_cauchy_results),
+                ("annotation association overview", self.prepare_association_overview),
                 ("UMAP data", self.prepare_umap_data),
                 ("3D visualization", self.prepare_3d_visualization),
                 ("final assets", self.finalize_report),
@@ -725,6 +726,17 @@ class ReportDataManager:
             _export_cauchy_js(self.report_data_dir, self.js_data_dir)
         else:
             logger.info("Compact lazy Cauchy payloads are current. Skipping export.")
+
+    def prepare_association_overview(self):
+        from .association_overview import export_association_overview
+
+        export_association_overview(
+            self.metadata,
+            self.report_data_dir,
+            self.js_data_dir,
+            self.traits,
+            self.report_config.annotation_list,
+        )
 
     def prepare_umap_data(self):
         """Reuse UMAP data only when embeddings, settings and trait values match."""
@@ -2660,6 +2672,7 @@ def _save_report_metadata(
     }
     report_meta.update(
         {
+            "association_overview_version": 1,
             "traits": traits,
             "trait_labels": trait_labels(report_config, traits),
             "trait_payload_version": 2,

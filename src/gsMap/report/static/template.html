@@ -257,6 +257,16 @@
             padding: 0.5rem;
         }
 
+        .spatial-context-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+        .spatial-context-maps { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+        .association-overview { min-width: 0; }
+        .association-overview-list { max-height: clamp(14rem, 38vh, 28rem); overflow-y: auto; overscroll-behavior: contain; }
+        .association-row { display: block; width: 100%; text-align: left; padding: 9px 10px; border-bottom: 1px solid #e8eef4; background: white; }
+        .association-row:hover { background: #f8fafc; }
+        .association-row[aria-pressed="true"] { background: #eff6ff; box-shadow: inset 3px 0 #2563eb; }
+        .association-ridge { display: block; width: 100%; height: 36px; overflow: visible; }
+        .association-axis { display: flex; justify-content: space-between; color: #64748b; font-size: 10px; }
+
         .plot-panel h3 { overflow-wrap: anywhere; }
 
         .plot-frame-3d {
@@ -464,7 +474,7 @@
         <!-- ==================== SIDEBAR ==================== -->
         <aside id="report-sidebar" x-show="dataLoaded" aria-label="Report controls and navigation"
             :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'"
-            class="report-sidebar fixed bottom-0 left-0 top-16 z-40 w-[min(88vw,19rem)] flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white md:sticky md:z-20 md:h-[calc(100vh-4rem)] md:w-72">
+            class="report-sidebar fixed bottom-0 left-0 top-16 z-40 w-[min(92vw,22rem)] flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white md:sticky md:z-20 md:h-[calc(100vh-4rem)] md:w-[22rem]">
             <div class="space-y-5 p-4">
                 <!-- Sidebar Header -->
                 <div class="flex items-center justify-between border-b border-slate-200 pb-3">
@@ -583,53 +593,100 @@
                     </select>
                 </div>
 
-                <!-- Shared annotation legend -->
-                <div x-show="currentAnnotationLegend.length"
-                    class="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
-                    <div class="flex items-center justify-between gap-2">
-                        <div class="min-w-0">
-                            <h3 class="truncate text-[11px] font-bold uppercase tracking-[0.14em] text-slate-600"
-                                x-text="selectedAnnotationCategory + ' colors'"></h3>
-                            <p class="mt-0.5 text-[10px] text-slate-400">
-                                <span x-text="visibleAnnotationCategoryCount"></span>/<span x-text="currentAnnotationLegend.length"></span> visible
-                            </p>
+                <!-- Shared annotation colors, distributions and selection -->
+            <section id="association-overview" class="association-overview rounded-xl border border-slate-200 overflow-hidden"
+                x-show="annotations.length" aria-label="Annotation association overview">
+                <div class="border-b border-slate-200 px-3 py-3">
+                    <h2 class="break-words text-sm font-semibold text-slate-900" x-text="(selectedAnnotationCategory || 'Annotation') + ' association distribution'"></h2>
+                    <p class="mt-1 text-xs text-slate-500" x-text="traitLabel(selectedTrait)"></p>
+                    <fieldset class="mt-3" x-show="reportMeta.association_overview_version" aria-label="Association overview scope">
+                        <legend class="sr-only">Sections</legend>
+                        <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs text-slate-700">
+                            <label class="inline-flex cursor-pointer items-center gap-1.5">
+                                <input type="radio" name="overview-scope" value="all" x-model="overviewScope" @change="loadAssociationOverview()" class="accent-blue-600">All sections
+                            </label>
+                            <label class="inline-flex cursor-pointer items-center gap-1.5">
+                                <input type="radio" name="overview-scope" value="sample" x-model="overviewScope" @change="loadAssociationOverview()" class="accent-blue-600">Selected section
+                            </label>
                         </div>
-                        <button type="button" @click="showAllAnnotationCategories()"
-                            class="flex-none text-[11px] font-semibold text-primary-700 hover:text-primary-900">
-                            Show all
-                        </button>
+                    </fieldset>
+                    <fieldset class="mt-3" aria-label="Sort annotation overview">
+                        <legend class="mb-1.5 text-xs font-medium text-slate-600">Sort by</legend>
+                        <div class="flex flex-wrap gap-x-3 gap-y-2 text-[11px] text-slate-700">
+                            <label class="inline-flex cursor-pointer items-center gap-1.5"><input type="radio" name="overview-sort" value="cauchy_logp" x-model="overviewSort" class="accent-blue-600">Cauchy</label>
+                            <label class="inline-flex cursor-pointer items-center gap-1.5"><input type="radio" name="overview-sort" value="median_logp" x-model="overviewSort" class="accent-blue-600">Median</label>
+                            <label class="inline-flex cursor-pointer items-center gap-1.5"><input type="radio" name="overview-sort" value="q95_logp" x-model="overviewSort" class="accent-blue-600">95% quantile</label>
+                            <label class="inline-flex cursor-pointer items-center gap-1.5"><input type="radio" name="overview-sort" value="n_spots" x-model="overviewSort" class="accent-blue-600">Spot count</label>
+                            <label class="inline-flex cursor-pointer items-center gap-1.5"><input type="radio" name="overview-sort" value="category" x-model="overviewSort" class="accent-blue-600">Category name</label>
+                        </div>
+                    </fieldset>
+                    <p class="mt-2 break-words text-xs text-slate-500" x-text="overviewScope === 'all' ? 'All result spots across sections' : selectedSample"></p>
+                    <input aria-label="Search annotation overview" type="search" placeholder="Find a category…" x-model="overviewQuery" @input="overviewLimit = 80"
+                        class="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs">
+                    <p id="annotation-selection-help" class="mt-2 rounded-md bg-blue-50 px-2 py-2 text-[11px] leading-5 text-slate-600"><strong class="font-semibold text-primary-700">Click</strong> categories to <strong class="font-semibold text-primary-700">select</strong>; click again to <strong class="font-semibold text-primary-700">remove</strong>. <strong class="font-semibold text-primary-700">Clear</strong> shows all.</p>
+                    <div class="mt-2 flex items-center justify-between gap-2 text-xs">
+                        <span class="text-slate-600" x-text="hasAnnotationSelection ? selectedAnnotationCategories.length + ' selected' : 'All categories shown'"></span>
+                        <button type="button" @click="clearAnnotationSelection()" :disabled="!hasAnnotationSelection && !overviewQuery"
+                            aria-label="Clear annotation selection" class="font-semibold text-primary-700 disabled:opacity-40">Clear</button>
                     </div>
-                    <p class="mt-2 text-[10px] leading-4 text-slate-500">Click to hide; double-click to isolate in point maps.</p>
-                    <input x-show="currentAnnotationLegend.length > 12" type="search"
-                        aria-label="Search annotation colors" placeholder="Find annotation…"
-                        x-model.debounce.150ms="annotationLegendQuery" @input="annotationLegendLimit = 80"
-                        class="mt-2 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs">
-                    <div class="mt-2 max-h-44 space-y-0.5 overflow-y-auto pr-1 custom-scrollbar"
-                        role="group" :aria-label="selectedAnnotationCategory + ' shared color legend'">
-                        <template x-for="entry in visibleAnnotationLegend" :key="entry.category">
-                            <button type="button" @click="scheduleAnnotationLegendToggle(entry.category)"
-                                @dblclick.prevent.stop="isolateAnnotationCategory(entry.category)"
-                                :aria-pressed="entry.visible.toString()"
-                                class="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[11px] transition"
-                                :class="entry.visible ? 'text-slate-700 hover:bg-white' : 'text-slate-400 opacity-45 hover:bg-white/70'"
-                                :title="entry.category">
-                                <span class="h-3 w-3 flex-none rounded-sm border border-black/10 shadow-sm"
-                                    :style="`background-color:${entry.color}`"></span>
-                                <span class="min-w-0 flex-1 truncate" :class="entry.visible ? '' : 'line-through'"
-                                    x-text="entry.category"></span>
-                                <svg x-show="entry.visible" class="h-3 w-3 flex-none text-slate-400" fill="none"
-                                    stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="m5 12 4 4L19 6" />
-                                </svg>
+                    <div x-show="hasAnnotationSelection" class="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto custom-scrollbar">
+                        <template x-for="category in selectedAnnotationCategories" :key="category">
+                            <button type="button" @click="toggleAnnotationCategory(category)" :aria-label="'Remove category ' + category"
+                                class="inline-flex max-w-full items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] text-blue-800">
+                                <span class="h-2 w-2 flex-none rounded-sm" :style="'background:' + getAnnotationColor(category)"></span>
+                                <span class="truncate" x-text="category"></span><span aria-hidden="true">×</span>
                             </button>
                         </template>
                     </div>
-                    <button type="button" x-show="filteredAnnotationLegend.length > annotationLegendLimit"
-                        @click="annotationLegendLimit += 80" class="mt-2 text-left text-xs font-medium text-primary-700">
-                        Show more annotations
-                    </button>
-                    <p x-show="annotationLegendQuery && !filteredAnnotationLegend.length" class="mt-2 text-xs text-slate-500">No matching annotations.</p>
                 </div>
+                <p x-show="overviewLoading" class="p-4 text-sm text-slate-500" role="status">Loading full-result distributions…</p>
+                <div x-show="overviewError" class="p-4 text-xs text-red-700" role="alert">
+                    <p x-text="overviewError"></p><button type="button" @click="loadAssociationOverview()" class="mt-2 underline">Retry</button>
+                </div>
+                <div x-show="!overviewLoading">
+                    <div x-show="overviewData" class="border-b border-slate-200 bg-slate-50 px-3 py-2">
+                        <p class="text-xs text-slate-600"><strong x-text="overviewData?.n_spots?.toLocaleString()"></strong> spots · <span x-text="overviewData?.rows?.length"></span> categories</p>
+                        <p class="mt-1 text-[11px] text-slate-500">Spot −log10(P) distribution</p>
+                        <div class="association-axis"><span>0</span><span x-text="overviewScore((overviewData?.x_max || 0) / 2)"></span><span x-text="overviewScore(overviewData?.x_max)"></span></div>
+                    </div>
+                    <div class="association-overview-list custom-scrollbar">
+                        <template x-for="row in overviewDisplayedRows" :key="row.category">
+                            <button type="button" class="association-row" @click="toggleAnnotationCategory(row.category)"
+                                aria-describedby="annotation-selection-help"
+                                :aria-pressed="isAnnotationCategorySelected(row.category).toString()"
+                                :aria-label="'Toggle category ' + row.category" :title="overviewRowDescription(row)">
+                                <div class="flex items-start justify-between gap-2 text-xs">
+                                    <span class="flex min-w-0 items-start gap-2 font-semibold text-slate-700">
+                                        <span class="mt-0.5 h-2.5 w-2.5 flex-none rounded-sm" :style="'background:' + getAnnotationColor(row.category)"></span>
+                                        <span class="break-words" x-text="row.category"></span>
+                                    </span>
+                                    <span class="flex-none tabular-nums text-slate-500" x-show="row.n_spots != null" x-text="row.n_spots?.toLocaleString() + ' spots'"></span>
+                                </div>
+                                <svg x-show="overviewData" class="association-ridge" viewBox="0 0 240 40" preserveAspectRatio="none" aria-hidden="true">
+                                    <path d="M0 36 H240" stroke="#e2e8f0" stroke-width="1"></path>
+                                    <path :d="row.ridgePath" :fill="getAnnotationColor(row.category)" fill-opacity="0.3" :stroke="getAnnotationColor(row.category)" stroke-width="1.4" vector-effect="non-scaling-stroke"></path>
+                                </svg>
+                                <div x-show="overviewData" class="grid grid-cols-3 gap-2 text-[11px] text-slate-600">
+                                    <span>Cauchy <strong class="block tabular-nums" x-text="overviewScore(row.cauchy_logp)"></strong></span>
+                                    <span>Median <strong class="block tabular-nums" x-text="overviewScore(row.median_logp)"></strong></span>
+                                    <span>95% quantile <strong class="block tabular-nums" x-text="overviewScore(row.q95_logp)"></strong></span>
+                                </div>
+                                <p x-show="row.n_scored != null && row.n_scored < row.n_spots" class="mt-1 text-[10px] text-slate-400" x-text="row.n_scored?.toLocaleString() + ' spots with scores'"></p>
+                                <p x-show="row.cauchy_n_spots != null && row.cauchy_n_spots !== row.n_scored" class="mt-1 text-[10px] text-slate-400" x-text="'Cauchy used ' + row.cauchy_n_spots?.toLocaleString() + ' spots'"></p>
+                            </button>
+                        </template>
+                        <p x-show="!overviewVisibleRows.length" class="p-4 text-xs text-slate-500">No matching categories in this scope.</p>
+                        <button type="button" x-show="overviewVisibleRows.length > overviewLimit" @click="overviewLimit += 80"
+                            class="w-full px-3 py-2 text-left text-xs font-medium text-primary-700">Show more categories</button>
+                    </div>
+                    <p x-show="overviewData" class="border-t border-slate-200 px-3 py-2 text-[10px] leading-4 text-slate-500">
+                        Ridges smooth 96 shared bins from all scored spots, not map sampling. Each ridge is peak-normalized; height is not spot count.
+                        Summary scores use −log10(P), as in Enrichment; — means unavailable. Cauchy does not compare categories against one another.
+                        Selection filters maps, UMAP and enrichment; gene/GWAS views stay global.
+                    </p>
+                    <p x-show="spatial2dComparisonActive" class="px-4 pb-3 text-[11px] text-slate-500">Overview follows the main trait/sample selectors, not the independent comparison panels.</p>
+                </div>
+            </section>
 
                 <!-- Gene Selector (only top genes) -->
                 <div>
@@ -735,6 +792,8 @@
             </section>
 
             <!-- ==================== SECTION 1: 3D SPATIAL VISUALIZATION ==================== -->
+            <div class="spatial-context-layout" style="order: 1" x-show="dataLoaded && (currentSections.show3d || currentSections.show2dDistribution)">
+            <div class="spatial-context-maps">
             <div id="sec-spatial3d" x-show="dataLoaded && currentSections.show3d && has3dWidget"
                 class="report-card" style="order: 1">
                 <button type="button" class="report-card-header" @click="toggleSection('spatial3d', 'sec-spatial3d')"
@@ -1105,6 +1164,7 @@
                     <!-- Static overview matrices are folded and loaded only when requested. -->
                     <div x-show="reportMeta.generate_multi_sample_plots"
                         class="space-y-3 border-t border-slate-200 bg-slate-50/60 p-4 sm:p-5">
+                        <p x-show="hasAnnotationSelection" class="text-xs text-amber-800">These static overview images show all categories; use the interactive point maps for category focus.</p>
                         <details class="rounded-xl border border-slate-200 bg-white shadow-sm"
                             @toggle="setTraitOverviewOpen($event.target.open)">
                             <summary class="cursor-pointer px-4 py-3">
@@ -1175,6 +1235,9 @@
             </div>
 
             <!-- ==================== SECTION 5: GSS Distribution ==================== -->
+            </div>
+            </div>
+
             <div id="sec-genes" x-show="dataLoaded && currentSections.showGSS"
                 class="report-card" style="order: 5">
                 <button type="button" class="report-card-header" @click="toggleSection('genes', 'sec-genes')"
@@ -1193,6 +1256,7 @@
                     </svg>
                 </button>
                 <div id="content-genes" class="section-content" :class="sections.genes ? 'expanded' : 'collapsed'">
+                    <p x-show="hasAnnotationSelection" class="border-b border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Full-analysis gene PCC and static expression/GSS plots — not recomputed for the selected categories.</p>
                     <!-- Gene Plot Info Bar -->
                     <div class="p-4 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-6">
                         <div class="flex items-center gap-2">
@@ -1422,6 +1486,7 @@
                     </svg>
                 </button>
                 <div id="content-manhattan" class="section-content" :class="sections.manhattan ? 'expanded' : 'collapsed'">
+                    <p x-show="hasAnnotationSelection" class="border-b border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">GWAS-level signal and full-analysis gene highlights — not a category-specific GWAS.</p>
                     <div x-show="loadingManhattanData" class="flex items-center justify-center gap-3 py-16 text-sm font-medium text-slate-600">
                         <svg class="spinner h-7 w-7 text-primary-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1465,20 +1530,7 @@
                                 <option value="sample">Per Sample</option>
                             </select>
                         </div>
-                        <div x-show="pointMapAnnotationSelectionActive"
-                            class="inline-flex items-center gap-2 rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-xs text-primary-800">
-                            <span class="inline-flex min-w-0 items-center gap-1">
-                                Point maps:
-                                <strong class="max-w-64 truncate" x-text="pointMapAnnotationSelectionLabel"
-                                    :title="pointMapAnnotationSelection.join(', ')"></strong>
-                            </span>
-                            <button type="button" @click="showAllAnnotationCategories()"
-                                class="inline-flex h-5 w-5 items-center justify-center rounded-full font-bold text-primary-600 hover:bg-primary-100 hover:text-primary-900"
-                                title="Show all annotations in point maps"
-                                aria-label="Restore all annotations in the 3D, 2D, and UMAP views">
-                                ×
-                            </button>
-                        </div>
+                        <p x-show="hasAnnotationSelection" class="text-xs text-slate-600">Filtered by sidebar annotation selection.</p>
                     </div>
 
                     <div x-show="cauchyActivated && !loadingCauchyData" class="px-4 py-3">
@@ -1555,15 +1607,11 @@
                                     <tr class="table-row-hover">
                                         <td class="px-4 py-2 text-sm font-medium text-gray-900" x-text="traitLabel(row.trait)" :title="row.trait"></td>
                                         <td class="px-4 py-2 text-sm">
-                                            <button type="button" @click="toggleAnnotationFromEnrichment(row.annotation, row.annotation_name)"
-                                                :aria-pressed="isPointMapAnnotationSelected(row.annotation, row.annotation_name).toString()"
-                                                :title="isPointMapAnnotationSelected(row.annotation, row.annotation_name) ? 'Remove this annotation from the 3D, 2D, and UMAP views' : (pointMapAnnotationSelectionActive ? 'Add this annotation to the 3D, 2D, and UMAP views' : 'Isolate this annotation in the 3D, 2D, and UMAP views')"
-                                                class="inline-flex max-w-xs items-center gap-2 rounded-full border px-2 py-0.5 text-xs"
-                                                :class="isPointMapAnnotationSelected(row.annotation, row.annotation_name) ? 'border-primary-400 bg-primary-50 text-primary-800 ring-1 ring-primary-200' : 'border-slate-200 bg-white text-slate-700 hover:border-primary-300'">
+                                            <span class="inline-flex max-w-xs items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-700" :title="row.annotation">
                                                 <span class="h-3 w-3 flex-none rounded-sm border border-black/10 shadow-sm"
                                                     :style="`background-color:${getAnnotationColor(row.annotation, row.annotation_name)}`"></span>
                                                 <span class="truncate" x-text="row.annotation"></span>
-                                            </button>
+                                            </span>
                                         </td>
                                         <td x-show="cauchyViewMode === 'sample'" class="px-4 py-2 text-sm text-gray-600"
                                             x-text="row.sample_name"></td>
@@ -1860,9 +1908,20 @@
             // Serialize comparison redraws; stale script loads cannot replace a newer selection.
             let comparisonRender = null;
             let comparisonRevision = 0;
+            const overviewCache = new Map();
+            const overviewPromises = new Map();
             return {
                 // Data loaded flag
                 dataLoaded: false,
+                overviewIndex: null,
+                overviewData: null,
+                overviewLoading: false,
+                overviewError: '',
+                overviewScope: 'all',
+                overviewSort: 'cauchy_logp',
+                overviewQuery: '',
+                _overviewRequestSerial: 0,
+                selectedAnnotationCategories: [],
                 plotlyReady: false,
 
                 // Global state
@@ -2075,37 +2134,8 @@
                     }));
                 },
 
-                get visibleAnnotationCategoryCount() {
-                    return this.currentAnnotationLegend.filter(entry => entry.visible).length;
-                },
-
-                get filteredAnnotationLegend() {
-                    const query = this.annotationLegendQuery.trim().toLowerCase();
-                    return this.currentAnnotationLegend.filter(entry =>
-                        !query || String(entry.category).toLowerCase().includes(query)
-                    );
-                },
-
-                get visibleAnnotationLegend() {
-                    return this.filteredAnnotationLegend.slice(0, this.annotationLegendLimit);
-                },
-
-                get pointMapAnnotationSelectionActive() {
-                    return this.hasHiddenAnnotationCategories();
-                },
-
-                get pointMapAnnotationSelection() {
-                    if (!this.pointMapAnnotationSelectionActive) return [];
-                    return this.currentAnnotationLegend
-                        .filter(entry => entry.visible)
-                        .map(entry => String(entry.category));
-                },
-
-                get pointMapAnnotationSelectionLabel() {
-                    const selected = this.pointMapAnnotationSelection;
-                    if (!selected.length) return 'None';
-                    if (selected.length <= 3) return selected.join(', ');
-                    return `${selected.slice(0, 3).join(', ')} +${selected.length - 3}`;
+                get hasAnnotationSelection() {
+                    return this.selectedAnnotationCategories.length > 0;
                 },
 
                 get filteredTraits() {
@@ -2262,8 +2292,6 @@
                 _pointHoverContexts: {},
                 _pointHoverContextOrder: [],
                 _traitChangeDebounceTimer: null, // Debounce timer for trait changes
-                annotationHiddenCategories: {}, // { annotationName: { category: true } }
-                _annotationLegendClickTimer: null,
 
                 // Virtual scrolling state
                 geneTableScroll: 0,
@@ -2295,8 +2323,7 @@
                 cauchyHeatmapTraitPages: 1,
                 cauchyHeatmapAnnotationPages: 1,
                 cauchyTableQuery: '',
-                annotationLegendQuery: '',
-                annotationLegendLimit: 80,
+                overviewLimit: 80,
                 cauchyTablePage: 0,
                 cauchyTablePageSize: 200,
 
@@ -2352,9 +2379,127 @@
                 },
 
                 // Memoized: filtered cauchy table
+                overviewScore(value) {
+                    return value != null && Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '—';
+                },
+
+                overviewRidgePath(histogram) {
+                    if (!histogram?.length || !histogram.some(value => value > 0)) return '';
+                    const kernel = [1, 2, 3, 2, 1];
+                    const smooth = histogram.map((_, i) => kernel.reduce((sum, weight, j) =>
+                        sum + weight * (histogram[i + j - 2] || 0), 0));
+                    const peak = Math.max(...smooth);
+                    return 'M0 36 ' + smooth.map((value, i) =>
+                        `L${((i + 0.5) / smooth.length * 240).toFixed(2)} ${(36 - value / peak * 31).toFixed(2)}`
+                    ).join(' ') + ' L240 36 Z';
+                },
+
+                get overviewVisibleRows() {
+                    const query = this.overviewQuery.trim().toLowerCase();
+                    const rows = (this.overviewData?.rows || this.currentAnnotationLegend.map(entry => ({
+                        category: String(entry.category), n_spots: null, n_scored: null,
+                        cauchy_logp: null, median_logp: null, q95_logp: null, ridgePath: ''
+                    }))).filter(row => row.category.toLowerCase().includes(query));
+                    const key = this.overviewSort;
+                    return [...rows].sort((a, b) => key === 'category'
+                        ? a.category.localeCompare(b.category, undefined, {numeric: true})
+                        : (b[key] ?? -Infinity) - (a[key] ?? -Infinity) || a.category.localeCompare(b.category));
+                },
+
+                get overviewDisplayedRows() {
+                    return this.overviewVisibleRows.slice(0, this.overviewLimit);
+                },
+
+                overviewRowDescription(row) {
+                    if (row.n_spots == null) return row.category + ': click to add or remove this category.';
+                    const count = row.cauchy_n_spots == null ? '' : ` (${row.cauchy_n_spots.toLocaleString()} input spots)`;
+                    return `${row.category}: ${row.n_spots.toLocaleString()} spots; ${row.n_scored.toLocaleString()} scored; Cauchy −log10(P) ${this.overviewScore(row.cauchy_logp)}${count}; Median −log10(P) ${this.overviewScore(row.median_logp)}; 95% quantile of spot −log10(P) ${this.overviewScore(row.q95_logp)}. Click to add or remove this category.`;
+                },
+
+                async loadOverviewShard(entry) {
+                    if (overviewCache.has(entry.key)) {
+                        const cached = overviewCache.get(entry.key);
+                        overviewCache.delete(entry.key); overviewCache.set(entry.key, cached);
+                        return cached;
+                    }
+                    if (overviewPromises.has(entry.key)) return overviewPromises.get(entry.key);
+                    const pending = (async () => {
+                        await this.loadScript(entry.file);
+                        const payload = window.GSMAP_ASSOCIATION_OVERVIEW_DATA?.[entry.key];
+                        if (!payload || payload.version !== 1 || !Array.isArray(payload.rows)) {
+                            throw new Error('Invalid association overview payload');
+                        }
+                        delete window.GSMAP_ASSOCIATION_OVERVIEW_DATA[entry.key];
+                        const data = {...payload, rows: payload.rows.map(row => ({...row,
+                            ridgePath: this.overviewRidgePath(row.histogram)}))};
+                        overviewCache.set(entry.key, data);
+                        while (overviewCache.size > 6) overviewCache.delete(overviewCache.keys().next().value);
+                        return data;
+                    })();
+                    overviewPromises.set(entry.key, pending);
+                    try { return await pending; }
+                    finally { overviewPromises.delete(entry.key); }
+                },
+
+                async loadAssociationOverview() {
+                    if (!this.reportMeta.association_overview_version) return;
+                    const serial = ++this._overviewRequestSerial;
+                    const trait = this.selectedTrait, annotation = this.selectedAnnotationCategory;
+                    const sample = this.overviewScope === 'sample' ? this.selectedSample : null;
+                    this.overviewLoading = true; this.overviewError = ''; this.overviewData = null;
+                    try {
+                        if (!this.overviewIndex) {
+                            await this.loadScript('js_data/association_overview_index.js');
+                            this.overviewIndex = window.GSMAP_ASSOCIATION_OVERVIEW_INDEX;
+                        }
+                        const entries = this.overviewIndex?.traits?.[trait]?.[annotation];
+                        const entry = sample == null ? entries?.all : entries?.samples?.[sample];
+                        if (!entry) throw new Error('No distribution is available for this trait, annotation and scope.');
+                        const payload = await this.loadOverviewShard(entry);
+                        if (serial !== this._overviewRequestSerial) return;
+                        if (payload.trait !== trait || payload.annotation !== annotation || payload.sample !== sample) {
+                            throw new Error('Association overview selection does not match its payload.');
+                        }
+                        this.overviewData = payload;
+                    } catch (error) {
+                        if (serial === this._overviewRequestSerial) this.overviewError = error.message;
+                    } finally {
+                        if (serial === this._overviewRequestSerial) this.overviewLoading = false;
+                    }
+                },
+
+                isAnnotationCategorySelected(category) {
+                    return this.selectedAnnotationCategories.includes(this.annotationCategoryKey(category));
+                },
+
+                toggleAnnotationCategory(category) {
+                    const key = this.annotationCategoryKey(category);
+                    const known = this.getAnnotationSchema(this.selectedAnnotationCategory)?.categories || [];
+                    if (!known.some(value => this.annotationCategoryKey(value) === key)) return;
+                    this.selectedAnnotationCategories = this.isAnnotationCategorySelected(key)
+                        ? this.selectedAnnotationCategories.filter(value => value !== key)
+                        : [...this.selectedAnnotationCategories, key];
+                    this.refreshAnnotationSelection();
+                },
+
+                clearAnnotationSelection() {
+                    this.selectedAnnotationCategories = [];
+                    this.overviewQuery = ''; this.overviewLimit = 80;
+                    this.refreshAnnotationSelection();
+                },
+
+                refreshAnnotationSelection() {
+                    this.cauchyTableQuery = '';
+                    this.cauchyHeatmapSelectedAnnotations = [];
+                    this.cauchyHeatmapAnnotationQuery = '';
+                    this._cauchyFilterCache = null; this.cauchyTablePage = 0;
+                    this.renderAnnotationCategoryViews();
+                    if (this.cauchyActivated) this.scheduleCauchyHeatmap();
+                },
+
                 get filteredCauchyTable() {
                     const key = JSON.stringify([this.selectedTrait, this.selectedAnnotationCategory,
-                        this.cauchyViewMode, this.cauchySortKey, this.cauchySortAsc, this.cauchyTableQuery]);
+                        this.cauchyViewMode, this.cauchySortKey, this.cauchySortAsc, this.cauchyTableQuery, this.selectedAnnotationCategories]);
                     if (this._cauchyFilterKey === key && this._cauchyFilterCache) {
                         return this._cauchyFilterCache;
                     }
@@ -2365,6 +2510,9 @@
                         r.trait === this.selectedTrait &&
                         r.annotation_name === this.selectedAnnotationCategory
                     );
+                    if (this.hasAnnotationSelection) {
+                        data = data.filter(row => this.isAnnotationCategoryVisible(row.annotation));
+                    }
                     const query = this.cauchyTableQuery.trim().toLowerCase();
                     if (query) data = data.filter(row =>
                         String(row.annotation ?? '').toLowerCase().includes(query) ||
@@ -2493,6 +2641,8 @@
 
                         // Now safe to show the UI - all selections are initialized
                         this.dataLoaded = true;
+                        this.overviewScope = this.has3dWidget ? 'all' : 'sample';
+                        this.loadAssociationOverview();
                         this.activeSection = this.visibleSections.find(section =>
                             section.id !== 'sec-spatial3d' || this.has3dWidget
                         )?.id || '';
@@ -3167,10 +3317,8 @@
                 },
 
                 annotationVisibilityKey(annotationName = this.selectedAnnotationCategory) {
-                    return Object.keys(this.annotationHiddenCategories?.[annotationName] || {})
-                        .filter(category => this.annotationHiddenCategories[annotationName][category])
-                        .sort()
-                        .join('\u001f');
+                    return annotationName === this.selectedAnnotationCategory && this.hasAnnotationSelection
+                        ? JSON.stringify([...this.selectedAnnotationCategories].sort()) : '';
                 },
 
                 annotationCategoryKey(value, annotationName = this.selectedAnnotationCategory) {
@@ -3185,108 +3333,8 @@
                 },
 
                 isAnnotationCategoryVisible(category, annotationName = this.selectedAnnotationCategory) {
-                    const key = this.annotationCategoryKey(category, annotationName);
-                    return !this.annotationHiddenCategories?.[annotationName]?.[key];
-                },
-
-                setAnnotationCategoryVisible(category, visible) {
-                    const annotationName = this.selectedAnnotationCategory;
-                    const hidden = { ...(this.annotationHiddenCategories[annotationName] || {}) };
-                    const key = String(category);
-                    if (visible) delete hidden[key];
-                    else hidden[key] = true;
-                    this.annotationHiddenCategories = {
-                        ...this.annotationHiddenCategories,
-                        [annotationName]: hidden
-                    };
-                    this.renderAnnotationCategoryViews();
-                },
-
-                scheduleAnnotationLegendToggle(category) {
-                    if (this._annotationLegendClickTimer) {
-                        clearTimeout(this._annotationLegendClickTimer);
-                    }
-                    this._annotationLegendClickTimer = setTimeout(() => {
-                        this._annotationLegendClickTimer = null;
-                        this.setAnnotationCategoryVisible(
-                            category,
-                            !this.isAnnotationCategoryVisible(category)
-                        );
-                    }, 220);
-                },
-
-                isolateAnnotationCategory(category) {
-                    if (this._annotationLegendClickTimer) {
-                        clearTimeout(this._annotationLegendClickTimer);
-                        this._annotationLegendClickTimer = null;
-                    }
-                    const annotationName = this.selectedAnnotationCategory;
-                    const categoryKey = String(category);
-                    const visible = this.currentAnnotationLegend
-                        .filter(entry => entry.visible)
-                        .map(entry => String(entry.category));
-                    const restoreAll = visible.length === 1 && visible[0] === categoryKey;
-                    const hidden = {};
-                    if (!restoreAll) {
-                        for (const entry of this.currentAnnotationLegend) {
-                            if (String(entry.category) !== categoryKey) hidden[String(entry.category)] = true;
-                        }
-                    }
-                    this.annotationHiddenCategories = {
-                        ...this.annotationHiddenCategories,
-                        [annotationName]: hidden
-                    };
-                    this.renderAnnotationCategoryViews();
-                },
-
-                isPointMapAnnotationSelected(category, annotationName) {
-                    return this.hasHiddenAnnotationCategories(annotationName) &&
-                        this.isAnnotationCategoryVisible(category, annotationName);
-                },
-
-                hasHiddenAnnotationCategories(annotationName = this.selectedAnnotationCategory) {
-                    const schema = this.getAnnotationSchema(annotationName);
-                    return Boolean(schema?.categories?.some(category =>
-                        !this.isAnnotationCategoryVisible(category, annotationName)
-                    ));
-                },
-
-                toggleAnnotationFromEnrichment(category, annotationName) {
-                    if (annotationName !== this.selectedAnnotationCategory) return;
-                    const categoryKey = this.annotationCategoryKey(category, annotationName);
-                    const legend = this.currentAnnotationLegend;
-                    const hidden = { ...(this.annotationHiddenCategories[annotationName] || {}) };
-                    const selectionActive = legend.some(entry => !entry.visible);
-
-                    if (!selectionActive) {
-                        for (const entry of legend) {
-                            const entryKey = this.annotationCategoryKey(entry.category, annotationName);
-                            if (entryKey !== categoryKey) hidden[entryKey] = true;
-                        }
-                    } else if (hidden[categoryKey]) {
-                        delete hidden[categoryKey];
-                    } else {
-                        const visibleCount = legend.filter(entry => entry.visible).length;
-                        if (visibleCount <= 1) {
-                            for (const key of Object.keys(hidden)) delete hidden[key];
-                        } else {
-                            hidden[categoryKey] = true;
-                        }
-                    }
-                    this.annotationHiddenCategories = {
-                        ...this.annotationHiddenCategories,
-                        [annotationName]: hidden
-                    };
-                    this.renderAnnotationCategoryViews();
-                },
-
-                showAllAnnotationCategories() {
-                    const annotationName = this.selectedAnnotationCategory;
-                    this.annotationHiddenCategories = {
-                        ...this.annotationHiddenCategories,
-                        [annotationName]: {}
-                    };
-                    this.renderAnnotationCategoryViews();
+                    return annotationName !== this.selectedAnnotationCategory || !this.hasAnnotationSelection ||
+                        this.selectedAnnotationCategories.includes(this.annotationCategoryKey(category, annotationName));
                 },
 
                 renderAnnotationCategoryViews() {
@@ -3444,11 +3492,10 @@
                         return cached.points;
                     }
 
-                    const hidden = this.annotationHiddenCategories?.[annotationName] || {};
+                    const visibleCodes = schema.categories.map(category => this.isAnnotationCategoryVisible(category, annotationName));
                     const indices = [];
                     for (let index = 0; index < schema.codes.length; index++) {
-                        const category = String(schema.categories[schema.codes[index]] ?? 'NaN');
-                        if (!hidden[category]) indices.push(index);
+                        if (visibleCodes[schema.codes[index]]) indices.push(index);
                     }
                     const points = {
                         x: this.selectPointValues(x, indices),
@@ -4040,6 +4087,7 @@
                     this._geneFilterCache = null;
                     this._geneFilterKey = '';
                     this.selectedTrait = newTrait;
+                    this.loadAssociationOverview();
                     this.traitSearchQuery = this.traitLabel(newTrait);
                     this.multiSamplePlotStatus = this.allSampleTraitOverviewOpen
                         ? 'loading' : 'idle';
@@ -4101,6 +4149,10 @@
                 },
 
                 async onAnnotationChange() {
+                    this.selectedAnnotationCategories = [];
+                    this.overviewQuery = ''; this.overviewLimit = 80;
+                    this.cauchyTableQuery = ''; this.cauchyTablePage = 0;
+                    this.loadAssociationOverview();
                     this._cauchyFilterCache = null;
                     this.cauchyHeatmapSelectedAnnotations = [];
                     this.cauchyHeatmapAnnotationQuery = '';
@@ -4126,6 +4178,7 @@
                 },
 
                 async onSampleChange() {
+                    if (this.overviewScope === 'sample') this.loadAssociationOverview();
                     this.hidePointHoverTooltip();
                     const sampleName = this.selectedSample;
                     const trait = this.selectedTrait;
@@ -4688,8 +4741,9 @@
                     const chosenAnnotations = new Set(this.cauchyHeatmapSelectedAnnotations);
                     const allTraits = model.traits.filter(t => chosenTraits.size ? chosenTraits.has(t) :
                         this.heatmapTraitSearchMatches(t, this.cauchyHeatmapTraitQuery));
-                    const allAnnotations = model.annotations.filter(a => chosenAnnotations.size ? chosenAnnotations.has(a) :
-                        this.heatmapSearchMatches(a, this.cauchyHeatmapAnnotationQuery));
+                    const allAnnotations = model.annotations.filter(a =>
+                        this.isAnnotationCategoryVisible(a) &&
+                        (chosenAnnotations.size ? chosenAnnotations.has(a) : this.heatmapSearchMatches(a, this.cauchyHeatmapAnnotationQuery)));
                     const traitSize = Math.max(1, Math.min(60, Number(this.cauchyHeatmapTraitsPerPage) || 24));
                     const annotationSize = Math.max(1, Math.min(80, Number(this.cauchyHeatmapAnnotationsPerPage) || 40));
                     this.cauchyHeatmapTraitPages = Math.max(1, Math.ceil(allTraits.length / traitSize));
@@ -5761,8 +5815,7 @@
                         linked: this.spatialComparisonLinked, colorMax: Number(this.spatialComparisonColorMax),
                         pointScale: Number(this.spatial2dPointScale), cutoff: Number(this.spatial2dAssociationMinLogP),
                         emphasis: Number(this.spatial2dAssociationOpacityStrength), annotation: this.selectedAnnotationCategory,
-                        hidden: Object.keys(this.annotationHiddenCategories[this.selectedAnnotationCategory] || {})
-                            .filter(key => this.annotationHiddenCategories[this.selectedAnnotationCategory][key]),
+                        hidden: this.currentAnnotationLegend.filter(entry => !entry.visible).map(entry => String(entry.category)),
                         ranges: ['spatial2dPlotTrait', 'spatial2dPlotAnnotation'].map(id => {
                             const plot = document.getElementById(id);
                             return ['xaxis', 'yaxis'].map(axis => plot?._fullLayout?.[axis]?.range?.slice() || null);
@@ -5830,8 +5883,12 @@
                     this.spatial2dAssociationMinLogP = view.cutoff;
                     this.spatial2dAssociationOpacityStrength = view.emphasis;
                     this.selectedAnnotationCategory = view.annotation;
-                    this.annotationHiddenCategories = {...this.annotationHiddenCategories,
-                        [view.annotation]: Object.fromEntries(view.hidden.map(name => [name, true]))};
+                    if (annotationChanged) await this.onAnnotationChange();
+                    this.selectedAnnotationCategories = view.hidden.length
+                        ? this.getAnnotationSchema(view.annotation).categories
+                            .filter(name => !view.hidden.includes(String(name))).map(name => this.annotationCategoryKey(name))
+                        : [];
+                    this.refreshAnnotationSelection();
                     await this.waitForLayoutPaint();
                     await this.renderSpatialComparison();
                     if (this.spatial2dError) throw new Error(this.spatial2dError);
@@ -5842,14 +5899,7 @@
                             await Plotly.relayout(plot, {'xaxis.range': view.ranges[i][0], 'yaxis.range': view.ranges[i][1]});
                         } finally { plot.__gsMapApplyingViewport = false; }
                     }
-                    // Shared annotation selection also drives the existing 3D/UMAP views.
-                    if (annotationChanged) {
-                        await this.onAnnotationChange();
-                    } else {
-                        // Hiding categories must not clear enrichment-table/heatmap selections.
-                        await this.renderSpatial3dViews();
-                        if (this.umapActivated) this.renderUmapPlots();
-                    }
+                    // Annotation selection has already refreshed the shared views and summaries.
                     this.spatialComparisonNotice = 'View restored, including annotation selection and zoom.';
                 },
 
@@ -5886,7 +5936,7 @@
                         const noteLines = notes.map(text => wrap(text, width, detailFont));
                         const legend = this.currentAnnotationLegend.filter(entry => entry.visible);
                         const visible = legend.map(entry => entry.category);
-                        const filter = this.hasHiddenAnnotationCategories() ? visible.join(', ') || 'none' : 'all categories';
+                        const filter = this.hasAnnotationSelection ? visible.join(', ') || 'none' : 'all categories';
                         const footer = wrap(`gsMap · ${this.selectedAnnotationCategory}: ${filter} · ` +
                             (this.spatialComparisonIsAnnotation ? 'shared annotation colors; displayed spots only' :
                                 `cutoff ${this.spatial2dAssociationMinLogP} · absolute −log10(P); displayed spots only`),

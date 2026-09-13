@@ -196,6 +196,8 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         js_data_dir / "sample_index.js",
         js_data_dir / "report_meta.js",
         js_data_dir / "cauchy_index.js",
+        js_data_dir / "association_overview_index.js",
+        js_data_dir / "association_overview_manifest.json",
         js_data_dir / "cauchy_manifest.json",
     ]
 

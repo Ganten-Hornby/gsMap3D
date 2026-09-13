@@ -13,6 +13,7 @@ def build(output):
     import pandas as pd
     from PIL import Image
 
+    from gsMap.report.association_overview import export_association_overview
     from gsMap.report.report import _render_report_html
     from gsMap.report.report_data import (
         _copy_js_assets,
@@ -38,6 +39,7 @@ def build(output):
         dataset_type="spatial2D",
         top_corr_genes=10,
         trait_payload_version=2,
+        association_overview_version=1,
     )
     (js / "report_meta.js").write_text("window.GSMAP_REPORT_META=" + json.dumps(meta) + ";")
     frame = pd.DataFrame(
@@ -93,6 +95,8 @@ def build(output):
             )
     pd.DataFrame(rows).to_csv(output / "cauchy_results.csv", index=False)
     _export_cauchy_js(output, js)
+    frame.to_csv(output / "spot_metadata.csv", index=False)
+    export_association_overview(frame, output, js, traits, ["celltype"])
     (js / "umap_data.js").write_text("window.GSMAP_UMAP=null;")
     plots = output / "gene_diagnostic_plots"
     plots.mkdir()
@@ -121,6 +125,16 @@ def check(output):
         page.wait_for_function(
             "window.Alpine && Alpine.$data(document.body).dataLoaded && Alpine.$data(document.body).plotlyReady"
         )
+        page.wait_for_function("Alpine.$data(document.body).overviewData?.rows.length > 0")
+        assert page.evaluate("Alpine.$data(document.body).overviewData.n_spots") == 4
+        assert page.evaluate("Alpine.$data(document.body).overviewScope") == "sample"
+        page.get_by_role("radio", name="All sections", exact=True).check()
+        page.wait_for_function("Alpine.$data(document.body).overviewData?.n_spots === 8")
+        page.get_by_role("button", name="Toggle category Brain", exact=True).click()
+        assert page.evaluate("Alpine.$data(document.body).selectedAnnotationCategories") == ["Brain"]
+        page.get_by_role("button", name="Toggle category Heart", exact=True).click()
+        assert page.evaluate("Alpine.$data(document.body).selectedAnnotationCategories") == ["Brain", "Heart"]
+        page.get_by_role("button", name="Clear annotation selection", exact=True).click()
         selector = page.locator("#trait-selector")
         assert selector.input_value() == "Intelligence — cognitive performance"
         selector.click()

@@ -350,7 +350,7 @@ def test_annotation_comparison_bookmark_is_supported(run_js):
     assert result == "sample_annotations"
 
 
-def test_restoring_hidden_categories_does_not_reset_enrichment_selection(run_js):
+def test_restoring_bookmark_updates_the_unified_annotation_selection(run_js):
     result = run_js(
         BOOKMARK
         + """
@@ -359,14 +359,15 @@ def test_restoring_hidden_categories_does_not_reset_enrichment_selection(run_js)
         Plotly.relayout = async () => {};
         app.cauchyHeatmapSelectedAnnotations = ['Brain'];
         app.renderSpatial3dViews = async () => {};
+        app.renderAnnotationCategoryViews = () => {};
         app.onAnnotationChange = async () => {app.cauchyHeatmapSelectedAnnotations=[];};
         view.hidden=['Heart'];
         await app.restoreSpatialComparison(view);
-        console.log(JSON.stringify({hidden:app.annotationHiddenCategories.celltype,
-            selected:app.cauchyHeatmapSelectedAnnotations}));
+        console.log(JSON.stringify({selected:app.selectedAnnotationCategories,
+            heatmapSubset:app.cauchyHeatmapSelectedAnnotations}));
     """
     )
-    assert result == {"hidden": {"Heart": True}, "selected": ["Brain"]}
+    assert result == {"selected": ["Brain"], "heatmapSubset": []}
 
 
 def test_independent_renderer_uses_source_rows_for_paired_hover(run_js):
@@ -374,7 +375,7 @@ def test_independent_renderer_uses_source_rows_for_paired_hover(run_js):
         app.selectedSample='sidebar'; app.selectedTrait='sidebar';
         app.selectedAnnotationCategory='celltype';
         app.spatial2dAssociationMinLogP=3; app.spatial2dAssociationOpacityStrength=.5;
-        app.annotationHiddenCategories={celltype:{Heart:true}};
+        app.selectedAnnotationCategories=['Brain'];
         const target={};
         document.getElementById = () => target;
         app.hidePointHoverTooltip=()=>{};

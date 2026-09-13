@@ -50,6 +50,91 @@ def run_js():
     return run
 
 
+def test_annotation_overview_density_and_focus_are_reversible(run_js):
+    result = run_js("""
+        window.GSMAP_ANNOTATION_SCHEMAS={celltype:{categories:['01','2','NA'],colors:['red','blue','green']}};
+        app.selectedAnnotationCategory='celltype'; app.selectedTrait='IQ';
+        app.renderAnnotationCategoryViews=()=>{};
+        app.cauchyData=['01','2','NA'].map(annotation=>({trait:'IQ', annotation_name:'celltype', type:'aggregated', annotation}));
+        app.toggleAnnotationCategory('01');
+        const focused={categories:app.selectedAnnotationCategories,table:app.filteredCauchyTable.map(r=>r.annotation),
+            visible: ['01','2','NA'].filter(c=>app.isAnnotationCategoryVisible(c))};
+        app.toggleAnnotationCategory('01');
+        console.log(JSON.stringify({focused,restored:!app.hasAnnotationSelection,
+            table:app.filteredCauchyTable.length, zero:app.overviewScore(0),missing:app.overviewScore(null),
+            flat:app.overviewRidgePath([0,0]),ridge:app.overviewRidgePath([1,0,0])}));
+    """)
+    assert result["focused"] == {"categories": ["01"], "table": ["01"], "visible": ["01"]}
+    assert result["restored"] and result["table"] == 3
+    assert result["zero"] == "0.00" and result["missing"] == "—"
+    assert result["flat"] == "" and result["ridge"].endswith("Z")
+    assert "NaN" not in result["ridge"]
+
+
+def test_sidebar_multiselection_filters_all_linked_views_and_clear_restores(run_js):
+    result = run_js("""
+        window.GSMAP_ANNOTATION_SCHEMAS={celltype:{categories:['01','2','NA'],colors:['red','blue','green']}};
+        app.selectedAnnotationCategory='celltype'; app.selectedTrait='IQ';
+        app.renderAnnotationCategoryViews=()=>{};
+        app.cauchyData=['01','2','NA'].map(annotation=>({trait:'IQ', annotation_name:'celltype', type:'aggregated', annotation,mlog10_p_cauchy:1}));
+        app.cauchyHeatmapData=app.cauchyData;
+        app.umapData={celltype:['01','2','NA','01']};
+        const schema={categories:['01','2','NA'],codes:new Uint8Array([0,1,2,0])};
+        const x=new Float32Array([0,1,2,3]);
+        app.toggleAnnotationCategory('01'); app.toggleAnnotationCategory('2');
+        const chosen=[...app.selectedAnnotationCategories];
+        const table=app.filteredCauchyTable.map(r=>r.annotation).sort();
+        await app.renderCauchyHeatmap();const heatmap=plot.traces[0].y.slice().sort();
+        const points=Array.from(app.filterCategoricalPlotPoints(x,x,null,schema,'celltype').indices);
+        const umap=app.visibleUmapPointIndices();
+        app.toggleAnnotationCategory('unknown');
+        const unchanged=app.selectedAnnotationCategories.slice();
+        app.toggleAnnotationCategory('01'); const removed=app.selectedAnnotationCategories.slice();
+        app.selectedSample='other'; app.overviewScope='sample';
+        const preserved=app.selectedAnnotationCategories.slice();
+        app.overviewQuery='01'; app.overviewLimit=160;
+        app.clearAnnotationSelection();
+        console.log(JSON.stringify({chosen,table,heatmap,points,umap,unchanged,removed,preserved,
+            restored:app.filteredCauchyTable.length,allPoints:app.filterCategoricalPlotPoints(x,x,null,schema,'celltype').indices,
+            allUmap:app.visibleUmapPointIndices(),active:app.hasAnnotationSelection,
+            query:app.overviewQuery,limit:app.overviewLimit}));
+    """)
+    assert result == {
+        "chosen": ["01", "2"], "table": ["01", "2"], "heatmap": ["01", "2"],
+        "points": [0, 1, 3], "umap": [0, 1, 3], "unchanged": ["01", "2"],
+        "removed": ["2"], "preserved": ["2"], "restored": 3,
+        "allPoints": None, "allUmap": None, "active": False, "query": "", "limit": 80,
+    }
+
+
+def test_sidebar_all_explicitly_selected_can_still_remove_one(run_js):
+    result = run_js("""
+        window.GSMAP_ANNOTATION_SCHEMAS={domain:{categories:['1','2'],colors:[]}};
+        app.selectedAnnotationCategory='domain'; app.renderAnnotationCategoryViews=()=>{};
+        app.toggleAnnotationCategory(1);app.toggleAnnotationCategory('2');
+        const all=app.selectedAnnotationCategories.slice();
+        app.toggleAnnotationCategory('1');
+        console.log(JSON.stringify({all,selected:app.selectedAnnotationCategories,
+            visible:['1','2'].filter(c=>app.isAnnotationCategoryVisible(c)),
+            otherAnnotation:app.isAnnotationCategoryVisible('unrelated','other')}));
+    """)
+    assert result == {"all": ["1", "2"], "selected": ["2"], "visible": ["2"], "otherAnnotation": True}
+
+
+def test_annotation_overview_ignores_stale_scope_loads(run_js):
+    result = run_js("""
+        app.reportMeta={association_overview_version:1};app.selectedAnnotationCategory='celltype';
+        app.overviewIndex={traits:{IQ:{celltype:{all:{key:'iq'}}},AF:{celltype:{all:{key:'af'}}}}};
+        const pending={};app.loadOverviewShard=e=>new Promise(resolve=>pending[e.key]=resolve);
+        app.selectedTrait='IQ';const old=app.loadAssociationOverview();
+        app.selectedTrait='AF';const latest=app.loadAssociationOverview();
+        pending.af({trait:'AF',annotation:'celltype',sample:null,rows:[]});await latest;
+        pending.iq({trait:'IQ',annotation:'celltype',sample:null,rows:[]});await old;
+        console.log(JSON.stringify({trait:app.overviewData.trait,loading:app.overviewLoading,error:app.overviewError}));
+    """)
+    assert result == {"trait": "AF", "loading": False, "error": ""}
+
+
 def test_spatial_maps_start_in_compare_without_2d_signal_fading(run_js):
     result = run_js("""
         console.log(JSON.stringify({
@@ -526,10 +611,10 @@ def test_numeric_annotation_table_sort_search_and_legend_window(run_js):
         app.cauchyTableQuery = '10';
         app.getAnnotationSchema = () => ({categories: Array.from({length: 2000},
             (_, i) => 'domain' + i), colors: []});
-        const initial = app.visibleAnnotationLegend.length;
-        app.annotationLegendQuery = 'domain1999';
+        const initial = app.overviewDisplayedRows.length;
+        app.overviewQuery = 'domain1999';
         console.log(JSON.stringify({table: app.filteredCauchyTable.map(r => r.annotation),
-            initial, legend: app.visibleAnnotationLegend.map(r => r.category)}));
+            initial, legend: app.overviewDisplayedRows.map(r => r.category)}));
     """)
     assert result == dict(table=[10], initial=80, legend=["domain1999"])
 
@@ -933,6 +1018,32 @@ def test_trait_only_render_leaves_annotation_panels_unchanged(run_js, mode):
         if mode == "compare" or kind == mode
     ]
     assert result["all"] == expected
+
+
+def test_overview_sort_metrics_default_to_cauchy_and_keep_missing_last(run_js):
+    result = run_js("""
+        app.overviewData={rows:[
+            {category:'10',cauchy_logp:null,median_logp:2,q95_logp:3,n_spots:10},
+            {category:'2',cauchy_logp:0,median_logp:4,q95_logp:2,n_spots:30},
+            {category:'1',cauchy_logp:5,median_logp:null,q95_logp:1,n_spots:20}
+        ]};
+        const result={defaultSort:app.overviewSort};
+        for (const key of ['cauchy_logp','median_logp','q95_logp','n_spots','category']) {
+            app.overviewSort=key;
+            result[key]=app.overviewVisibleRows.map(row=>row.category);
+        }
+        result.original=app.overviewData.rows.map(row=>row.category);
+        console.log(JSON.stringify(result));
+    """)
+    assert result == {
+        "defaultSort": "cauchy_logp",
+        "cauchy_logp": ["1", "2", "10"],
+        "median_logp": ["2", "10", "1"],
+        "q95_logp": ["10", "2", "1"],
+        "n_spots": ["2", "1", "10"],
+        "category": ["1", "2", "10"],
+        "original": ["10", "2", "1"],
+    }
 
 
 def test_trait_change_refreshes_threshold_filtered_annotation_comparison(run_js):
