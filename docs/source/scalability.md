@@ -20,7 +20,11 @@ gsmap_tutorials/
 │   └── homologs/mouse_human_homologs.txt
 ├── example_data/
 │   ├── mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad
-│   └── example-traits/IQ.sumstats.gz
+│   └── example-traits/
+│       ├── IQ.sumstats.gz
+│       ├── Height.sumstats.gz
+│       ├── MCHC.sumstats.gz
+│       └── gwas.yaml                 # Trait list shown below
 └── results/mouse-e16-mosta/           # Created by the analysis
 ```
 
@@ -35,15 +39,17 @@ command. Python tuning snippets modify its `config` **before**
 - **Use a GPU when helpful.** Try one GPU for the compute-heavy stages; extra
   workers or devices do not guarantee a faster run.
 - **Use an SSD if I/O is slow.** It is optional; project storage is supported.
-- **Reuse GSS for additional traits.** Do not recalculate embeddings or ranks
-  when only the GWAS changes.
+- **Run multiple traits together.** Reuse GSS and share LD-score construction
+  within one run, rather than repeating it in a separate job for each trait.
 - **Leave room for memory and output.** More workers and larger batches can
   increase memory use. Download size is not working disk space.
 
 ## Choose CPU or GPU
 
-Embedding uses PyTorch and a visible CUDA GPU when available. Marker scoring
-and spatial LDSC use JAX; `--use-gpu` / `--no-gpu` controls these latter stages.
+Embedding uses PyTorch and a visible CUDA GPU when available.
+`--use-gpu` / `--no-gpu` selects the device for marker scoring and spatial LDSC.
+Spatial LDSC automatically chooses an optimized CPU or GPU regression backend;
+you do not need to select a kernel implementation.
 
 ### GPU run
 
@@ -69,20 +75,20 @@ Before starting the CLI or Python process, hide CUDA devices:
 export CUDA_VISIBLE_DEVICES=""
 ```
 
-Then choose CPU execution. Four regression workers below are an example, not
-a requirement; use a count suitable for your available cores and memory.
+Then choose CPU execution. This example uses up to **16 compute threads** for
+the default regression model. Use a count suitable for your allocated cores:
 
 ````{tab} CLI
 ```text
 --no-gpu
---ldsc-compute-workers 4
+--ldsc-compute-workers 16
 ```
 ````
 
 ````{tab} Python
 ```python
 config.use_gpu = False
-config.ldsc_compute_workers = 4
+config.ldsc_compute_workers = 16
 ```
 ````
 
@@ -91,6 +97,40 @@ config.ldsc_compute_workers = 4
 Set the environment before imports for a fully CPU-only run. For a GPU job,
 use a fresh shell without the CPU-only override and respect scheduler-assigned devices.
 ```
+
+The default CPU model uses a fused Numba backend. Its effective compute-thread
+count is capped by the requested workers, available CPU affinity, Numba's thread
+limit and the scheduler's CPU allocation when present. Reader and writer threads
+share those resources; this option is not a global thread limit for every library.
+Additional baseline annotations remain supported through the general JAX backend.
+
+### Multiple GPUs on one node
+
+For a node with four allocated, visible GPUs, add:
+
+````{tab} CLI
+```text
+--use-gpu
+--ldsc-num-gpus 4
+```
+````
+
+````{tab} Python
+```python
+config.use_gpu = True
+config.ldsc_num_gpus = 4
+```
+````
+
+gsMap divides cells into nonoverlapping ranges. **Each GPU processes all traits**
+for its assigned cells, sharing LD scores across those traits. Once workers
+succeed, results are merged in cell order into the usual per-trait files.
+No manual splitting or merging is needed.
+
+This setting applies to spatial LDSC, not embedding or marker scoring. It uses
+GPUs on **one node**, requires shared-LD mode (enabled by default), and does not
+request GPUs from a scheduler. Leave enough CPU cores for all GPU workers;
+the measured GPU runs below used eight physical CPU cores per GPU.
 
 ## I/O and fast storage
 
@@ -122,6 +162,12 @@ New ranks can be written to scratch first and synchronized back to the project.
 If staging cannot fit safely, gsMap falls back to project storage and logs the
 decision. Compare runtime including those copies.
 
+Shared-LD runs can stage and reuse a read-only marker cache on the selected
+disk. NumPy/memmap input uses up to four reader threads with up to eight chunks
+in flight; shared HDF5/file readers use one reader. These are **marker-input
+chunks**, not a cache of LD scores for the whole dataset. Prefetching overlaps
+input preparation with computation without loading the entire matrix into RAM.
+
 ```{tip}
 This setting selects disk storage, not RAM or GPU memory. A directory named
 `scratch` on the same slow filesystem is not faster.
@@ -140,9 +186,32 @@ can coexist. This is a disk-size estimate, not a peak-RAM estimate.
 | Setting | Default | When to adjust |
 |---|---|---|
 | `--mkscore-batch-size` | `0` (automatic) | Set a smaller explicit batch if marker-score computation runs out of memory. |
-| `--spots-per-chunk-quick-mode` | `100` | Reduce for lower per-chunk spatial-LDSC memory use. |
-| `--ldsc-read-workers` | `10` | CPU sparse-transform threads, or GPU marker-preparation workers; disk reads remain sequential. |
-| `--ldsc-compute-workers` | `10` | Tune CPU regression concurrency within your CPU/memory budget; the effective count may be lower. |
+| `--spots-per-chunk-quick-mode` | Automatic: **CPU 400, GPU 100** | Cells per compute chunk, per device. An explicit positive value overrides automatic selection. |
+| `--ldsc-read-workers` | `10` | Shared-LD input prefetch uses at most four readers for NumPy/memmap input and one for shared file handles. |
+| `--ldsc-compute-workers` | `10` | Requested compute threads for the default CPU model; use the cores allocated to your run. |
+| `--ldsc-trait-batch-size` | `4` | Traits processed together within a shared-LD chunk; range 1–16. Not a limit on the total number of traits. |
+| `--ldsc-num-gpus` | `1` | GPUs used for spatial LDSC on one node. |
+| `--ldsc-share-ld` | Enabled | Reuse each LD-score chunk across all requested traits. |
+| `--ldsc-regression-backend` | `auto` | Optimize the common model automatically; retain general JAX support for other designs. |
+
+### How the automatic batch size is displayed
+
+The CLI help shows `auto: CPU=400, GPU=100`. Omit
+`--spots-per-chunk-quick-mode` to use it. In Python, omit
+`spots_per_chunk_quick_mode` or set it to `None`; in a quick-mode YAML
+configuration, omit the field or use `null`.
+
+The actual execution device determines the batch, including a fallback from
+GPU to CPU. The spatial-LDSC log records the resolved value, for example:
+
+```text
+Spatial LDSC batch size: 400 spots/chunk (auto: CPU)
+```
+
+An explicit value such as `--spots-per-chunk-quick-mode 100` stays 100 on
+either device. With multiple GPUs, the automatic value is **100 per GPU**.
+
+### Explicit smaller batches
 
 For example, test these lower-memory settings. A marker batch of 50 helps only
 if it is smaller than the effective batch reported in your log.
@@ -167,32 +236,82 @@ selected neighborhood before scoring, even when the rank rows are far apart.
 These settings change how work is scheduled, not which cells enter the analysis.
 ```
 
-More workers are not always faster. Keep reader, writer and queue settings at
-their defaults unless the logs identify a specific bottleneck. GPU LDSC normally
-uses one compute worker; increasing the CPU worker setting does not create more
-GPU workers. See {doc}`cli_reference` for all controls.
+More workers are not always faster. CPU computation, readers and writers share
+memory bandwidth and I/O. Larger batches amortize overhead, but neither doubling
+threads nor doubling a batch guarantees twice the throughput. Increasing
+`--ldsc-compute-workers` does not create extra GPU workers; use
+`--ldsc-num-gpus` for that. See {doc}`cli_reference` for all controls.
 
-CPU sparse transforms cooperate on one batch. Regression workers submit batches
-to JAX, which also parallelizes internally; both stages share cores and memory
-bandwidth. CPU worker caps respect affinity and `SLURM_CPUS_PER_TASK` when present,
-but are not a global thread limit for every library.
+## Multiple traits with shared LD scores
 
-GPU LDSC keeps the SNP × gene matrix on the device, uploads marker batches and
-passes the resulting LD scores directly to JAX. Reported overall throughput
-includes final output writing; component throughput measures only that component.
+Download the example GWAS bundle from {doc}`downloads`, if needed, and
+save this small trait list as `example_data/example-traits/gwas.yaml`:
+
+```yaml
+IQ: IQ.sumstats.gz
+Height: Height.sumstats.gz
+MCHC: MCHC.sumstats.gz
+```
+
+Paths are relative to the YAML file. Pass `--sumstats-config-file` (Python:
+`sumstats_config_file`) instead of `--trait-name` and `--sumstats-file`.
+The complete association command is below.
+
+For each cell chunk, gsMap reads GSS once, constructs SNP × cell LD scores
+once, then runs the requested GWAS regressions in small trait groups. The
+default group size is four: a file with 127 traits processes **all 127**, not
+only the first four. Output writing overlaps computation.
+
+Only reusable computation is shared. Each trait keeps its own retained SNPs,
+sample sizes, regression weights and jackknife blocks; the GWAS are not pooled
+and are not restricted to a single common SNP intersection. Group traits that
+use the **same reference panel and SNP × gene matrix** in one run. Use separate
+runs for different reference ancestries or annotation builds.
+
+The common model (spatial GSS LD score, base, all-gene and intercept) benefits
+from gene-space initialization and fused regression statistics. Extra baseline
+annotations use the general backend automatically. Trait grouping bounds
+temporary regression workspaces, but host memory still grows with prepared
+GWAS inputs. Start with the default group size before increasing it.
+
+## Spatial LDSC throughput at a glance
+
+**Cell-traits/s** is the number of cell–trait associations completed per second
+(cells × traits / time). Dashed lines show **one trait (IQ)**; solid lines show
+**four traits together**. Higher is faster. Both tests use the same
+**1,000,037 HESTA CS20 cells**.
+
+### CPU
+
+AMD EPYC, 1–32 physical cores, **default batch 400**.
+
+![CPU spatial LDSC throughput: one versus four traits, 1–32 cores, default batch 400](_static/benchmarks/cpu_trait_scaling.png)
+
+### GPU
+
+A100, V100 and RTX 2080 Ti, 1–4 GPUs, **default batch 100 per GPU**.
+
+![GPU spatial LDSC throughput: one versus four traits on 1–4 A100, V100 or RTX 2080 Ti GPUs](_static/benchmarks/gpu_trait_scaling.png)
+
+Measured with node-local SSD, including loading and output writing but excluding
+initial staging and JIT warmup. These are throughput measurements, not full
+CLI startup times; actual speed depends on your data and hardware.
+
+{download}`Measurements and test details <_static/benchmarks/README.md>` ·
+{download}`Download CSV <_static/benchmarks/trait_scaling_measurements.csv>`
 
 ## Cluster users
 
-The simplest way to parallelize multiple traits is **one spatial-LDSC job per
-trait**, after preprocessing has completed.
+Run preprocessing once, then run the trait list together. The same workflow
+works on a workstation; a cluster simply supplies the allocated CPUs or GPUs.
 
 1. **Preprocess once.** Calculate embeddings and GSS.
 2. **Allocate resources.** Run on a compute node, not a login node. Set worker
    counts for the CPUs assigned to the job, not the whole node.
-3. **Run independent trait jobs.** Keep shared inputs unchanged and write distinct
-   trait result files. Use only the GPUs assigned by your scheduler.
-4. **Check completion, then report.** Inspect job status and logs before combining
-   results. Do not let independent jobs overwrite the same report.
+3. **Run shared multi-trait LDSC.** Use multiple CPU cores or GPUs within one job.
+   Do not launch overlapping jobs that write the same trait result files.
+4. **Check completion, then report.** Wait for all traits and any GPU workers to
+   finish. Generate the combined report once.
 
 ### Example: calculate embeddings and GSS
 
@@ -244,11 +363,13 @@ run_quick_mode(config)
 ```
 ````
 
-### Example: one trait per job
+### Example: multiple traits in one run
 
 After preprocessing finishes, submit the following command in a compute job.
 `--start-step spatial_ldsc --stop-step spatial_ldsc` runs only association
-testing; it reuses the saved ranks and GSS.
+testing; it reuses the saved GSS. Shared LD and automatic regression selection
+are enabled by default. This command uses one GPU; apply the CPU or multi-GPU
+settings above to change the execution resources.
 
 ````{tab} CLI
 ```bash
@@ -261,8 +382,7 @@ gsmap quick-mode \
     --stop-step spatial_ldsc \
     --w-ld-dir resources/1000g-hc-grch38-v50-eur/w_ld \
     --snp-gene-weight-adata-path resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad \
-    --trait-name IQ \
-    --sumstats-file example_data/example-traits/IQ.sumstats.gz
+    --sumstats-config-file example_data/example-traits/gwas.yaml
 ```
 ````
 
@@ -280,17 +400,16 @@ config = QuickModeConfig(
     stop_step="spatial_ldsc",
     w_ld_dir="resources/1000g-hc-grch38-v50-eur/w_ld",
     snp_gene_weight_adata_path="resources/1000g-hc-grch38-v50-eur/snp_gene_weights.h5ad",
-    trait_name="IQ",
-    sumstats_file="example_data/example-traits/IQ.sumstats.gz",
+    sumstats_config_file="example_data/example-traits/gwas.yaml",
 )
 run_quick_mode(config)
 ```
 ````
 
-To analyze another downloaded trait, change **both** `IQ` and its GWAS path,
-for example to `Height` or `MCHC`. The original E16.5 example uses IQ only.
-For a CPU job, apply the CPU settings above. Limit concurrency if many jobs
-saturate the shared filesystem.
+Add more traits to `gwas.yaml` to reuse the same GSS. Previously completed trait
+files are skipped. If you change GWAS contents, the LD reference or analysis
+settings, use a new output project as described in {doc}`advanced_usage`;
+the existence of an old result is not evidence that it matches new inputs.
 
 ```{important}
 Keep the complete `latent_to_gene/` directory, including metadata, the
@@ -302,7 +421,10 @@ See {doc}`output_files` for the files needed to reuse scores.
 For an exceptionally large single trait, `--cell-indices-range` can split LDSC
 into nonoverlapping ranges. This is an advanced option: merge partial results
 and verify complete coverage with no duplicate cells before enrichment/reporting.
-Prefer trait-level parallelism when possible.
+For GPUs on the same node, prefer `--ldsc-num-gpus`, which handles splitting
+and merging automatically. Independent jobs on different nodes remain an
+option, but separate trait jobs repeat LD-score construction and can saturate
+shared storage.
 
 ## Keep large reports responsive
 
@@ -340,8 +462,8 @@ config.downsampling_n_spots_2d = 150000
 
 ### Example: finish enrichment and the report
 
-After the **IQ** LDSC result is complete, this runs Cauchy enrichment and builds
-the IQ report with a 150,000-spot 2D display limit, without recalculating
+After **all three traits** finish, this runs Cauchy enrichment and builds
+the combined report with a 150,000-spot 2D display limit, without recalculating
 embeddings, GSS or spatial LDSC.
 
 ````{tab} CLI
@@ -354,8 +476,7 @@ gsmap quick-mode \
     --spatial-key spatial \
     --plot-origin lower \
     --start-step cauchy \
-    --trait-name IQ \
-    --sumstats-file example_data/example-traits/IQ.sumstats.gz \
+    --sumstats-config-file example_data/example-traits/gwas.yaml \
     --downsampling-n-spots-2d 150000
 ```
 ````
@@ -373,18 +494,15 @@ config = QuickModeConfig(
     spatial_key="spatial",
     plot_origin="lower",
     start_step="cauchy",
-    trait_name="IQ",
-    sumstats_file="example_data/example-traits/IQ.sumstats.gz",
+    sumstats_config_file="example_data/example-traits/gwas.yaml",
     downsampling_n_spots_2d=150000,
 )
 run_quick_mode(config)
 ```
 ````
 
-If you ran additional trait jobs, use a multi-trait GWAS configuration containing
-all completed traits instead of the single IQ options. The
-{doc}`advanced_usage` shows how to specify that configuration. Generate the
-combined report once, after every requested trait is complete.
+Use the same trait list for association testing and reporting. The
+{doc}`advanced_usage` describes additional GWAS configuration options.
 
 ## Where the work happens
 

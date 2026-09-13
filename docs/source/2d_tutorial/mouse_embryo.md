@@ -103,7 +103,7 @@ Use `count` for expression, `annotation` for labels and `spatial` for coordinate
 The homolog file maps mouse gene symbols to human genes. See
 {doc}`../advanced_usage` for other flags and multiple-trait configurations.
 
-To run these same data on CPU, use fast temporary storage, split work by trait,
+To run these same data on multiple CPU cores or GPUs, share LD scores across traits,
 or display every analyzed spot, follow the E16.5 examples in
 {doc}`../scalability`. The biological workflow is explained in
 {doc}`../key_concepts`.

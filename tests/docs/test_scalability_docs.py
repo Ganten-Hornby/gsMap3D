@@ -1,5 +1,7 @@
 """Validate page ownership and executable E16.5 performance recipes."""
 
+import csv
+import json
 import re
 import shlex
 import subprocess
@@ -68,7 +70,8 @@ def test_complete_neighborhoods_and_safe_cluster_advice():
     cluster = text.split("## Cluster users")[1].split("## Keep large reports")[0]
     assert re.findall(r"^(\d)\. ", cluster, re.MULTILINE) == ["1", "2", "3", "4"]
     assert "CPUs assigned to the job" in cluster
-    assert "distinct\n   trait result files" in cluster
+    assert "Run shared multi-trait LDSC" in cluster
+    assert "Do not launch overlapping jobs" in cluster
     assert "verify complete coverage with no duplicate cells" in cluster
     assert "near-linearly" not in text
 
@@ -270,6 +273,9 @@ def example_workspace(tmp_path, monkeypatch):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
     (tmp_path / "resources/1000g-hc-grch38-v50-eur/w_ld").mkdir()
+    yaml_block = re.findall(r"```yaml\n(.*?)\n```", guide(), re.DOTALL)
+    assert len(yaml_block) == 1
+    (tmp_path / "example_data/example-traits/gwas.yaml").write_text(yaml_block[0] + "\n")
     return tmp_path
 
 
@@ -340,6 +346,11 @@ def test_e16_full_cli_python_recipes(example_workspace, monkeypatch):
     assert seen[1][0].start_step == seen[1][0].stop_step == "spatial_ldsc"
     assert seen[2][0].start_step == "cauchy"
     assert seen[2][0].downsampling_n_spots_2d == 150000
+    for config, _ in seen[1:]:
+        assert config.trait_name_list == ["IQ", "Height", "MCHC"]
+        assert config.ldsc_share_ld is True
+        assert config.ldsc_trait_batch_size == 4
+        assert config.spots_per_chunk_quick_mode is None
 
 
 def test_tuning_snippets_match_cli_options(example_workspace, monkeypatch):
@@ -356,7 +367,7 @@ def test_tuning_snippets_match_cli_options(example_workspace, monkeypatch):
         text,
         re.DOTALL,
     )
-    assert len(pairs) == 5
+    assert len(pairs) == 6
     base = [
         "--workdir",
         "results",
@@ -404,3 +415,284 @@ def test_auxiliary_shell_snippets(example_workspace):
     for code in snippets:
         result = subprocess.run(["bash", "-c", code], text=True, capture_output=True)
         assert result.returncode == 0, result.stderr
+
+
+def test_scalability_measurements_and_units():
+    """Public curves/tables are backed by complete, finite measured sweeps."""
+    import numpy as np
+
+    assets = SOURCE / "_static/benchmarks"
+    text = guide()
+    with (assets / "cpu_batch_scaling.csv").open() as stream:
+        cpu = list(csv.DictReader(stream))
+    assert len(cpu) == 30
+    for batch in (100, 400, 800, 1600, 3200):
+        rows = [row for row in cpu if int(row["batch"]) == batch]
+        assert [int(row["cores"]) for row in rows] == [1, 2, 4, 8, 16, 32]
+        for row in rows:
+            assert int(row["repeats"]) == 3
+            assert float(row["max_abs_logp"]) < 0.1
+            ct_s = float(row["mean_ct_s"])
+            assert np.isfinite(ct_s)
+            assert ct_s > 0
+            assert ct_s == pytest.approx(4 * float(row["mean_cell_s"]))
+    with (assets / "gpu_scaling_measurements.csv").open() as stream:
+        gpu = list(csv.DictReader(stream))
+    assert len(gpu) == 12
+    for model in ("A100", "RTX 2080 Ti"):
+        for count in (1, 2, 4):
+            rows = [r for r in gpu if r["gpu"] == model and int(r["gpus"]) == count]
+            assert {int(r["repeat"]) for r in rows} == {0, 1}
+            for row in rows:
+                assert float(row["max_abs_logp"]) < 0.1
+                assert int(row["cells"]) == 1000037
+                assert int(row["traits"]) == 4
+                assert float(row["cell_trait_s"]) == pytest.approx(
+                    1000037 * 4 / float(row["seconds"])
+                )
+    # Earlier GPU measurements remain reproducible, but are not mixed into the
+    # replacement IQ-only/four-trait curves.
+    assert "_static/benchmarks/gpu_scaling.png" not in text
+    assert "_static/benchmarks/cpu_batch_scaling.png" not in text
+    assert "1600" not in text
+    for image in ("cpu_trait_scaling", "gpu_trait_scaling"):
+        assert f"_static/benchmarks/{image}.png" in text
+        assert (assets / f"{image}.png").stat().st_size > 10000
+    assert "Cell-traits/s" in text
+    assert "Both tests use the same\n**1,000,037 HESTA CS20 cells**" in text
+    assert "auto: CPU=400, GPU=100" in text
+
+
+def test_single_multi_trait_measurements_and_simple_view():
+    import numpy as np
+    from docs.tools.plot_trait_scalability import validate_coverage
+
+    assets = SOURCE / "_static/benchmarks"
+    with (assets / "trait_scaling_measurements.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    validate_coverage(rows)
+    text = guide()
+    quick_view = text.split("## Spatial LDSC throughput at a glance")[1].split("## Cluster users")[
+        0
+    ]
+    assert not any(line.startswith("|") for line in quick_view.splitlines())
+    assert "default batch 400" in quick_view
+    for model in ("CPU", "A100", "V100", "RTX 2080 Ti"):
+        cpu = model == "CPU"
+        for count in [1, 2, 4, 8, 16, 32] if cpu else [1, 2, 4]:
+            for traits in (1, 4):
+                selected = [
+                    r
+                    for r in rows
+                    if r["hardware"] == model
+                    and int(r["workers"]) == count
+                    and int(r["traits"]) == traits
+                ]
+                for row in selected:
+                    cells = 1000037
+                    assert int(row["cells"]) == cells
+                    assert int(row["batch"]) == (400 if cpu else 100)
+                    seconds, ct_s, cell_s, delta = (
+                        float(row[k])
+                        for k in ("seconds", "cell_trait_s", "cell_s", "max_abs_logp")
+                    )
+                    assert np.isfinite([seconds, ct_s, cell_s, delta]).all()
+                    assert seconds > 0
+                    assert 0 <= delta < 0.1
+                    assert ct_s == pytest.approx(cells * traits / seconds)
+                    assert cell_s == pytest.approx(cells / seconds)
+    assert max(float(r["max_abs_logp"]) for r in rows) < 0.05005
+    for platform in ("cpu", "gpu"):
+        svg = (assets / f"{platform}_trait_scaling.svg").read_text()
+        assert "1 trait (IQ)" in svg
+        assert "4 traits" in svg
+        assert "Cell-traits / second" in svg
+        assert "Cells / second" not in svg
+        assert "Strong scaling" not in svg
+        assert "≈" in svg
+        assert "1,000,037 cells" in svg
+
+
+@pytest.mark.parametrize("platform", ["CPU", "GPU"])
+def test_throughput_only_plot_matches_measured_means(platform, tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from docs.tools.plot_trait_scalability import plot
+
+    with (SOURCE / "_static/benchmarks/trait_scaling_measurements.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    captured = []
+    original_close = plt.close
+    monkeypatch.setattr(plt, "close", captured.append)
+    plot(rows, platform, tmp_path)
+    fig = captured[-1]
+    try:
+        assert len(fig.axes) == 1
+        axis = fig.axes[0]
+        cpu = platform == "CPU"
+        models = ["CPU"] if cpu else ["RTX 2080 Ti", "V100", "A100"]
+        counts = [1, 2, 4, 8, 16, 32] if cpu else [1, 2, 4]
+        assert len(axis.lines) == 2 * len(models)
+        for line, (model, traits) in zip(
+            axis.lines, [(m, t) for m in models for t in (1, 4)], strict=True
+        ):
+            expected = [
+                np.mean(
+                    [
+                        float(r["cell_trait_s"])
+                        for r in rows
+                        if r["hardware"] == model
+                        and int(r["traits"]) == traits
+                        and int(r["workers"]) == n
+                    ]
+                )
+                for n in counts
+            ]
+            np.testing.assert_array_equal(line.get_xdata(), counts)
+            np.testing.assert_allclose(line.get_ydata(), expected)
+            assert line.get_linestyle() == ("--" if traits == 1 else "-")
+        assert len(axis.texts) == len(axis.lines)
+        assert all(t.get_text().startswith("≈") for t in axis.texts)
+        assert axis.get_ylim()[0] == 0
+        assert axis.get_ylim()[1] > max(max(line.get_ydata()) for line in axis.lines)
+    finally:
+        original_close(fig)
+
+
+def test_scalability_plot_axes_include_measured_values(tmp_path):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from docs.tools.plot_scalability import figure, save, series
+
+    fig, axes = figure("Test", "Four traits", [1, 2, 4], "GPUs")
+    rates = np.array([47012.0, 92619.0, 182954.0])
+    series(axes, [1, 2, 4], rates, rates * 0.99, rates * 1.01, "A100", "#007f86")
+    try:
+        # Setting bottom=0 before plotting would disable autoscaling at top=1.
+        save(fig, tmp_path / "test_scaling", "Observed measurements")
+        assert axes[0].get_ylim()[0] == 0
+        assert axes[0].get_ylim()[1] > rates.max()
+        assert axes[1].get_ylim()[1] >= 4
+    finally:
+        plt.close(fig)
+
+
+def test_single_multi_trait_plot_requires_complete_measured_grid():
+    from docs.tools.plot_trait_scalability import validate_coverage
+
+    rows = [
+        dict(hardware=model, workers=n, traits=t, repeat=r)
+        for model in ("CPU", "A100", "V100", "RTX 2080 Ti")
+        for n in ([1, 2, 4, 8, 16, 32] if model == "CPU" else [1, 2, 4])
+        for t in (1, 4)
+        for r in range(3 if model == "CPU" else 2)
+    ]
+    validate_coverage(rows)
+    with pytest.raises(AssertionError, match="Missing cases"):
+        validate_coverage(rows[:-1])
+    with pytest.raises(AssertionError, match="Duplicate"):
+        validate_coverage([*rows, rows[0]])
+
+
+@pytest.fixture
+def matched_benchmark_summaries(tmp_path):
+    """Exercise the importer without access to private GWAS or benchmark data."""
+    with (SOURCE / "_static/benchmarks/trait_scaling_measurements.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    for model in ("CPU", "A100", "V100", "RTX 2080 Ti"):
+        for ntraits in (1, 4):
+            cpu = model == "CPU"
+            traits = [64] if ntraits == 1 else [64, 92, 2, 59]
+            selected = [r for r in rows if r["hardware"] == model and int(r["traits"]) == ntraits]
+            summary = dict(complete=True, all_passed=True)
+            hashes = {"kernel.py": "test-kernel-hash"}
+            if cpu:
+                summary.update(
+                    cells=1000037,
+                    traits=traits,
+                    source_commit="test-commit",
+                    manifest_sha256="test-manifest",
+                    matched_gpu=dict(
+                        same_cells_as_gpu=True,
+                        cells=1000037,
+                        row_offset=0,
+                        source_commit="test-commit",
+                        kernel_hashes=hashes,
+                    ),
+                )
+            else:
+                summary.update(
+                    label=f"{model.replace(' ', '')}_t{ntraits}",
+                    arguments=dict(
+                        cells=1000037, traits=",".join(map(str, traits)), batch=100, row_offset=0
+                    ),
+                    implementation_commit="test-commit",
+                    prepared_sha256="test-manifest",
+                    kernel_hashes=hashes,
+                )
+            cases = []
+            for row in selected:
+                count = int(row["workers"])
+                case = dict(
+                    repeat=int(row["repeat"]),
+                    seconds=float(row["seconds"]),
+                    cell_trait_s=float(row["cell_trait_s"]),
+                )
+                checks = [
+                    dict(passed=True, max_abs_logp=float(row["max_abs_logp"])) for _ in traits
+                ]
+                if cpu:
+                    case.update(
+                        batch=400,
+                        cores=count,
+                        numba_threads=count,
+                        affinity=list(range(count)),
+                        cells=1000037,
+                        traits=ntraits,
+                        all_passed=True,
+                        checks=checks,
+                    )
+                else:
+                    case.update(
+                        method="moments", axis="cells", passed=True, gpus=count, audits=checks
+                    )
+                cases.append(case)
+            summary["runs" if cpu else "cases"] = cases
+            directory = "cpu/runs_million" if cpu else "gpu/scaling_results"
+            path = tmp_path / directory / f"{model}_t{ntraits}" / "summary.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(summary))
+    return tmp_path
+
+
+def test_importer_accepts_only_matched_complete_million_cell_grid(matched_benchmark_summaries):
+    from docs.tools.plot_trait_scalability import measurements
+
+    rows = measurements(matched_benchmark_summaries)
+    assert len(rows) == 72
+    assert {r["cells"] for r in rows} == {1000037}
+
+
+@pytest.mark.parametrize(
+    "problem", ["incomplete", "unmatched", "offset", "small", "source", "nan"]
+)
+def test_importer_rejects_invalid_cpu_retests(matched_benchmark_summaries, problem):
+    from docs.tools.plot_trait_scalability import measurements
+
+    path = next((matched_benchmark_summaries / "cpu/runs_million").glob("*/summary.json"))
+    data = json.loads(path.read_text())
+    if problem == "incomplete":
+        data["complete"] = False
+    elif problem == "unmatched":
+        data["matched_gpu"]["same_cells_as_gpu"] = False
+    elif problem == "offset":
+        data["matched_gpu"]["row_offset"] = 1
+    elif problem == "small":
+        data["cells"] = 30037
+    elif problem == "source":
+        data["matched_gpu"]["kernel_hashes"]["kernel.py"] = "different-kernel"
+    else:
+        data["runs"][0]["checks"][-1]["max_abs_logp"] = float("nan")
+    path.write_text(json.dumps(data))
+    with pytest.raises(AssertionError):
+        measurements(matched_benchmark_summaries)

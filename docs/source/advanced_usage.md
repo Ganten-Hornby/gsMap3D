@@ -6,7 +6,8 @@ another copy of the reference resources. Use a fresh project name when changing
 scientific inputs or settings.
 
 For an explanation of embeddings, neighbors and GSS, see {doc}`key_concepts`.
-For CPU/GPU, SSD, memory and cluster examples, see {doc}`scalability`.
+For shared multi-trait LDSC, CPU cores, multiple GPUs and SSD settings, see
+{doc}`scalability`.
 This page focuses on **changing the analysis**, rather than tuning its execution.
 
 CLI flags use hyphens (`--data-layer`); Python configuration fields use underscores
@@ -300,7 +301,8 @@ Height: ../example_data/example-traits/Height.sumstats.gz
 ## Scalability and performance
 
 See {doc}`scalability` for E16.5 examples covering CPU/GPU selection, SSD storage,
-memory tuning, one-trait-per-job execution and report display limits.
+shared multi-trait execution, CPU/multi-GPU scaling, memory tuning and report
+display limits.
 For all available options, consult {doc}`cli_reference` or run:
 
 ```bash

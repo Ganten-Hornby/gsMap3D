@@ -62,7 +62,7 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--cross-slice-z-scale FLOAT RANGE` | Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.  \[default: 1.0; x>=0.0] |
 | `--cross-slice-marker-score-strategy [global_pool\|per_slice_pool\|hierarchical_pool]` | Strategy for computing marker scores across slices in spatial3D datasets. 'global_pool': Select the top K most similar neighbors globally across all slices combined. 'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. 'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.  \[default: hierarchical_pool] |
 | `--high-quality-neighbor-filter / --no-high-quality-filter` | Only find neighbors within high quality cells (requires High_quality column in obs)  \[default: no-high-quality-filter] |
-| `--use-gpu / --no-gpu` | Use GPU for JAX-accelerated spatial LDSC implementation  \[default: use-gpu] |
+| `--use-gpu / --no-gpu` | Use GPU rather than CPU for spatial LDSC  \[default: use-gpu] |
 | `--memmap-tmp-dir DIRECTORY` | Optional fast scratch directory. Concurrent spatial-LDSC processes stage and reuse one content-addressed, read-only marker cache per directory/node. If it does not fit, gsMap streams directly from project storage. |
 | `--mkscore-batch-size INTEGER RANGE` | Cells per marker-score batch; 0 selects automatically  \[default: 0; 0<=x<=1000] |
 | `--rank-read-workers INTEGER RANGE` | Threads used to materialize distinct rank rows for each cache window  \[default: 120; 1<=x<=128] |
@@ -70,9 +70,13 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--mkscore-write-workers INTEGER RANGE` | Marker-score and rank write workers  \[default: 2; 1<=x<=50] |
 | `--compute-input-queue-size INTEGER RANGE` | Maximum pending marker-score batches per compute worker  \[default: 1; 1<=x<=10] |
 | `--writer-queue-size INTEGER RANGE` | Writer-input queue capacity  \[default: 20; 10<=x<=500] |
-| `--ldsc-read-workers INTEGER RANGE` | CPU sparse-transform threads, or GPU marker-transform workers. CPU threads cooperate on one LD-score batch; marker memmap I/O uses one bounded sequential stream.  \[default: 10; x>=1] |
-| `--ldsc-compute-workers INTEGER RANGE` | Number of compute workers for LDSC regression  \[default: 10; x>=1] |
-| `--spots-per-chunk-quick-mode INTEGER RANGE` | Number of spots per chunk in quick mode  \[default: 100; x>=1] |
+| `--ldsc-num-gpus INTEGER RANGE` | Number of visible GPUs for spatial LDSC on this node. Cells are split between GPUs; each GPU processes all traits. Requires --use-gpu.  \[default: 1; x>=1] |
+| `--ldsc-share-ld / --no-ldsc-share-ld` | Share each LD-score chunk across GWAS traits. Required for multiple GPUs.  \[default: ldsc-share-ld] |
+| `--ldsc-regression-backend [auto\|jax\|moments]` | Regression backend: auto uses fused moments for two baseline annotations plus intercept, otherwise JAX. jax disables this fast path.  \[default: auto] |
+| `--ldsc-trait-batch-size INTEGER RANGE` | Traits per regression group in shared-LD mode; all requested traits are processed, regardless of this group size.  \[default: 4; 1<=x<=16] |
+| `--ldsc-read-workers INTEGER RANGE` | Reader/preparation workers. Shared-LD mode uses at most four readers for NumPy/memmap markers and one for shared file handles; non-shared mode uses this for sparse-transform or marker-preparation workers.  \[default: 10; x>=1] |
+| `--ldsc-compute-workers INTEGER RANGE` | Requested CPU compute threads for the automatic moment backend, capped by available cores and thread limits; regression workers in non-shared mode. Does not select the number of GPUs.  \[default: 10; x>=1] |
+| `--spots-per-chunk-quick-mode INTEGER RANGE` | Spots per spatial-LDSC compute chunk. Omit to select automatically for the execution device; an explicit value overrides both CPU and GPU defaults.  \[default: (auto: CPU=400, GPU=100); x>=1] |
 | `--trait-name TEXT` | Name of the trait for GWAS analysis |
 | `--sumstats-file FILE` | Path to GWAS summary statistics file |
 | `--sumstats-config-file FILE` | Path to sumstats config file |
@@ -211,11 +215,15 @@ This step:
 |---|---|
 | `--workdir DIRECTORY` | Path to the working directory  \[required] |
 | `--project-name TEXT` | Name of the project  \[required] |
-| `--use-gpu / --no-gpu` | Use GPU for JAX-accelerated spatial LDSC implementation  \[default: use-gpu] |
+| `--use-gpu / --no-gpu` | Use GPU rather than CPU for spatial LDSC  \[default: use-gpu] |
+| `--ldsc-num-gpus INTEGER RANGE` | Number of visible GPUs for spatial LDSC on this node. Cells are split between GPUs; each GPU processes all traits. Requires --use-gpu.  \[default: 1; x>=1] |
+| `--ldsc-share-ld / --no-ldsc-share-ld` | Share each LD-score chunk across GWAS traits. Required for multiple GPUs.  \[default: ldsc-share-ld] |
+| `--ldsc-regression-backend [auto\|jax\|moments]` | Regression backend: auto uses fused moments for two baseline annotations plus intercept, otherwise JAX. jax disables this fast path.  \[default: auto] |
+| `--ldsc-trait-batch-size INTEGER RANGE` | Traits per regression group in shared-LD mode; all requested traits are processed, regardless of this group size.  \[default: 4; 1<=x<=16] |
 | `--memmap-tmp-dir DIRECTORY` | Optional fast scratch directory. Concurrent spatial-LDSC processes stage and reuse one content-addressed, read-only marker cache per directory/node. If it does not fit, gsMap streams directly from project storage. |
-| `--ldsc-read-workers INTEGER RANGE` | CPU sparse-transform threads, or GPU marker-transform workers. CPU threads cooperate on one LD-score batch; marker memmap I/O uses one bounded sequential stream.  \[default: 10; x>=1] |
-| `--ldsc-compute-workers INTEGER RANGE` | Number of compute workers for LDSC regression  \[default: 10; x>=1] |
-| `--spots-per-chunk-quick-mode INTEGER RANGE` | Number of spots per chunk in quick mode  \[default: 100; x>=1] |
+| `--ldsc-read-workers INTEGER RANGE` | Reader/preparation workers. Shared-LD mode uses at most four readers for NumPy/memmap markers and one for shared file handles; non-shared mode uses this for sparse-transform or marker-preparation workers.  \[default: 10; x>=1] |
+| `--ldsc-compute-workers INTEGER RANGE` | Requested CPU compute threads for the automatic moment backend, capped by available cores and thread limits; regression workers in non-shared mode. Does not select the number of GPUs.  \[default: 10; x>=1] |
+| `--spots-per-chunk-quick-mode INTEGER RANGE` | Spots per spatial-LDSC compute chunk. Omit to select automatically for the execution device; an explicit value overrides both CPU and GPU defaults.  \[default: (auto: CPU=400, GPU=100); x>=1] |
 | `--trait-name TEXT` | Name of the trait for GWAS analysis |
 | `--sumstats-file FILE` | Path to GWAS summary statistics file |
 | `--sumstats-config-file FILE` | Path to sumstats config file |
