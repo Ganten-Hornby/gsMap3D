@@ -277,6 +277,67 @@
             border-radius: 0.65rem;
         }
 
+        #sec-spatial3d, #sec-gsmap { position: relative; }
+        .spatial-map-fullscreen-button {
+            position: absolute;
+            right: 1.5rem;
+            bottom: 1.5rem;
+            z-index: 20;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.5rem;
+            height: 2.5rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 0.6rem;
+            background: rgba(255, 255, 255, 0.95);
+            color: #475569;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+        }
+        .spatial-map-fullscreen-button:hover { background: #eff6ff; color: #2563eb; }
+        .spatial-map-fullscreen-button:disabled { cursor: wait; opacity: 0.6; }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            border: 0;
+            border-radius: 0;
+            background: white;
+        }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen::backdrop { background: white; }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen > .report-card-header { flex: 0 0 auto; }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen > .section-content {
+            display: flex;
+            flex: 1 1 0;
+            flex-direction: column;
+            min-height: 0;
+            overflow: auto;
+            transform: none;
+        }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen .spatial-map-controls { flex: 0 0 auto; }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen .spatial-map-viewport {
+            display: flex;
+            flex: 1 1 0;
+            flex-direction: column;
+            min-height: 20rem;
+        }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen :is(.plot-grid, .spatial2d-grid) {
+            flex: 1 1 0; min-height: 0; grid-auto-rows: minmax(0, 1fr);
+        }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen .plot-panel {
+            display: flex; flex-direction: column; min-height: 0; max-width: none;
+        }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen .plot-panel :is(h3, p) { flex: 0 0 auto; }
+        #sec-spatial3d:fullscreen .plot-frame-3d { flex: 1 1 0; height: 0; min-height: 0; }
+        #sec-gsmap:fullscreen .spatial-2d-plot { flex: 1 1 0; height: 0; min-height: 0; }
+        #sec-gsmap:fullscreen .spatial2d-overviews { display: none; }
+        :is(#sec-spatial3d, #sec-gsmap):fullscreen .spatial-map-fullscreen-button { position: fixed; }
+        @media (max-width: 1023px) {
+            :is(#sec-spatial3d, #sec-gsmap):fullscreen .spatial-map-viewport[data-compare="true"] { min-height: 36rem; }
+        }
+
         .umap-frame {
             width: 100%;
             height: clamp(25rem, 48vh, 30rem);
@@ -795,8 +856,10 @@
             <div class="spatial-context-layout" style="order: 1" x-show="dataLoaded && (currentSections.show3d || currentSections.show2dDistribution)">
             <div class="spatial-context-maps">
             <div id="sec-spatial3d" x-show="dataLoaded && currentSections.show3d && has3dWidget"
-                class="report-card" style="order: 1">
+                class="report-card" style="order: 1"
+                @fullscreenchange.document="onSpatial3dFullscreenChange()">
                 <button type="button" class="report-card-header" @click="toggleSection('spatial3d', 'sec-spatial3d')"
+                    :disabled="spatial3dFullscreen"
                     :aria-expanded="sections.spatial3d.toString()" aria-controls="content-spatial3d">
                     <div class="min-w-0">
                         <h2 class="text-base font-semibold text-slate-900 sm:text-lg" x-text="getSectionTitle('sec-spatial3d')"></h2>
@@ -809,7 +872,7 @@
                     </svg>
                 </button>
                 <div id="content-spatial3d" class="section-content" :class="sections.spatial3d ? 'expanded' : 'collapsed'">
-                    <div class="border-b border-slate-200 bg-slate-50/80 p-4">
+                    <div class="spatial-map-controls border-b border-slate-200 bg-slate-50/80 p-4">
                         <div class="flex flex-wrap items-end gap-4">
                             <fieldset>
                                 <legend class="mb-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">View</legend>
@@ -827,6 +890,7 @@
                                     <span>Point size</span><span x-text="Number(spatial3dPointSize).toFixed(1)"></span>
                                 </span>
                                 <input type="range" min="0.5" max="4" step="0.1" x-model.number="spatial3dPointSize"
+                                    aria-label="3D point size"
                                     @input.debounce.80ms="renderSpatial3dViews()"
                                     class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600">
                             </label>
@@ -858,8 +922,9 @@
                                 </span>
                                 <input type="range" min="0" max="1" step="0.05"
                                     x-model.number="spatial3dAssociationOpacityStrength"
+                                    :disabled="Number(spatial3dOpacity) >= 1"
                                     @input.debounce.80ms="renderSpatial3dViews()"
-                                    class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600"
+                                    class="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-primary-600 disabled:cursor-default disabled:opacity-40"
                                     aria-label="Association opacity gradient strength">
                             </label>
                             <button type="button" @click="resetSpatial3dCamera()"
@@ -876,7 +941,10 @@
                                 Representative sampling is stratified across annotations.
                             </span>
                             <span x-show="spatial3dCoordinateInfo?.note" class="basis-full text-slate-600" x-text="spatial3dCoordinateInfo?.note"></span>
-                            <span x-show="spatial3dTraitData?.q95 && spatial3dViewMode !== 'annotation'">
+                            <span x-show="spatial3dFullscreenNotice" role="status" class="basis-full text-amber-700"
+                                x-text="spatial3dFullscreenNotice"></span>
+                            <span x-show="Number(spatial3dOpacity) >= 1">Fully opaque: frontmost spots hide points behind them.</span>
+                            <span x-show="Number(spatial3dOpacity) < 1 && spatial3dTraitData?.q95 && spatial3dViewMode !== 'annotation'">
                                 Full signal opacity at shared trait Q95:
                                 <strong class="text-slate-700" x-text="Number(spatial3dTraitData?.q95).toFixed(2)"></strong>.
                             </span>
@@ -891,7 +959,7 @@
                         </div>
                     </div>
 
-                    <div class="relative p-3 sm:p-4">
+                    <div class="spatial-map-viewport relative p-3 sm:p-4" :data-compare="spatial3dViewMode === 'compare'">
                         <div x-show="spatial3dError" class="mb-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
                             x-text="spatial3dError"></div>
                         <div class="plot-grid" :class="spatial3dViewMode === 'compare' ? '' : 'lg:!grid-cols-1'">
@@ -930,12 +998,28 @@
                         </div>
                     </div>
                 </div>
+                <button id="spatial3dFullscreenButton" type="button" class="spatial-map-fullscreen-button"
+                    x-show="sections.spatial3d" @click="toggleSpatial3dFullscreen()"
+                    :disabled="spatial3dFullscreenBusy" :aria-pressed="spatial3dFullscreen.toString()"
+                    :aria-label="spatial3dFullscreen ? 'Exit full screen' : 'Full screen 3D map'"
+                    :title="spatial3dFullscreen ? 'Exit full screen (Esc)' : 'Full screen 3D map'"
+                    aria-controls="content-spatial3d">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8"
+                        viewBox="0 0 24 24" aria-hidden="true">
+                        <path x-show="!spatial3dFullscreen" stroke-linecap="round" stroke-linejoin="round"
+                            d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
+                        <path x-show="spatial3dFullscreen" stroke-linecap="round" stroke-linejoin="round"
+                            d="M3 8h5V3m13 5h-5V3M8 21v-5H3m13 5v-5h5" />
+                    </svg>
+                </button>
             </div>
 
             <!-- ==================== SECTION 2: gsMap 2D Distribution ==================== -->
             <div id="sec-gsmap" x-show="dataLoaded && currentSections.show2dDistribution"
-                class="report-card" style="order: 2">
+                class="report-card" style="order: 2"
+                @fullscreenchange.document="onSpatial2dFullscreenChange()">
                 <button type="button" class="report-card-header" @click="toggleSection('gsmap', 'sec-gsmap')"
+                    :disabled="spatial2dFullscreen"
                     :aria-expanded="sections.gsmap.toString()" aria-controls="content-gsmap">
                     <div class="min-w-0">
                         <h2 class="truncate text-base font-semibold text-slate-900 sm:text-lg">
@@ -951,7 +1035,7 @@
                 </button>
                 <div id="content-gsmap" class="section-content" :class="sections.gsmap ? 'expanded' : 'collapsed'">
                     <!-- Spatial 2D Controls -->
-                    <div class="border-b border-slate-200 bg-slate-50 p-4">
+                    <div class="spatial-map-controls border-b border-slate-200 bg-slate-50 p-4">
                         <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-[auto_minmax(12rem,1fr)_minmax(12rem,1fr)_minmax(12rem,1fr)_auto] xl:items-end">
                             <div>
                                 <span class="control-label">View</span>
@@ -1005,6 +1089,8 @@
                                 Reset view
                             </button>
                         </div>
+                        <p x-show="spatial2dFullscreenNotice" role="status" class="mt-2 text-xs text-amber-700"
+                            x-text="spatial2dFullscreenNotice"></p>
                         <div x-show="spatial2dViewMode === 'compare'" class="mt-4 space-y-3" id="spatial-comparison-controls">
                             <label class="block">
                                 <span class="control-label">Compare</span>
@@ -1103,7 +1189,7 @@
                     </div>
 
                     <!-- Plotly Container with Loading Indicator -->
-                    <div class="p-4">
+                    <div class="spatial-map-viewport relative p-4" :data-compare="spatial2dViewMode === 'compare'">
                         <!-- Loading indicator -->
                         <div x-show="loadingSampleData" class="flex items-center justify-center py-12">
                             <svg class="animate-spin h-8 w-8 text-primary-600 mr-3" xmlns="http://www.w3.org/2000/svg"
@@ -1120,7 +1206,7 @@
                             x-text="spatial2dError" role="alert"></p>
                         <!-- Trait, annotation, or synchronized comparison -->
                         <p x-show="spatialComparisonBusy" role="status" class="px-4 py-3 text-sm text-slate-500">Loading comparison…</p>
-                        <div x-show="!loadingSampleData" :style="spatial2dError ? 'visibility:hidden;pointer-events:none' : spatialComparisonBusy ? 'pointer-events:none' : ''"
+                        <div class="spatial2d-grid" x-show="!loadingSampleData" :style="spatial2dError ? 'visibility:hidden;pointer-events:none' : spatialComparisonBusy ? 'pointer-events:none' : ''"
                             :class="spatial2dViewMode === 'compare' ? 'plot-grid' : 'grid grid-cols-1'">
                             <!-- Left: Trait -log10(p) -->
                             <div x-show="spatial2dViewMode !== 'annotation'" class="plot-panel relative"
@@ -1159,11 +1245,25 @@
                                 <p x-show="spatial2dComparisonActive" class="px-2 pb-1 text-center text-xs text-slate-500" x-text="spatialComparisonPanelNotes[1]"></p>
                             </div>
                         </div>
+                        <button id="spatial2dFullscreenButton" type="button" class="spatial-map-fullscreen-button"
+                            @click="toggleSpatial2dFullscreen()" :disabled="spatial2dFullscreenBusy"
+                            :aria-pressed="spatial2dFullscreen.toString()"
+                            :aria-label="spatial2dFullscreen ? 'Exit full screen' : 'Full screen 2D map'"
+                            :title="spatial2dFullscreen ? 'Exit full screen (Esc)' : 'Full screen 2D map'"
+                            aria-controls="content-gsmap">
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8"
+                                viewBox="0 0 24 24" aria-hidden="true">
+                                <path x-show="!spatial2dFullscreen" stroke-linecap="round" stroke-linejoin="round"
+                                    d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
+                                <path x-show="spatial2dFullscreen" stroke-linecap="round" stroke-linejoin="round"
+                                    d="M3 8h5V3m13 5h-5V3M8 21v-5H3m13 5v-5h5" />
+                            </svg>
+                        </button>
                     </div>
 
                     <!-- Static overview matrices are folded and loaded only when requested. -->
                     <div x-show="reportMeta.generate_multi_sample_plots"
-                        class="space-y-3 border-t border-slate-200 bg-slate-50/60 p-4 sm:p-5">
+                        class="spatial2d-overviews space-y-3 border-t border-slate-200 bg-slate-50/60 p-4 sm:p-5">
                         <p x-show="hasAnnotationSelection" class="text-xs text-amber-800">These static overview images show all categories; use the interactive point maps for category focus.</p>
                         <details class="rounded-xl border border-slate-200 bg-white shadow-sm"
                             @toggle="setTraitOverviewOpen($event.target.open)">
@@ -2003,11 +2103,14 @@
                 _spatial3dAnnotationCacheOrder: [],
                 spatial3dViewMode: 'compare',
                 spatial3dAspectMode: 'physical',
-                spatial3dPointSize: 1.2,
+                spatial3dPointSize: 1.0,
                 spatial3dOpacity: 0.72,
                 spatial3dAssociationMinLogP: 0,
                 spatial3dAssociationOpacityStrength: 0.65,
                 spatial3dError: '',
+                spatial3dFullscreen: false,
+                spatial3dFullscreenBusy: false,
+                spatial3dFullscreenNotice: '',
                 _scriptPromises: {},
                 _spatial3dSyncing: false,
 
@@ -2034,6 +2137,9 @@
                 spatial2dPointScale: 1.0,
                 spatial2dPointSizePixels: 1.5,
                 spatial2dError: '',
+                spatial2dFullscreen: false,
+                spatial2dFullscreenBusy: false,
+                spatial2dFullscreenNotice: '',
                 spatial2dAssociationMinLogP: 0,
                 spatial2dAssociationOpacityStrength: 0,
                 allSampleTraitOverviewOpen: false,
@@ -2187,6 +2293,7 @@
                 },
 
                 get spatial3dAssociationOpacityLabel() {
+                    if (Number(this.spatial3dOpacity) >= 1) return 'Off · opaque';
                     return this.associationOpacityLabel(this.spatial3dAssociationOpacityStrength);
                 },
 
@@ -3122,7 +3229,7 @@
                             z: this.decodeTypedArray(encoded.z),
                             sample: this.decodeCategoricalPayload(encoded.sample)
                         };
-                        this.spatial3dPointSize = Number(encoded.point_size || 1.2);
+                        this.spatial3dPointSize = Number(encoded.point_size || 1.0);
                         delete window.GSMAP_SPATIAL_3D_BASE;
 
                         await Promise.all([
@@ -3220,6 +3327,56 @@
                         if (annotation === this.selectedAnnotationCategory) {
                             this.spatial3dAnnotationLoading = false;
                         }
+                    }
+                },
+
+                toggleSpatial3dFullscreen() { return this.toggleSpatialMapFullscreen('3d'); },
+                toggleSpatial2dFullscreen() { return this.toggleSpatialMapFullscreen('2d'); },
+                onSpatial3dFullscreenChange() { return this.onSpatialMapFullscreenChange('3d'); },
+                onSpatial2dFullscreenChange() { return this.onSpatialMapFullscreenChange('2d'); },
+
+                async toggleSpatialMapFullscreen(kind) {
+                    const section = kind === '3d' ? 'spatial3d' : 'gsmap';
+                    const prefix = 'spatial' + kind;
+                    const panel = document.getElementById('sec-' + section);
+                    if (!panel || this[prefix + 'FullscreenBusy']) return;
+                    this[prefix + 'FullscreenNotice'] = '';
+                    this[prefix + 'FullscreenBusy'] = true;
+                    try {
+                        if (document.fullscreenElement === panel) {
+                            await document.exitFullscreen();
+                        } else if (panel.requestFullscreen && document.fullscreenEnabled !== false) {
+                            this.sections[section] = true;
+                            // Call directly from the click: native fullscreen requires user activation.
+                            await panel.requestFullscreen();
+                        } else {
+                            this[prefix + 'FullscreenNotice'] = 'Full screen is not available in this browser.';
+                        }
+                    } catch (error) {
+                        this[prefix + 'FullscreenNotice'] = 'Unable to open or close full screen. Check your browser permissions and try again.';
+                    } finally {
+                        this[prefix + 'FullscreenBusy'] = false;
+                    }
+                },
+
+                async onSpatialMapFullscreenChange(kind) {
+                    const prefix = 'spatial' + kind;
+                    const panel = document.getElementById(kind === '3d' ? 'sec-spatial3d' : 'sec-gsmap');
+                    const active = Boolean(panel && document.fullscreenElement === panel);
+                    if (active === this[prefix + 'Fullscreen']) return;
+                    this[prefix + 'Fullscreen'] = active;
+                    this.hidePointHoverTooltip();
+                    // A body-level tooltip would be hidden behind the fullscreen top layer.
+                    if (document.getElementById('gsmapPointHoverTooltip')) this.getPointHoverTooltip();
+                    try {
+                        // Resize only; do not reset camera, filters, point size or rebuild payloads.
+                        if (kind === '3d') await this.resizeSpatial3dViews();
+                        else await this.resizeSpatial2dViews();
+                    } catch (error) {
+                        this[prefix + 'FullscreenNotice'] = 'Unable to resize the map. Try leaving full screen and opening it again.';
+                    }
+                    if (!document.fullscreenElement || document.fullscreenElement === panel) {
+                        document.getElementById(prefix + 'FullscreenButton')?.focus({preventScroll: true});
                     }
                 },
 
@@ -3419,7 +3576,8 @@
                 ) {
                     const strength = Math.max(0, Math.min(1, Number(strengthValue) || 0));
                     const maximumOpacity = Number(marker.opacity) || 1;
-                    if (strength <= 0 || values.length === 0) {
+                    // The opacity endpoint must be genuinely opaque, including low-signal spots.
+                    if (maximumOpacity >= 1 || strength <= 0 || values.length === 0) {
                         return values.length ? [{
                             type: 'scatter3d', mode: 'markers',
                             x: points.x, y: points.y, z: points.z,
@@ -3593,17 +3751,192 @@
                     };
                 },
 
+                spatial3dDepthOrder(positions, camera, cached = null) {
+                    // Camera-space Z is affine. Translation/zoom does not change ordering.
+                    const v = camera.view, m = camera.model;
+                    const direction = [0, 1, 2].map(c =>
+                        v[2]*m[c*4] + v[6]*m[c*4+1] + v[10]*m[c*4+2]);
+                    const signature = direction.join(',');
+                    if (cached?.signature === signature && cached.positions === positions) return cached;
+                    const count = positions.length / 3;
+                    const order = cached?.order.length===count ? cached.order : Uint32Array.from({length:count}, (_,i) => i);
+                    const depth = cached?.depth.length===count ? cached.depth : new Float64Array(count);
+                    for (let i=0; i<count; i++) depth[i] = direction[0]*positions[i*3] +
+                        direction[1]*positions[i*3+1] + direction[2]*positions[i*3+2];
+                    // More negative camera Z is farther away. Sort across ALL opacity bins.
+                    order.sort((a,b) => depth[a]-depth[b] || a-b);
+                    return {signature, order, depth, positions};
+                },
+
+                createSpatial3dPointLayer(renderer, sources) {
+                    // Keep Plotly axes, cameras, colorbars and data/hover identities. Replace
+                    // only the point draw calls with one globally depth-sorted point layer.
+                    // One vertex per spot keeps orbit updates to a small index-buffer upload.
+                    const gl = renderer.gl;
+                    const vaoExtension = gl.getExtension('OES_vertex_array_object');
+                    if (!gl.getExtension('OES_element_index_uint') || !vaoExtension) {
+                        throw new Error('3D transparency requires WebGL vertex-array and uint-index support.');
+                    }
+                    const shaders = [], buffers = [];
+                    let program = null, vao = null;
+                    const dispose = () => {
+                        for (const b of buffers) gl.deleteBuffer(b);
+                        for (const s of shaders) gl.deleteShader(s);
+                        if (program) gl.deleteProgram(program);
+                        if (vao) vaoExtension.deleteVertexArrayOES(vao);
+                    };
+                    try {
+                        const compile = (type, source) => {
+                            const shader = gl.createShader(type);shaders.push(shader);
+                            gl.shaderSource(shader,source);gl.compileShader(shader);
+                            if (!gl.getShaderParameter(shader,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+                            return shader;
+                        };
+                        const vertex = compile(gl.VERTEX_SHADER, `
+                            precision highp float;
+                            attribute vec3 position;
+                            attribute vec4 color;
+                            attribute float diameter;
+                            uniform mat4 model, view, projection;
+                            uniform vec3 lower, upper;
+                            uniform float pixelRatio;
+                            varying vec4 rgba;
+                            varying float pointDiameter;
+                            void main() {
+                                bool clipped=diameter<=0. || color.a<=0. || any(lessThan(position,lower)) || any(greaterThan(position,upper));
+                                gl_Position=clipped ? vec4(2.,2.,2.,1.) : projection*view*model*vec4(position,1.);
+                                pointDiameter=diameter*pixelRatio;
+                                gl_PointSize=clipped ? 0. : pointDiameter;
+                                rgba=color;
+                            }
+                        `);
+                        const fragment = compile(gl.FRAGMENT_SHADER, `
+                            precision highp float;
+                            varying vec4 rgba;
+                            varying float pointDiameter;
+                            uniform float opaque;
+                            void main() {
+                                float radius=length(gl_PointCoord-vec2(.5));
+                                if(radius>.5) discard;
+                                float coverage=opaque>.5 ? 1. : clamp((.5-radius)*pointDiameter,0.,1.);
+                                float alpha=rgba.a*coverage;
+                                gl_FragColor=vec4(rgba.rgb*alpha,alpha);
+                            }
+                        `);
+                        program=gl.createProgram();gl.attachShader(program,vertex);gl.attachShader(program,fragment);
+                        gl.linkProgram(program);
+                        if(!gl.getProgramParameter(program,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+                        const count=sources.reduce((n,s)=>n+s.points.length,0);
+                        const positions=new Float32Array(count*3), colors=new Float32Array(count*4), sizes=new Float32Array(count);
+                        const colorCache=new Map();let offset=0, opaque=true;
+                        // Plotly's native objects alone own autorange. A custom layer must
+                        // not contribute stale bounds while Plotly is updating filtered data.
+                        const bounds=[[Infinity,Infinity,Infinity],[-Infinity,-Infinity,-Infinity]];
+                        for(const source of sources) {
+                            const marker=source.object._trace.data.marker;
+                            const size=Number(marker.size)*3;
+                            for(let i=0;i<source.points.length;i++,offset++) {
+                                const p=source.points[i], finite=p.every(Number.isFinite);
+                                for(let k=0;k<3;k++) {
+                                    positions[offset*3+k]=finite ? p[k]:0;
+                                }
+                                const css=Array.isArray(source.colors) ? source.colors[i]:source.colors;
+                                let rgb=colorCache.get(css);
+                                if(!rgb) {rgb=this.colorChannels(css);colorCache.set(css,rgb);}
+                                for(let k=0;k<3;k++)colors[offset*4+k]=rgb[k]/255;
+                                colors[offset*4+3]=finite ? source.opacity:0;
+                                sizes[offset]=finite ? size:0;
+                            }
+                            opaque=opaque && source.opacity>=1;
+                        }
+                        vao=vaoExtension.createVertexArrayOES();vaoExtension.bindVertexArrayOES(vao);
+                        const attribute=(name,array,width) => {
+                            const buffer=gl.createBuffer();buffers.push(buffer);
+                            gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,array,gl.STATIC_DRAW);
+                            const location=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(location);
+                            gl.vertexAttribPointer(location,width,gl.FLOAT,false,0,0);
+                        };
+                        attribute('position',positions,3);attribute('color',colors,4);attribute('diameter',sizes,1);
+                        const indices=gl.createBuffer();buffers.push(indices);
+                        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,indices);
+                        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,Uint32Array.from({length:count},(_,i)=>i),gl.DYNAMIC_DRAW);
+                        vaoExtension.bindVertexArrayOES(null);
+                        const uniforms=Object.fromEntries(['model','view','projection','lower','upper','pixelRatio','opaque']
+                            .map(name=>[name,gl.getUniformLocation(program,name)]));
+                        let sorted=null, disposed=false;
+                        const layer={
+                            __gsMapPointLayer:true, sources, bounds, dirty:true, pickSlots:0,
+                            _trace:sources[0].object._trace, pointCount:count,
+                            isOpaque:()=>opaque, isTransparent:()=>!opaque,
+                            draw:camera=>draw(camera), drawTransparent:camera=>draw(camera),
+                            dispose:()=>{if(!disposed){disposed=true;dispose();}}
+                        };
+                        const draw=camera => {
+                            if(disposed || !count)return;
+                            vaoExtension.bindVertexArrayOES(vao);
+                            if(!opaque) {
+                                const next=this.spatial3dDepthOrder(positions,camera,sorted);
+                                if(next!==sorted) {
+                                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,indices);
+                                    gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER,0,next.order);sorted=next;
+                                }
+                            }
+                            gl.useProgram(program);
+                            for(const name of ['model','view','projection']) gl.uniformMatrix4fv(uniforms[name],false,camera[name]);
+                            gl.uniform3fv(uniforms.lower,renderer.bounds[0]);gl.uniform3fv(uniforms.upper,renderer.bounds[1]);
+                            gl.uniform1f(uniforms.pixelRatio,renderer.pixelRatio || 1);gl.uniform1f(uniforms.opaque,opaque?1:0);
+                            gl.drawElements(gl.POINTS,count,gl.UNSIGNED_INT,0);
+                            vaoExtension.bindVertexArrayOES(null);
+                        };
+                        return layer;
+                    } catch(error) {dispose();throw error;}
+                },
+
+                prepareSpatial3dRenderer(plot) {
+                    const scene=plot?._fullLayout?.scene?._scene;
+                    let renderer=scene?.glplot;
+                    if(!renderer || renderer.contextLost)return;
+                    // Plotly can recreate its WebGL scene on a projection-type change
+                    // without repopulating traces. Rebuild from resolved data in that case.
+                    const data=(plot._fullData || []).filter(t=>t.scene==='scene' && t.visible===true && t._length>0);
+                    if(!renderer.objects.length && data.length) {
+                        scene.plot(data,plot._fullLayout,plot.layout);
+                        renderer=scene.glplot;
+                    }
+                    const sources=renderer.objects.filter(o=>!o.__gsMapPointLayer && o._trace?.scatterPlot===o)
+                        .map(object=>({object,points:object._trace.dataPoints,colors:object._trace.color,
+                            opacity:object.opacity,size:object._trace.data.marker.size}));
+                    const previous=renderer.__gsMapPointLayer;
+                    const same=previous && previous.sources.length===sources.length && previous.sources.every((s,i)=>
+                        ['object','points','colors','opacity','size'].every(key=>s[key]===sources[i][key]));
+                    if(same)return;
+                    if(previous) {renderer.remove(previous);previous.dispose();delete renderer.__gsMapPointLayer;}
+                    if(!sources.length)return;
+                    const layer=this.createSpatial3dPointLayer(renderer,sources);
+                    for(const {object} of sources) {
+                        // Native objects still own Plotly's data, bounds and update lifecycle.
+                        // GPU hover picking is disabled; CPU picking retains source-row IDs.
+                        object.isOpaque=()=>false;object.isTransparent=()=>false;object.drawPick=()=>{};
+                    }
+                    renderer.__gsMapPointLayer=layer;renderer.add(layer);renderer.redraw();
+                },
+
                 spatial3dHoverIndex(plot) {
                     // Read the matrices used by the bundled Plotly renderer.
                     // Screen projection avoids synchronous GPU pick-buffer reads.
                     const scene = plot._fullLayout?.scene?._scene, gl = scene?.glplot;
                     const params = gl?.cameraParams, canvas = gl?.canvas;
                     if (!params?.model || !params.view || !params.projection || !canvas) return null;
+                    if (gl.objects?.length === 0 || gl.contextLost) {
+                        delete plot.__gsMapSpatial3dHoverIndex;
+                        return null;
+                    }
                     const box = canvas.getBoundingClientRect();
                     if (!(box.width > 0 && box.height > 0)) return null;
-                    const signature = [box.width, box.height, ...params.model, ...params.view,
-                        ...params.projection, ...scene.dataScale].join(',');
                     const traces = plot.data || [], old = plot.__gsMapSpatial3dHoverIndex;
+                    const signature = [box.width, box.height, ...params.model, ...params.view,
+                        ...params.projection, ...scene.dataScale, ...traces.map(t =>
+                            [t.visible, t.opacity, t.marker?.opacity, t.marker?.size].join(':'))].join(',');
                     if (old?.signature === signature && old.traces.length === traces.length &&
                         old.traces.every((t, i) => t === traces[i])) return old;
                     const multiply = (a, b) => {
@@ -3619,11 +3952,18 @@
                     const count = traces.reduce((n, t) => n + (t.x?.length || 0), 0);
                     const heads = new Int32Array(columns * rows).fill(-1), next = new Int32Array(count);
                     const px = new Float32Array(count), py = new Float32Array(count);
-                    const depth = new Float32Array(count), curve = new Uint32Array(count), point = new Uint32Array(count);
+                    // Thin sections can differ by less than Float32 precision after projection.
+                    const depth = new Float64Array(count), curve = new Uint32Array(count), point = new Uint32Array(count);
+                    // Our 3D traces use scalar-size circles. Bundled Plotly scatter3d draws
+                    // these screen-facing glyphs at ~3 * marker.size CSS-pixel diameter,
+                    // in both camera projections (independent of device pixel ratio).
+                    const radii = traces.map(t => Math.max(0, Number(t.marker?.size ?? 6)) * 1.5);
+                    const maxRadius = Math.max(0, ...radii);
                     let offset = 0;
                     traces.forEach((trace, c) => {
                         for (let j = 0; j < (trace.x?.length || 0); j++, offset++) {
-                            if (trace.visible === false || trace.visible === 'legendonly') continue;
+                            if (trace.visible === false || trace.visible === 'legendonly' ||
+                                trace.opacity === 0 || trace.marker?.opacity === 0 || !(radii[c] > 0)) continue;
                             const x = trace.x[j]*scene.dataScale[0], y = trace.y[j]*scene.dataScale[1],
                                 z = trace.z[j]*scene.dataScale[2];
                             if (!Number.isFinite(x+y+z) || [x,y,z].some((v,k) =>
@@ -3641,9 +3981,40 @@
                         }
                     });
                     const index = {signature, traces: [...traces], cell, width, height, columns, rows,
-                        heads, next, px, py, depth, curve, point};
+                        heads, next, px, py, depth, curve, point, radii, maxRadius};
                     plot.__gsMapSpatial3dHoverIndex = index;
                     return index;
+                },
+
+                findSpatial3dHoverPoint(index, x, y, proximity = 5) {
+                    if (!index || x < 0 || y < 0 || x > index.width || y > index.height) return -1;
+                    // Resolve occlusion over the marker footprint, not just coincident centers.
+                    // No GPU readback: only nearby screen-grid buckets are visited.
+                    const frontAt = (sx, sy) => {
+                        const {cell, columns, rows, maxRadius, radii, heads, next, px, py, depth, curve} = index;
+                        const x0 = Math.max(0, Math.floor((sx-maxRadius)/cell));
+                        const x1 = Math.min(columns-1, Math.floor((sx+maxRadius)/cell));
+                        const y0 = Math.max(0, Math.floor((sy-maxRadius)/cell));
+                        const y1 = Math.min(rows-1, Math.floor((sy+maxRadius)/cell));
+                        let best = -1, distance = Infinity;
+                        for (let yy = y0; yy <= y1; yy++) for (let xx = x0; xx <= x1; xx++) {
+                            for (let i = heads[yy*columns+xx]; i >= 0; i = next[i]) {
+                                const d = (px[i]-sx)**2 + (py[i]-sy)**2;
+                                if (d > radii[curve[i]]**2) continue;
+                                if (best < 0 || depth[i] < depth[best] ||
+                                    (depth[i] === depth[best] && (d < distance || (d === distance && i > best)))) {
+                                    best = i; distance = d;
+                                }
+                            }
+                        }
+                        return best;
+                    };
+                    const front = frontAt(x, y);
+                    if (front >= 0) return front;
+                    // Retain a small hover tolerance for tiny/sparse points, but resolve
+                    // occlusion again at the nearby center before offering its tooltip.
+                    const nearby = this.findSpatial2dHoverPoint(index, x, y, proximity);
+                    return nearby < 0 ? -1 : frontAt(index.px[nearby], index.py[nearby]);
                 },
 
                 setSpatial3dHoverContexts(plot, traces, points, annotation, colors = null, feature = null) {
@@ -3670,6 +4041,11 @@
 
                 bindSpatial3dHover(plot) {
                     const prepare = () => {
+                        try { this.prepareSpatial3dRenderer(plot); }
+                        catch (error) {
+                            this.spatial3dError = `Unable to render the 3D point layer: ${error.message}`;
+                            throw error;
+                        }
                         const gl = plot._fullLayout?.scene?._scene?.glplot;
                         // Camera controls have their own listener: disable only GPU hover picking.
                         if (gl?.mouseListener) gl.mouseListener.enabled = false;
@@ -3701,7 +4077,7 @@
                                 !gl?.canvas || !plot.getClientRects().length) { hide(); return; }
                             const box = gl.canvas.getBoundingClientRect();
                             const index = this.spatial3dHoverIndex(plot);
-                            const hit = this.findSpatial2dHoverPoint(index, e.clientX-box.left, e.clientY-box.top);
+                            const hit = this.findSpatial3dHoverPoint(index, e.clientX-box.left, e.clientY-box.top);
                             if (hit < 0) { hide(); return; }
                             const trace = plot.data[index.curve[hit]], pointNumber = index.point[hit];
                             const key = trace.meta?.hoverContextKey;
@@ -5195,8 +5571,9 @@
                         tooltip.id = 'gsmapPointHoverTooltip';
                         tooltip.className = 'gsmap-hover-tooltip';
                         tooltip.setAttribute('role', 'tooltip');
-                        document.body.appendChild(tooltip);
                     }
+                    const parent = document.fullscreenElement || document.body;
+                    if (tooltip.parentElement !== parent) parent.appendChild(tooltip);
                     return tooltip;
                 },
 
@@ -5979,6 +6356,24 @@
                     } catch (error) {
                         this.spatialComparisonNotice = `Could not export: ${error.message}`;
                     } finally { this.spatialComparisonExporting = false; }
+                },
+
+                async resizeSpatial2dViews() {
+                    await this.waitForLayoutPaint();
+                    const ids = this.spatial2dViewMode === 'trait' ? ['spatial2dPlotTrait'] :
+                        this.spatial2dViewMode === 'annotation' ? ['spatial2dPlotAnnotation'] :
+                        ['spatial2dPlotTrait', 'spatial2dPlotAnnotation'];
+                    const plots = ids.map(id => document.getElementById(id)).filter(plot => plot?.data);
+                    // Resizing each panel is not a user pan/zoom: do not copy its axes to
+                    // the other sample, which can have a different coordinate system.
+                    const applying = plots.map(plot => plot.__gsMapApplyingViewport);
+                    plots.forEach(plot => { plot.__gsMapApplyingViewport = true; });
+                    try {
+                        await Promise.all(plots.map(plot => Promise.resolve(Plotly.Plots.resize(plot))));
+                    } finally {
+                        plots.forEach((plot, index) => { plot.__gsMapApplyingViewport = applying[index]; });
+                    }
+                    plots.forEach(plot => this.updateSpatial2dPointSize(plot));
                 },
 
                 async setSpatial2dViewMode(mode) {

@@ -116,6 +116,25 @@ def test_spatial3d_compare_waits_for_layout_then_resizes_and_recenters(
     assert "this.fittedSpatial3dCamera" in report_template
 
 
+def test_3d_fullscreen_has_accessible_button_and_fills_viewport(report_template: str) -> None:
+    assert 'id="spatial3dFullscreenButton"' in report_template
+    assert ':aria-pressed="spatial3dFullscreen.toString()"' in report_template
+    assert "'Exit full screen' : 'Full screen 3D map'" in report_template
+    assert '@fullscreenchange.document="onSpatial3dFullscreenChange()"' in report_template
+    assert "#sec-spatial3d:fullscreen .plot-frame-3d" in report_template
+    assert "document.fullscreenElement || document.body" in report_template
+
+
+def test_2d_fullscreen_keeps_controls_and_hides_static_overviews(report_template: str) -> None:
+    assert 'id="spatial2dFullscreenButton"' in report_template
+    assert ':aria-pressed="spatial2dFullscreen.toString()"' in report_template
+    assert "'Exit full screen' : 'Full screen 2D map'" in report_template
+    assert '@fullscreenchange.document="onSpatial2dFullscreenChange()"' in report_template
+    assert "#sec-gsmap:fullscreen .spatial-2d-plot" in report_template
+    assert "#sec-gsmap:fullscreen .spatial2d-overviews { display: none; }" in report_template
+    assert "max-width: none" in report_template
+
+
 def test_large_secondary_datasets_are_loaded_near_their_sections(
     report_template: str,
 ) -> None:

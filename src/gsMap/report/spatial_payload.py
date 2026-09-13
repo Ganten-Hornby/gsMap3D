@@ -340,7 +340,13 @@ def _finite_range(values: np.ndarray | None) -> float:
 
 
 def _point_size_3d(n_points: int) -> float:
-    return round(float(np.clip(520.0 / np.sqrt(max(1, n_points)), 1.0, 4.0)), 2)
+    """Choose a conservative screen-space size from the displayed spot count.
+
+    Anchor 100,000 displayed spots at size 1.0 (about 3 CSS pixels in the
+    renderer). Inverse-square-root scaling roughly preserves total glyph area,
+    with bounds matching the viewer slider. This is not a physical cell size.
+    """
+    return round(float(np.clip(np.sqrt(100_000.0 / max(1, n_points)), 0.5, 4.0)), 1)
 
 
 def _point_geometry_2d(coordinates: np.ndarray) -> dict:
@@ -447,6 +453,7 @@ def export_spatial_3d_payloads(
         "version": SPATIAL_PAYLOAD_VERSION,
         "n_total": len(metadata),
         "n_display": target_size,
+        "point_size": _point_size_3d(target_size),
         "traits": available_traits,
         "annotations": available_annotations,
         "coordinate_info": coordinate_info,
@@ -495,7 +502,7 @@ def export_spatial_3d_payloads(
         "z": encode_typed_array(coordinates[:, 2]),
         "coordinate_ranges": coordinate_ranges,
         "sample": sample_payload,
-        "point_size": _point_size_3d(target_size),
+        "point_size": signature["point_size"],
     }
     base_relative = "js_data/spatial_3d/spatial_3d_base.js"
     _atomic_write_text(

@@ -17,6 +17,7 @@ from gsMap.report.spatial_payload import (
     SPATIAL_PAYLOAD_VERSION,
     _point_geometry_2d,
     _point_size_2d,
+    _point_size_3d,
     _stratified_positions,
     decode_typed_array,
     encode_nonnegative_quantized_array,
@@ -128,6 +129,26 @@ def test_large_stratified_sampling_preserves_rare_sample_and_annotation():
     assert set(metadata.iloc[positions]["region"]) == {"common", "rare"}
 
 
+@pytest.mark.parametrize(
+    ("n_points", "expected"),
+    [
+        (0, 4.0),
+        (1, 4.0),
+        (10_000, 3.2),
+        (50_000, 1.4),
+        (100_000, 1.0),
+        (200_000, 0.7),
+        (400_000, 0.5),
+        (1_000_000, 0.5),
+    ],
+)
+def test_3d_point_size_is_density_aware_and_matches_slider(n_points, expected):
+    size = _point_size_3d(n_points)
+    assert size == expected
+    assert 0.5 <= size <= 4.0
+    assert size * 10 == pytest.approx(round(size * 10))
+
+
 def test_2d_point_size_has_visible_density_aware_bounds():
     dense_x, dense_y = np.meshgrid(
         np.linspace(0, 100, 400, dtype=np.float32),
@@ -233,6 +254,33 @@ def test_spatial_3d_export_uses_shared_geometry_and_lazy_features(tmp_path):
     assert region["categories"] == ["common", "rare"]
     provenance = pd.read_parquet(report_data / "spatial_3d/spatial_3d_display_spots.parquet")
     assert len(provenance) == 8
+
+
+def test_3d_point_size_change_invalidates_only_3d_payload_cache(tmp_path, monkeypatch):
+    from gsMap.report import spatial_payload
+
+    report_data = tmp_path / "report_data"
+    web_report = tmp_path / "web"
+    options = dict(
+        metadata=_metadata(),
+        traits=["trait"],
+        annotations=["region"],
+        report_data_dir=report_data,
+        web_report_dir=web_report,
+        max_points=8,
+    )
+    first = export_spatial_3d_payloads(**options)
+    manifest = report_data / "spatial_3d/spatial_3d_manifest.json"
+    assert json.loads(manifest.read_text())["signature"]["point_size"] == first["point_size"]
+    before = manifest.stat().st_mtime_ns
+    assert export_spatial_3d_payloads(**options) == first
+    assert manifest.stat().st_mtime_ns == before
+
+    monkeypatch.setattr(spatial_payload, "_point_size_3d", lambda n: 1.0)
+    updated = export_spatial_3d_payloads(**options)
+    base = _assignment_payload(web_report / "js_data/spatial_3d/spatial_3d_base.js")
+    assert updated["point_size"] == base["point_size"] == 1.0
+    assert json.loads(manifest.read_text())["signature"]["point_size"] == 1.0
 
 
 def test_sample_export_splits_base_and_traits(tmp_path):

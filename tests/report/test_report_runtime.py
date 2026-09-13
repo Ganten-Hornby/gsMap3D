@@ -50,6 +50,126 @@ def run_js():
     return run
 
 
+def test_3d_fullscreen_resizes_on_enter_and_external_exit_without_resetting(run_js):
+    result = run_js("""
+        let requests=0, resizes=0, focused=0, hidden=0;
+        const tooltip={parentElement:null,style:{display:'block'}};
+        const body={appendChild(node){node.parentElement=this;}};
+        const panel={appendChild:body.appendChild,requestFullscreen:async()=>{requests++;}};
+        tooltip.parentElement=body;document.body=body;
+        document.getElementById=id=>({'sec-spatial3d':panel,gsmapPointHoverTooltip:tooltip,
+            spatial3dFullscreenButton:{focus:()=>focused++}}[id] || null);
+        app.resizeSpatial3dViews=async()=>{resizes++;};
+        app.hidePointHoverTooltip=()=>{hidden++;tooltip.style.display='none';};
+        app.renderSpatial3dViews=()=>{throw Error('Fullscreen must not rebuild traces');};
+        app.spatial3dPointSize=.9;app.spatial3dOpacity=.5;
+        const pending=app.toggleSpatial3dFullscreen();
+        const immediate=requests;await pending;
+        document.fullscreenElement=panel;await app.onSpatial3dFullscreenChange();
+        const entered={active:app.spatial3dFullscreen,parent:tooltip.parentElement===panel};
+        await app.onSpatial3dFullscreenChange(); // Duplicate event must not resize again.
+        document.fullscreenElement=null;await app.onSpatial3dFullscreenChange(); // Browser Esc.
+        console.log(JSON.stringify({immediate,entered,exited:!app.spatial3dFullscreen,
+            parent:tooltip.parentElement===body,resizes,focused,hidden,
+            size:app.spatial3dPointSize,opacity:app.spatial3dOpacity,busy:app.spatial3dFullscreenBusy}));
+    """)
+    assert result == {
+        "immediate": 1, "entered": {"active": True, "parent": True}, "exited": True,
+        "parent": True, "resizes": 2, "focused": 2, "hidden": 2,
+        "size": 0.9, "opacity": 0.5, "busy": False,
+    }
+
+
+def test_3d_fullscreen_exit_rejection_and_unsupported_browser_are_safe(run_js):
+    result = run_js("""
+        let exits=0;
+        const panel={requestFullscreen:async()=>{throw Error('Permission denied');}};
+        document.getElementById=id=>id==='sec-spatial3d' ? panel:null;
+        document.exitFullscreen=async()=>{exits++;document.fullscreenElement=null;};
+        document.fullscreenElement=panel;
+        await app.toggleSpatial3dFullscreen();
+        await app.toggleSpatial3dFullscreen();
+        const rejected=app.spatial3dFullscreenNotice;
+        delete panel.requestFullscreen;
+        await app.toggleSpatial3dFullscreen();
+        console.log(JSON.stringify({exits,rejected,unsupported:app.spatial3dFullscreenNotice,
+            active:app.spatial3dFullscreen,busy:app.spatial3dFullscreenBusy,error:app.spatial3dError}));
+    """)
+    assert result["exits"] == 1
+    assert "permissions" in result["rejected"]
+    assert "not available" in result["unsupported"]
+    assert not result["active"] and not result["busy"] and not result["error"]
+
+
+def test_2d_fullscreen_uses_2d_state_and_leaves_3d_untouched(run_js):
+    result = run_js("""
+        const panel={requestFullscreen:async()=>{document.fullscreenElement=panel;}};
+        document.getElementById=id=>id==='sec-gsmap' ? panel:null;
+        document.exitFullscreen=async()=>{document.fullscreenElement=null;};
+        let resizes=0;
+        app.resizeSpatial2dViews=async()=>{resizes++;};
+        app.resizeSpatial3dViews=()=>{throw Error('Must not resize 3D');};
+        app.renderSpatial2DPlot=()=>{throw Error('Must not rebuild traces');};
+        app.spatial2dPointScale=2;app.spatial2dCompareKind='samples';
+        await app.toggleSpatial2dFullscreen();await app.onSpatial2dFullscreenChange();
+        const entered=app.spatial2dFullscreen;
+        await app.onSpatial3dFullscreenChange();
+        await app.toggleSpatial2dFullscreen();await app.onSpatial2dFullscreenChange();
+        console.log(JSON.stringify({entered,resizes,exited:!app.spatial2dFullscreen,
+            untouched:!app.spatial3dFullscreen,scale:app.spatial2dPointScale,kind:app.spatial2dCompareKind,
+            busy:app.spatial2dFullscreenBusy}));
+    """)
+    assert result == {
+        "entered": True, "resizes": 2, "exited": True, "untouched": True,
+        "scale": 2, "kind": "samples", "busy": False,
+    }
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_2d_fullscreen_resize_preserves_independent_viewports_and_flags(run_js, fail):
+    result = run_js("""
+        const fail=FAIL;
+        const a={data:[{x:[1]}],__gsMapApplyingViewport:false},b={data:[{x:[2]}]};
+        document.getElementById=id=>({spatial2dPlotTrait:a,spatial2dPlotAnnotation:b}[id]);
+        app.waitForLayoutPaint=async()=>{};
+        let guarded=true,resizes=0,sizes=0;
+        Plotly.Plots={resize:async p=>{
+            resizes++;guarded=guarded && a.__gsMapApplyingViewport && b.__gsMapApplyingViewport;
+            if(fail)throw Error('Resize failed');
+        }};
+        app.updateSpatial2dPointSize=p=>{sizes++;};
+        let failed=false;
+        try {await app.resizeSpatial2dViews();} catch(e){failed=true;}
+        console.log(JSON.stringify({resizes,sizes,guarded,failed,
+            restored:a.__gsMapApplyingViewport===false && b.__gsMapApplyingViewport===undefined,
+            coordinates:[a.data[0].x[0],b.data[0].x[0]]}));
+    """.replace("FAIL", str(fail).lower()))
+    assert result == {
+        "resizes": 2, "sizes": 0 if fail else 2, "guarded": True, "failed": fail,
+        "restored": True, "coordinates": [1, 2],
+    }
+
+
+def test_point_tooltip_is_created_inside_fullscreen_top_layer(run_js):
+    result = run_js("""
+        const nodes={};
+        document.createElement=()=>({setAttribute(){}});
+        const body={appendChild(node){nodes[node.id]=node;node.parentElement=this;}};
+        const panel={appendChild:body.appendChild};
+        document.body=body;document.getElementById=id=>nodes[id] || null;
+        document.fullscreenElement=panel;
+        const first=app.getPointHoverTooltip(),inside=first.parentElement===panel;
+        document.fullscreenElement=null;
+        const second=app.getPointHoverTooltip();
+        console.log(JSON.stringify({inside,same:first===second,restored:second.parentElement===body,
+            id:first.id,style:first.className}));
+    """)
+    assert result == {
+        "inside": True, "same": True, "restored": True,
+        "id": "gsmapPointHoverTooltip", "style": "gsmap-hover-tooltip",
+    }
+
+
 def test_annotation_overview_density_and_focus_are_reversible(run_js):
     result = run_js("""
         window.GSMAP_ANNOTATION_SCHEMAS={celltype:{categories:['01','2','NA'],colors:['red','blue','green']}};
@@ -222,15 +342,158 @@ def test_spatial3d_projection_depth_clipping_and_camera_cache(run_js):
             _fullLayout:{scene:{_scene:{glplot:gl,dataScale:[1,1,1]}}}};
         const index=app.spatial3dHoverIndex(target);
         const reused=app.spatial3dHoverIndex(target)===index;
-        const nearest=app.findSpatial2dHoverPoint(index,50,50);
+        const nearest=app.findSpatial3dHoverPoint(index,50,50);
         params.view[12]=.5;
         const moved=app.spatial3dHoverIndex(target);
-        const hit=app.findSpatial2dHoverPoint(moved,75,50);
-        console.log(JSON.stringify({reused,nearest,index:moved.point[hit],cameraChanged:moved!==index,
-            oldPosition:app.findSpatial2dHoverPoint(moved,50,50),outside:app.findSpatial2dHoverPoint(moved,200,50)}));
+        const hit=app.findSpatial3dHoverPoint(moved,75,50);
+        gl.objects=[];
+        const empty=app.spatial3dHoverIndex(target)===null;
+        gl.objects=[{}];gl.contextLost=true;
+        const lost=app.spatial3dHoverIndex(target)===null;
+        console.log(JSON.stringify({reused,nearest,index:moved.point[hit],cameraChanged:moved!==index,empty,lost,
+            oldPosition:app.findSpatial3dHoverPoint(moved,50,50),outside:app.findSpatial3dHoverPoint(moved,200,50)}));
     """)
     assert result == {"reused": True, "nearest": 1, "index": 1, "cameraChanged": True,
-                      "oldPosition": -1, "outside": -1}
+                      "oldPosition": -1, "outside": -1, "empty": True, "lost": True}
+
+
+def test_spatial3d_hover_resolves_off_center_occlusion_and_rotation(run_js):
+    result = run_js("""
+        const identity=()=>Float64Array.from([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+        const params={model:identity(),view:identity(),projection:identity()};
+        const gl={cameraParams:params,canvas:{getBoundingClientRect:()=>({width:100,height:100})},
+            bounds:[[-1,-1,-1],[1,1,1]]};
+        const target={data:[{x:[0,.04],y:[0,0],z:[.5,-.5],marker:{size:2,opacity:1}}],
+            _fullLayout:{scene:{_scene:{glplot:gl,dataScale:[1,1,1]}}}};
+        const before=app.spatial3dHoverIndex(target);
+        const hidden=app.findSpatial2dHoverPoint(before,50,50);
+        const visible=app.findSpatial3dHoverPoint(before,50,50);
+        params.view[0]=-1;params.view[10]=-1;
+        const rotated=app.spatial3dHoverIndex(target);
+        console.log(JSON.stringify({hidden,visible,rotated:app.findSpatial3dHoverPoint(rotated,48,50),
+            reused:app.spatial3dHoverIndex(target)===rotated}));
+    """)
+    assert result == {"hidden": 0, "visible": 1, "rotated": 0, "reused": True}
+
+
+def test_spatial3d_hover_footprints_visibility_and_size_cache(run_js):
+    result = run_js("""
+        const identity=()=>Float64Array.from([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+        const gl={cameraParams:{model:identity(),view:identity(),projection:identity()},
+            canvas:{getBoundingClientRect:()=>({width:100,height:100})},bounds:[[-1,-1,-1],[1,1,1]]};
+        const trace=(x,z,size)=>({x:[x],y:[0],z:[z],marker:{size,opacity:1}});
+        const target={data:[trace(0,.5,1),trace(.04,-.5,.4)],
+            _fullLayout:{scene:{_scene:{glplot:gl,dataScale:[1,1,1]}}}};
+        const small=app.spatial3dHoverIndex(target);
+        const throughGap=app.findSpatial3dHoverPoint(small,50,50);
+        target.data[1].marker.size=2;
+        const big=app.spatial3dHoverIndex(target);
+        const occluded=app.findSpatial3dHoverPoint(big,50,50);
+        const proximity=app.findSpatial3dHoverPoint(big,45.5,50);
+        const invisible=[];
+        for(const update of [{visible:false},{visible:'legendonly'},{opacity:0},
+            {marker:{size:2,opacity:0}},{marker:{size:0,opacity:1}}]) {
+            target.data[1]={...trace(.04,-.5,2),...update};
+            invisible.push(app.findSpatial3dHoverPoint(app.spatial3dHoverIndex(target),50,50));
+        }
+        console.log(JSON.stringify({throughGap,occluded,proximity,invisible,
+            rebuilt:big!==small,empty:app.findSpatial3dHoverPoint(big,10,10)}));
+    """)
+    assert result == {"throughGap": 0, "occluded": 1, "proximity": 1,
+                      "invisible": [0, 0, 0, 0, 0], "rebuilt": True, "empty": -1}
+
+
+def test_spatial3d_transparent_order_is_global_and_camera_dependent(run_js):
+    result = run_js("""
+        const identity=()=>Float64Array.from([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+        // Interleave rows as if they came from different signal-opacity bins.
+        const xyz=new Float32Array([0,0,-1, 0,0,1, 0,0,-2, 0,0,.5]);
+        const camera={view:identity(),model:identity()};
+        let sorted=app.spatial3dDepthOrder(xyz,camera);
+        const front=Array.from(sorted.order);
+        camera.view[14]=100;
+        const reused=app.spatial3dDepthOrder(xyz,camera,sorted)===sorted;
+        camera.view[10]=-1;
+        sorted=app.spatial3dDepthOrder(xyz,camera,sorted);
+        console.log(JSON.stringify({front,reused,back:Array.from(sorted.order)}));
+    """)
+    assert result == {"front": [2, 0, 3, 1], "reused": True, "back": [1, 3, 0, 2]}
+
+
+def test_spatial3d_transparent_order_matches_full_model_view_transform(run_js):
+    result = run_js("""
+        const model=Float64Array.from([2,0,0,0,0,3,0,0,0,0,.1,0,-.5,3,1,1]);
+        const view=Float64Array.from([.8,0,.6,0,0,1,0,0,-.6,0,.8,0,1,2,3,1]);
+        const xyz=Float32Array.from({length:3000},(_,i)=>Math.sin(i*2.7));
+        const transformed=Array.from({length:1000},(_,i)=>{
+            const x=xyz[3*i]*2-.5,y=xyz[3*i+1]*3+3,z=xyz[3*i+2]*.1+1;
+            return {i,z:view[2]*x+view[6]*y+view[10]*z+view[14]};
+        }).sort((a,b)=>a.z-b.z||a.i-b.i).map(p=>p.i);
+        const actual=app.spatial3dDepthOrder(xyz,{model,view});
+        console.log(JSON.stringify({equal:transformed.every((i,k)=>i===actual.order[k])}));
+    """)
+    assert result["equal"]
+
+
+def test_spatial3d_transparent_order_reallocates_for_new_geometry(run_js):
+    result = run_js("""
+        const identity=()=>Float64Array.from([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+        const camera={view:identity(),model:identity()};
+        let order=app.spatial3dDepthOrder(new Float32Array([0,0,-1]),camera);
+        const xyz=new Float32Array([0,0,1,0,0,-1]);
+        order=app.spatial3dDepthOrder(xyz,camera,order);
+        console.log(JSON.stringify({rows:Array.from(order.order),positions:order.positions===xyz}));
+    """)
+    assert result == {"rows": [1, 0], "positions": True}
+
+
+def test_spatial3d_projection_rebuilds_missing_renderer_traces(run_js):
+    result = run_js("""
+        const marker={size:2},full={scene:'scene',visible:true,_length:1,marker};
+        const native={opacity:.5};native._trace={data:full,dataPoints:[[0,0,0]],color:['rgb(1,2,3)'],scatterPlot:native};
+        let rebuilt=0,created=0,redrawn=0,disposed=0;
+        const renderer={objects:[],add(o){this.objects.push(o)},remove(o){this.objects.splice(this.objects.indexOf(o),1)},redraw(){redrawn++}};
+        const scene={glplot:renderer,plot(data){if(data[0]!==full)throw Error('Wrong data');rebuilt++;renderer.objects.push(native)}};
+        const target={_fullData:[full],_fullLayout:{scene:{_scene:scene}},layout:{}};
+        app.createSpatial3dPointLayer=(r,sources)=>{created++;return {sources,__gsMapPointLayer:true,dispose(){disposed++}}};
+        app.prepareSpatial3dRenderer(target);
+        app.prepareSpatial3dRenderer(target);
+        native.opacity=.7;app.prepareSpatial3dRenderer(target);
+        console.log(JSON.stringify({rebuilt,created,redrawn,disposed,n:renderer.objects.length,
+            suppressed:!native.isOpaque()&&!native.isTransparent()}));
+    """)
+    assert result == {"rebuilt": 1, "created": 2, "redrawn": 2, "disposed": 1, "n": 2, "suppressed": True}
+
+
+def test_spatial3d_hover_preserves_thin_section_depth(run_js):
+    result = run_js("""
+        const identity=()=>Float64Array.from([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+        const gl={cameraParams:{model:identity(),view:identity(),projection:identity()},
+            canvas:{getBoundingClientRect:()=>({width:100,height:100})},bounds:[[-1,-1,-1],[1,1,1]]};
+        const target={data:[{x:[.02,0],y:[0,0],z:[-.995000002,-.995000001],marker:{size:2}}],
+            _fullLayout:{scene:{_scene:{glplot:gl,dataScale:[1,1,1]}}}};
+        const index=app.spatial3dHoverIndex(target);
+        console.log(JSON.stringify({picked:app.findSpatial3dHoverPoint(index,50,50),
+            different:index.depth[0]!==index.depth[1]}));
+    """)
+    assert result == {"picked": 0, "different": True}
+
+
+def test_spatial3d_fully_opaque_overrides_signal_fading_without_changing_colors(run_js):
+    result = run_js("""
+        const points={x:[10,20,30],y:[1,2,3],z:[4,5,6],indices:[4,2,0]},values=[0,5,10];
+        const marker={size:2,opacity:1,cmin:0,cmax:10,colorscale:'Viridis',showscale:true};
+        const traces=app.buildSpatial3dAssociationTraces(points,values,marker,'unused','IQ',10,0,.65);
+        app.spatial3dOpacity=1;
+        const label=app.spatial3dAssociationOpacityLabel;
+        app.spatial3dOpacity=.8;
+        const faded=app.buildSpatial3dAssociationTraces(points,values,{...marker,opacity:.8},'unused','IQ',10,0,.65);
+        console.log(JSON.stringify({n:traces.length,opacity:traces[0].marker.opacity,
+            colors:traces[0].marker.color,scale:traces[0].marker.colorscale,sources:traces[0].meta.sourceIndices,
+            label,faded:faded.length>1 && faded.some(t=>t.marker.opacity<.8)}));
+    """)
+    assert result == {"n": 1, "opacity": 1, "colors": [0, 5, 10], "scale": "Viridis",
+                      "sources": [4, 2, 0], "label": "Off · opaque", "faded": True}
 
 
 def test_spatial3d_opacity_bins_preserve_hover_source_indices(run_js):
