@@ -637,6 +637,27 @@ class GCN(torch.nn.Module):
         edge_weight: torch.Tensor | None = None,
         legacy_normalization: bool = False,
     ) -> torch.Tensor:
+        adjacency = self.normalized_adjacency(
+            x, edge_index, edge_weight, legacy_normalization=legacy_normalization
+        )
+        xs = [x]
+        for _ in range(self.K):
+            xs.append(torch.sparse.mm(adjacency, xs[-1]))
+
+        return torch.cat(xs[1:], dim=1)
+
+    def normalized_adjacency(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None = None,
+        legacy_normalization: bool = False,
+    ) -> torch.Tensor:
+        """Build the same operator once for reuse across independent feature blocks.
+
+        Only x's row count, dtype and device are used; feature values are not
+        involved in graph normalization.
+        """
         if legacy_normalization:
             if edge_weight is not None:
                 raise ValueError("Legacy normalization supports only unweighted edges")
@@ -667,8 +688,4 @@ class GCN(torch.nn.Module):
             check_invariants=True,
         ).coalesce()
 
-        xs = [x]
-        for _ in range(self.K):
-            xs.append(torch.sparse.mm(adjacency, xs[-1]))
-
-        return torch.cat(xs[1:], dim=1)
+        return adjacency
