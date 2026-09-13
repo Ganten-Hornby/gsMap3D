@@ -22,6 +22,7 @@ from rich.progress import (
 )
 
 from gsMap.config import SpatialLDSCConfig
+from gsMap.config.spatial_ldsc_config import resolve_spatial_ldsc_batch_size
 from gsMap.spatial_ldsc.backends.cpu_sparse import available_cpu_count
 from gsMap.spatial_ldsc.data.chunks import SpatialLDChunkSource
 from gsMap.spatial_ldsc.data.loading import prepare_trait_data
@@ -206,8 +207,23 @@ class SpatialLDSCEngine:
 
         self.n_spots_filtered = len(self.spot_indices)
 
-        # Set up chunking
-        self.chunk_size = self.config.spots_per_chunk_quick_mode
+        # Resolve automatic sizing on the actual execution device, including a
+        # requested GPU falling back to CPU. Multi-GPU coordinators must not
+        # initialize JAX: their workers are GPU-only and enforce that contract.
+        requested_batch = self.config.spots_per_chunk_quick_mode
+        if requested_batch is None:
+            if getattr(self.config, "ldsc_num_gpus", 1) > 1:
+                platform = "gpu"
+            else:
+                import jax
+
+                platform = jax.default_backend()
+            batch_source = f"auto: {platform.upper()}"
+        else:
+            platform = ""  # An explicit override needs no device discovery.
+            batch_source = "explicit override"
+        self.chunk_size = resolve_spatial_ldsc_batch_size(requested_batch, platform)
+        logger.info("Spatial LDSC batch size: %d spots/chunk (%s)", self.chunk_size, batch_source)
 
         # Handle cell indices range if specified
         if self.config.cell_indices_range:

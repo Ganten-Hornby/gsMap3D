@@ -5,6 +5,7 @@ Configuration for spatial LD score regression.
 import logging
 import os
 from dataclasses import dataclass, field
+from numbers import Integral
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -16,6 +17,17 @@ from gsMap.config.gwas import load_gwas_mapping, normalize_gwas_mapping
 logger = logging.getLogger("gsMap.config")
 
 
+def resolve_spatial_ldsc_batch_size(batch_size: int | None, platform: str) -> int:
+    """Resolve an automatic batch on the execution device, preserving overrides."""
+    if batch_size is not None:
+        if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size < 1:
+            raise ValueError(
+                "spots_per_chunk_quick_mode must be a positive integer or None (auto)"
+            )
+        return int(batch_size)
+    return 400 if platform == "cpu" else 100
+
+
 @dataclass
 class SpatialLDSCComputeConfig:
     """Compute configuration for spatial LDSC step."""
@@ -24,9 +36,7 @@ class SpatialLDSCComputeConfig:
 
     use_gpu: Annotated[
         bool,
-        typer.Option(
-            "--use-gpu/--no-gpu", help="Use GPU for JAX-accelerated spatial LDSC implementation"
-        ),
+        typer.Option("--use-gpu/--no-gpu", help="Use GPU rather than CPU for spatial LDSC"),
         {"__display_in_quick_mode_cli__": True},
     ] = True
 
@@ -57,7 +67,13 @@ class SpatialLDSCComputeConfig:
     ] = "auto"
 
     ldsc_trait_batch_size: Annotated[
-        int, typer.Option(help="Traits per JAX dispatch in shared-LD mode.", min=1, max=16)
+        int,
+        typer.Option(
+            help="Traits per regression group in shared-LD mode; all requested traits are "
+            "processed, regardless of this group size.",
+            min=1,
+            max=16,
+        ),
     ] = 4
 
     memmap_tmp_dir: Annotated[
@@ -76,19 +92,32 @@ class SpatialLDSCComputeConfig:
     ldsc_read_workers: Annotated[
         int,
         typer.Option(
-            help="CPU sparse-transform threads, or GPU marker-transform workers. CPU threads "
-            "cooperate on one LD-score batch; marker memmap I/O uses one bounded sequential stream.",
+            help="Reader/preparation workers. Shared-LD mode uses at most four readers for "
+            "NumPy/memmap markers and one for shared file handles; non-shared mode uses "
+            "this for sparse-transform or marker-preparation workers.",
             min=1,
         ),
     ] = 10
 
     ldsc_compute_workers: Annotated[
-        int, typer.Option(help="Number of compute workers for LDSC regression", min=1)
+        int,
+        typer.Option(
+            help="Requested CPU compute threads for the automatic moment backend, capped by "
+            "available cores and thread limits; regression workers in non-shared mode. "
+            "Does not select the number of GPUs.",
+            min=1,
+        ),
     ] = 10
 
     spots_per_chunk_quick_mode: Annotated[
-        int, typer.Option(help="Number of spots per chunk in quick mode", min=1)
-    ] = 100
+        int | None,
+        typer.Option(
+            help="Spots per spatial-LDSC compute chunk. Omit to select automatically for the "
+            "execution device; an explicit value overrides both CPU and GPU defaults.",
+            min=1,
+            show_default="auto: CPU=400, GPU=100",
+        ),
+    ] = None
 
 
 @dataclass
