@@ -18,7 +18,11 @@ from .cauchy_config import CauchyCombinationConfig
 # Use relative imports to avoid circular dependency
 from .find_latent_config import FindLatentRepresentationsConfig
 from .latent2gene_config import DatasetType, LatentToGeneConfig
-from .report_config import ReportConfig
+from .report_config import (
+    ReportConfig,
+    should_export_spatialvista,
+    spatialvista_output_is_current,
+)
 from .spatial_ldsc_config import SpatialLDSCConfig
 
 logger = logging.getLogger("gsMap.config")
@@ -163,6 +167,11 @@ def _report_visualization_config_matches(config: QuickModeConfig, verbose: bool 
         "trait_labels": trait_labels(config, config.trait_name_list),
         "trait_payload_version": 2,
     }
+    if should_export_spatialvista(config):
+        expected.update(
+            export_spatialvista=True,
+            spatialvista_max_spots=getattr(config, "spatialvista_max_spots", None),
+        )
     mismatches = {
         key: (report_meta.get(key), value)
         for key, value in expected.items()
@@ -213,8 +222,11 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
         report_data_dir / "gene_list.csv",
         report_data_dir / "cauchy_results.csv",
     ]
-    if getattr(config, "export_spatialvista", False):
-        core_data_files.append(config.project_dir / f"{config.project_dir.name}.spatialvista.h5ad")
+    if should_export_spatialvista(config):
+        if not spatialvista_output_is_current(config):
+            missing_data_files.append(
+                config.project_dir / f"{config.project_dir.name}.spatialvista.h5ad"
+            )
 
     for f in core_data_files:
         if not f.exists():

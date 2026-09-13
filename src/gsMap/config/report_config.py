@@ -11,8 +11,35 @@ import typer
 
 from .base import ConfigWithAutoPaths, ensure_path_exists
 from .cauchy_config import CauchyCombinationConfig
+from .latent2gene_config import DatasetType
 
 logger = logging.getLogger("gsMap.config")
+
+
+def should_export_spatialvista(config) -> bool:
+    """SpatialVista is a default report output for spatial3D datasets only."""
+    return (
+        getattr(config, "dataset_type", None) == DatasetType.SPATIAL_3D
+        and getattr(config, "export_spatialvista", True)
+    )
+
+
+def spatialvista_output_is_current(config) -> bool:
+    """Validate the export itself, including after an interrupted report rerun."""
+    import h5py
+
+    path = config.project_dir / f"{config.project_dir.name}.spatialvista.h5ad"
+    if not path.is_file():
+        return False
+    try:
+        with h5py.File(path, "r") as handle:
+            return (
+                handle["uns/gsmap/schema_version"][()] == 1
+                and handle["uns/gsmap/requested_max_spots"][()]
+                == (getattr(config, "spatialvista_max_spots", None) or 0)
+            )
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
 
 
 @dataclass
@@ -22,9 +49,17 @@ class ReportConfig(CauchyCombinationConfig, ConfigWithAutoPaths):
     export_spatialvista: Annotated[
         bool,
         typer.Option(
-            help="Also export all 3D result spots to a lightweight SpatialVista H5AD with trait metadata"
+            help="Automatically export a SpatialVista H5AD for spatial3D reports; ignored for spatial2D and scRNA"
         ),
-    ] = False
+    ] = True
+
+    spatialvista_max_spots: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            help="Optional deterministic sampling limit for the SpatialVista H5AD; default exports all result spots, independently of HTML sampling",
+        ),
+    ] = None
 
     downsampling_n_spots_pcc: Annotated[
         int,

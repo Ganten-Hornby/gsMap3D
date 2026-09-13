@@ -32,6 +32,7 @@ from joblib.externals.loky.backend.context import get_context
 from gsMap.config import QuickModeConfig
 from gsMap.config.gwas import trait_labels
 from gsMap.config.latent2gene_config import DatasetType
+from gsMap.config.report_config import should_export_spatialvista
 from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
@@ -2684,6 +2685,8 @@ def _save_report_metadata(
             "downsampling_n_spots_2d": report_config.downsampling_n_spots_2d,
             "downsampling_n_spots_3d": report_config.downsampling_n_spots_3d,
             "downsampling_n_spots_umap": report_config.downsampling_n_spots_umap,
+            "export_spatialvista": should_export_spatialvista(report_config),
+            "spatialvista_max_spots": getattr(report_config, "spatialvista_max_spots", None),
             "generate_multi_sample_plots": report_config.generate_multi_sample_plots,
             "multi_sample_trait_plots": (
                 {trait: f"by_trait/ldsc_{trait_file_token(trait)}.png" for trait in traits}

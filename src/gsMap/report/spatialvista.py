@@ -1,4 +1,4 @@
-"""Export completed spatial reports without reading expression or marker matrices."""
+"""Write the SpatialVista output of a 3D report without reading expression matrices."""
 
 import hashlib
 import json
@@ -54,7 +54,7 @@ def export_spatialvista(
     if output.suffix.lower() != ".h5ad":
         raise ValueError("SpatialVista export must have a .h5ad extension")
     if output.exists() and not overwrite:
-        raise FileExistsError(f"Export exists: {output}; use overwrite=True / --overwrite")
+        raise FileExistsError(f"Export exists: {output}; use overwrite=True")
     columns = list(
         dict.fromkeys(["spot", "3d_x", "3d_y", "3d_z", "sample_name", *annotations, *traits])
     )
@@ -144,6 +144,7 @@ def export_spatialvista(
         "coordinate_provenance_json": json.dumps(coordinate_info, allow_nan=False),
         "source_n_spots": total,
         "export_n_spots": result.n_obs,
+        "requested_max_spots": max_spots or 0,
         "sampling": "all" if result.n_obs == total else "uniform_without_replacement_seed_2024",
     }
     output.parent.mkdir(parents=True, exist_ok=True)

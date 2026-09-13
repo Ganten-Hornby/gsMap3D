@@ -1,5 +1,6 @@
 import logging
 import shlex
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from jinja2 import Template
 
 import gsMap
 from gsMap.config import QuickModeConfig
-from gsMap.config.latent2gene_config import DatasetType
+from gsMap.config.report_config import should_export_spatialvista
 from gsMap.logging_config import logged_stage
 
 from .report_data import ReportDataManager, _atomic_write_text
@@ -34,6 +35,7 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
 
     Output structure:
         project_dir/
+        ├── {project_name}.spatialvista.h5ad  # spatial3D coordinates, annotations and traits
         ├── report_data/                    # Prepared data and export provenance
         │   ├── spot_metadata.csv
         │   ├── cauchy_results.csv
@@ -66,11 +68,10 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
                 └── ... (other JS modules)
     """
     logger.info("Running gsMap Report Module (Alpine.js + Tailwind based)")
-    if (
-        getattr(config, "export_spatialvista", False)
-        and config.dataset_type != DatasetType.SPATIAL_3D
-    ):
-        raise ValueError("SpatialVista report export requires a spatial3D dataset")
+    maximum = getattr(config, "spatialvista_max_spots", None)
+    if should_export_spatialvista(config) and maximum is not None:
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+            raise ValueError("spatialvista_max_spots must be a positive integer or None")
     # Validate the template before doing expensive data preparation.
     rendered_html = _render_report_html(config.project_name)
 
@@ -78,15 +79,22 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
     manager = ReportDataManager(config)
     web_report_dir = manager.run()
 
-    if getattr(config, "export_spatialvista", False):
-        from gsMap.export_spatialvista import export_spatialvista
+    exported = None
+    if should_export_spatialvista(config):
+        from .spatialvista import export_spatialvista
 
-        exported = export_spatialvista(
-            config.project_dir, metadata=manager.metadata, overwrite=True
-        )
-        logger.info(f"SpatialVista export: {exported}")
+        export_started = time.perf_counter()
         logger.info(
-            f"Open with a gsMap-aware SpatialVista build: spatialvista --input {shlex.quote(str(exported))}"
+            "Preparing SpatialVista H5AD from report coordinates, annotations and traits..."
+        )
+        exported = export_spatialvista(
+            config.project_dir,
+            metadata=manager.metadata,
+            max_spots=maximum,
+            overwrite=True,
+        )
+        logger.info(
+            f"SpatialVista export completed in {time.perf_counter() - export_started:.2f}s"
         )
 
     # 2. Save run_parameters for future reference
@@ -100,19 +108,20 @@ def run_report(config: QuickModeConfig, run_parameters: dict = None):
     report_file = web_report_dir / "index.html"
     _atomic_write_text(report_file, rendered_html)
 
-    from rich import print as rprint
-
-    rprint("\n[bold green]Report generated successfully![/bold green]")
-    rprint(f"Web report directory: [cyan]{web_report_dir}[/cyan]")
-    rprint(f"Data files directory: [cyan]{config.report_data_dir}[/cyan]\n")
-
-    rprint("[bold]Ways to view the interactive report:[/bold]")
-    rprint(
-        "1. [bold white]Remote Server:[/bold white] Run the command below to start a temporary web server:"
+    logger.info("Report generated successfully!")
+    logger.info(f"Web report directory: {web_report_dir}")
+    logger.info(f"Data files directory: {config.report_data_dir}")
+    logger.info(
+        f"Open gsMap report: gsmap report-view {shlex.quote(str(web_report_dir))} --port 8080 --no-browser"
     )
-    rprint(
-        f"   [bold cyan]gsmap report-view {shlex.quote(str(web_report_dir))} --port 8080 --no-browser[/bold cyan]"
+    logger.info(
+        f"On your computer, copy the complete {web_report_dir.name} directory and open index.html."
     )
-    rprint(
-        f"\n2. [bold white]Local PC:[/bold white] Copy the [cyan]{web_report_dir.name}[/cyan] folder to your machine and open [cyan]index.html[/cyan].\n"
-    )
+    if exported is not None:
+        logger.info(f"SpatialVista H5AD: {exported}")
+        logger.info(
+            f"Open 3D traits and annotations with gsMap-enabled SpatialVista: spatialvista --input {shlex.quote(str(exported))}"
+        )
+        logger.info(
+            "For remote SpatialVista, add --no-browser --port 8765 and forward that port to your computer."
+        )
