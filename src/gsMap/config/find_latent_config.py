@@ -78,15 +78,6 @@ class FindLatentModelConfig:
 
     K: Annotated[int, typer.Option(help="Graph convolution depth for LGCN", min=1, max=10)] = 3
 
-    training_feature_chunk_size: Annotated[
-        int,
-        typer.Option(
-            help="Genes per full-density non-section training graph propagation block; does not change the graph or sampled cells",
-            min=1,
-        ),
-        {"__display_in_quick_mode_cli__": True},
-    ] = 128
-
     inference_chunk_size: Annotated[
         int,
         typer.Option(

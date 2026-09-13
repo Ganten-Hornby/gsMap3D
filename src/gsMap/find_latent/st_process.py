@@ -1119,61 +1119,24 @@ class TrainingData:
         hvg: list[str],
         source_path: str | Path,
     ) -> tuple[torch.Tensor, int]:
-        """Propagate the full graph in feature blocks, retaining only focal rows.
-
-        A**hop @ X is independent across feature columns. Never restrict the
-        graph to sampled cells: unsampled cells remain in every propagation
-        step. The output is still hop-major, then HVG order, in source_rows
-        order, exactly as full propagation followed by row selection.
-        """
-
-        feature_chunk_size = getattr(self.params, "training_feature_chunk_size", 128)
-        if (
-            isinstance(feature_chunk_size, bool)
-            or not isinstance(feature_chunk_size, int)
-            or feature_chunk_size < 1
-        ):
-            raise ValueError("training_feature_chunk_size must be a positive integer")
+        """Propagate a non-section graph before selecting sampled focal rows."""
 
         source_adata = sc.read_h5ad(source_path)
         source_adata.var_names_make_unique()
         setup_data_layer(source_adata, self.params.data_layer)
         source_rows = self._source_rows(batch_adata, source_adata)
-        graph = build_graph_for_mode(
+        expression = torch.from_numpy(_dense_float32(source_adata[:, hvg].X))
+        propagated, graph = propagate_spatial_features(
+            expression=expression,
             coords=np.asarray(source_adata.obsm[self.params.spatial_key]),
             stable_ids=source_adata.obs_names.to_numpy(),
-            mode=self.params.graph_mode,
-            n_neighbors=self.params.n_neighbors,
-            radius=self.params.graph_radius,
-            sigma=self.params.graph_sigma,
+            params=self.params,
+            gcov=self.gcov,
             section_labels=_section_labels_for_graph(source_adata, self.params),
         )
+        selected = propagated[source_rows].clone()
         edge_count = graph.edges.shape[0]
-        edge_index = torch.from_numpy(graph.edges.T).long()
-        edge_weight = None if graph.weights is None else torch.from_numpy(graph.weights).float()
-        adjacency = self.gcov.normalized_adjacency(
-            torch.empty((source_adata.n_obs, 0), dtype=torch.float32),
-            edge_index,
-            edge_weight,
-            legacy_normalization=self.params.graph_mode.lower()
-            in {"legacy_bug", "legacy_symmetric"},
-        )
-        del edge_index, edge_weight, graph
-        n_features = len(hvg)
-        selected = torch.empty((len(source_rows), n_features * self.params.K), dtype=torch.float32)
-        focal_rows = torch.as_tensor(source_rows, dtype=torch.long)
-        for start in range(0, n_features, feature_chunk_size):
-            stop = min(start + feature_chunk_size, n_features)
-            expression = torch.from_numpy(_dense_float32(source_adata[:, hvg[start:stop]].X))
-            for hop in range(self.params.K):
-                expression = torch.sparse.mm(adjacency, expression)
-                selected[:, hop * n_features + start : hop * n_features + stop] = expression[
-                    focal_rows
-                ]
-            del expression
-            logger.info(
-                "Full-density training graph features: genes %d:%d/%d", start, stop, n_features
-            )
+        del expression, propagated, graph, source_adata
         return selected, edge_count
 
     def prepare(
