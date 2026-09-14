@@ -539,10 +539,10 @@ class SpatialLDSCEngine:
                                 or time_since_last_log >= 60
                             ):
                                 elapsed = current_time - start_time
-                                console.log(
+                                logger.info(
                                     f"Progress: {n_cells_processed:,}/{self.total_cells_to_process:,} cells "
                                     f"({current_pct:.1f}%) | {n_chunks_processed}/{self.total_chunks} chunks | "
-                                    f"Speed: {speed_10s:,.0f} cells/s | "
+                                    f"Throughput: {speed_10s:,.0f} cell-traits/s (1 trait) | "
                                     f"Source I/O: {io_speed} MiB/s | "
                                     f"Source pending: {r_pending:,} | Ready queue: {r_to_c:,} | "
                                     f"Elapsed: {elapsed:.1f}s"

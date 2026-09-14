@@ -7,6 +7,7 @@ import pandas as pd
 from scipy.stats import chi2
 
 from gsMap.config import FormatSumstatsConfig
+from gsMap.logging_config import logged_stage
 
 VALID_SNPS = {"AC", "AG", "CA", "CT", "GA", "GT", "TC", "TG"}
 logger = logging.getLogger(__name__)
@@ -397,6 +398,7 @@ def gwas_metadata(gwas, config):
     )
 
 
+@logged_stage("format_sumstats")
 def gwas_format(config: FormatSumstatsConfig):
     """
     Format GWAS data

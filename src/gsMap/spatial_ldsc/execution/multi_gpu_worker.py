@@ -15,6 +15,13 @@ def main():
     if hasattr(os, "sched_setaffinity"):
         os.sched_setaffinity(0, request["cpus"])
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # The sampler thread must inherit this worker's assigned CPU affinity.
+    from gsMap.resource_usage import track_resource_usage
+
+    return track_resource_usage(run_worker)(request)
+
+
+def run_worker(request):
     logging.info(
         "Starting LDSC worker %s on CUDA token %s; CPU affinity %s",
         request["rank"],
@@ -51,6 +58,15 @@ def main():
         ldsc_read_workers=meta.get("read_workers", 4),
     )
     source_info = meta["source"]
+
+    def record_progress(record):
+        if "progress_path" not in request:
+            return
+        path = Path(request["progress_path"])
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(record))
+        os.replace(temporary, path)
+
     marker, direct, matrix, sparse = None, None, None, None
     try:
         if source_info["format"] == "direct":
@@ -97,6 +113,7 @@ def main():
             staging / f"rank-{rank}",
             right - left,
             emit_header=rank == 0,
+            progress_callback=record_progress,
         )
         device = torch.cuda.get_device_properties(0)
         (staging / f"worker-{rank}.json").write_text(

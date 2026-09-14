@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 from scipy import sparse as sp
 
+from gsMap.spatial_ldsc.execution.progress import LDSCProgress
+
 logger = logging.getLogger("gsMap.spatial_ldsc.multi_gpu")
 
 
@@ -156,9 +158,10 @@ def merge_gzip_members(parts, target):
         temporary.unlink(missing_ok=True)
 
 
-def wait_workers(processes):
+def wait_workers(processes, *, on_progress=None):
     """Fail fast, terminate siblings and reap every child even on interruption."""
     try:
+        last_progress = time.monotonic()
         while True:
             codes = [process.poll() for process in processes]
             for rank, code in enumerate(codes):
@@ -166,7 +169,11 @@ def wait_workers(processes):
                     raise RuntimeError(
                         f"LDSC GPU worker {rank} exited with status {code}; inspect its worker log"
                     )
-            if all(code == 0 for code in codes):
+            done = all(code == 0 for code in codes)
+            if on_progress is not None and (done or time.monotonic() - last_progress >= 30):
+                on_progress()
+                last_progress = time.monotonic()
+            if done:
                 return
             time.sleep(0.2)
     finally:
@@ -187,6 +194,7 @@ def stop_workers(processes):
 
 def run_multi_gpu(engine, union, sparse, prepared):
     """Stage shared host inputs once, launch isolated GPUs, merge ordered shards."""
+    started = time.monotonic()
     tokens = visible_gpu_tokens(engine.config.ldsc_num_gpus)
     ranges = partition_cells(engine.total_cells_to_process, engine.chunk_size, len(tokens))
     tokens = tokens[: len(ranges)]
@@ -197,6 +205,29 @@ def run_multi_gpu(engine, union, sparse, prepared):
     logs.mkdir(parents=True, exist_ok=True)
     logdir = Path(tempfile.mkdtemp(prefix="run-", dir=logs))
     logger.info("Multi-GPU LDSC: %d workers; logs: %s", len(tokens), logdir)
+    progress = LDSCProgress(
+        engine.total_cells_to_process,
+        len(prepared),
+        len(engine.chunk_starts),
+        started=started,
+        label=f"Multi-GPU LDSC ({len(tokens)} GPUs)",
+    )
+    worker_progress = [{} for _ in ranges]
+
+    def report_progress():
+        for rank in range(len(ranges)):
+            try:
+                worker_progress[rank] = json.loads(
+                    (logdir / f"worker-{rank}.progress.json").read_text()
+                )
+            except (OSError, ValueError):
+                pass  # Keep the last complete snapshot during startup/updates.
+        progress.update(
+            sum(record.get("completed_cells", 0) for record in worker_progress),
+            sum(record.get("completed_chunks", 0) for record in worker_progress),
+            force=True,
+        )
+
     with tempfile.TemporaryDirectory(prefix="gsmap-ldsc-", dir=root) as temporary:
         staging = Path(temporary)
         np.save(staging / "union.npy", union, allow_pickle=False)
@@ -248,7 +279,12 @@ def run_multi_gpu(engine, union, sparse, prepared):
         (staging / "inputs.json").write_text(json.dumps(metadata))
         try:
             for rank, (token, cpu_set) in enumerate(zip(tokens, cpus, strict=True)):
-                request = dict(staging=str(staging), rank=rank, cpus=cpu_set)
+                request = dict(
+                    staging=str(staging),
+                    rank=rank,
+                    cpus=cpu_set,
+                    progress_path=str(logdir / f"worker-{rank}.progress.json"),
+                )
                 request_path = staging / f"request-{rank}.json"
                 request_path.write_text(json.dumps(request))
                 # Keep editable installs and source checkouts usable in children.
@@ -268,7 +304,7 @@ def run_multi_gpu(engine, union, sparse, prepared):
                         stderr=subprocess.STDOUT,
                     )
                 )
-            wait_workers(processes)
+            wait_workers(processes, on_progress=report_progress)
             receipts = [
                 json.loads((staging / f"worker-{rank}.json").read_text())
                 for rank in range(len(ranges))
@@ -296,6 +332,15 @@ def run_multi_gpu(engine, union, sparse, prepared):
                 )
             )
             logger.info("Published %d traits from %d GPU cell shards", len(prepared), len(ranges))
+            seconds = max(time.monotonic() - started, 1e-9)
+            logger.info(
+                "Multi-GPU LDSC completed %d cells × %d traits in %.2fs "
+                "(%.1f cell-traits/s, including staging, worker setup and writing/merge)",
+                engine.total_cells_to_process,
+                len(prepared),
+                seconds,
+                engine.total_cells_to_process * len(prepared) / seconds,
+            )
         finally:
             stop_workers(processes)
             for handle in handles:

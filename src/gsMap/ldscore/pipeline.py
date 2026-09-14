@@ -30,6 +30,7 @@ from rich.progress import (
 )
 
 from gsMap.config.ldscore_config import LDScoreConfig
+from gsMap.logging_config import stage_logging
 
 from .batch_construction import construct_batches, resolve_ld_window
 from .compute import (
@@ -125,16 +126,18 @@ class LDScorePipeline:
         """
         Main entry point. Dispatches to specific pipeline mode based on configuration.
         """
-        if self.config.annot_file:
-            logger.info(f"Mode: Annotation File ({self.config.annot_file})")
-            self._run_with_annotation()
-        elif self.config.mapping_file:
-            logger.info(f"Mode: SNP-Feature Mapping ({self.config.mapping_type})")
-            self._run_with_mapping()
-        else:
-            raise ValueError(
-                "Invalid Configuration: Neither 'annot_file' nor 'mapping_file' specified."
-            )
+        with stage_logging(self.config, "ldscore_weight_matrix") as session:
+            session.record_config(self.config, stage="ldscore_weight_matrix")
+            if self.config.annot_file:
+                logger.info(f"Mode: Annotation File ({self.config.annot_file})")
+                self._run_with_annotation()
+            elif self.config.mapping_file:
+                logger.info(f"Mode: SNP-Feature Mapping ({self.config.mapping_type})")
+                self._run_with_mapping()
+            else:
+                raise ValueError(
+                    "Invalid Configuration: Neither 'annot_file' nor 'mapping_file' specified."
+                )
 
     def _run_with_mapping(self):
         """Run the pipeline using SNP-Feature mapping (BED/Dictionary)."""

@@ -188,6 +188,7 @@ can coexist. This is a disk-size estimate, not a peak-RAM estimate.
 | `--mkscore-batch-size` | `0` (automatic) | Set a smaller explicit batch if marker-score computation runs out of memory. |
 | `--spots-per-chunk-quick-mode` | Automatic: **CPU 400, GPU 100** | Cells per compute chunk, per device. An explicit positive value overrides automatic selection. |
 | `--ldsc-read-workers` | `10` | Shared-LD input prefetch uses at most four readers for NumPy/memmap input and one for shared file handles. |
+| `--ldsc-gwas-workers` | `16` | Concurrent GWAS preparation, capped at 16 files in flight and available CPU cores. Use fewer workers to reduce temporary memory. |
 | `--ldsc-compute-workers` | `10` | Requested compute threads for the default CPU model; use the cores allocated to your run. |
 | `--ldsc-trait-batch-size` | `4` | Traits processed together within a shared-LD chunk; range 1–16. Not a limit on the total number of traits. |
 | `--ldsc-num-gpus` | `1` | GPUs used for spatial LDSC on one node. |

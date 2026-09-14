@@ -5,132 +5,19 @@ Decorators for CLI and resource tracking.
 import functools
 import inspect
 import logging
-import os
 import re
 import subprocess
-import sys
-import threading
 import time
 from dataclasses import fields
 from functools import wraps
 from typing import Annotated, Any, get_args, get_origin
 
-import psutil
 import pyfiglet
 
 from gsMap.logging_config import resolve_project_dir_from_kwargs, stage_logging
+from gsMap.resource_usage import track_resource_usage as track_resource_usage
 
 logger = logging.getLogger("gsMap")
-
-
-def process_cpu_time(proc: psutil.Process):
-    """Calculate total CPU time for a process."""
-    cpu_times = proc.cpu_times()
-    total = cpu_times.user + cpu_times.system
-    return total
-
-
-def track_resource_usage(func):
-    """
-    Decorator to track resource usage during function execution.
-    Logs memory usage, CPU time, and wall clock time at the end of the function.
-    """
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        # Get the current process
-        process = psutil.Process(os.getpid())
-
-        # Initialize tracking variables
-        peak_memory = 0
-        cpu_percent_samples = []
-        stop_thread = False
-
-        # Function to monitor resource usage
-        def resource_monitor():
-            nonlocal peak_memory, cpu_percent_samples
-            while not stop_thread:
-                try:
-                    # Get current memory usage in MB
-                    current_memory = process.memory_info().rss / (1024 * 1024)
-                    peak_memory = max(peak_memory, current_memory)
-
-                    # Get CPU usage percentage
-                    cpu_percent = process.cpu_percent(interval=None)
-                    if cpu_percent > 0:  # Skip initial zero readings
-                        cpu_percent_samples.append(cpu_percent)
-
-                    time.sleep(0.5)
-                except OSError:
-                    pass
-
-        # Start resource monitoring in a separate thread
-        monitor_thread = threading.Thread(target=resource_monitor)
-        monitor_thread.daemon = True
-        monitor_thread.start()
-
-        # Get start times
-        start_wall_time = time.time()
-        start_cpu_time = process_cpu_time(process)
-
-        try:
-            # Run the actual function
-            result = func(*args, **kwargs)
-            return result
-        finally:
-            # Stop the monitoring thread
-            stop_thread = True
-            monitor_thread.join(timeout=1.0)
-
-            # Calculate elapsed times
-            end_wall_time = time.time()
-            end_cpu_time = process_cpu_time(process)
-
-            wall_time = end_wall_time - start_wall_time
-            cpu_time = end_cpu_time - start_cpu_time
-
-            # Calculate average CPU percentage
-            avg_cpu_percent = (
-                sum(cpu_percent_samples) / len(cpu_percent_samples) if cpu_percent_samples else 0
-            )
-
-            # Adjust for macOS if needed
-            if sys.platform == "darwin":
-                from gsMap.utils import macos_timebase_factor
-
-                factor = macos_timebase_factor()
-                cpu_time *= factor
-                avg_cpu_percent *= factor
-
-            # Format memory for display
-            if peak_memory < 1024:
-                memory_str = f"{peak_memory:.2f} MB"
-            else:
-                memory_str = f"{peak_memory / 1024:.2f} GB"
-
-            # Format times for display
-            if wall_time < 60:
-                wall_time_str = f"{wall_time:.2f} seconds"
-            elif wall_time < 3600:
-                wall_time_str = f"{wall_time / 60:.2f} minutes"
-            else:
-                wall_time_str = f"{wall_time / 3600:.2f} hours"
-
-            if cpu_time < 60:
-                cpu_time_str = f"{cpu_time:.2f} seconds"
-            elif cpu_time < 3600:
-                cpu_time_str = f"{cpu_time / 60:.2f} minutes"
-            else:
-                cpu_time_str = f"{cpu_time / 3600:.2f} hours"
-
-            # Log the resource usage
-            logger.info("Resource usage summary:")
-            logger.info(f"  • Wall clock time: {wall_time_str}")
-            logger.info(f"  • CPU time: {cpu_time_str}")
-            logger.info(f"  • Average CPU utilization: {avg_cpu_percent:.1f}%")
-            logger.info(f"  • Peak memory usage: {memory_str}")
-
-    return wrapper
 
 
 def show_banner(command_name: str, version: str = "1.73.5"):
@@ -181,7 +68,8 @@ def dataclass_typer(func):
             # validation and auto-resolution messages are retained.
             config = config_class(**kwargs)
             logging_session.record_config(config, stage=func.__name__)
-            result = track_resource_usage(func)(config)
+            # stage_logging tracks the CLI and Python entry points alike.
+            result = func(config)
 
             # Record end time
             end_time = time.strftime("%Y-%m-%d %H:%M:%S")

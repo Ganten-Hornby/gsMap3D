@@ -18,6 +18,7 @@ from statsmodels.stats.multitest import multipletests
 from gsMap.config import SpatialLDSCConfig
 from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
+from gsMap.spatial_ldsc.data.sumstats import read_reference_sumstats
 from gsMap.utils.h5ad import read_h5ad_metadata
 
 logger = logging.getLogger("gsMap.spatial_ldsc.io")
@@ -389,7 +390,7 @@ def acquire_marker_scores_memmap(
     )
 
 
-def _read_sumstats(fh, alleles=False, dropna=False):
+def _read_sumstats(fh, alleles=False, dropna=False, *, float_dtype=float):
     """Parse GWAS summary statistics."""
     fh = str(fh)
     logger.info(f"Reading summary statistics from {fh} ...")
@@ -402,7 +403,7 @@ def _read_sumstats(fh, alleles=False, dropna=False):
         compression = "bz2"
 
     # Define columns and dtypes
-    dtype_dict = {"SNP": str, "Z": float, "N": float, "A1": str, "A2": str}
+    dtype_dict = {"SNP": str, "Z": float_dtype, "N": float_dtype, "A1": str, "A2": str}
     usecols = ["SNP", "Z", "N"]
     if alleles:
         usecols += ["A1", "A2"]
@@ -781,23 +782,35 @@ def prepare_trait_data(
     """
     logger.info(f"Preparing data for {trait_name}...")
 
-    # Load and process summary statistics
-    sumstats = _read_sumstats(fh=sumstats_file, alleles=False, dropna=False)
+    # Keep full-file QC statistics even when the fast reader materializes only
+    # reference SNPs. Other whitespace formats use the established reader.
+    fast = read_reference_sumstats(sumstats_file, baseline_ld.index)
+    if fast is None:
+        sumstats = _read_sumstats(
+            fh=sumstats_file, alleles=False, dropna=False, float_dtype=np.float32
+        )
+        n_max = sumstats.N.max()
+        lambda_gc = np.median(sumstats.Z**2) / 0.4559364
+    else:
+        sumstats, n_max, lambda_gc = fast
     sumstats.set_index("SNP", inplace=True)
-    sumstats = sumstats.astype(np.float32)
 
     # Filter by chi-squared
     chisq_max = config.chisq_max
     if chisq_max is None:
-        chisq_max = max(0.001 * sumstats.N.max(), 80)
+        chisq_max = max(0.001 * n_max, 80)
     sumstats["chisq"] = sumstats.Z**2
 
     # Calculate genomic control lambda (λGC) before filtering
-    lambda_gc = np.median(sumstats.chisq) / 0.4559364
     logger.info(f"Lambda GC (genomic control λ): {lambda_gc:.4f}")
 
     sumstats = sumstats[sumstats.chisq < chisq_max]
-    logger.info(f"Filtered to {len(sumstats)} SNPs with chi^2 < {chisq_max}")
+    logger.info(
+        "Filtered to %d %sSNPs with chi^2 < %s",
+        len(sumstats),
+        "reference " if fast is not None else "",
+        chisq_max,
+    )
 
     # Intersect trait sumstats with common resources
     common_snps = baseline_ld.index.intersection(sumstats.index)

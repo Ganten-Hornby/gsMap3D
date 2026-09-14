@@ -99,6 +99,16 @@ class SpatialLDSCComputeConfig:
         ),
     ] = 10
 
+    ldsc_gwas_workers: Annotated[
+        int,
+        typer.Option(
+            help="Concurrent GWAS file preparation in shared-LD mode (bounded prefetch). "
+            "Use fewer workers to reduce temporary memory; at most 16 files are in flight.",
+            min=1,
+            max=16,
+        ),
+    ] = 16
+
     ldsc_compute_workers: Annotated[
         int,
         typer.Option(
@@ -314,6 +324,9 @@ class SpatialLDSCConfig(SpatialLDSCCoreConfig, SpatialLDSCComputeConfig, ConfigW
 
         if self.n_blocks < 2:
             raise ValueError("n_blocks must be at least 2 for jackknife standard errors")
+        from gsMap.spatial_ldsc.execution.trait_loading import resolve_gwas_workers
+
+        resolve_gwas_workers(self.ldsc_gwas_workers, 1)
 
         # Import here to avoid circular imports
         from gsMap.config.utils import configure_jax_platform, get_anndata_shape

@@ -30,6 +30,8 @@ import psutil
 from rich.console import Console
 from rich.logging import RichHandler
 
+from gsMap.resource_usage import ResourceMonitor, log_resource_usage
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from typing import Any
@@ -593,6 +595,7 @@ class RunLoggingSession:
         self._closed = False
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
+        self._resource_monitor = ResourceMonitor()
         self._console_handlers: list[logging.Handler] = []
         self._owns_console_handlers = False
         self._owns_warning_capture = False
@@ -631,6 +634,7 @@ class RunLoggingSession:
             daemon=True,
         )
         self._heartbeat_thread.start()
+        self._resource_monitor.start()
 
     def _write_manifest(self) -> None:
         with self._lock:
@@ -710,6 +714,7 @@ class RunLoggingSession:
                     "sink": sink,
                     "entry": entry,
                     "started": time.perf_counter(),
+                    "resources": self._resource_monitor.begin(),
                     "error": None,
                 }
                 self._write_manifest()
@@ -749,6 +754,7 @@ class RunLoggingSession:
                     entry = active["entry"]
                     entry["finished_at_utc"] = _utc_now()
                     entry["duration_seconds"] = time.perf_counter() - active["started"]
+                    entry["resource_usage"] = self._resource_monitor.finish(active["resources"])
                     if stage_error is None:
                         entry["status"] = "complete"
                     else:
@@ -765,6 +771,7 @@ class RunLoggingSession:
                             f"{resource_label} | stage={normalized} trait={safe_trait}"
                         )
                     _log_resource_snapshot(resource_label, psutil.Process(self.owner_pid))
+                    log_resource_usage(entry["resource_usage"], label=completion_target)
                     if stage_error is None:
                         logger.info(
                             f"{completion_target} completed in {entry['duration_seconds']:.2f}s"
@@ -798,11 +805,15 @@ class RunLoggingSession:
         self._heartbeat_stop.set()
         if self._heartbeat_thread is not None:
             self._heartbeat_thread.join(timeout=2)
+        self._resource_monitor.close()
 
         with self._lock:
             for key, active in list(self._active.items()):
                 active["entry"]["status"] = "interrupted"
                 active["entry"]["finished_at_utc"] = _utc_now()
+                active["entry"]["resource_usage"] = self._resource_monitor.finish(
+                    active["resources"]
+                )
                 active["sink"].close()
                 del self._active[key]
 
