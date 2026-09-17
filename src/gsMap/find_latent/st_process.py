@@ -1,5 +1,4 @@
 import logging
-import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,11 +22,12 @@ from .gnn.gcn import (
     order_sections_by_median_coordinate,
     sectionwise_2d_slice_labels,
 )
+from .section_data import SOURCE_NAME, SOURCE_ROW, section_source
 
 logger = logging.getLogger(__name__)
 
-_SOURCE_OBS_INDEX_KEY = "_gsmap_source_obs_index"
-SOURCE_OBS_NAME = "_gsmap_source_obs_name"
+_SOURCE_OBS_INDEX_KEY = SOURCE_ROW
+SOURCE_OBS_NAME = SOURCE_NAME
 _FULL_SOURCE_GRAPH_SAMPLED_FOCAL = "full_source_graph_sampled_focal"
 _TRAINING_ROWS_GRAPH_CONTEXT = "training_rows"
 
@@ -79,9 +79,7 @@ def load_ordered_section_graph_data(
     sample_names: list[str] = []
     sample_paths: list[Path] = []
     for section_ordinal, (sample_name, source_path) in enumerate(sample_items):
-        adata = sc.read_h5ad(source_path)
-        adata.var_names_make_unique()
-        setup_data_layer(adata, params.data_layer)
+        adata = section_source(source_path, params).load(genes=hvg)
         coords = np.asarray(adata.obsm[params.spatial_key])
         if coords.ndim != 2 or coords.shape[1] != 3:
             raise ValueError(
@@ -89,7 +87,7 @@ def load_ordered_section_graph_data(
                 f"sample {sample_name!r} has coordinate shape {coords.shape}"
             )
 
-        expression = adata[:, hvg].X
+        expression = adata.X
         expression_blocks.append(
             expression.tocsr(copy=True)
             if sp.issparse(expression)
@@ -297,7 +295,75 @@ def convert_to_human_genes(adata, gene_homolog_dict: dict, species: str = None):
     return adata
 
 
-def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
+def _validate_hvg_expression(matrix, *, is_count_data, sample_name):
+    """Validate every stored value without densifying a sparse count matrix."""
+    values = matrix.data if sp.issparse(matrix) else np.asarray(matrix).reshape(-1)
+    for start in range(0, values.size, 1_000_000):
+        block = values[start : start + 1_000_000]
+        if not np.isfinite(block).all() or (block < 0).any():
+            raise ValueError(f"HVG input {sample_name}: expression must be finite and nonnegative")
+        if is_count_data and not np.equal(block, np.floor(block)).all():
+            raise ValueError(f"HVG input {sample_name}: count expression must be integer-valued")
+
+
+def _section_hvg(adata, *, is_count_data, n_top_genes, sample_name):
+    """Fit on nonempty rows/columns only; retain the original gene universe for merging.
+
+    Zero-library rows cause 0/0 in Pearson residuals. Filtering this private fit
+    view does not remove cells from training/inference or change graph density.
+    A gene unexpressed in one section can still be informative in another.
+    """
+    _validate_hvg_expression(adata.X, is_count_data=is_count_data, sample_name=sample_name)
+    rows = np.asarray(adata.X.sum(axis=1, dtype=np.float64)).ravel() > 0
+    columns = np.asarray(adata.X.sum(axis=0, dtype=np.float64)).ravel() > 0
+    if rows.sum() < 2 or not columns.any():
+        raise ValueError(
+            f"HVG input {sample_name}: fewer than two nonzero cells or no expressed genes"
+        )
+    # Canonicalize before Scanpy too: its within-section cutoff may contain ties.
+    names = sorted(adata.var_names[columns])
+    fit = adata[rows, names].copy()
+    score = "residual_variances" if is_count_data else "dispersions_norm"
+    try:
+        if is_count_data:
+            sc.experimental.pp.highly_variable_genes(
+                fit,
+                n_top_genes=min(n_top_genes, fit.n_vars),
+                subset=False,
+                flavor="pearson_residuals",
+                theta=100,
+                clip=None,
+            )
+        else:
+            sc.pp.highly_variable_genes(
+                fit, n_top_genes=min(n_top_genes, fit.n_vars), subset=False, flavor="seurat"
+            )
+    except Exception as error:
+        raise ValueError(f"HVG calculation failed for section {sample_name}: {error}") from error
+    if not np.isfinite(fit.var[score].to_numpy()).all():
+        raise ValueError(
+            f"HVG section {sample_name}: non-finite {score}; refusing partial results"
+        )
+    result = pd.DataFrame(index=adata.var_names.copy())
+    result[score] = 0.0
+    result["highly_variable"] = False
+    result["expressed"] = columns
+    result.loc[fit.var_names, score] = fit.var[score].to_numpy()
+    result.loc[fit.var_names, "highly_variable"] = fit.var["highly_variable"].to_numpy()
+    audit = {
+        "n_cells": int(adata.n_obs),
+        "n_fit_cells": int(rows.sum()),
+        "n_zero_cells_excluded_from_fit": int((~rows).sum()),
+        "n_genes": int(adata.n_vars),
+        "n_fit_genes": int(columns.sum()),
+    }
+    logger.info("HVG fit %s: %s", sample_name, audit)
+    return result, audit
+
+
+def find_common_hvg(
+    sample_h5ad_dict, params: FindLatentRepresentationsConfig, *, saved_hvg=None, audit=None
+):
     """
     Identifies common highly variable genes (HVGs) across multiple ST datasets and calculates
     the number of cells to sample from each dataset.
@@ -310,6 +376,7 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
     variances_list = []
     cell_number = []
     input_data_types = {}
+    section_audits = {}
 
     logger.info("Finding highly variable genes (HVGs)...")
 
@@ -321,42 +388,31 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
         task = progress.add_task("Finding HVGs", total=len(sample_h5ad_dict))
 
         for sample_name, st_file in sample_h5ad_dict.items():
-            adata_temp = sc.read_h5ad(st_file)
-            # sc.pp.filter_genes(adata_temp, min_counts=1)
+            source = section_source(st_file, params)
+            adata_temp = source.load()
 
-            # Filter out mitochondrial and hemoglobin genes
-            gene_keep = ~adata_temp.var_names.str.match(re.compile(r"^(HB.-|MT-)", re.IGNORECASE))
-            if removed_genes := adata_temp.n_vars - gene_keep.sum():
-                progress.console.log(
-                    f"Removed {removed_genes} mitochondrial and hemoglobin genes in {sample_name}."
-                )
-
-            adata_temp = adata_temp[:, gene_keep].copy()
-
-            # Make gene names unique to avoid issues with HVG calculation
-            adata_temp.var_names_make_unique()
-
-            is_count_data, actual_data_layer = setup_data_layer(
-                adata_temp, params.data_layer, verbose=False
-            )
+            is_count_data, actual_data_layer = source.is_count_data, source.layer
             input_data_types[sample_name] = is_count_data
             cell_number.append(adata_temp.n_obs)
 
-            try:
-                # Identify highly variable genes
-                if is_count_data:
-                    sc.experimental.pp.highly_variable_genes(
-                        adata_temp, n_top_genes=params.feat_cell, subset=False
-                    )
-                else:
-                    sc.pp.highly_variable_genes(
-                        adata_temp, n_top_genes=params.feat_cell, subset=False, flavor="seurat"
-                    )
-
-                variances_list.append(adata_temp.var.copy())
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[HVG skipped] {e}")
-                continue
+            if saved_hvg is None:
+                result, section_audit = _section_hvg(
+                    adata_temp,
+                    is_count_data=is_count_data,
+                    n_top_genes=params.feat_cell,
+                    sample_name=sample_name,
+                )
+                section_audits[sample_name] = {
+                    **section_audit,
+                    "actual_data_layer": actual_data_layer,
+                }
+                variances_list.append(result)
+            else:
+                # A checkpoint defines the input columns; never reselect them at inference.
+                _validate_hvg_expression(
+                    adata_temp.X, is_count_data=is_count_data, sample_name=sample_name
+                )
+                variances_list.append(pd.DataFrame(index=adata_temp.var_names.copy()))
 
             progress.update(task, advance=1)
 
@@ -378,55 +434,72 @@ def find_common_hvg(sample_h5ad_dict, params: FindLatentRepresentationsConfig):
 
     # Find the common genes across all samples
     common_genes = np.array(
-        list(set.intersection(*map(set, [st.index.to_list() for st in variances_list])))
+        sorted(set.intersection(*map(set, [st.index.to_list() for st in variances_list])))
     )
 
     # Error when gene number is too small
     if len(common_genes) < 300:
         raise ValueError(f"Only {len(common_genes)} common genes between all samples.")
 
-    # Aggregate variances and identify HVGs
-    df = pd.concat(variances_list, axis=0)
-    df["highly_variable"] = df["highly_variable"].astype(int)
-
-    if is_count_data:
+    if saved_hvg is None:
+        score = "residual_variances" if is_count_data else "dispersions_norm"
+        df = pd.concat(variances_list, axis=0)
+        df["highly_variable"] = df["highly_variable"].astype(int)
         df = df.groupby(level=0).agg(
-            dict(
-                residual_variances="median",
-                highly_variable="sum",
-            )
+            {score: "median", "highly_variable": "sum", "expressed": "sum"}
         )
         df = df.loc[common_genes]
+        df = df.loc[df["expressed"] > 0].copy()
+        if len(df) < params.feat_cell:
+            raise ValueError(
+                f"Only {len(df)} expressed common genes for {params.feat_cell} requested HVGs"
+            )
         df["highly_variable_nbatches"] = df["highly_variable"]
+        df["_gene_id"] = df.index.astype(str)
         df.sort_values(
-            ["highly_variable_nbatches", "residual_variances"],
-            ascending=False,
-            na_position="last",
+            ["highly_variable_nbatches", score, "_gene_id"],
+            ascending=[False, False, True],
             inplace=True,
         )
+        hvg = df.index[: params.feat_cell].tolist()
     else:
-        df = df.groupby(level=0).agg(
-            dict(
-                dispersions_norm="median",
-                highly_variable="sum",
-            )
+        hvg = list(saved_hvg)
+        if len(hvg) != params.feat_cell or len(set(hvg)) != len(hvg):
+            raise ValueError("Checkpoint HVGs must be unique and match feat_cell")
+        missing = sorted(set(hvg) - set(common_genes))
+        if missing:
+            raise ValueError(f"Checkpoint HVGs missing from input sections: {missing[:10]}")
+    if audit is not None:
+        audit.update(
+            {
+                "method": "pearson_residuals" if is_count_data else "seurat",
+                "theta": 100 if is_count_data else None,
+                "clip": "sqrt(n_fit_cells)" if is_count_data else None,
+                "sections": section_audits,
+                "reused_checkpoint_hvg": saved_hvg is not None,
+            }
         )
-        df = df.loc[common_genes]
-        df["highly_variable_nbatches"] = df["highly_variable"]
-        df.sort_values(
-            ["highly_variable_nbatches", "dispersions_norm"],
-            ascending=False,
-            na_position="last",
-            inplace=True,
-        )
-
-    hvg = df.iloc[: params.feat_cell,].index.tolist()
 
     # Find the number of sampling cells for each batch
     total_cell = np.sum(cell_number)
     total_cell_training = np.minimum(total_cell, params.n_cell_training)
-    cell_proportion = cell_number / total_cell
-    n_cell_used = [int(cell) for cell in (total_cell_training * cell_proportion).tolist()]
+    # Allocate at least one focal cell per section without exceeding the total budget.
+    if getattr(params, "do_sampling", True) and total_cell_training < len(cell_number):
+        raise ValueError("n_cell_training must allow at least one QC-passing cell per section")
+    if not getattr(params, "do_sampling", True):
+        n_cell_used = list(cell_number)
+    else:
+        capacity = np.asarray(cell_number) - 1
+        remaining = int(total_cell_training) - len(cell_number)
+        shares = (
+            remaining * capacity / capacity.sum()
+            if capacity.sum()
+            else np.zeros_like(capacity, dtype=float)
+        )
+        extra = np.floor(shares).astype(int)
+        for index in np.argsort(-(shares - extra), kind="stable")[: remaining - int(extra.sum())]:
+            extra[index] += 1
+        n_cell_used = (extra + 1).tolist()
 
     # Only use the common genes that can be transformed to human genes
     if params.species is not None:
@@ -474,20 +547,9 @@ def create_subsampled_adata(
     for st_id, (sample_name, st_file) in enumerate(sample_h5ad_dict.items()):
         logger.info(f"Processing {sample_name}...")
 
-        # Load the data
-        adata = sc.read_h5ad(st_file)
-        adata.obs[_SOURCE_OBS_INDEX_KEY] = np.arange(adata.n_obs, dtype=np.int64)
-        adata.obs[SOURCE_OBS_NAME] = adata.obs_names.astype(str)
-
-        # Filter out mitochondrial and hemoglobin genes
-        gene_keep = ~adata.var_names.str.match(re.compile(r"^(HB.-|MT-)", re.IGNORECASE))
-        adata = adata[:, gene_keep].copy()
-
-        # Make gene names unique to avoid issues with concatenation
-        adata.var_names_make_unique()
-
-        # Setup data layer consistently
-        is_count_data, actual_data_layer = setup_data_layer(adata, params.data_layer)
+        # Choose focal rows from metadata before reading their expression matrix.
+        source = section_source(st_file, params)
+        adata = AnnData(obs=source.observations(), var=source.var.copy())
 
         # Filter cells based on annotation if provided
         if params.annotation is not None:
@@ -535,6 +597,16 @@ def create_subsampled_adata(
 
                 # Filter adata to sampled cells
                 adata = adata[sampled_cells].copy()
+
+        if adata.n_obs == 0:
+            raise ValueError(
+                f"No training cells remain in section {sample_name} after annotation/sampling"
+            )
+
+        adata = source.load(
+            original_rows=adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(),
+            all_obsm=True,
+        )
 
         # Add batch information to obs
         adata.obs["batch_id"] = sample_name
@@ -923,7 +995,17 @@ class TrainingData:
         """Resolve sampled focal rows against their unsampled source object."""
 
         if _SOURCE_OBS_INDEX_KEY in batch_adata.obs:
-            source_rows = batch_adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(dtype=np.int64)
+            original_rows = batch_adata.obs[_SOURCE_OBS_INDEX_KEY].to_numpy(dtype=np.int64)
+            if _SOURCE_OBS_INDEX_KEY in source_adata.obs:
+                source_rows = pd.Index(source_adata.obs[_SOURCE_OBS_INDEX_KEY]).get_indexer(
+                    original_rows
+                )
+                if (source_rows < 0).any():
+                    raise RuntimeError(
+                        "Sampled cells are absent from the QC-passing source population"
+                    )
+            else:
+                source_rows = original_rows
         elif SOURCE_OBS_NAME in batch_adata.obs:
             source_index = pd.Index(source_adata.obs_names.astype(str))
             if not source_index.is_unique:
@@ -972,6 +1054,9 @@ class TrainingData:
                     "Training data is missing source-row provenance required for "
                     "ordered section-aware propagation"
                 )
+            source_rows = section_source(
+                graph_data.sample_paths[section_ordinal], self.params
+            ).filtered_positions(source_rows)
             if source_rows.size and (
                 source_rows.min() < 0 or source_rows.max() >= source_stop - source_start
             ):
@@ -1046,9 +1131,7 @@ class TrainingData:
     ) -> torch.Tensor:
         """Propagate sampled focal rows using their full-density source graph."""
 
-        source_adata = sc.read_h5ad(source_path)
-        source_adata.var_names_make_unique()
-        setup_data_layer(source_adata, self.params.data_layer)
+        source_adata = section_source(source_path, self.params).load(genes=hvg)
         source_rows = self._source_rows(batch_adata, source_adata)
 
         coords = np.asarray(source_adata.obsm[self.params.spatial_key])
@@ -1121,9 +1204,7 @@ class TrainingData:
     ) -> tuple[torch.Tensor, int]:
         """Propagate a non-section graph before selecting sampled focal rows."""
 
-        source_adata = sc.read_h5ad(source_path)
-        source_adata.var_names_make_unique()
-        setup_data_layer(source_adata, self.params.data_layer)
+        source_adata = section_source(source_path, self.params).load(genes=hvg)
         source_rows = self._source_rows(batch_adata, source_adata)
         expression = torch.from_numpy(_dense_float32(source_adata[:, hvg].X))
         propagated, graph = propagate_spatial_features(
@@ -1422,9 +1503,7 @@ class InferenceData:
         ):
             start = graph_data.offsets[section_ordinal]
             stop = graph_data.offsets[section_ordinal + 1]
-            adata = sc.read_h5ad(source_path)
-            adata.var_names_make_unique()
-            setup_data_layer(adata, self.params.data_layer)
+            adata = section_source(source_path, self.params).load(all_obsm=True)
             adata.obsm[self.params.latent_representation_cell] = emb_cell[start:stop]
             adata.obsm[self.params.latent_representation_niche] = emb_niche[start:stop]
             yield sample_name, adata
@@ -1435,14 +1514,7 @@ class InferenceData:
         batch_code = self._encode_batch_label(batch_label)
 
         # Load the ST data
-        adata = sc.read_h5ad(st_file)
-        # sc.pp.filter_genes(adata, min_counts=1)
-
-        # Make gene names unique to avoid reindexing issues
-        adata.var_names_make_unique()
-
-        # Setup data layer consistently
-        is_count_data, actual_data_layer = setup_data_layer(adata, self.params.data_layer)
+        adata = section_source(st_file, self.params).load(all_obsm=True)
 
         coords = np.asarray(adata.obsm[self.params.spatial_key])
         stable_ids = adata.obs_names.to_numpy()

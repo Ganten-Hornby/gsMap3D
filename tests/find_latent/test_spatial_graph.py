@@ -248,7 +248,7 @@ def test_training_batch_codes_use_one_fitted_mapping_after_s10():
 
 
 def test_training_data_propagates_full_graph_before_selecting_loss_cells(tmp_path):
-    expression = np.arange(5, dtype=np.float32).reshape(-1, 1)
+    expression = np.arange(1, 6, dtype=np.float32).reshape(-1, 1)
     obs_names = np.asarray([f"cell-{index}" for index in range(5)])
     full_adata = anndata.AnnData(
         X=sp.csr_matrix(expression),
@@ -274,6 +274,7 @@ def test_training_data_propagates_full_graph_before_selecting_loss_cells(tmp_pat
         graph_radius=None,
         graph_sigma=None,
         data_layer="X",
+        cell_qc_min_genes=1,
         do_sampling=True,
         sample_h5ad_dict={"section": full_path},
     )
@@ -320,6 +321,7 @@ def test_subsampling_preserves_source_ids_for_full_graph_alignment(tmp_path):
     adata.write_h5ad(source_path)
     params = SimpleNamespace(
         data_layer="X",
+        cell_qc_min_genes=1,
         annotation=None,
         do_sampling=True,
     )

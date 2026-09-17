@@ -27,7 +27,7 @@ def _full_section_fixture() -> anndata.AnnData:
     n_obs = len(sections)
     expression = np.column_stack(
         (
-            np.arange(n_obs, dtype=np.float32),
+            np.arange(n_obs, dtype=np.float32) + 1,
             np.square(np.arange(n_obs, dtype=np.float32)) / n_obs,
         )
     )
@@ -60,6 +60,7 @@ def _params(graph_mode: str) -> SimpleNamespace:
         n_neighbors=2,
         inference_chunk_size=6,
         data_layer="X",
+        cell_qc_min_genes=1,
         do_sampling=True,
     )
 

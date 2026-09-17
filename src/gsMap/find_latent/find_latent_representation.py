@@ -17,8 +17,15 @@ from torch.utils.data import (
 
 from gsMap.config import FindLatentRepresentationsConfig
 
+from .checkpoint import (
+    load_checkpoint_state,
+    make_feature_schema,
+    read_checkpoint,
+    validate_input_contract,
+)
 from .gnn.st_model import StEmbeding
 from .gnn.train_step import ModelTrain
+from .section_data import cell_qc_summary
 from .st_process import (
     InferenceData,
     TrainingData,
@@ -34,9 +41,10 @@ from .st_process import (
 logger = logging.getLogger(__name__)
 
 
-def _load_compatible_model_state(model: StEmbeding, model_path: str | Path) -> bool:
-    state_dict = torch.load(model_path)
-    return model.load_compatible_state_dict(state_dict)
+def _load_compatible_model_state(
+    model: StEmbeding, model_path: str | Path, feature_schema
+) -> bool:
+    return load_checkpoint_state(model, model_path, feature_schema)
 
 
 def _resolve_expression_model(is_count_data, requested_distribution, use_tf):
@@ -128,15 +136,31 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     logger.info(f"Project dir: {config.project_dir}")
     set_seed(config.random_seed)
 
-    # Find the hvg
+    # Refuse unverifiable legacy checkpoints before expensive feature/graph work.
+    feature_schema = None
+    if os.path.exists(config.model_path):
+        feature_schema = read_checkpoint(config.model_path)["feature_schema"]
+        validate_input_contract(feature_schema, config)
+    hvg_audit = {}
     hvg, n_cell_used, gene_homolog_dict, is_count_data = find_common_hvg(
         config.sample_h5ad_dict,
         config,
+        saved_hvg=feature_schema["hvg_order"] if feature_schema else None,
+        audit=hvg_audit,
     )
+    if feature_schema is None:
+        feature_schema = make_feature_schema(hvg, config, is_count_data, hvg_audit)
+    elif feature_schema["input_is_count_data"] != bool(is_count_data):
+        raise ValueError("Checkpoint expression data type differs from the current inputs")
+    elif feature_schema.get("cell_qc") != cell_qc_summary(config):
+        raise ValueError("Checkpoint cell-QC population differs from the current inputs")
     common_genes = np.array(list(gene_homolog_dict.keys()))
 
     # Create subsampled concatenated adata with sample-specific stratified sampling
     training_adata = create_subsampled_adata(config.sample_h5ad_dict, n_cell_used, config)
+    training_adata.var["highly_variable"] = training_adata.var_names.isin(hvg)
+    training_adata.uns["hvg_order"] = list(hvg)
+    training_adata.uns["hvg_feature_sha256"] = feature_schema["feature_sha256"]
 
     # Prepare the trainning data
     get_trainning_data = TrainingData(config)
@@ -223,6 +247,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         mode="reconstruction",
         lr=1e-3,
         model_path=config.model_path,
+        feature_schema=feature_schema,
     )
     gsMap_embedding_finder.set_loaders(train_loader, val_loader)
     print(gsMap_embedding_finder.model)
@@ -230,11 +255,13 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     model_is_compatible = os.path.exists(config.model_path) and _load_compatible_model_state(
         gsMap_embedding_finder.model,
         config.model_path,
+        feature_schema,
     )
     if not model_is_compatible:
         if os.path.exists(config.model_path):
-            logger.info(
-                "Existing model uses incompatible encoder or batch-label semantics; retraining."
+            raise ValueError(
+                "Existing model has incompatible encoder or batch-label semantics. "
+                "Use a new output directory; refusing to overwrite the checkpoint."
             )
         # reconstruction
         gsMap_embedding_finder.train(config.itermax, patience=config.patience)
@@ -244,6 +271,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
             if not _load_compatible_model_state(
                 gsMap_embedding_finder.model,
                 config.model_path,
+                feature_schema,
             ):
                 raise RuntimeError("Training produced an incompatible model checkpoint")
             gsMap_embedding_finder.mode = "classification"
@@ -252,7 +280,9 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         logger.info(f"Model found at {config.model_path}. Skipping training.")
 
     # Load the best model
-    if not _load_compatible_model_state(gsMap_embedding_finder.model, config.model_path):
+    if not _load_compatible_model_state(
+        gsMap_embedding_finder.model, config.model_path, feature_schema
+    ):
         raise RuntimeError("Model checkpoint has incompatible encoder or batch-label semantics")
     gsmap_embedding_model = gsMap_embedding_finder.model
 
@@ -357,6 +387,7 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
     # Save metadata
     metadata = {
         "config": config_dict,
+        "feature_schema": feature_schema,
         "model_info": {
             "model_path": str(config.model_path),
             "n_parameters": int(sum(p.numel() for p in gsmap_embedding_model.parameters())),

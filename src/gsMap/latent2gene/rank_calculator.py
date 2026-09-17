@@ -21,7 +21,6 @@ import jax.numpy as jnp
 import jax.scipy
 import numpy as np
 import pandas as pd
-import scanpy as sc
 from anndata._io.specs import read_elem
 from jax import jit
 from numba import get_num_threads, get_thread_id, njit, prange, set_num_threads
@@ -40,6 +39,7 @@ from scipy.sparse import csr_matrix
 
 from gsMap.config import LatentToGeneConfig
 from gsMap.logging_config import is_interactive_output
+from gsMap.utils.expression_qc import expression_row_metrics, h5_expression_row_metrics
 
 from .memmap_io import MemMapDense
 
@@ -318,9 +318,8 @@ def filter_cells(
             nfeature_mask = precomputed_gene_counts >= min_genes
             nfeature_mask = pd.Series(nfeature_mask, index=obs_df.index)
         elif X is not None:
-            nfeature_mask, n_genes_per_cell = sc.pp.filter_cells(
-                X, min_genes=min_genes, inplace=False
-            )
+            n_genes_per_cell, _ = expression_row_metrics(X)
+            nfeature_mask = n_genes_per_cell >= min_genes
             # Convert to pandas Series for consistent indexing
             nfeature_mask = pd.Series(nfeature_mask, index=obs_df.index)
         else:
@@ -892,24 +891,11 @@ class RankCalculator:
                 ):
                     reordered_gene_samples.append(sample_name)
 
-                # Efficiently read gene counts per cell without loading full expression matrix
-                # For CSR format, we only need indptr to calculate non-zero counts
+                # Independent downstream QC: inputs may never have passed find_latent.
+                # Do not trust upstream metrics after gene/homolog conversion, and
+                # do not confuse explicit zeros/duplicate CSR entries with genes.
                 X_group, _matrix_source = _select_rank_matrix_element(f, data_layer)
-                if (
-                    "encoding-type" in X_group.attrs
-                    and X_group.attrs["encoding-type"] == "csr_matrix"
-                ):
-                    # CSR format: number of non-zero genes = indptr[i+1] - indptr[i]
-                    indptr = X_group["indptr"][:]
-                    n_genes_per_cell = np.diff(indptr)
-                    # Pass precomputed counts to filter function
-                    X_temp = None
-                    use_precomputed_counts = True
-                else:
-                    # Not CSR or unknown format, read the full matrix
-                    X_temp = read_elem(X_group)
-                    n_genes_per_cell = None
-                    use_precomputed_counts = False
+                n_genes_per_cell, _ = h5_expression_row_metrics(X_group)
 
                 if annotation_key is not None:
                     if annotation_key not in adata_temp_obs.columns:
@@ -919,23 +905,14 @@ class RankCalculator:
                         )
 
                 # Apply unified filtering function
-                if use_precomputed_counts:
-                    filtered_obs, stats, keep_mask = filter_cells(
-                        adata_temp_obs,
-                        X=None,
-                        annotation_key=annotation_key,
-                        min_cells_per_type=self.config.min_cells_per_type,
-                        min_genes=20,
-                        precomputed_gene_counts=n_genes_per_cell,
-                    )
-                else:
-                    filtered_obs, stats, keep_mask = filter_cells(
-                        adata_temp_obs,
-                        X=X_temp,
-                        annotation_key=annotation_key,
-                        min_cells_per_type=self.config.min_cells_per_type,
-                        min_genes=20,
-                    )
+                filtered_obs, stats, keep_mask = filter_cells(
+                    adata_temp_obs,
+                    X=None,
+                    annotation_key=annotation_key,
+                    min_cells_per_type=self.config.min_cells_per_type,
+                    min_genes=20,
+                    precomputed_gene_counts=n_genes_per_cell,
+                )
 
                 # Store the indices of cells to keep for this sample
                 sample_keep_indices[sample_name] = keep_mask

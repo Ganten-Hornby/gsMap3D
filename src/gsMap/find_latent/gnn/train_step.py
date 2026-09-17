@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from gsMap.find_latent.checkpoint import save_checkpoint
+
 from .loss import ce_loss, rec_loss
 
 
@@ -33,7 +35,7 @@ class EarlyStopping:
 
 
 class ModelTrain:
-    def __init__(self, model, optimizer, distribution, mode, lr, model_path):
+    def __init__(self, model, optimizer, distribution, mode, lr, model_path, feature_schema):
         self.model = model
         self.optimizer = optimizer
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -42,6 +44,7 @@ class ModelTrain:
         self.mode = mode
         self.lr = lr
         self.model_path = model_path
+        self.feature_schema = feature_schema
 
         self.train_loader = None
         self.val_loader = None
@@ -152,7 +155,7 @@ class ModelTrain:
 
             # Save the best model
             if loss_track.best_score < -val_loss:
-                torch.save(self.model.state_dict(), self.model_path)
+                save_checkpoint(self.model, self.model_path, self.feature_schema)
 
             # Update validation loss
             loss_track(val_loss)

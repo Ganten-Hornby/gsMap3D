@@ -56,7 +56,7 @@ def test_find_common_hvg_accepts_gene_named_var_index(tmp_path, monkeypatch):
         adata.write_h5ad(sample_path)
         sample_paths[f"sample_{sample_index}"] = sample_path
 
-    def fake_highly_variable_genes(adata, n_top_genes, subset):
+    def fake_highly_variable_genes(adata, n_top_genes, subset, **kwargs):
         adata.var["residual_variances"] = np.arange(adata.n_vars, dtype=float)
         adata.var["highly_variable"] = np.arange(adata.n_vars) < n_top_genes
 

@@ -209,6 +209,23 @@ class FindLatentCoreConfig:
         ),
     ] = "X"
 
+    cell_qc_min_genes: Annotated[
+        int,
+        typer.Option(
+            help="Minimum positive-expression genes before HVG, training, graph and inference",
+            min=0,
+        ),
+    ] = 20
+
+    cell_qc_min_counts: Annotated[
+        float | None,
+        typer.Option(help="Optional minimum total raw counts for front-end cell QC", min=0),
+    ] = None
+
+    cell_qc_chunk_size: Annotated[
+        int, typer.Option(help="Rows per bounded expression QC/read block", min=1)
+    ] = 8192
+
     spatial_key: Annotated[
         str, typer.Option(help="Spatial key in adata.obsm storing spatial coordinates")
     ] = "spatial"

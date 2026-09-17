@@ -171,6 +171,7 @@ def test_section_aware_3d_inference_uses_cross_file_graph_context(tmp_path):
         embedding_size=2,
         spatial_key="spatial",
         data_layer="X",
+        cell_qc_min_genes=1,
         latent_dir=tmp_path,
         latent_representation_cell="emb_cell",
         latent_representation_niche="emb_niche",

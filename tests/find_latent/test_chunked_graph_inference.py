@@ -185,6 +185,7 @@ def test_section_inference_never_densifies_the_full_expression_matrix(monkeypatc
         embedding_size=2,
         spatial_key="spatial",
         data_layer="X",
+        cell_qc_min_genes=1,
         latent_dir=tmp_path,
         latent_representation_cell="emb_cell",
         latent_representation_niche="emb_niche",
