@@ -119,8 +119,10 @@
 
         .gradient-header {
             background:
-                radial-gradient(circle at 72% -100%, rgba(255, 255, 255, 0.20), transparent 22rem),
-                linear-gradient(135deg, var(--report-purple) 0%, var(--report-purple-deep) 100%);
+                radial-gradient(circle at 88% -90%, rgba(88, 163, 207, 0.16), transparent 26rem),
+                linear-gradient(90deg, #ffffff 0%, #f5faff 100%);
+            border-bottom: 1px solid #d3e3ef;
+            box-shadow: 0 1px 8px rgba(23, 82, 119, 0.05);
         }
 
         .report-sidebar {
@@ -163,23 +165,29 @@
         .report-overview {
             position: relative;
             overflow: hidden;
-            border: 1px solid #dbe5ef;
+            min-height: 11.75rem;
+            border: 1px solid #ccdbea;
             border-radius: 1rem;
-            background:
-                linear-gradient(120deg, rgba(255, 255, 255, 0.98), rgba(245, 243, 255, 0.94));
+            background: #f8f9ff;
             box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
         }
 
-        .report-overview::after {
-            content: '';
+        .report-banner-art {
             position: absolute;
-            width: 13rem;
-            height: 13rem;
-            right: -5rem;
-            top: -7rem;
-            border-radius: 9999px;
-            background: rgba(118, 75, 162, 0.10);
+            inset: 0;
+            width: 100%;
+            height: 100%;
             pointer-events: none;
+            -webkit-mask-image: linear-gradient(90deg, transparent 0%, transparent 62%, rgba(0, 0, 0, 0.55) 82%, #000 100%);
+            mask-image: linear-gradient(90deg, transparent 0%, transparent 62%, rgba(0, 0, 0, 0.55) 82%, #000 100%);
+        }
+
+        @media (max-width: 767px) {
+            .report-banner-art {
+                opacity: 0.16;
+                -webkit-mask-image: linear-gradient(90deg, transparent 30%, #000 100%);
+                mask-image: linear-gradient(90deg, transparent 30%, #000 100%);
+            }
         }
 
         .context-chip {
@@ -465,6 +473,7 @@
                 break-inside: avoid;
                 box-shadow: none;
             }
+            .report-banner-art { display: none; }
         }
     </style>
 </head>
@@ -475,19 +484,19 @@
     <a href="#main-content" class="skip-link">Skip to report content</a>
 
     <!-- Header -->
-    <header class="gradient-header text-white shadow-lg sticky top-0 z-50">
+    <header class="gradient-header sticky top-0 z-50">
         <div class="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex items-center justify-between h-16 gap-3">
                 <div class="flex min-w-0 items-center gap-3">
-                    <button type="button" class="md:hidden rounded-lg p-2 text-white/80 hover:bg-white/10 hover:text-white"
+                    <button type="button" class="md:hidden rounded-lg p-2 text-slate-600 hover:bg-blue-50 hover:text-blue-900"
                         @click="sidebarOpen = true" aria-label="Open report controls" aria-controls="report-sidebar"
                         :aria-expanded="sidebarOpen.toString()">
                         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
                         </svg>
                     </button>
-                    <div class="flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-2.5 py-1.5">
-                        <svg class="h-5 w-5 text-blue-100" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    <div class="flex items-center gap-2 rounded-lg border border-[#c8dceb] bg-white/75 px-2.5 py-1.5 text-[#183950]">
+                        <svg class="h-5 w-5 text-[#2072a5]" fill="none" stroke="currentColor" viewBox="0 0 24 24"
                             aria-hidden="true">
                             <circle cx="5" cy="12" r="2" stroke-width="2" />
                             <circle cx="12" cy="6" r="2" stroke-width="2" />
@@ -496,19 +505,19 @@
                         </svg>
                         <span class="text-lg font-bold tracking-tight">gsMap</span>
                     </div>
-                    <div class="hidden min-w-0 sm:block">
+                    <div class="hidden min-w-0 text-[#183950] sm:block">
                         <h1 class="truncate text-sm font-semibold lg:text-base">{{ project_name }}</h1>
-                        <p class="text-xs text-white/60">Interactive spatial genetics report</p>
+                        <p class="text-xs text-slate-500">Genetics spatial mapping report</p>
                     </div>
                     <!-- Dataset Type Badge -->
                     <span x-show="reportMeta?.dataset_type"
-                        class="hidden rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-xs font-semibold text-white/90 lg:inline-flex"
+                        class="hidden rounded-full border border-[#c8dceb] bg-white/70 px-2.5 py-1 text-xs font-semibold text-[#285b7a] lg:inline-flex"
                         x-text="reportMeta?.dataset_type_label || reportMeta?.dataset_type">
                     </span>
                 </div>
                 <div class="flex flex-shrink-0 items-center gap-3">
                     <!-- Loading Indicator in header -->
-                    <span x-show="isLoading" class="inline-flex items-center text-xs text-white/75" aria-live="polite">
+                    <span x-show="isLoading" class="inline-flex items-center text-xs text-[#285b7a]" aria-live="polite">
                         <svg class="spinner -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none"
                             viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
@@ -518,8 +527,8 @@
                         </svg>
                         Updating
                     </span>
-                    <div class="hidden text-xs text-white/60 sm:block">Generated {{ generated_at }}</div>
-                    <div class="rounded-md bg-white/10 px-2 py-1 text-xs text-white/75">v{{ gsmap_version }}</div>
+                    <div class="hidden text-xs text-slate-500 sm:block">Generated {{ generated_at }}</div>
+                    <div class="rounded-md border border-[#c8dceb] bg-white/70 px-2 py-1 text-xs text-[#43657a]">v{{ gsmap_version }}</div>
                 </div>
             </div>
         </div>
@@ -822,6 +831,55 @@
 
             <!-- Active analysis context -->
             <section x-show="dataLoaded" style="order: 0" class="report-overview p-4 sm:p-5" aria-labelledby="report-overview-title">
+                <!-- Decorative cell motif inspired by homogeneous spatial neighborhoods; not tissue data. -->
+                <svg class="report-banner-art" viewBox="0 0 1200 240" preserveAspectRatio="xMaxYMid slice" fill="none" aria-hidden="true" focusable="false">
+                    <defs>
+                        <g id="banner-cell-round">
+                            <path d="M-44-16C-43-37-19-43-2-35C15-28 34-38 43-17C50 0 39 17 22 25C7 33-11 31-28 24C-43 18-51 1-44-16Z" fill="currentColor" stroke="#72b4db" stroke-width="2"/>
+                            <path d="M-34-17C-22-34-7-30 6-28C21-26 30-27 36-13C24-20 12-13 1-18C-12-23-21-13-34-17Z" fill="#fff" opacity=".26"/>
+                            <ellipse cx="2" cy="-3" rx="19" ry="16" fill="#3eabd9" opacity=".22"/>
+                        </g>
+                        <g id="banner-cell-lobed">
+                            <path d="M-48-12C-55-28-38-37-25-33C-8-28-14-49 4-42C20-36 8-21 28-23C47-25 55-8 42 5C29 18 37 32 17 35C3 37-5 24-19 27C-38 31-46 17-39 4C-37-2-44-4-48-12Z" fill="currentColor" stroke="#75b7dd" stroke-width="2"/>
+                            <path d="M-36-18C-19-24-5-17 0-30C10-18 16-10 32-11C20-1 28 15 14 22C0 17-5 10-22 17C-32 10-23-5-36-18Z" fill="#fff" opacity=".22"/>
+                            <circle cx="-2" cy="-1" r="16" fill="#4caedb" opacity=".24"/>
+                        </g>
+                        <g id="banner-cell-long">
+                            <path d="M-51-15C-46-30-29-36-17-28C-6-21 6-22 14-32C27-45 50-33 49-13C48 2 34 4 31 18C26 37 8 38-4 25C-15 13-30 23-43 13C-53 5-57-3-51-15Z" fill="currentColor" stroke="#70b1d9" stroke-width="2"/>
+                            <path d="M-41-14C-31-24-16-12-4-15C11-17 16-31 34-24C42-16 37-3 24 4C12 10 16 24 0 20C-11 13-19 10-37 8Z" fill="#fff" opacity=".22"/>
+                            <ellipse cx="4" cy="-1" rx="18" ry="14" fill="#43a9d6" opacity=".22"/>
+                        </g>
+                        <g id="banner-cell-warm">
+                            <path d="M-39-17C-35-34-19-38-6-29C7-21 21-37 36-22C49-9 41 7 28 16C18 24 1 19-7 28C-20 40-42 21-40 7C-39-3-45-8-39-17Z" fill="currentColor" stroke="#e89b65" stroke-width="2.3"/>
+                            <path d="M-29-15C-19-30-9-20 4-22C17-24 22-18 30-9C16-12 13-4 4 3C-9 9-16 1-29 7Z" fill="#fff" opacity=".19"/>
+                            <ellipse cx="0" cy="-2" rx="17" ry="15" fill="#ee8c55" opacity=".42"/>
+                        </g>
+                    </defs>
+                    <g opacity=".78">
+                        <use href="#banner-cell-lobed" transform="translate(620 4) rotate(-17) scale(1.03)" color="#c0eaff"/>
+                        <use href="#banner-cell-round" transform="translate(729 41) rotate(21) scale(.95)" color="#b7e5fb"/>
+                        <use href="#banner-cell-long" transform="translate(849 -2) rotate(-14) scale(1.16)" color="#9dd8f4"/>
+                        <use href="#banner-cell-lobed" transform="translate(978 24) rotate(8) scale(1.07)" color="#b2e1f9"/>
+                        <use href="#banner-cell-round" transform="translate(1105 -4) rotate(-19) scale(1.19)" color="#8ecdec"/>
+                        <use href="#banner-cell-long" transform="translate(1210 38) rotate(18) scale(1.12)" color="#a9dff8"/>
+                        <use href="#banner-cell-round" transform="translate(654 126) rotate(12) scale(1.05)" color="#c7ebfb"/>
+                        <use href="#banner-cell-long" transform="translate(777 116) rotate(-27) scale(.97)" color="#b6e2f8"/>
+                        <use href="#banner-cell-lobed" transform="translate(910 101) rotate(13) scale(1.06)" color="#d5f0ff"/>
+                        <use href="#banner-cell-round" transform="translate(1065 112) rotate(-7) scale(1.12)" color="#a6d9f2"/>
+                        <use href="#banner-cell-lobed" transform="translate(1192 136) rotate(17) scale(1.18)" color="#a8d9f4"/>
+                        <use href="#banner-cell-long" transform="translate(695 222) rotate(16) scale(1.04)" color="#b6e5fa"/>
+                        <use href="#banner-cell-round" transform="translate(865 211) rotate(-25) scale(1.12)" color="#b8e5fb"/>
+                        <use href="#banner-cell-lobed" transform="translate(1022 213) rotate(24) scale(1.17)" color="#9fd7f3"/>
+                        <use href="#banner-cell-long" transform="translate(1165 232) rotate(-12) scale(1.13)" color="#b8e5fa"/>
+                    </g>
+                    <g opacity=".78">
+                        <use href="#banner-cell-warm" transform="translate(824 132) rotate(-9) scale(.68)" color="#ffc48d"/>
+                        <use href="#banner-cell-warm" transform="translate(891 154) rotate(27) scale(.71)" color="#ffb875"/>
+                        <use href="#banner-cell-warm" transform="translate(839 192) rotate(12) scale(.72)" color="#f7aa7a"/>
+                        <use href="#banner-cell-warm" transform="translate(988 164) rotate(-14) scale(.94)" color="#ffc28b"/>
+                        <use href="#banner-cell-warm" transform="translate(1065 168) rotate(24) scale(1.01)" color="#ffaf73"/>
+                    </g>
+                </svg>
                 <div class="relative z-10 flex flex-col justify-between gap-5 xl:flex-row xl:items-center">
                     <div class="min-w-0">
                         <p class="text-[11px] font-bold uppercase tracking-[0.17em] text-primary-700">Active analysis</p>
