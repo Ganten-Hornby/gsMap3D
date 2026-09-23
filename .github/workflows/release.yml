@@ -1,7 +1,7 @@
 name: Release Pipeline
 
 # This is the main release workflow that handles everything when you push a version tag
-# It builds Python packages, Docker images, publishes to PyPI and ghcr.io, and creates GitHub releases
+# Pre-releases publish Python packages only and never replace stable Docker tags.
 on:
   push:
     tags:
@@ -13,17 +13,38 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build-python:
     name: Build Python distribution 📦
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+      - name: Install release validation tools
+        run: python -m pip install packaging twine
+      - name: Validate release tag and package version
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: python .github/scripts/release_metadata.py "$RELEASE_TAG"
       - name: Build package
         run: |
-          uv build
+          uv build --no-sources
+          python -m twine check --strict dist/*
           ls -lh dist
       - name: Store the distribution packages
         uses: actions/upload-artifact@v4
@@ -51,6 +72,8 @@ jobs:
 
   build-docker:
     name: Build Docker images 🐳
+    needs: build-python
+    if: needs.build-python.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -60,6 +83,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build-python.outputs.tag }}
 
       - name: Convert repository name to lowercase
         id: repo
@@ -107,7 +132,10 @@ jobs:
 
   create-release:
     name: Create GitHub Release 📝
-    needs: [publish-pypi, build-docker]
+    needs: [build-python, publish-pypi, build-docker]
+    if: >-
+      ${{ !cancelled() && needs.publish-pypi.result == 'success' &&
+          (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,6 +143,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build-python.outputs.tag }}
+          fetch-depth: 0
 
       - name: Download Python distributions
         uses: actions/download-artifact@v4
@@ -131,40 +162,60 @@ jobs:
 
       - name: Generate Release Notes
         id: release_notes
+        env:
+          RELEASE_TAG: ${{ needs.build-python.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.build-python.outputs.version }}
+          PRERELEASE: ${{ needs.build-python.outputs.prerelease }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="$RELEASE_TAG"
           echo "# gsMap3D ${VERSION}" > release_notes.md
           echo "" >> release_notes.md
           echo "## 📦 Installation" >> release_notes.md
           echo "" >> release_notes.md
           echo "### PyPI" >> release_notes.md
           echo '```bash' >> release_notes.md
-          echo "pip install gsMap3D==${VERSION#v}" >> release_notes.md
+          echo "pip install gsMap3D==${RELEASE_VERSION}" >> release_notes.md
           echo '```' >> release_notes.md
           echo "" >> release_notes.md
-          echo "### Docker" >> release_notes.md
-          echo '```bash' >> release_notes.md
-          echo "docker pull ghcr.io/${{ github.repository }}:${VERSION#v}" >> release_notes.md
-          echo '```' >> release_notes.md
+          if [ "$PRERELEASE" = "false" ]; then
+            echo "### Docker" >> release_notes.md
+            echo '```bash' >> release_notes.md
+            echo "docker pull ghcr.io/${GITHUB_REPOSITORY,,}:${RELEASE_VERSION}" >> release_notes.md
+            echo '```' >> release_notes.md
+          else
+            echo "This is a pre-release for testing. Stable Docker tags are unchanged." >> release_notes.md
+          fi
           echo "" >> release_notes.md
           echo "## 📋 What's Changed" >> release_notes.md
           echo "" >> release_notes.md
-          echo "See [full changelog](https://github.com/${{ github.repository }}/compare/$(git describe --tags --abbrev=0 ${GITHUB_REF}^)...${VERSION})" >> release_notes.md
+          PREVIOUS_TAG=$(git describe --tags --match 'v*' --abbrev=0 "${VERSION}^" 2>/dev/null || true)
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "See [full changelog](https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${VERSION})" >> release_notes.md
+          fi
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-python.outputs.tag }}
+          PRERELEASE: ${{ needs.build-python.outputs.prerelease }}
         run: |
+          RELEASE_FLAGS=()
+          if [ "$PRERELEASE" = "true" ]; then
+            RELEASE_FLAGS+=(--prerelease --latest=false)
+          fi
           gh release create \
-            '${{ github.ref_name }}' \
+            "$RELEASE_TAG" \
             --repo '${{ github.repository }}' \
-            --title "gsMap3D ${{ github.ref_name }}" \
+            --verify-tag \
+            --title "gsMap3D $RELEASE_TAG" \
+            "${RELEASE_FLAGS[@]}" \
             --notes-file release_notes.md
 
       - name: Upload artifacts to GitHub Release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build-python.outputs.tag }}
         run: |
           gh release upload \
-            '${{ github.ref_name }}' dist/** \
+            "$RELEASE_TAG" dist/** \
             --repo '${{ github.repository }}'

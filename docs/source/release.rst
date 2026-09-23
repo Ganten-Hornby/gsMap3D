@@ -1,6 +1,20 @@
 Release notes
 =============
 
+v0.1.4a1
+--------
+
+Alpha release of the revised 2D/3D workflow. Install this preview explicitly
+with ``pip install gsMap3D==0.1.4a1``.
+
+* Shared multi-trait spatial LDSC, optimized CPU/GPU regression, and single-node
+  multi-GPU execution.
+* Faster GWAS preparation and per-stage resource and throughput logging.
+* Improved interactive reports and automatic SpatialVista export for 3D data.
+* Expression-based cell filtering before latent modeling and HVG provenance.
+
+This pre-release does not update stable Docker tags.
+
 Current features and improvements
 ---------------------------------
 
