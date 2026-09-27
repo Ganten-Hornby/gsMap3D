@@ -71,54 +71,30 @@ def test_spatial3d_uses_physical_z_instead_of_slice_labels():
         coords,
         slice_ids=first_labels,
         dataset_type="spatial3D",
-        z_coordinate=2,
         z_scale=2.5,
     )
     second = optimize_spatial_row_order(
         coords,
         slice_ids=permuted_labels,
         dataset_type="spatial3D",
-        z_coordinate=-1,
         z_scale=2.5,
     )
 
     assert np.array_equal(first, second)
 
 
-def test_spatial3d_xy_only_falls_back_to_ordinal_slice_rank():
-    coords = np.asarray([[0.0, 2.0], [3.0, 0.0], [1.0, 3.0], [2.0, 1.0]])
-    slice_ids = np.asarray([10, 30, 10, 20], dtype=np.int32)
-    _, ordinal_z = np.unique(slice_ids, return_inverse=True)
-
-    observed = optimize_spatial_row_order(
-        coords,
-        slice_ids=slice_ids,
-        dataset_type="spatial3D",
-    )
-    expected = optimize_spatial_row_order(np.column_stack((coords, ordinal_z)))
-
-    assert np.array_equal(observed, expected)
-
-
-def test_spatial3d_constant_or_incomplete_z_falls_back_to_slice_rank():
-    slice_ids = np.asarray([0, 1, 0, 1], dtype=np.int32)
+def test_spatial3d_requires_xyz_and_preserves_constant_axes():
     xy = np.asarray([[0.0, 2.0], [3.0, 0.0], [1.0, 3.0], [2.0, 1.0]])
-    _, ordinal_z = np.unique(slice_ids, return_inverse=True)
-    expected = optimize_spatial_row_order(np.column_stack((xy, ordinal_z)))
-
-    constant = optimize_spatial_row_order(
-        np.column_stack((xy, np.ones(4))),
-        slice_ids=slice_ids,
-        dataset_type="spatial3D",
-    )
-    incomplete = optimize_spatial_row_order(
-        np.column_stack((xy, [0.0, 1.0, np.nan, 2.0])),
-        slice_ids=slice_ids,
-        dataset_type="spatial3D",
-    )
-
-    assert np.array_equal(constant, expected)
-    assert np.array_equal(incomplete, expected)
+    ids = np.asarray([0, 1, 0, 1])
+    with pytest.raises(ValueError, match="XYZ"):
+        optimize_spatial_row_order(xy, slice_ids=ids, dataset_type="spatial3D")
+    coords = np.column_stack((xy, np.ones(4)))
+    first = optimize_spatial_row_order(coords, slice_ids=ids, dataset_type="spatial3D")
+    second = optimize_spatial_row_order(coords, slice_ids=ids[::-1], dataset_type="spatial3D")
+    np.testing.assert_array_equal(first, second)
+    coords[2, 2] = np.nan
+    with pytest.raises(ValueError, match="NaN"):
+        optimize_spatial_row_order(coords, slice_ids=ids, dataset_type="spatial3D")
 
 
 @pytest.mark.parametrize(
@@ -126,20 +102,6 @@ def test_spatial3d_constant_or_incomplete_z_falls_back_to_slice_rank():
     [
         (np.ones((3, 2)), None, {}, ValueError, "requires slice IDs"),
         (np.ones((3, 2)), np.zeros(2), {}, ValueError, "must have shape"),
-        (
-            np.ones((3, 3)),
-            np.zeros(3),
-            {"z_coordinate": 3},
-            IndexError,
-            "outside",
-        ),
-        (
-            np.ones((3, 3)),
-            np.zeros(3),
-            {"z_coordinate": 1},
-            ValueError,
-            "distinct from x/y",
-        ),
         (
             np.ones((3, 3)),
             np.zeros(3),

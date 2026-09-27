@@ -28,10 +28,14 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 |---|---|
 | `--workdir DIRECTORY` | Path to the working directory  \[required] |
 | `--project-name TEXT` | Name of the project  \[required] |
+| `--dataset-type [scrna\|spatial2d\|spatial3d]` | Type of dataset: scRNA, spatial2D (XY), or spatial3D (XYZ sections or a single thick-tissue volume)  \[default: spatial2D] |
 | `--h5ad-path PATH` | Space-separated list of h5ad file paths. Sample names are derived from file names without suffix. |
 | `--h5ad-yaml FILE` | YAML file with sample names and h5ad paths |
 | `--h5ad-list-file FILE` | Each row is a h5ad file path, sample name is the file name without suffix |
 | `--data-layer TEXT` | Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X  \[default: X] |
+| `--cell-qc-min-genes INTEGER RANGE` | Minimum positive-expression genes before HVG, training, graph and inference  \[default: 20; x>=0] |
+| `--cell-qc-min-counts FLOAT RANGE` | Optional minimum total raw counts for front-end cell QC  \[x>=0] |
+| `--cell-qc-chunk-size INTEGER RANGE` | Rows per bounded expression QC/read block  \[default: 8192; x>=1] |
 | `--spatial-key TEXT` | Spatial key in adata.obsm  \[default: spatial] |
 | `--annotation TEXT` | Name of the annotation in adata.obs to use |
 | `--homolog-file FILE` | Path to homologous gene conversion file |
@@ -44,11 +48,9 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--graph-radius FLOAT RANGE` | Physical radius for radius graph modes  \[x>=0.0] |
 | `--graph-sigma FLOAT RANGE` | Gaussian sigma for weighted-radius edges  \[x>=0.0] |
 | `--graph-z-scale FLOAT RANGE` | Multiplier converting the stored z coordinate to the physical XY units for section_aware_3d graphs  \[default: 1.0; x>=0.0] |
-| `--training-feature-chunk-size INTEGER RANGE` | Genes per full-density non-section training graph propagation block; does not change the graph or sampled cells  \[default: 128; x>=1] |
 | `--inference-chunk-size INTEGER RANGE` | Target number of focal spots per section-aligned inference chunk. Physical sections remain intact, all spots are retained, and section-aware chunks include graph halos.  \[default: 250000; x>=1] |
 | `--two-stage / --single-stage` | Tune the cell embeddings based on the provided annotation  \[default: single-stage] |
 | `--n-cell-training INTEGER RANGE` | Number of cells used for training  \[default: 100000; 1000<=x<=1000000] |
-| `--dataset-type [scrna\|spatial2d\|spatial3d]` | Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)  \[default: spatial2D] |
 | `--spatial-neighbors INTEGER RANGE` | k1: Number of spatial neighbors in it's own slice for spatial dataset  \[default: 301; 10<=x<=5000] |
 | `--homogeneous-neighbors INTEGER RANGE` | k3: Number of homogeneous neighbors per cell (for spatial) or KNN neighbors (for scRNA-seq)  \[default: 21; 1<=x<=200] |
 | `--cell-embedding-similarity-threshold FLOAT RANGE` | Minimum similarity threshold for cell embedding.  \[default: 0.0; 0.0<=x<=1.0] |
@@ -56,10 +58,9 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--homogeneous-selection-mode [soft_priority\|hard_niche_filter]` | How niche similarity is used: soft_priority ranks passing neighbors first and fills remaining slots; hard_niche_filter reproduces the historical rule by assigning zero marker-score weight below the niche threshold.  \[default: soft_priority] |
 | `--no-expression-fraction` | Skip expression fraction filtering |
 | `--adjacent-slice-spatial-neighbors INTEGER RANGE` | Number of spatial neighbors to find on each adjacent slice for 3D data  \[default: 200; 10<=x<=2000] |
-| `--n-adjacent-slices INTEGER RANGE` | For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.  \[default: 2; 0<=x<=100] |
+| `--n-adjacent-slices INTEGER RANGE` | Adjacent sections on each side (default 2). Set 0 to disable cross-section homogeneous matching while retaining XYZ distances. Automatically 0 for a single spatial3D volume. Does not disable an explicit section-aware embedding graph.  \[default: 2; 0<=x<=100] |
 | `--cross-slice-selection-mode [ordinal\|physical_window]` | How cross-section candidates are chosen: by ordinal input order (legacy) or by a measured physical z-distance window.  \[default: ordinal] |
 | `--cross-slice-max-distance FLOAT RANGE` | Maximum absolute physical z distance for physical-window section selection. Required when cross_slice_selection_mode=physical_window.  \[x>=0.0] |
-| `--cross-slice-z-coordinate INTEGER` | Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.  \[default: -1] |
 | `--cross-slice-z-scale FLOAT RANGE` | Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.  \[default: 1.0; x>=0.0] |
 | `--cross-slice-marker-score-strategy [global_pool\|per_slice_pool\|hierarchical_pool]` | Strategy for computing marker scores across slices in spatial3D datasets. 'global_pool': Select the top K most similar neighbors globally across all slices combined. 'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. 'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.  \[default: hierarchical_pool] |
 | `--high-quality-neighbor-filter / --no-high-quality-filter` | Only find neighbors within high quality cells (requires High_quality column in obs)  \[default: no-high-quality-filter] |
@@ -75,8 +76,8 @@ Requires pre-generated SNP-gene weight matrix and LD weights.
 | `--ldsc-share-ld / --no-ldsc-share-ld` | Share each LD-score chunk across GWAS traits. Required for multiple GPUs.  \[default: ldsc-share-ld] |
 | `--ldsc-regression-backend [auto\|jax\|moments]` | Regression backend: auto uses fused moments for two baseline annotations plus intercept, otherwise JAX. jax disables this fast path.  \[default: auto] |
 | `--ldsc-trait-batch-size INTEGER RANGE` | Traits per regression group in shared-LD mode; all requested traits are processed, regardless of this group size.  \[default: 4; 1<=x<=16] |
-| `--ldsc-gwas-workers INTEGER RANGE` | Concurrent GWAS file preparation in shared-LD mode (bounded prefetch). Use fewer workers to reduce temporary memory; at most 16 files are in flight.  \[default: 16; 1<=x<=16] |
 | `--ldsc-read-workers INTEGER RANGE` | Reader/preparation workers. Shared-LD mode uses at most four readers for NumPy/memmap markers and one for shared file handles; non-shared mode uses this for sparse-transform or marker-preparation workers.  \[default: 10; x>=1] |
+| `--ldsc-gwas-workers INTEGER RANGE` | Concurrent GWAS file preparation in shared-LD mode (bounded prefetch). Use fewer workers to reduce temporary memory; at most 16 files are in flight.  \[default: 16; 1<=x<=16] |
 | `--ldsc-compute-workers INTEGER RANGE` | Requested CPU compute threads for the automatic moment backend, capped by available cores and thread limits; regression workers in non-shared mode. Does not select the number of GPUs.  \[default: 10; x>=1] |
 | `--spots-per-chunk-quick-mode INTEGER RANGE` | Spots per spatial-LDSC compute chunk. Omit to select automatically for the execution device; an explicit value overrides both CPU and GPU defaults.  \[default: (auto: CPU=400, GPU=100); x>=1] |
 | `--trait-name TEXT` | Name of the trait for GWAS analysis |
@@ -120,10 +121,14 @@ This step:
 |---|---|
 | `--workdir DIRECTORY` | Path to the working directory  \[required] |
 | `--project-name TEXT` | Name of the project  \[required] |
+| `--dataset-type [scrna\|spatial2d\|spatial3d]` | spatial2D (XY) or spatial3D (XYZ sections or a thick-tissue volume)  \[default: spatial2D] |
 | `--h5ad-path PATH` | Space-separated list of h5ad file paths. Sample names are derived from file names without suffix. |
 | `--h5ad-yaml FILE` | YAML file with sample names and h5ad paths |
 | `--h5ad-list-file FILE` | Each row is a h5ad file path, sample name is the file name without suffix |
 | `--data-layer TEXT` | Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X  \[default: X] |
+| `--cell-qc-min-genes INTEGER RANGE` | Minimum positive-expression genes before HVG, training, graph and inference  \[default: 20; x>=0] |
+| `--cell-qc-min-counts FLOAT RANGE` | Optional minimum total raw counts for front-end cell QC  \[x>=0] |
+| `--cell-qc-chunk-size INTEGER RANGE` | Rows per bounded expression QC/read block  \[default: 8192; x>=1] |
 | `--spatial-key TEXT` | Spatial key in adata.obsm storing spatial coordinates  \[default: spatial] |
 | `--annotation TEXT` | Annotation of cell type in adata.obs to use |
 | `--homolog-file FILE` | Path to homologous gene conversion file |
@@ -138,7 +143,6 @@ This step:
 | `--graph-sigma FLOAT RANGE` | Gaussian sigma for weighted-radius edges  \[x>=0.0] |
 | `--graph-z-scale FLOAT RANGE` | Multiplier converting the stored z coordinate to the physical XY units for section_aware_3d graphs  \[default: 1.0; x>=0.0] |
 | `--k INTEGER RANGE` | Graph convolution depth for LGCN  \[default: 3; 1<=x<=10] |
-| `--training-feature-chunk-size INTEGER RANGE` | Genes per full-density non-section training graph propagation block; does not change the graph or sampled cells  \[default: 128; x>=1] |
 | `--inference-chunk-size INTEGER RANGE` | Target number of focal spots per section-aligned inference chunk. Physical sections remain intact, all spots are retained, and section-aware chunks include graph halos.  \[default: 250000; x>=1] |
 | `--hidden-size INTEGER RANGE` | Units in the first hidden layer  \[default: 128; 32<=x<=512] |
 | `--embedding-size INTEGER RANGE` | Size of the latent embedding layer  \[default: 32; 8<=x<=128] |
@@ -172,7 +176,7 @@ This step:
 |---|---|
 | `--workdir DIRECTORY` | Path to the working directory  \[required] |
 | `--project-name TEXT` | Name of the project  \[required] |
-| `--dataset-type [scrna\|spatial2d\|spatial3d]` | Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)  \[default: spatial2D] |
+| `--dataset-type [scrna\|spatial2d\|spatial3d]` | Type of dataset: scRNA, spatial2D (XY), or spatial3D (XYZ sections or a single thick-tissue volume)  \[default: spatial2D] |
 | `--h5ad-path PATH` | Space-separated list of h5ad file paths. Sample names are derived from file names without suffix. |
 | `--h5ad-yaml FILE` | YAML file with sample names and h5ad paths |
 | `--h5ad-list-file FILE` | Each row is a h5ad file path, sample name is the file name without suffix |
@@ -188,10 +192,9 @@ This step:
 | `--homogeneous-selection-mode [soft_priority\|hard_niche_filter]` | How niche similarity is used: soft_priority ranks passing neighbors first and fills remaining slots; hard_niche_filter reproduces the historical rule by assigning zero marker-score weight below the niche threshold.  \[default: soft_priority] |
 | `--no-expression-fraction` | Skip expression fraction filtering |
 | `--adjacent-slice-spatial-neighbors INTEGER RANGE` | Number of spatial neighbors to find on each adjacent slice for 3D data  \[default: 200; 10<=x<=2000] |
-| `--n-adjacent-slices INTEGER RANGE` | For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.  \[default: 2; 0<=x<=100] |
+| `--n-adjacent-slices INTEGER RANGE` | Adjacent sections on each side (default 2). Set 0 to disable cross-section homogeneous matching while retaining XYZ distances. Automatically 0 for a single spatial3D volume. Does not disable an explicit section-aware embedding graph.  \[default: 2; 0<=x<=100] |
 | `--cross-slice-selection-mode [ordinal\|physical_window]` | How cross-section candidates are chosen: by ordinal input order (legacy) or by a measured physical z-distance window.  \[default: ordinal] |
 | `--cross-slice-max-distance FLOAT RANGE` | Maximum absolute physical z distance for physical-window section selection. Required when cross_slice_selection_mode=physical_window.  \[x>=0.0] |
-| `--cross-slice-z-coordinate INTEGER` | Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.  \[default: -1] |
 | `--cross-slice-z-scale FLOAT RANGE` | Physical units per registered z-coordinate unit. For example, use 4 for the E11.5 z_correction coordinates to express the window in micrometres.  \[default: 1.0; x>=0.0] |
 | `--cross-slice-marker-score-strategy [global_pool\|per_slice_pool\|hierarchical_pool]` | Strategy for computing marker scores across slices in spatial3D datasets. 'global_pool': Select the top K most similar neighbors globally across all slices combined. 'per_slice_pool': Select a fixed number of neighbors (K) from each slice independently, then compute a single weighted average score from all selected neighbors. 'hierarchical_pool': Compute an independent marker score for each slice using its top K neighbors, then take the average of these per-slice scores.  \[default: hierarchical_pool] |
 | `--high-quality-neighbor-filter / --no-high-quality-filter` | Only find neighbors within high quality cells (requires High_quality column in obs)  \[default: no-high-quality-filter] |
@@ -225,8 +228,8 @@ This step:
 | `--ldsc-regression-backend [auto\|jax\|moments]` | Regression backend: auto uses fused moments for two baseline annotations plus intercept, otherwise JAX. jax disables this fast path.  \[default: auto] |
 | `--ldsc-trait-batch-size INTEGER RANGE` | Traits per regression group in shared-LD mode; all requested traits are processed, regardless of this group size.  \[default: 4; 1<=x<=16] |
 | `--memmap-tmp-dir DIRECTORY` | Optional fast scratch directory. Concurrent spatial-LDSC processes stage and reuse one content-addressed, read-only marker cache per directory/node. If it does not fit, gsMap streams directly from project storage. |
-| `--ldsc-gwas-workers INTEGER RANGE` | Concurrent GWAS file preparation in shared-LD mode (bounded prefetch). Use fewer workers to reduce temporary memory; at most 16 files are in flight.  \[default: 16; 1<=x<=16] |
 | `--ldsc-read-workers INTEGER RANGE` | Reader/preparation workers. Shared-LD mode uses at most four readers for NumPy/memmap markers and one for shared file handles; non-shared mode uses this for sparse-transform or marker-preparation workers.  \[default: 10; x>=1] |
+| `--ldsc-gwas-workers INTEGER RANGE` | Concurrent GWAS file preparation in shared-LD mode (bounded prefetch). Use fewer workers to reduce temporary memory; at most 16 files are in flight.  \[default: 16; 1<=x<=16] |
 | `--ldsc-compute-workers INTEGER RANGE` | Requested CPU compute threads for the automatic moment backend, capped by available cores and thread limits; regression workers in non-shared mode. Does not select the number of GPUs.  \[default: 10; x>=1] |
 | `--spots-per-chunk-quick-mode INTEGER RANGE` | Spots per spatial-LDSC compute chunk. Omit to select automatically for the execution device; an explicit value overrides both CPU and GPU defaults.  \[default: (auto: CPU=400, GPU=100); x>=1] |
 | `--trait-name TEXT` | Name of the trait for GWAS analysis |

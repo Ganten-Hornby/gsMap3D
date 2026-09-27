@@ -47,7 +47,6 @@ def test_physical_window_uses_calibrated_distance_and_pads_missing_planes() -> N
         slice_ids,
         cross_slice_selection_mode=CrossSliceSelectionMode.PHYSICAL_WINDOW,
         cross_slice_max_distance=20.0,
-        cross_slice_z_coordinate=2,
         cross_slice_z_scale=4.0,
     )
 
@@ -78,7 +77,7 @@ def test_ordinal_mode_preserves_boundary_compensation() -> None:
 
 def test_physical_window_requires_a_z_coordinate() -> None:
     coords, slice_ids = irregular_fixture()
-    with pytest.raises(ValueError, match="at least three coordinate"):
+    with pytest.raises(ValueError, match="exactly three coordinate"):
         find_neighbors(
             coords[:, :2],
             slice_ids,
@@ -87,27 +86,26 @@ def test_physical_window_requires_a_z_coordinate() -> None:
         )
 
 
-@pytest.mark.parametrize("z_column", [3, -4])
-def test_physical_window_rejects_out_of_range_z_column(z_column: int) -> None:
+def test_physical_window_always_uses_the_third_column() -> None:
     coords, slice_ids = irregular_fixture()
-    with pytest.raises(IndexError, match="outside"):
-        find_neighbors(
-            coords,
-            slice_ids,
-            cross_slice_selection_mode=CrossSliceSelectionMode.PHYSICAL_WINDOW,
-            cross_slice_max_distance=20.0,
-            cross_slice_z_coordinate=z_column,
-        )
+    neighbors = find_neighbors(
+        coords,
+        slice_ids,
+        cross_slice_selection_mode="physical_window",
+        cross_slice_max_distance=6.0,
+    )
+    # Every section has the same median Y, while only the first two Z positions
+    # fit the window. X/Y must never be inferred as the stacking axis.
+    assert set(neighbors[0, 2:4]) == {2, 3}
+    assert np.all(neighbors[4, 2:6] == -1)
 
 
-@pytest.mark.parametrize("z_column", [0, 1, -3, -2])
-def test_physical_window_rejects_xy_as_z(z_column: int) -> None:
+def test_physical_window_rejects_extra_coordinate_columns() -> None:
     coords, slice_ids = irregular_fixture()
-    with pytest.raises(ValueError, match="first two x/y"):
+    with pytest.raises(ValueError, match="exactly three coordinate"):
         find_neighbors(
-            coords,
+            np.column_stack((coords, np.zeros(len(coords)))),
             slice_ids,
-            cross_slice_selection_mode=CrossSliceSelectionMode.PHYSICAL_WINDOW,
+            cross_slice_selection_mode="physical_window",
             cross_slice_max_distance=20.0,
-            cross_slice_z_coordinate=z_column,
         )

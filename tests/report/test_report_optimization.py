@@ -13,6 +13,7 @@ from gsMap.config.quick_mode_config import (
     get_report_missing_files,
 )
 from gsMap.config.report_config import ReportConfig
+from gsMap.config.spatial import report_geometry
 from gsMap.latent2gene.marker_layout import SequentialMarkerRowWriter
 from gsMap.report.diagnosis import load_gwas_data
 from gsMap.report.report_data import (
@@ -172,6 +173,8 @@ def test_report_completion_detects_changed_visualization_limits(tmp_path):
                 "top_corr_genes": 10,
                 "trait_labels": {"IQ": "IQ"},
                 "trait_payload_version": 2,
+                "spatial_layout": "sections",
+                "spatial_geometry": report_geometry(config),
             }
         )
     )

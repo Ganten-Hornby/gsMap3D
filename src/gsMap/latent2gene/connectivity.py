@@ -49,7 +49,6 @@ def find_spatial_neighbors_with_slices(
     n_adjacent_slices: int = 2,
     cross_slice_selection_mode: CrossSliceSelectionMode | str = (CrossSliceSelectionMode.ORDINAL),
     cross_slice_max_distance: float | None = None,
-    cross_slice_z_coordinate: int = -1,
     cross_slice_z_scale: float = 1.0,
 ) -> tuple[np.ndarray, dict[int, np.ndarray]]:
     """
@@ -64,7 +63,7 @@ def find_spatial_neighbors_with_slices(
     within high quality cells only.
 
     Args:
-        coords: Spatial coordinates (n_cells, 2) - only x,y coordinates
+        coords: Spatial coordinates in XY (2D) or XYZ (3D) column order.
         slice_ids: Slice/z-coordinate indices (n_cells,) - sequential integers
         query_cell_mask: Boolean mask for cells to find neighbors for
         high_quality_cell_mask: Boolean mask for high quality cells (defines the neighbor search pool)
@@ -75,8 +74,7 @@ def find_spatial_neighbors_with_slices(
         cross_slice_selection_mode: Select sections by ordinal IDs (legacy) or
             measured physical z distance.
         cross_slice_max_distance: Maximum physical z distance when using
-            physical-window selection.
-        cross_slice_z_coordinate: Column in ``coords`` containing section z.
+            physical-window selection; Z is always the third column.
         cross_slice_z_scale: Physical units per registered z-coordinate unit.
 
     Returns:
@@ -184,7 +182,11 @@ def find_spatial_neighbors_with_slices(
                     # f"Some neighbors will be invalid (-1)."
                 )
 
-    selection_mode = CrossSliceSelectionMode(cross_slice_selection_mode)
+    selection_mode = (
+        CrossSliceSelectionMode(cross_slice_selection_mode)
+        if n_adjacent_slices > 0
+        else CrossSliceSelectionMode.ORDINAL
+    )
 
     # Build a mapping of slice_id -> list of adjacent slice_ids to search.
     # The fixed number of slots keeps downstream array shapes unchanged. Physical
@@ -195,10 +197,10 @@ def find_spatial_neighbors_with_slices(
 
     slice_z_positions = None
     if selection_mode == CrossSliceSelectionMode.PHYSICAL_WINDOW:
-        if coords.ndim != 2 or coords.shape[1] < 3:
+        if coords.ndim != 2 or coords.shape[1] != 3:
             raise ValueError(
                 "physical_window cross-section selection requires a spatial key "
-                "with at least three coordinate columns"
+                "with exactly three coordinate columns [X, Y, Z]"
             )
         if (
             cross_slice_max_distance is None
@@ -210,23 +212,9 @@ def find_spatial_neighbors_with_slices(
             )
         if not np.isfinite(cross_slice_z_scale) or cross_slice_z_scale <= 0:
             raise ValueError("cross_slice_z_scale must be positive for physical_window selection")
-        z_column = cross_slice_z_coordinate
-        if z_column < 0:
-            z_column += coords.shape[1]
-        if not 0 <= z_column < coords.shape[1]:
-            raise IndexError(
-                f"cross_slice_z_coordinate={cross_slice_z_coordinate} is outside "
-                f"the {coords.shape[1]} spatial coordinate columns"
-            )
-        if z_column < 2:
-            raise ValueError(
-                "cross_slice_z_coordinate must identify a registered z column after "
-                "the first two x/y spatial coordinates"
-            )
+
         slice_z_positions = {
-            slice_id: float(
-                np.median(coords[slice_ids == slice_id, z_column]) * cross_slice_z_scale
-            )
+            slice_id: float(np.median(coords[slice_ids == slice_id, 2]) * cross_slice_z_scale)
             for slice_id in unique_slice_ids
         }
         if not np.isfinite(list(slice_z_positions.values())).all():
@@ -749,6 +737,10 @@ class ConnectivityMatrixBuilder:
             if coords is None or emb_indv is None:
                 raise ValueError("coords and emb_indv required for spatial datasets")
 
+            from gsMap.config.spatial import spatial_coordinates
+
+            coords = spatial_coordinates(coords, self.dataset_type, n_obs=len(emb_indv))
+
             # Use config defaults if not provided
             if k_central is None:
                 k_central = self.config.spatial_neighbors
@@ -776,7 +768,6 @@ class ConnectivityMatrixBuilder:
                 n_adjacent_slices=n_adjacent_slices,
                 cross_slice_selection_mode=self.config.cross_slice_selection_mode,
                 cross_slice_max_distance=self.config.cross_slice_max_distance,
-                cross_slice_z_coordinate=self.config.cross_slice_z_coordinate,
                 cross_slice_z_scale=self.config.cross_slice_z_scale,
             )
 
@@ -798,14 +789,13 @@ class ConnectivityMatrixBuilder:
             CrossSliceSelectionMode.ORDINAL
         ),
         cross_slice_max_distance: float | None = None,
-        cross_slice_z_coordinate: int = -1,
         cross_slice_z_scale: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Internal method for building spatial connectivity matrix.
 
         Args:
-            coords: Spatial coordinates (n_cells, 2) - only x,y coordinates
+            coords: Spatial coordinates in XY (2D) or XYZ (3D) column order.
             emb_niche: Niche embeddings (n_cells, d1) - always provided (may be dummy ones)
             emb_indv: Cell identity embeddings (n_cells, d2)
             cell_mask: Boolean mask for cells to process
@@ -815,8 +805,7 @@ class ConnectivityMatrixBuilder:
             k_adjacent: Number of neighbors on adjacent slices for 3D data
             n_adjacent_slices: Number of slices to search above/below for 3D data
             cross_slice_selection_mode: Ordinal or physical-window section selection.
-            cross_slice_max_distance: Physical z-distance cutoff for physical-window mode.
-            cross_slice_z_coordinate: Coordinate column containing section z.
+            cross_slice_max_distance: Physical Z-distance cutoff using the third column.
             cross_slice_z_scale: Physical units per registered z unit.
 
         Returns:
@@ -841,7 +830,6 @@ class ConnectivityMatrixBuilder:
             n_adjacent_slices=n_adjacent_slices,
             cross_slice_selection_mode=cross_slice_selection_mode,
             cross_slice_max_distance=cross_slice_max_distance,
-            cross_slice_z_coordinate=cross_slice_z_coordinate,
             cross_slice_z_scale=cross_slice_z_scale,
         )
 

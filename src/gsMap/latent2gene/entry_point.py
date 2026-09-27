@@ -79,6 +79,10 @@ def run_latent_to_gene(config: LatentToGeneConfig) -> dict[str, Any]:
             - marker_scores: Path to marker scores memory map
     """
 
+    from gsMap.config.spatial import guard_spatial_contract
+
+    guard_spatial_contract(config, write=True)
+
     # Setup output directory using config paths
     output_dir = Path(config.latent2gene_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

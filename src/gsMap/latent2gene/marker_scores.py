@@ -550,13 +550,11 @@ class MarkerScoreCalculator:
             spatial_key = self.config.spatial_key
             if spatial_key not in adata.obsm:
                 raise KeyError(f"Spatial coordinates '{spatial_key}' are missing from adata.obsm")
-            coords = np.asarray(adata.obsm[spatial_key])
-            if coords.ndim != 2 or coords.shape[0] != adata.n_obs or coords.shape[1] < 2:
-                raise ValueError(
-                    f"Spatial coordinates must have shape ({adata.n_obs}, >=2), got {coords.shape}"
-                )
-            if not np.isfinite(coords[:, :2]).all():
-                raise ValueError("Spatial x/y coordinates contain non-finite values")
+            from gsMap.config.spatial import spatial_coordinates
+
+            coords = spatial_coordinates(
+                adata.obsm[spatial_key], self.config.dataset_type, n_obs=adata.n_obs
+            )
 
             if "slice_id" not in adata.obs.columns:
                 raise KeyError("Spatial marker-score calculation requires adata.obs['slice_id']")
@@ -670,6 +668,7 @@ class MarkerScoreCalculator:
 
         if (
             self.config.dataset_type == DatasetType.SPATIAL_3D
+            and self.config.n_adjacent_slices > 0
             and self.config.cross_slice_marker_score_strategy
             in [
                 MarkerScoreCrossSliceStrategy.PER_SLICE_POOL,
@@ -1222,8 +1221,9 @@ class MarkerScoreCalculator:
                 coords[cell_indices],
                 slice_ids=slice_ids[cell_indices],
                 dataset_type=self.config.dataset_type,
-                z_coordinate=self.config.cross_slice_z_coordinate,
-                z_scale=self.config.cross_slice_z_scale,
+                z_scale=self.config.cross_slice_z_scale
+                if self.config.n_adjacent_slices > 0
+                else 1.0,
             )
         else:
             logger.info("Optimizing non-spatial row order for cache efficiency...")

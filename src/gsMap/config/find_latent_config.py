@@ -13,9 +13,8 @@ import typer
 import yaml
 
 from gsMap.config.base import ConfigWithAutoPaths
+from gsMap.config.spatial import DatasetType, validate_spatial_config
 from gsMap.config.utils import (
-    get_h5ad_obsm_shape,
-    get_h5ad_obsm_unique_values,
     process_h5ad_inputs,
     validate_h5ad_structure,
     verify_homolog_file_format,
@@ -171,6 +170,14 @@ class FindLatentModelConfig:
 
 @dataclass
 class FindLatentCoreConfig:
+    dataset_type: Annotated[
+        DatasetType,
+        typer.Option(
+            help="spatial2D (XY) or spatial3D (XYZ sections or a thick-tissue volume)",
+            case_sensitive=False,
+        ),
+    ] = DatasetType.SPATIAL_2D
+
     h5ad_path: Annotated[
         list[Path] | None,
         typer.Option(
@@ -305,7 +312,9 @@ class FindLatentRepresentationsConfig(
             or self.graph_sigma <= 0
         ):
             raise ValueError("A positive graph_sigma is required for weighted_radius")
-        if self.graph_mode == "section_aware_3d" and self.graph_z_scale <= 0:
+        if self.graph_mode == "section_aware_3d" and (
+            not math.isfinite(self.graph_z_scale) or self.graph_z_scale <= 0
+        ):
             raise ValueError("graph_z_scale must be positive for section_aware_3d mode")
         if self.graph_mode.startswith("legacy_"):
             logger.warning(
@@ -328,6 +337,9 @@ class FindLatentRepresentationsConfig(
             raise ValueError(
                 "At least one of h5ad_yaml, h5ad_path, h5ad_list_file, or spe_file_list must be provided"
             )
+        validate_spatial_config(self)
+        if self.dataset_type == DatasetType.SCRNA_SEQ:
+            self.spatial_key = None
         # Define required and optional fields for validation
         required_fields = {
             "data_layer": ("layers", self.data_layer, "Data layer"),
@@ -340,49 +352,6 @@ class FindLatentRepresentationsConfig(
 
         # Validate h5ad structure
         validate_h5ad_structure(self.sample_h5ad_dict, required_fields)
-
-        if self.graph_mode in {"sectionwise_2d", "section_aware_3d"}:
-            unique_z_values: set[float] = set()
-            has_xyz_input = False
-            n_input_slices = len(self.sample_h5ad_dict)
-            for sample_name, h5ad_path in self.sample_h5ad_dict.items():
-                spatial_shape = get_h5ad_obsm_shape(h5ad_path, self.spatial_key)
-                allowed_coordinate_widths = {2, 3} if self.graph_mode == "sectionwise_2d" else {3}
-                if len(spatial_shape) != 2 or spatial_shape[1] not in allowed_coordinate_widths:
-                    raise ValueError(
-                        f"{self.graph_mode} requires "
-                        f"{'an XY or XYZ' if self.graph_mode == 'sectionwise_2d' else 'an XYZ'} "
-                        "spatial array; "
-                        f"sample {sample_name!r} has shape {spatial_shape}"
-                    )
-                if spatial_shape[1] == 3:
-                    has_xyz_input = True
-                    unique_z_values.update(
-                        get_h5ad_obsm_unique_values(
-                            h5ad_path,
-                            self.spatial_key,
-                            2,
-                            stop_after=n_input_slices,
-                        )
-                    )
-
-            logger.warning(
-                "%s treats each input H5AD file as one slice and uses the H5AD list "
-                "order as physical slice order. Ensure the input list is already "
-                "correctly ordered.",
-                self.graph_mode,
-            )
-            if has_xyz_input and len(unique_z_values) != n_input_slices:
-                count_qualifier = "at least " if len(unique_z_values) > n_input_slices else ""
-                logger.warning(
-                    "%s input consistency check found %s%d unique z values "
-                    "across %d H5AD slice files. Slice identity still comes from the "
-                    "H5AD file list, not z.",
-                    self.graph_mode,
-                    count_qualifier,
-                    len(unique_z_values),
-                    n_input_slices,
-                )
 
         # Log final sample count
         logger.info(f"Loaded and validated {len(self.sample_h5ad_dict)} samples")

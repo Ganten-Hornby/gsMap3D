@@ -226,7 +226,7 @@ print(adata.obs["annotation"].value_counts().head())
 - **`--dataset-type`**:
     Specifies the data modality.
     - `spatial2D`: Standard 2D spatial transcriptomics (e.g., Visium, Stereo-seq).
-    - `spatial3D`: 3D spatial stacks (multiple aligned 2D slices).
+    - `spatial3D`: 3D spatial transcriptomics (aligned sections or thick tissue).
 
 #### H5ad Path
 
@@ -260,7 +260,7 @@ For YAML and list files, relative paths are resolved from the directory containi
 the configuration file, not the shell working directory. Use one input form.
 
 ```{important}
-For `spatial3D` datasets, the order of file paths defines the Z-axis order of slices. Ensure files are listed in the same order as they appear along the Z-axis (e.g., from bottom to top or vice versa).
+For multiple `spatial3D` inputs, list H5AD files in anatomical order along Z (ascending or descending). Each file identifies one section; distinct coordinate values do not create new sections.
 ```
 
 #### Data Layers & Coordinates
@@ -269,7 +269,12 @@ For `spatial3D` datasets, the order of file paths defines the Z-axis order of sl
 - **`--spatial-key`**: The key in `adata.obsm` containing spatial coordinates (default: 'spatial').
 
 ```{important}
-For `spatial3D` datasets, the spatial coordinates must be **aligned across slices**. Ensure all slices share a common coordinate system before running gsMap.
+Use columns **[X, Y, Z]**, with Z in the third column, for `spatial3D`.
+Multiple sections must share an **aligned coordinate system**, with XY in the
+section plane and Z along the stack. Within each section, the sampled Z span
+must be smaller than both X and Y spans; otherwise configuration fails.
+A single XYZ file is a volume and is exempt from this section-thickness check.
+In `spatial2D`, XYZ input emits a warning and only X and Y are used.
 ```
 
 #### Annotation
@@ -395,7 +400,7 @@ Batch and chunk sizes control execution, not the biological neighborhood.
 
 #### 3D Specific Options
 
-For `spatial3D` datasets, `gsMap3D` can search for homogeneous neighbors across aligned adjacent slices.
+For multiple `spatial3D` sections, gsMap can search for homogeneous neighbors across aligned adjacent slices. Set `n_adjacent_slices=0` to disable this matching while retaining full XYZ distances. Single-file thick tissue always uses within-volume neighbors. Cross-section matching and the embedding graph are independent.
 
 - **`--n-adjacent-slices`**:
     Default: `2` sections above and below. Ordinal selection follows input order

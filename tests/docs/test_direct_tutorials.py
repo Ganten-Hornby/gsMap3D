@@ -376,7 +376,20 @@ def test_e11_quick_mode_initializes_documented_settings(tmp_path, monkeypatch, i
     (tmp_path / "results").mkdir()
     dataset = tmp_path / "example_data/mouse-e11"
     dataset.mkdir(parents=True)
-    (dataset / "sample_paths.txt").write_text("ST/Mouse_E11.5_embryo_S00.h5ad\n")
+    import anndata as ad
+    import numpy as np
+
+    (dataset / "ST").mkdir()
+    inputs = []
+    for section in range(17):
+        relative = f"ST/Mouse_E11.5_embryo_S{section:02d}.h5ad"
+        data = ad.AnnData(np.ones((3, 2)))
+        data.obsm["z_correction"] = np.array(
+            [[0, 0, section], [1, 0, section], [0, 1, section]], dtype=float
+        )
+        data.write_h5ad(dataset / relative)
+        inputs.append(relative)
+    (dataset / "sample_paths.txt").write_text("\n".join(inputs) + "\n")
     shutil.copyfile(
         REPO / "tests/fixtures/tutorial_inputs/mouse-e11/gwas.yaml",
         dataset / "gwas.yaml",

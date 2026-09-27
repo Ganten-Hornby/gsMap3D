@@ -198,7 +198,13 @@ def _section_labels_for_graph(adata, params) -> np.ndarray | None:
 
     graph_mode = params.graph_mode.lower()
     if graph_mode == "sectionwise_2d":
-        return sectionwise_2d_slice_labels(np.asarray(adata.obsm[params.spatial_key]))
+        from gsMap.config.spatial import spatial_coordinates
+
+        return sectionwise_2d_slice_labels(
+            spatial_coordinates(
+                adata.obsm[params.spatial_key], getattr(params, "dataset_type", "spatial2D")
+            )
+        )
     if graph_mode == "section_aware_3d":
         raise RuntimeError(
             "section_aware_3d slice identity comes from the ordered H5AD file list; "
@@ -219,9 +225,16 @@ def propagate_spatial_features(
 ) -> tuple[torch.Tensor, SpatialGraph]:
     """Construct the configured graph and propagate one expression block."""
 
+    from gsMap.config.spatial import spatial_coordinates
+
+    coords = spatial_coordinates(
+        coords, getattr(params, "dataset_type", "spatial2D"), n_obs=expression.shape[0]
+    )
     if params.graph_mode.lower() == "section_aware_3d" and params.graph_z_scale != 1.0:
         coords = np.array(coords, dtype=np.float64, copy=True)
-        coords[:, -1] *= params.graph_z_scale
+        coords[:, 2] *= params.graph_z_scale
+    if params.graph_mode.lower() == "section_aware_3d" and section_order is None:
+        section_order = order_sections_by_median_coordinate(coords, section_labels)
 
     graph = build_graph_for_mode(
         coords=coords,

@@ -54,6 +54,7 @@ def _params(graph_mode: str) -> SimpleNamespace:
         annotation="spatial_domain",
         spatial_key="spatial",
         graph_mode=graph_mode,
+        dataset_type="spatial3D" if graph_mode == "section_aware_3d" else "spatial2D",
         graph_z_scale=1.0,
         graph_radius=None,
         graph_sigma=None,

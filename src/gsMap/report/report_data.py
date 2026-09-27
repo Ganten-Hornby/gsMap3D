@@ -33,6 +33,12 @@ from gsMap.config import QuickModeConfig
 from gsMap.config.gwas import trait_labels
 from gsMap.config.latent2gene_config import DatasetType
 from gsMap.config.report_config import should_export_spatialvista
+from gsMap.config.spatial import (
+    is_thick_tissue,
+    report_geometry,
+    spatial_coordinates,
+    spatial_layout,
+)
 from gsMap.latent2gene.marker_layout import open_marker_obs_indices
 from gsMap.latent2gene.memmap_io import MemMapDense
 from gsMap.report.diagnosis import convert_z_to_p, filter_snps, load_gwas_data
@@ -381,7 +387,7 @@ class ReportDataManager:
             if self.report_config.dataset_type in (
                 DatasetType.SPATIAL_2D,
                 DatasetType.SPATIAL_3D,
-            ):
+            ) and not is_thick_tissue(self.report_config):
                 required_columns.update(("sx", "sy"))
             if self.report_config.dataset_type == DatasetType.SPATIAL_3D:
                 required_columns.update(("3d_x", "3d_y", "3d_z"))
@@ -442,9 +448,10 @@ class ReportDataManager:
         # Only this stage needs invalidation; full PCC tables remain reusable.
         try:
             previous = json.loads((self.web_report_dir / "report_meta.json").read_text())
-            top_genes_current = isinstance(previous, dict) and previous.get(
-                "top_corr_genes"
-            ) == self.report_config.top_corr_genes
+            top_genes_current = (
+                isinstance(previous, dict)
+                and previous.get("top_corr_genes") == self.report_config.top_corr_genes
+            )
         except (OSError, ValueError):
             top_genes_current = False
 
@@ -576,8 +583,10 @@ class ReportDataManager:
         dataset_type = getattr(self.report_config, "dataset_type", DatasetType.SPATIAL_2D)
         is_spatial = dataset_type in (DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D)
 
-        if not is_spatial:
-            logger.info("Skipping static plot rendering for non-spatial dataset type")
+        if not is_spatial or is_thick_tissue(self.report_config):
+            logger.info(
+                "Skipping section-style 2D static plots; non-spatial statistics remain available"
+            )
             return
 
         from .visualize import (
@@ -1277,84 +1286,27 @@ def _derive_section_plane_coordinates(
     coordinates: np.ndarray,
     sample_names: pd.Series,
     axis_titles: list[str],
-    *,
-    maximum_cut_span_ratio: float = 0.35,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, dict]]:
-    """Project each physical section onto its detected in-plane coordinate axes.
-
-    Serial sections need not be cut normal to the third coordinate axis.  A true
-    section is much thinner along its cut-normal axis than along either in-plane
-    axis, so the 1st--99th percentile span provides a robust orientation signal.
-    When no axis is clearly thinner, retain the first two coordinates rather
-    than inventing a section orientation for volumetric data.
-    """
-
+    """Use the fixed XY section plane; Z is always the third coordinate."""
     coordinates = np.asarray(coordinates, dtype=np.float64)
     if coordinates.ndim != 2 or coordinates.shape[1] != 3:
-        raise ValueError("Section-plane detection requires an n-by-3 coordinate array")
+        raise ValueError("Section-plane projection requires an n-by-3 coordinate array")
     if len(sample_names) != len(coordinates):
         raise ValueError("Section-plane sample labels must match the coordinate rows")
     if len(axis_titles) != 3:
-        raise ValueError("Section-plane detection requires exactly three axis titles")
+        raise ValueError("Section-plane projection requires exactly three axis titles")
 
-    sample_values = sample_names.astype(str).to_numpy()
-    sample_codes, unique_samples = pd.factorize(sample_values, sort=False)
-    order = np.argsort(sample_codes, kind="stable")
-    counts = np.bincount(sample_codes[sample_codes >= 0], minlength=len(unique_samples))
-    offsets = np.concatenate(([0], np.cumsum(counts)))
-
-    section_x = np.empty(len(coordinates), dtype=np.float64)
-    section_y = np.empty(len(coordinates), dtype=np.float64)
-    section_planes: dict[str, dict] = {}
-    for code, sample_name in enumerate(unique_samples):
-        positions = order[offsets[code] : offsets[code + 1]]
-        sample_coordinates = coordinates[positions]
-        with np.errstate(all="ignore"):
-            quantiles = np.nanpercentile(sample_coordinates, [1.0, 99.0], axis=0)
-        robust_spans = quantiles[1] - quantiles[0]
-        finite_order = np.argsort(np.where(np.isfinite(robust_spans), robust_spans, np.inf))
-        smallest_axis = int(finite_order[0])
-        second_span = float(robust_spans[finite_order[1]])
-        smallest_span = float(robust_spans[smallest_axis])
-        cut_span_ratio = (
-            smallest_span / second_span
-            if np.isfinite(smallest_span) and np.isfinite(second_span) and second_span > 0
-            else np.inf
-        )
-        detected = cut_span_ratio <= maximum_cut_span_ratio
-        cut_axis = smallest_axis if detected else 2
-        in_plane_axes = [axis for axis in range(3) if axis != cut_axis]
-
-        section_x[positions] = sample_coordinates[:, in_plane_axes[0]]
-        section_y[positions] = sample_coordinates[:, in_plane_axes[1]]
-        section_planes[str(sample_name)] = {
-            "x_axis": in_plane_axes[0],
-            "y_axis": in_plane_axes[1],
-            "cut_axis": cut_axis,
-            "axis_titles": [axis_titles[in_plane_axes[0]], axis_titles[in_plane_axes[1]]],
-            "cut_axis_title": axis_titles[cut_axis],
-            "cut_axis_detected": detected,
-            "cut_to_in_plane_span_ratio": (
-                round(cut_span_ratio, 6) if np.isfinite(cut_span_ratio) else None
-            ),
+    section_planes = {
+        str(sample): {
+            "x_axis": 0,
+            "y_axis": 1,
+            "cut_axis": 2,
+            "axis_titles": axis_titles[:2],
+            "cut_axis_title": axis_titles[2],
         }
-
-    detected_counts = pd.Series(
-        [
-            plane["cut_axis_title"]
-            for plane in section_planes.values()
-            if plane["cut_axis_detected"]
-        ]
-    ).value_counts()
-    logger.info(
-        "Detected section cut-normal axes from physical coordinates: "
-        + (
-            ", ".join(f"{axis}={count}" for axis, count in detected_counts.items())
-            if len(detected_counts)
-            else "no strongly planar samples; retained the first two axes"
-        )
-    )
-    return section_x, section_y, section_planes
+        for sample in pd.unique(sample_names.astype(str))
+    }
+    return coordinates[:, 0], coordinates[:, 1], section_planes
 
 
 def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, bool, int | None]:
@@ -1395,128 +1347,55 @@ def _load_coordinates(report_config: QuickModeConfig) -> tuple[pd.DataFrame, boo
         hasattr(report_config, "dataset_type")
         and report_config.dataset_type == DatasetType.SPATIAL_3D
     )
-    has_3d_coords = coords_data.shape[1] >= 3
-
+    coords_data = spatial_coordinates(
+        coords_data, report_config.dataset_type, n_obs=adata_concat.n_obs
+    )
     z_axis = None
     coordinate_info = None
-    if is_3d_type and has_3d_coords:
-        # True 3D coordinates
-        logger.info("Detected 3D spatial coordinates")
-        z_axis = int(getattr(report_config, "cross_slice_z_coordinate", -1))
-        if z_axis < 0:
-            z_axis += coords_data.shape[1]
-        if not 0 <= z_axis < coords_data.shape[1]:
-            raise IndexError(
-                f"cross_slice_z_coordinate is outside the {coords_data.shape[1]} "
-                "spatial coordinate columns"
-            )
-        if z_axis < 2:
-            raise ValueError(
-                "cross_slice_z_coordinate must identify a Z column after the first "
-                "two X/Y spatial coordinate columns"
-            )
-
-        report_coordinates = np.asarray(coords_data[:, [0, 1, z_axis]], dtype=np.float64)
-        z_scale = float(getattr(report_config, "cross_slice_z_scale", 1.0))
-        report_coordinates[:, 2] *= z_scale
+    if is_3d_type:
+        volume = is_thick_tissue(report_config)
+        z_axis = 2
+        report_coordinates = np.array(coords_data, dtype=np.float64, copy=True)
+        matching = not volume and getattr(report_config, "n_adjacent_slices", 2) > 0
+        z_scale = float(getattr(report_config, "cross_slice_z_scale", 1.0)) if matching else 1.0
+        if not np.isfinite(z_scale) or z_scale <= 0:
+            raise ValueError("cross_slice_z_scale must be positive and finite")
+        report_coordinates[:, z_axis] *= z_scale
         coords = pd.DataFrame(
-            report_coordinates,
-            columns=["3d_x", "3d_y", "3d_z"],
-            index=adata_concat.obs_names,
+            report_coordinates, columns=["3d_x", "3d_y", "3d_z"], index=adata_concat.obs_names
         )
         axis_titles = ["X", "Y", "Z"]
-        section_x, section_y, section_planes = _derive_section_plane_coordinates(
-            report_coordinates,
-            sample_info["sample_name"],
-            axis_titles,
-        )
+        section_planes = {}
+        if not volume:
+            section_x, section_y, section_planes = _derive_section_plane_coordinates(
+                report_coordinates,
+                sample_info["sample_name"],
+                axis_titles,
+            )
+            coords["sx"] = section_x
+            coords["sy"] = section_y
         coordinate_info = {
-            "schema_version": 3,
+            "schema_version": 5,
+            "layout": spatial_layout(report_config),
             "z_source": "registered_coordinate",
             "z_axis_input": z_axis,
             "z_scale": z_scale,
             "z_is_physical": True,
             "default_aspect_mode": "physical",
             "axis_titles": axis_titles,
-            "section_plane_method": "per_sample_1st_to_99th_percentile_span",
-            "section_plane_maximum_cut_span_ratio": 0.35,
+            "section_plane_method": None if volume else "fixed_xy",
             "section_planes": section_planes,
             "note": (
-                f"Z uses input coordinate axis {z_axis} with configured scale {z_scale:g}. "
-                "Each 2D section drops its strongly least-varying physical axis; samples without "
-                "a clear cut-normal axis retain X/Y."
+                "Original XYZ axes are preserved. "
+                + (
+                    "Single thick-tissue volume; no section-style 2D projection."
+                    if volume
+                    else f"Z (column 2) is scaled by {z_scale:g}; section views use X and Y."
+                )
             ),
         }
-
-        coords["sx"] = section_x
-        coords["sy"] = section_y
-
-    elif is_3d_type and not has_3d_coords:
-        # 3D dataset type but only 2D coordinates - create pseudo Z axis
-        logger.info(
-            "3D dataset type with 2D coordinates - creating pseudo Z axis based on sample_name"
-        )
-        coords_2d = coords_data[:, :2]
-        coords = pd.DataFrame(coords_2d, columns=["sx", "sy"], index=adata_concat.obs_names)
-
-        # Assign Z values based on sample order from report_config
-        sample_names_all = adata_concat.obs["sample_name"]
-        actual_samples_in_data = set(sample_names_all.unique())
-
-        # Explicitly use report_config order
-        ordered_samples = list(report_config.sample_h5ad_dict.keys())
-        missing = [s for s in ordered_samples if s not in actual_samples_in_data]
-        assert not missing, f"Samples {missing} in config are not present in coordinates data."
-
-        n_samples = len(ordered_samples)
-        z_values_per_sample = {
-            sample: float(index) for index, sample in enumerate(ordered_samples)
-        }
-
-        # Assign Z values to each spot
-        pseudo_z = sample_names_all.map(z_values_per_sample).values
-
-        coords["3d_x"] = coords["sx"]
-        coords["3d_y"] = coords["sy"]
-        coords["3d_z"] = pseudo_z
-        z_axis = 2  # Pseudo Z is always the last dimension
-        coordinate_info = {
-            "schema_version": 3,
-            "z_source": "ordinal_section_order",
-            "z_axis_input": None,
-            "z_scale": None,
-            "z_is_physical": False,
-            "default_aspect_mode": "expanded",
-            "axis_titles": ["X", "Y", "Section order"],
-            "sample_z_positions": z_values_per_sample,
-            "section_plane_method": "input_2d_coordinates",
-            "section_planes": {
-                str(sample): {
-                    "x_axis": 0,
-                    "y_axis": 1,
-                    "cut_axis": 2,
-                    "axis_titles": ["X", "Y"],
-                    "cut_axis_title": "Section order",
-                    "cut_axis_detected": True,
-                    "cut_to_in_plane_span_ratio": 0.0,
-                }
-                for sample in ordered_samples
-            },
-            "note": (
-                "No measured Z coordinate was provided; Z encodes input section order only. "
-                "Section thickness, missing sections, and unequal spacing are not represented."
-            ),
-        }
-
-        logger.warning(
-            f"Created an ordinal (non-physical) Z axis for {n_samples} samples. "
-            "Provide a three-column spatial key for measured 3D distances."
-        )
-
     else:
-        # 2D coordinates (non-3D dataset type)
-        coords_2d = coords_data[:, :2]
-        coords = pd.DataFrame(coords_2d, columns=["sx", "sy"], index=adata_concat.obs_names)
+        coords = pd.DataFrame(coords_data, columns=["sx", "sy"], index=adata_concat.obs_names)
 
     coords = pd.concat([coords, sample_info], axis=1)
     if coordinate_info is not None:
@@ -1942,6 +1821,8 @@ def _spatial_coordinate_info_is_current(path: Path, coordinate_info: dict | None
     except (OSError, ValueError):
         return False
     storage_keys = (
+        "schema_version",
+        "layout",
         "z_source",
         "z_axis_input",
         "z_scale",
@@ -1957,56 +1838,14 @@ def _apply_section_plane_coordinates(
     metadata: pd.DataFrame,
     coordinate_info: dict | None,
 ) -> None:
-    """Apply sample-specific 3D-to-2D projections without changing the CSV cache."""
-
-    section_planes = (coordinate_info or {}).get("section_planes") or {}
-    required_columns = {"sample_name", "sx", "sy", "3d_x", "3d_y", "3d_z"}
-    if not section_planes or not required_columns.issubset(metadata.columns):
+    """Keep cached 2D section views aligned with the fixed XY coordinate contract."""
+    if not (coordinate_info or {}).get("section_planes"):
         return
-
-    coordinate_arrays = [
-        pd.to_numeric(metadata[column], errors="coerce").to_numpy(dtype=np.float64)
-        for column in ("3d_x", "3d_y", "3d_z")
-    ]
-    section_x = pd.to_numeric(metadata["sx"], errors="coerce").to_numpy(
-        dtype=np.float64,
-        copy=True,
-    )
-    section_y = pd.to_numeric(metadata["sy"], errors="coerce").to_numpy(
-        dtype=np.float64,
-        copy=True,
-    )
-    sample_codes, unique_samples = pd.factorize(
-        metadata["sample_name"].astype(str).to_numpy(),
-        sort=False,
-    )
-    order = np.argsort(sample_codes, kind="stable")
-    counts = np.bincount(sample_codes[sample_codes >= 0], minlength=len(unique_samples))
-    offsets = np.concatenate(([0], np.cumsum(counts)))
-
-    applied = 0
-    for code, sample_name in enumerate(unique_samples):
-        plane = section_planes.get(str(sample_name))
-        if not plane:
-            continue
-        x_axis = int(plane.get("x_axis", 0))
-        y_axis = int(plane.get("y_axis", 1))
-        if x_axis == y_axis or not (0 <= x_axis < 3 and 0 <= y_axis < 3):
-            logger.warning(
-                f"Ignoring invalid section-plane axes for sample {sample_name}: {plane}"
-            )
-            continue
-        positions = order[offsets[code] : offsets[code + 1]]
-        section_x[positions] = coordinate_arrays[x_axis][positions]
-        section_y[positions] = coordinate_arrays[y_axis][positions]
-        applied += 1
-
-    metadata["sx"] = section_x
-    metadata["sy"] = section_y
-    logger.info(
-        f"Applied sample-specific in-memory 2D section planes to {applied}/{len(unique_samples)} "
-        "samples for report rendering"
-    )
+    required_columns = {"sx", "sy", "3d_x", "3d_y"}
+    if not required_columns.issubset(metadata.columns):
+        return
+    metadata["sx"] = pd.to_numeric(metadata["3d_x"], errors="coerce")
+    metadata["sy"] = pd.to_numeric(metadata["3d_y"], errors="coerce")
 
 
 def _write_spatial_coordinate_info(path: Path, coordinate_info: dict | None) -> None:
@@ -2619,7 +2458,6 @@ def _save_report_metadata(
             "n_adjacent_slices",
             "adjacent_slice_spatial_neighbors",
             "cross_slice_selection_mode",
-            "cross_slice_z_coordinate",
             "cross_slice_z_scale",
             "cross_slice_max_distance",
             "cross_slice_marker_score_strategy",
@@ -2673,6 +2511,8 @@ def _save_report_metadata(
     }
     report_meta.update(
         {
+            "spatial_layout": spatial_layout(report_config),
+            "spatial_geometry": report_geometry(report_config),
             "association_overview_version": 1,
             "traits": traits,
             "trait_labels": trait_labels(report_config, traits),
@@ -2690,12 +2530,12 @@ def _save_report_metadata(
             "generate_multi_sample_plots": report_config.generate_multi_sample_plots,
             "multi_sample_trait_plots": (
                 {trait: f"by_trait/ldsc_{trait_file_token(trait)}.png" for trait in traits}
-                if report_config.generate_multi_sample_plots
+                if report_config.generate_multi_sample_plots and not is_thick_tissue(report_config)
                 else {}
             ),
             "single_sample_multi_trait_plots": (
                 {sample: f"by_sample/sample_{safe_name(sample)}.png" for sample in sample_names}
-                if report_config.generate_multi_sample_plots
+                if report_config.generate_multi_sample_plots and not is_thick_tissue(report_config)
                 else {}
             ),
             "umap_info": umap_info,
@@ -2808,6 +2648,8 @@ def _sample_spatial_export_signature(data_dir: Path, meta: dict) -> dict:
 def _per_sample_spatial_outputs_current(data_dir: Path, js_data_dir: Path, meta: dict) -> bool:
     """Return whether per-sample JS outputs match a completed export manifest."""
 
+    if meta.get("spatial_layout") == "volume":
+        return False  # Re-export the tiny empty index; never retain a section payload index.
     metadata_file = data_dir / "spot_metadata.csv"
     manifest_path = js_data_dir / "sample_spatial_manifest.json"
     if not metadata_file.is_file() or metadata_file.stat().st_size == 0:
@@ -2892,6 +2734,13 @@ def _export_per_sample_spatial_js(
     metadata: pd.DataFrame | None = None,
 ):
     """Export compact per-sample geometry and lazy trait payloads."""
+    if meta.get("spatial_layout") == "volume":
+        js_data_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(js_data_dir / "sample_index.js", "window.GSMAP_SAMPLE_INDEX={};")
+        if metadata is not None:
+            _export_annotation_schemas_js(js_data_dir, metadata, meta.get("annotations", []))
+        return
+
     metadata_file = data_dir / "spot_metadata.csv"
     if not metadata_file.exists():
         logger.warning("spot_metadata.csv not found, skipping per-sample spatial export")

@@ -69,7 +69,6 @@ def test_missing_neighbor_is_read_safe_but_remains_invalid_in_anndata() -> None:
         n_adjacent_slices=0,
         homogeneous_neighbors=2,
         latent_representation_niche="niche",
-        cross_slice_z_coordinate=-1,
         cross_slice_z_scale=1.0,
     )
 

@@ -21,7 +21,7 @@ After running `gsMap3D`, the output is organized under `{workdir}/{project_name}
 ```
 
 ```{note}
-For `spatial3D` datasets, additional 3D-specific files are generated in `report_data/spatial_3d/` and `gsmap_web_report/spatial_3d/`.
+For `spatial3D` datasets, 3D data and lazy browser payloads are generated in `report_data/spatial_3d/` and `gsmap_web_report/js_data/spatial_3d/`. Single-file thick-tissue reports omit section-style 2D maps and spatial gene plots, but keep UMAP, enrichment, GWAS and gene statistics. `spatial_contract.json` records computation geometry to prevent incompatible output reuse.
 ```
 
 ## Execution Logs
@@ -47,33 +47,17 @@ logs/
 Only steps that ran have log files. The terminal shows progress and key messages;
 files also include debug details and full error tracebacks.
 
-Both CLI and Python pipeline calls record each step's sampled peak host memory
-in its log and `run_manifest.json` (`resource_usage`). Main-process RSS and
-process-tree RSS are reported separately; tree RSS counts shared pages per
-process. Linux PSS apportions shared pages and is reported when available.
-These are RAM measurements, not GPU VRAM; sampling can miss short-lived peaks.
-On Linux, logs also separate anonymous RAM (`RssAnon`), resident file mappings
-(`RssFile`), shared memory (`RssShmem`) and swapped anonymous memory (`VmSwap`).
-The manifest saves independent component peaks and the components observed at
-the RSS peak. Component peaks are not additive. These approximate counters help
-explain memmap residency; `RssAnon` alone is not a minimum-RAM requirement.
+CLI and Python runs record timings, settings and sampled peak host memory in
+`run_manifest.json`. RSS includes resident file mappings; Linux PSS accounts
+for shared pages. These measure RAM, not GPU VRAM, and can miss brief peaks.
 
-LDSC progress includes `cell-traits/s`: completed cells multiplied by the number
-of traits being processed, divided by elapsed time. Intermediate counts refer
-to completed regression results; output writing may still be queued. The final
-throughput includes writing, and multi-GPU totals also include worker setup and merge.
+LDSC throughput is reported in `cell-traits/s`. The final value includes output
+writing; multi-GPU totals also include worker setup and merge.
 
-Shared-LD GWAS preparation logs its worker count and completed traits. It prepares
-up to 16 files concurrently (`--ldsc-gwas-workers`, capped by available CPU cores).
-Tab-separated inputs use Arrow to match reference SNPs before creating pandas
-tables; full-file QC statistics are preserved. Other whitespace formats use pandas.
-Reduce the worker count for large files or limited RAM. This bounds concurrent
-files, not total RAM: retained regression arrays also grow with trait/SNP counts.
-
-For a failed step, open its numbered log; for a failed LDSC trait, open
-`03_spatial_ldsc/{trait}.log`. The adjacent `.manifest.json` file records the
-corresponding run's settings, status and timings. Earlier runs remain in their
-own folders; `latest/` can include steps from different runs.
+For errors, open the numbered step log or `03_spatial_ldsc/{trait}.log`.
+The adjacent `.manifest.json` records that invocation's settings and status.
+Earlier runs remain in their own folders; `latest/` can include steps from
+different runs.
 
 ______________________________________________________________________
 

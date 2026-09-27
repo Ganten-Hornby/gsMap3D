@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from gsMap.config.quick_mode_config import _report_visualization_config_matches
+from gsMap.config.spatial import report_geometry
 from gsMap.report.spatial_payload import trait_file_token
 from gsMap.report.trait_metadata import trait_payload_current, trait_payload_js
 from tests.report import test_report_runtime
@@ -98,6 +99,8 @@ def test_label_changes_invalidate_only_report_completion(tmp_path):
         ]
     }
     meta["trait_payload_version"] = 2
+    meta["spatial_layout"] = "sections"
+    meta["spatial_geometry"] = report_geometry(config)
     (tmp_path / "report_meta.json").write_text(json.dumps(meta))
     assert _report_visualization_config_matches(config)
     config.trait_labels = {"IQ": "Intelligence — cognitive performance"}

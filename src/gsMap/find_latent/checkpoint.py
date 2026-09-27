@@ -19,6 +19,7 @@ def feature_hash(genes):
 def input_contract(config):
     """Conservative reuse guard, not a content checksum of the source H5AD files."""
     fields = (
+        "dataset_type",
         "data_layer",
         "feat_cell",
         "K",
@@ -50,7 +51,11 @@ def input_contract(config):
             }
         )
     return {
-        "parameters": {name: getattr(config, name, None) for name in fields},
+        "parameters": {
+            name: getattr(value, "value", value)
+            for name in fields
+            for value in [getattr(config, name, None)]
+        },
         "ordered_inputs": inputs,
         "encoder_input_transform": "identity",
         "gene_exclusion_regex": "^(HB.-|MT-)",

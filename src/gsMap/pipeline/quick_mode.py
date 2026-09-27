@@ -56,6 +56,11 @@ def run_quick_mode(config: QuickModeConfig):
             f"start_step ({config.start_step}) must be before or equal to stop_step ({config.stop_step})"
         )
 
+    from gsMap.config.spatial import guard_spatial_contract
+
+    if config.requires_spatial_inputs and config.start_step != "report":
+        guard_spatial_contract(config, write=True)
+
     # Step 1: Find Latent Representations
     if start_idx <= 0 <= stop_idx:
         logger.info("=== Step 1: Find Latent Representations ===")

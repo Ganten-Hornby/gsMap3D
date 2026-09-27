@@ -133,6 +133,9 @@ def run_find_latent_representation(config: FindLatentRepresentationsConfig) -> d
         Dictionary containing metadata about the run including config, model info,
         training info, outputs, and annotation info
     """
+    from gsMap.config.spatial import guard_spatial_contract
+
+    guard_spatial_contract(config, write=True)
     logger.info(f"Project dir: {config.project_dir}")
     set_seed(config.random_seed)
 

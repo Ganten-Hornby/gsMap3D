@@ -1,10 +1,24 @@
 """Annotation module-score filtering is opt-in across entry points."""
 
+import anndata as ad
+import numpy as np
 import pytest
+
+
+
+
+
 from typer.main import get_command
 
 from gsMap.cli import app
 from gsMap.config import FindLatentRepresentationsConfig, LatentToGeneConfig, QuickModeConfig
+
+
+@pytest.fixture(autouse=True)
+def spatial_input(tmp_path):
+    data = ad.AnnData(np.ones((5, 2)))
+    data.obsm["spatial"] = np.zeros((5, 2))
+    data.write_h5ad(tmp_path / "input.h5ad")
 
 
 @pytest.mark.parametrize("config", [FindLatentRepresentationsConfig, QuickModeConfig])
@@ -27,6 +41,7 @@ def test_quick_mode_propagates_explicit_qc_choice(tmp_path, enabled):
     sumstats.touch()
     config = QuickModeConfig(
         workdir=tmp_path,
+        h5ad_path=[tmp_path / "input.h5ad"],
         project_name="qc",
         annotation="annotation",
         sumstats_config_dict={"trait": sumstats},
@@ -43,6 +58,7 @@ def test_marker_only_resume_does_not_enable_quality_filter(tmp_path):
     sumstats.touch()
     config = QuickModeConfig(
         workdir=tmp_path,
+        h5ad_path=[tmp_path / "input.h5ad"],
         project_name="qc",
         annotation="annotation",
         sumstats_config_dict={"trait": sumstats},

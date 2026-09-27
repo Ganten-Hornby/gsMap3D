@@ -346,31 +346,20 @@ def test_2d_sections_use_explicitly_ordinal_nonphysical_z(tmp_path):
         cross_slice_z_scale=9.0,
     )
 
-    coordinates, is_3d, z_axis = _load_coordinates(config)
-
-    assert is_3d
-    assert z_axis == 2
-    assert coordinates.groupby("sample_name", observed=True)["3d_z"].first().to_dict() == {
-        "slice_a": 1.0,
-        "slice_b": 0.0,
-    }
-    info = coordinates.attrs["spatial_3d_coordinate_info"]
-    assert info["z_source"] == "ordinal_section_order"
-    assert info["z_is_physical"] is False
-    assert info["default_aspect_mode"] == "expanded"
-    assert "not represented" in info["note"]
+    with pytest.raises(ValueError, match="XYZ"):
+        _load_coordinates(config)
 
 
-def test_registered_z_is_detected_reordered_and_scaled(tmp_path):
+def test_registered_z_is_third_column_and_scaled_without_reordering(tmp_path):
     path = tmp_path / "volume.h5ad"
     adata = ad.AnnData(np.ones((4, 1), dtype=np.float32))
     adata.obs["sample_name"] = ["slice_a", "slice_a", "slice_b", "slice_b"]
     adata.obsm["spatial"] = np.array(
         [
-            [0.0, 0.0, 99.0, 0.0],
-            [1.0, 2.0, 99.0, 0.0],
-            [10.0, 10.0, 99.0, 5.0],
-            [11.0, 12.0, 99.0, 5.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 0.0],
+            [10.0, 10.0, 5.0],
+            [11.0, 12.0, 5.0],
         ]
     )
     adata.write_h5ad(path)
@@ -379,14 +368,15 @@ def test_registered_z_is_detected_reordered_and_scaled(tmp_path):
         spatial_key="spatial",
         dataset_type=DatasetType.SPATIAL_3D,
         sample_h5ad_dict={"slice_a": path, "slice_b": path},
-        cross_slice_z_coordinate=3,
         cross_slice_z_scale=4.0,
     )
 
     coordinates, is_3d, z_axis = _load_coordinates(config)
 
     assert is_3d
-    assert z_axis == 3
+    assert z_axis == 2
+    assert coordinates["3d_x"].tolist() == [0.0, 1.0, 10.0, 11.0]
+    assert coordinates["3d_y"].tolist() == [0.0, 2.0, 10.0, 12.0]
     assert coordinates["3d_z"].tolist() == [0.0, 0.0, 20.0, 20.0]
     info = coordinates.attrs["spatial_3d_coordinate_info"]
     assert info["z_source"] == "registered_coordinate"
@@ -395,20 +385,20 @@ def test_registered_z_is_detected_reordered_and_scaled(tmp_path):
     assert info["default_aspect_mode"] == "physical"
 
 
-def test_physical_2d_sections_drop_their_sample_specific_cut_normal_axis(tmp_path):
-    path = tmp_path / "mixed_section_orientations.h5ad"
+def test_section_report_keeps_xy_even_when_scaled_z_span_is_larger(tmp_path):
+    path = tmp_path / "sections.h5ad"
     adata = ad.AnnData(np.ones((8, 1), dtype=np.float32))
-    adata.obs["sample_name"] = ["coronal"] * 4 + ["sagittal"] * 4
+    adata.obs["sample_name"] = ["a"] * 4 + ["b"] * 4
     adata.obsm["spatial"] = np.array(
         [
-            [5.00, 0.0, 0.0],
-            [5.10, 0.0, 20.0],
-            [5.20, 10.0, 0.0],
-            [5.30, 10.0, 20.0],
-            [0.0, 0.0, 7.00],
-            [20.0, 0.0, 7.10],
-            [0.0, 10.0, 7.20],
-            [20.0, 10.0, 7.30],
+            [0, 0, 0],
+            [10, 0, 0.1],
+            [0, 20, 0.2],
+            [10, 20, 0.3],
+            [0, 0, 7],
+            [10, 0, 7.1],
+            [0, 20, 7.2],
+            [10, 20, 7.3],
         ]
     )
     adata.write_h5ad(path)
@@ -416,32 +406,28 @@ def test_physical_2d_sections_drop_their_sample_specific_cut_normal_axis(tmp_pat
         concatenated_latent_adata_path=path,
         spatial_key="spatial",
         dataset_type=DatasetType.SPATIAL_3D,
-        sample_h5ad_dict={"coronal": path, "sagittal": path},
-        cross_slice_z_coordinate=2,
-        cross_slice_z_scale=1.0,
+        sample_h5ad_dict={"a": path, "b": path},
+        cross_slice_z_scale=100.0,
     )
 
     coordinates, is_3d, z_axis = _load_coordinates(config)
 
     assert is_3d
     assert z_axis == 2
-    coronal = coordinates[coordinates["sample_name"] == "coronal"]
-    sagittal = coordinates[coordinates["sample_name"] == "sagittal"]
-    assert coronal["sx"].tolist() == [0.0, 0.0, 10.0, 10.0]
-    assert coronal["sy"].tolist() == [0.0, 20.0, 0.0, 20.0]
-    assert sagittal["sx"].tolist() == [0.0, 20.0, 0.0, 20.0]
-    assert sagittal["sy"].tolist() == [0.0, 0.0, 10.0, 10.0]
-    planes = coordinates.attrs["spatial_3d_coordinate_info"]["section_planes"]
-    assert planes["coronal"]["cut_axis_title"] == "X"
-    assert planes["coronal"]["axis_titles"] == ["Y", "Z"]
-    assert planes["sagittal"]["cut_axis_title"] == "Z"
-    assert planes["sagittal"]["axis_titles"] == ["X", "Y"]
+    np.testing.assert_array_equal(coordinates["sx"], adata.obsm["spatial"][:, 0])
+    np.testing.assert_array_equal(coordinates["sy"], adata.obsm["spatial"][:, 1])
+    info = coordinates.attrs["spatial_3d_coordinate_info"]
+    assert info["section_plane_method"] == "fixed_xy"
+    for plane in info["section_planes"].values():
+        assert plane["cut_axis"] == 2
+        assert plane["axis_titles"] == ["X", "Y"]
 
 
-def test_section_plane_schema_change_does_not_invalidate_coordinate_storage(tmp_path):
+def test_section_plane_metadata_change_does_not_invalidate_coordinate_storage(tmp_path):
     path = tmp_path / "spatial_3d_coordinate_info.json"
     stored = {
-        "schema_version": 2,
+        "schema_version": 5,
+        "layout": "sections",
         "z_source": "registered_coordinate",
         "z_axis_input": 2,
         "z_scale": 1.0,
@@ -450,40 +436,41 @@ def test_section_plane_schema_change_does_not_invalidate_coordinate_storage(tmp_
     path.write_text(json.dumps(stored))
     current = {
         **stored,
-        "schema_version": 3,
-        "section_plane_method": "per_sample_1st_to_99th_percentile_span",
-        "section_planes": {"section": {"x_axis": 1, "y_axis": 2, "cut_axis": 0}},
+        "section_plane_method": "fixed_xy",
+        "section_planes": {"section": {"x_axis": 0, "y_axis": 1, "cut_axis": 2}},
     }
 
     assert _spatial_coordinate_info_is_current(path, current)
     assert not _spatial_coordinate_info_is_current(path, {**current, "z_scale": 2.0})
+    assert not _spatial_coordinate_info_is_current(path, {**current, "layout": "volume"})
+    assert not _spatial_coordinate_info_is_current(path, {**current, "schema_version": 4})
 
 
-def test_cached_metadata_section_plane_is_corrected_in_memory():
+def test_cached_metadata_uses_fixed_xy_in_memory():
     metadata = pd.DataFrame(
         {
             "sample_name": ["coronal", "coronal", "sagittal", "sagittal"],
             "3d_x": [5.0, 5.1, 0.0, 20.0],
             "3d_y": [0.0, 10.0, 0.0, 10.0],
             "3d_z": [0.0, 20.0, 7.0, 7.1],
-            "sx": [5.0, 5.1, 0.0, 20.0],
-            "sy": [0.0, 10.0, 0.0, 10.0],
+            "sx": [-1.0] * 4,
+            "sy": [-1.0] * 4,
         }
     )
     coordinate_info = {
         "section_planes": {
-            "coronal": {"x_axis": 1, "y_axis": 2, "cut_axis": 0},
+            "coronal": {"x_axis": 0, "y_axis": 1, "cut_axis": 2},
             "sagittal": {"x_axis": 0, "y_axis": 1, "cut_axis": 2},
         }
     }
 
     _apply_section_plane_coordinates(metadata, coordinate_info)
 
-    assert metadata["sx"].tolist() == [0.0, 10.0, 0.0, 20.0]
-    assert metadata["sy"].tolist() == [0.0, 20.0, 0.0, 10.0]
+    assert metadata["sx"].tolist() == metadata["3d_x"].tolist()
+    assert metadata["sy"].tolist() == metadata["3d_y"].tolist()
 
 
-def test_volumetric_sample_without_thin_axis_retains_xy_projection():
+def test_section_projection_never_infers_or_swaps_axes():
     coordinates = np.array(
         [
             [0.0, 0.0, 0.0],
@@ -505,5 +492,5 @@ def test_volumetric_sample_without_thin_axis_retains_xy_projection():
 
     np.testing.assert_array_equal(section_x, coordinates[:, 0])
     np.testing.assert_array_equal(section_y, coordinates[:, 1])
-    assert planes["volume"]["cut_axis_detected"] is False
+    assert planes["volume"]["cut_axis"] == 2
     assert planes["volume"]["axis_titles"] == ["X", "Y"]

@@ -19,6 +19,17 @@ from tests.paths import REPO_ROOT as REPO
 SOURCE = REPO / "docs/source"
 
 
+def write_spatial_fixture(path):
+    import anndata as ad
+    import numpy as np
+
+    data = ad.AnnData(np.ones((3, 2)))
+    data.obsm["spatial"] = np.array([[0, 0], [1, 0], [0, 1]], dtype=float)
+    data.layers["count"] = data.X.copy()
+    data.obs["annotation"] = ["heart", "heart", "brain"]
+    data.write_h5ad(path)
+
+
 def guide():
     return (SOURCE / "scalability.md").read_text()
 
@@ -180,6 +191,7 @@ def test_key_concepts_placeholder_usage_matches_cli_python(tmp_path, monkeypatch
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
+    write_spatial_fixture(tmp_path / "sample.h5ad")
     (tmp_path / "resources/w_ld").mkdir()
     text = (SOURCE / "key_concepts.md").read_text()
     shell = re.findall(r"```bash\n(.*?)\n```", text, re.DOTALL)[0]
@@ -272,10 +284,29 @@ def example_workspace(tmp_path, monkeypatch):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
+    write_spatial_fixture(tmp_path / "example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad")
     (tmp_path / "resources/1000g-hc-grch38-v50-eur/w_ld").mkdir()
     yaml_block = re.findall(r"```yaml\n(.*?)\n```", guide(), re.DOTALL)
     assert len(yaml_block) == 1
     (tmp_path / "example_data/example-traits/gwas.yaml").write_text(yaml_block[0] + "\n")
+    # Later recipes resume the original per-sample outputs from preprocessing.
+    import yaml
+
+    latent = tmp_path / "results/mouse-e16-mosta/find_latent_representations"
+    latent.mkdir()
+    (latent / "find_latent_metadata.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "outputs": {
+                    "latent_files": {
+                        "E16.5_E1S1.MOSTA": str(
+                            tmp_path / "example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad"
+                        )
+                    }
+                }
+            }
+        )
+    )
     return tmp_path
 
 
@@ -369,6 +400,8 @@ def test_tuning_snippets_match_cli_options(example_workspace, monkeypatch):
     )
     assert len(pairs) == 6
     base = [
+        "--h5ad-path",
+        "example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad",
         "--workdir",
         "results",
         "--project-name",
@@ -390,6 +423,7 @@ def test_tuning_snippets_match_cli_options(example_workspace, monkeypatch):
             code.replace("/fast-ssd/gsmap", str(scratch)),
         )
         config = gsMap.config.QuickModeConfig(
+            h5ad_path=["example_data/mouse-e16-mosta/ST/E16.5_E1S1.MOSTA.h5ad"],
             workdir="results",
             project_name="mouse-e16-mosta",
             annotation="annotation",

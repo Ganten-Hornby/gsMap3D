@@ -12,6 +12,14 @@ import typer
 
 from gsMap.config.base import ConfigWithAutoPaths
 from gsMap.config.gwas import trait_file_token, trait_labels
+from gsMap.config.spatial import (
+    is_thick_tissue,
+    report_geometry,
+    reuse_spatial_validation,
+    spatial_layout,
+    validate_spatial_config,
+)
+from gsMap.config.utils import process_h5ad_inputs
 
 from .cauchy_config import CauchyCombinationConfig
 
@@ -62,6 +70,18 @@ class QuickModeConfig(
         self._init_sumstats()
         self._init_annotation_list()
 
+        self.dataset_type = DatasetType(self.dataset_type)
+        self.sample_h5ad_dict = process_h5ad_inputs(
+            self,
+            {
+                "h5ad_yaml": ("h5ad_yaml", "yaml"),
+                "h5ad_path": ("h5ad_path", "list"),
+                "h5ad_list_file": ("h5ad_list_file", "file"),
+            },
+        )
+        if not self.sample_h5ad_dict:
+            self._auto_detect_h5ad_files()
+
         if self.is_both_latent_and_gene_running:
             self.high_quality_neighbor_filter = self.high_quality_cell_qc
 
@@ -71,12 +91,24 @@ class QuickModeConfig(
             if self.latent_representation_cell is None:
                 self.latent_representation_cell = "emb_cell"
 
+        # LDSC/Cauchy-only runs consume existing scores, not spatial coordinates.
+        if self.requires_spatial_inputs:
+            validate_spatial_config(self)
+            self._configure_dataset_parameters()
+
         # For scRNA, clear spatial_key and niche key so downstream steps (e.g. report)
         # skip spatial-coordinate-specific logic
         if self.dataset_type == DatasetType.SCRNA_SEQ:
             self.spatial_key = None
             self.latent_representation_niche = None
         self.show_config(QuickModeConfig)
+
+    @property
+    def requires_spatial_inputs(self) -> bool:
+        return not (
+            self.start_step in ("spatial_ldsc", "cauchy")
+            and self.stop_step in ("spatial_ldsc", "cauchy")
+        )
 
     @property
     def is_both_latent_and_gene_running(self) -> bool:
@@ -91,18 +123,20 @@ class QuickModeConfig(
 
     @property
     def find_latent_config(self) -> FindLatentRepresentationsConfig:
-        return FindLatentRepresentationsConfig(
-            **{
-                f.name: getattr(self, f.name)
-                for f in fields(FindLatentRepresentationsConfig)
-                if f.init
-            }
-        )
+        with reuse_spatial_validation(self):
+            return FindLatentRepresentationsConfig(
+                **{
+                    f.name: getattr(self, f.name)
+                    for f in fields(FindLatentRepresentationsConfig)
+                    if f.init
+                }
+            )
 
     @property
     def latent2gene_config(self) -> LatentToGeneConfig:
         params = {f.name: getattr(self, f.name) for f in fields(LatentToGeneConfig) if f.init}
-        return LatentToGeneConfig(**params)
+        with reuse_spatial_validation(self):
+            return LatentToGeneConfig(**params)
 
     @property
     def spatial_ldsc_config(self) -> SpatialLDSCConfig:
@@ -160,6 +194,8 @@ def _report_visualization_config_matches(config: QuickModeConfig, verbose: bool 
         return False
 
     expected = {
+        "spatial_layout": spatial_layout(config),
+        "spatial_geometry": report_geometry(config),
         "downsampling_n_spots_umap": config.downsampling_n_spots_umap,
         "downsampling_n_spots_2d": config.downsampling_n_spots_2d,
         "downsampling_n_spots_3d": config.downsampling_n_spots_3d,
@@ -254,7 +290,9 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
             missing_web_files.append(trait_manhattan_js)
 
     # Per-sample spatial JS files (Spatial only)
-    if dataset_type in (DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D):
+    if dataset_type in (DatasetType.SPATIAL_2D, DatasetType.SPATIAL_3D) and not is_thick_tissue(
+        config
+    ):
         sample_payload_dir = js_data_dir / "spatial_2d"
         sample_manifest = js_data_dir / "sample_spatial_manifest.json"
         if not sample_manifest.exists():
@@ -320,7 +358,7 @@ def get_report_missing_files(config: QuickModeConfig) -> tuple[list[Path], list[
             if not plot_path.exists():
                 missing_web_files.append(plot_path)
 
-        for sample_name in (config.sample_h5ad_dict or {}):
+        for sample_name in config.sample_h5ad_dict or {}:
             safe_sample = "".join(c if c.isalnum() else "_" for c in sample_name)
             plot_path = spatial_plot_dir / "by_sample" / f"sample_{safe_sample}.png"
             if not plot_path.exists():

@@ -50,6 +50,17 @@ def run_js():
     return run
 
 
+def test_volume_keeps_nonspatial_panels_but_disables_2d(run_js):
+    result = run_js("""
+        app.reportMeta={dataset_type:'spatial3D', spatial_layout:'volume'};
+        console.log(JSON.stringify(app.currentSections));
+    """)
+    assert result["show3d"] is True
+    assert result["show2dDistribution"] is False
+    for key in ("showUMAP", "showManhattan", "showEnrichment", "showGSS"):
+        assert result[key] is True
+
+
 def test_3d_fullscreen_resizes_on_enter_and_external_exit_without_resetting(run_js):
     result = run_js("""
         let requests=0, resizes=0, focused=0, hidden=0;

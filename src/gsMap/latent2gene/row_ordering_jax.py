@@ -70,7 +70,6 @@ def optimize_spatial_row_order(
     *,
     slice_ids: np.ndarray | None = None,
     dataset_type: str | None = None,
-    z_coordinate: int = -1,
     z_scale: float = 1.0,
 ) -> np.ndarray:
     """Choose a spatial row order that matches the dataset geometry.
@@ -80,10 +79,8 @@ def optimize_spatial_row_order(
 
     - Spatial2D: order each section independently because neighbors never cross
       sections.
-    - Spatial3D with a varying configured z column: use x, y, and measured z,
-      preserving their common physical scale.
-    - Spatial3D without measured z: use x, y, and the ordinal section rank. The
-      log explicitly identifies this as ordinal rather than physical geometry.
+    - Spatial3D: retain all measured XYZ axes, including constant axes; apply
+      the configured scale to Z (column 2), without manufacturing geometry.
     """
     coords = np.asarray(coords, dtype=np.float64)
     if dataset_type is None:
@@ -116,40 +113,12 @@ def optimize_spatial_row_order(
 
     if not np.isfinite(z_scale) or z_scale <= 0:
         raise ValueError("Spatial3D z scale must be positive")
-    physical_z = None
-    if coords.shape[1] >= 3:
-        if not -coords.shape[1] <= z_coordinate < coords.shape[1]:
-            raise IndexError(
-                f"Spatial3D z-coordinate column {z_coordinate} is outside a "
-                f"{coords.shape[1]}-column spatial matrix"
-            )
-        z_column = z_coordinate if z_coordinate >= 0 else coords.shape[1] + z_coordinate
-        if z_column in (0, 1):
-            raise ValueError("Spatial3D z coordinate must be distinct from x/y columns 0 and 1")
-        candidate_z = coords[:, z_column] * z_scale
-        if np.isfinite(candidate_z).all() and np.ptp(candidate_z) > 0:
-            physical_z = candidate_z
-        elif not np.isfinite(candidate_z).all():
-            logger.warning(
-                f"Spatial column {z_column} contains non-finite z coordinates; "
-                f"using ordinal slice rank for Morton ordering"
-            )
+    from gsMap.config.spatial import spatial_coordinates
 
-    if physical_z is not None:
-        logger.info(
-            f"Using physical 3D Morton order from x/y and spatial column "
-            f"{z_column} (z scale={z_scale:g})"
-        )
-        physical_coords = np.column_stack((coords[:, :2], physical_z))
-        return _morton_order(physical_coords, preserve_axis_scale=True)
-
-    _, ordinal_z = np.unique(slice_ids, return_inverse=True)
-    logger.warning(
-        "Spatial3D coordinates have no varying physical z axis; using ordinal "
-        "slice rank for Morton ordering"
-    )
-    ordinal_coords = np.column_stack((coords[:, :2], ordinal_z))
-    return _morton_order(ordinal_coords, preserve_axis_scale=False)
+    physical_coords = spatial_coordinates(coords, "spatial3D").copy()
+    physical_coords[:, 2] *= z_scale
+    logger.info("Using full XYZ Morton order (Z scale=%s)", z_scale)
+    return _morton_order(physical_coords, preserve_axis_scale=True)
 
 
 # @partial(jit, static_argnames=['k'])

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import anndata
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sp
 import torch
 from sklearn.preprocessing import LabelEncoder
@@ -23,7 +24,7 @@ def _write_slice(path, z_values):
         var=pd.DataFrame(index=["g0", "g1"]),
     )
     adata.obsm["spatial"] = np.column_stack(
-        (np.arange(n_obs, dtype=float), np.zeros(n_obs), np.asarray(z_values))
+        (np.arange(n_obs, dtype=float), 2.0 * np.arange(n_obs), np.asarray(z_values))
     )
     adata.write_h5ad(path)
     return adata
@@ -55,8 +56,7 @@ def test_sectionwise_2d_preserves_file_order_and_warns_on_z_count_mismatch(tmp_p
 
     assert list(config.sample_h5ad_dict) == ["slice-02", "slice-01"]
     warning_text = "\n".join(warnings)
-    assert "uses the H5AD list order as physical slice order" in warning_text
-    assert "3 unique z values across 2 H5AD slice files" in warning_text
+    assert "only columns 0 and 1" in warning_text
 
 
 def test_section_aware_3d_uses_file_list_as_slice_identity(tmp_path, monkeypatch):
@@ -74,13 +74,13 @@ def test_section_aware_3d_uses_file_list_as_slice_identity(tmp_path, monkeypatch
         workdir=tmp_path,
         project_name="ordered-3d-slices",
         h5ad_path=[first, second],
+        dataset_type="spatial3D",
         graph_mode="section_aware_3d",
     )
 
     assert list(config.sample_h5ad_dict) == ["slice-01", "slice-02"]
     warning_text = "\n".join(warnings)
-    assert "uses the H5AD list order as physical slice order" in warning_text
-    assert "3 unique z values across 2 H5AD slice files" in warning_text
+    assert "unique z values" not in warning_text
     assert not hasattr(config, "graph_section_key")
 
 
@@ -114,14 +114,13 @@ def test_sectionwise_2d_warns_when_xyz_has_no_z_values(tmp_path, monkeypatch):
         lambda message, *args: warnings.append(message % args),
     )
 
-    FindLatentRepresentationsConfig(
-        workdir=tmp_path,
-        project_name="empty-slice",
-        h5ad_path=[empty_slice],
-        graph_mode="sectionwise_2d",
-    )
-
-    assert "0 unique z values across 1 H5AD slice files" in "\n".join(warnings)
+    with pytest.raises(ValueError, match="nonempty"):
+        FindLatentRepresentationsConfig(
+            workdir=tmp_path,
+            project_name="empty-slice",
+            h5ad_path=[empty_slice],
+            graph_mode="sectionwise_2d",
+        )
 
 
 def test_sectionwise_2d_writes_one_output_for_an_xyz_h5ad(tmp_path):
@@ -161,6 +160,7 @@ def test_section_aware_3d_inference_uses_cross_file_graph_context(tmp_path):
     second_adata.write_h5ad(second)
     sample_h5ad_dict = {"slice-01": first, "slice-02": second}
     params = SimpleNamespace(
+        dataset_type="spatial3D",
         K=1,
         graph_mode="section_aware_3d",
         graph_z_scale=1.0,

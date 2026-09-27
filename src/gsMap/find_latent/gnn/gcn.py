@@ -318,7 +318,7 @@ def _nearest_target_indices(
 def order_sections_by_median_coordinate(
     coords: np.ndarray, section_labels: np.ndarray
 ) -> np.ndarray:
-    """Return section labels ordered by their median z coordinate."""
+    """Return section labels ordered by median Z (the third coordinate)."""
 
     coords = _validate_coordinates(coords)
     if coords.shape[1] != 3:

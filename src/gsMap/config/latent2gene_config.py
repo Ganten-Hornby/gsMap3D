@@ -14,15 +14,10 @@ import typer
 import yaml
 
 from gsMap.config.base import ConfigWithAutoPaths
+from gsMap.config.spatial import DatasetType, validate_spatial_config
 from gsMap.config.utils import configure_jax_platform, process_h5ad_inputs, validate_h5ad_structure
 
 logger = logging.getLogger("gsMap.config")
-
-
-class DatasetType(StrEnum):
-    SCRNA_SEQ = "scRNA"
-    SPATIAL_2D = "spatial2D"
-    SPATIAL_3D = "spatial3D"
 
 
 class MarkerScoreCrossSliceStrategy(StrEnum):
@@ -143,7 +138,7 @@ class LatentToGeneCoreConfig:
     dataset_type: Annotated[
         DatasetType,
         typer.Option(
-            help="Type of dataset: scRNA (uses KNN on latent space), spatial2D (2D spatial), or spatial3D (multi-slice)",
+            help="Type of dataset: scRNA, spatial2D (XY), or spatial3D (XYZ sections or a single thick-tissue volume)",
             case_sensitive=False,
         ),
     ] = "spatial2D"
@@ -268,7 +263,7 @@ class LatentToGeneCoreConfig:
     n_adjacent_slices: Annotated[
         int,
         typer.Option(
-            help="For ordinal selection, number of adjacent slices to search above and below. For physical-window selection, half of the maximum number of non-focal sections retained. Padding is applied when fewer sections qualify.",
+            help="Adjacent sections on each side (default 2). Set 0 to disable cross-section homogeneous matching while retaining XYZ distances. Automatically 0 for a single spatial3D volume. Does not disable an explicit section-aware embedding graph.",
             min=0,
             max=100,
         ),
@@ -289,13 +284,6 @@ class LatentToGeneCoreConfig:
             min=0.0,
         ),
     ] = None
-
-    cross_slice_z_coordinate: Annotated[
-        int,
-        typer.Option(
-            help="Column in spatial_key containing the registered section z coordinate; negative indices follow NumPy conventions.",
-        ),
-    ] = -1
 
     cross_slice_z_scale: Annotated[
         float,
@@ -353,17 +341,18 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
         self.cross_slice_selection_mode = CrossSliceSelectionMode(self.cross_slice_selection_mode)
         self.homogeneous_selection_mode = HomogeneousSelectionMode(self.homogeneous_selection_mode)
 
-        # Step 1: Configure JAX platform
-        configure_jax_platform(self.use_gpu)
-
         # Step 2: Process and validate h5ad inputs
         self._resolve_h5ad_inputs()
+        validate_spatial_config(self)
 
         # Step 3: Configure dataset-specific parameters first
         self._configure_dataset_parameters()
 
         # Step 4: Set up validation fields and validate structure (after dataset config)
         self._setup_and_validate_fields()
+
+        # Do not initialize an accelerator before input/configuration errors are reported.
+        configure_jax_platform(self.use_gpu)
 
         self.show_config(LatentToGeneConfig)
 
@@ -488,6 +477,8 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
             logger.info(
                 "Dataset type is spatial2D. This will only search homogeneous neighbors within each 2D slice (no cross-slice search). Setting adjacent_slices=0."
             )
+        self.adjacent_slice_spatial_neighbors = 0
+        self.fix_cross_slice_homogenous_neighbors = False
 
         if self.latent_representation_niche is None:
             logger.warning(
@@ -502,12 +493,14 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
 
     def _configure_spatial_3d(self):
         """Configure parameters for spatial 3D datasets"""
+        if self.n_adjacent_slices < 0:
+            raise ValueError("n_adjacent_slices must be nonnegative")
         if self.n_adjacent_slices == 0:
-            raise ValueError(
-                "Dataset type is spatial3D, but adjacent_slices=0. "
-                "You must set adjacent_slices to 1 or higher to enable cross-slice search. "
-                "If you don't want cross-slice search, use dataset_type='spatial2D' instead."
-            )
+            self.adjacent_slice_spatial_neighbors = 0
+            self.fix_cross_slice_homogenous_neighbors = False
+            if self.homogeneous_neighbors > self.spatial_neighbors:
+                raise ValueError("homogeneous_neighbors must be <= spatial_neighbors")
+            return
 
         if self.latent_representation_niche is None:
             logger.warning(

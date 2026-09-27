@@ -1,19 +1,11 @@
 # Customization Guide
 
-Start from a working 2D or 3D tutorial and change the paths or flags for your
-analysis. Reuse the shared downloads in {doc}`downloads`; you do not need
-another copy of the reference resources. Use a fresh project name when changing
-scientific inputs or settings.
+Configure gsMap for your own data, GWAS traits and reference weights. This guide
+also covers custom embeddings, custom GSS and spatial-neighborhood settings.
 
-For an explanation of embeddings, neighbors and GSS, see {doc}`key_concepts`.
-For shared multi-trait LDSC, CPU cores, multiple GPUs and SSD settings, see
-{doc}`scalability`.
-This page focuses on **changing the analysis**, rather than tuning its execution.
-
-CLI flags use hyphens (`--data-layer`); Python configuration fields use underscores
-(`data_layer`). Short **flag excerpts** below are marked as text: add/replace them
-in a complete tutorial command. Do not run excerpts as shell commands or specify
-the same option twice.
+Examples show CLI options and their Python equivalents. Apply option-only
+snippets to a complete command from the {doc}`2d_tutorial/10x` or
+{doc}`3d_tutorial/human_gastrulation` tutorial.
 
 ## File paths and configuration flags
 
@@ -174,8 +166,8 @@ Both embeddings must have one finite-valued row per observation. If raw counts
 are in `adata.X`, use `--data-layer X`; they do **not** have to be in X when a
 count layer is provided. Scaled/log-transformed values are not raw counts.
 For mouse or macaque genes, also specify `--species` and `--homolog-file` as in
-the tutorials. For 3D inputs, use an anatomically ordered `--h5ad-list-file`
-and `--dataset-type spatial3D`.
+the tutorials. For multiple XYZ sections, use an anatomically ordered `--h5ad-list-file`
+and `--dataset-type spatial3D`. For one thick-tissue XYZ volume, use `--h5ad-path`.
 
 ## Use your customized GSS
 
@@ -211,6 +203,49 @@ reports or Cauchy. Those steps require annotations/coordinates identifying the
 same spot IDs; matching row positions is insufficient. For native gsMap memmaps,
 keep `marker_scores.obs_indices.dat` with the matrix and metadata: it maps marker
 rows to canonical AnnData rows.
+
+## Choose spatial geometry
+
+| Input | Mode | Homogeneous-neighbor search | Spatial report |
+|---|---|---|---|
+| One or more XY sections | `spatial2D` | XY, within each section | 2D |
+| One or more XYZ sections in 2D mode | `spatial2D` | First two coordinates only; a warning is shown | 2D |
+| Multiple registered XYZ sections | `spatial3D` | Full XYZ; optional cross-section matching | 3D and section views |
+| One XYZ H5AD (thick tissue) | `spatial3D` | Full XYZ within the volume | 3D, without section-style 2D maps |
+
+For a thick-tissue volume, replace the tutorial input flags with:
+
+```text
+--dataset-type spatial3D
+--h5ad-path data/thick_tissue.h5ad
+--spatial-key spatial
+```
+
+Python uses `dataset_type="spatial3D", h5ad_path=["data/thick_tissue.h5ad"]`.
+The coordinate array must be N×3. A single input is automatically treated as a
+volume; do not split it into artificial Z sections. Cross-section matching is
+disabled, while UMAP, enrichment, GWAS and gene statistics remain in its report.
+
+For multiple registered XYZ sections that do not need cross-section matching,
+keep `spatial3D` and set `--n-adjacent-slices 0` (Python:
+`n_adjacent_slices=0`). Distances still use all three coordinates. This does
+not disable edges in an explicitly selected `section_aware_3d` embedding graph.
+
+Always provide columns **[X, Y, Z]**; the third column is Z. For multiple
+sections, XY must describe the section plane and Z the stacking direction.
+Reorient other coordinate conventions consistently before running gsMap.
+
+At configuration time, gsMap checks shape, dtype and at most 4,096 deterministic
+rows per file without reading expression data. For each section, its 1st–99th
+percentile Z span must be **strictly smaller than both X and Y spans**.
+Equal or larger spans (including degenerate XY geometry) raise an error naming
+the file and spans, even with `n_adjacent_slices=0`. Thick-tissue volumes and
+`spatial2D` inputs are exempt.
+
+This is a sampled geometry check, not proof of anatomical registration; sparse
+outliers or unsampled problems can be missed. All used coordinates are checked
+for finite values during computation. XY input is rejected in 3D mode; no
+artificial Z is added.
 
 ## Customize the graph and cross-section matching
 
@@ -248,7 +283,7 @@ at `latent2gene` cannot change embeddings that have already been computed.
 
 ### Cross-section matching
 
-In `spatial3D`, the default ordinal setting searches two sections on each side,
+For multiple XYZ sections in `spatial3D`, the default ordinal setting searches two sections on each side,
 with boundary compensation: near the first and last sections, farther sections
 can fill the neighbor quota. This is a section-order rule, not a physical-distance
 cutoff. To use E11.5 ordinal matching:

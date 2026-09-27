@@ -1,6 +1,6 @@
 # CS8 human embryo
 
-Analyze 62 registered sections with IQ, Height and MCHC GWAS using the default 3D settings.
+Analyze 62 registered XYZ sections with IQ, Height and MCHC GWAS using the default 3D settings: full XYZ distances and matching to two neighboring sections on each side.
 
 [Xiao et al. · 2024 · Cell](https://doi.org/10.1016/j.cell.2024.03.041) ·
 [gsMap Report preview](https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reports/human-gastrulation/r1/index.html)

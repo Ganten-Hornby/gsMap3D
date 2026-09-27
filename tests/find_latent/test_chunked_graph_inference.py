@@ -34,6 +34,7 @@ def _params(graph_mode, propagation_depth):
     return SimpleNamespace(
         K=propagation_depth,
         graph_mode=graph_mode,
+        dataset_type="spatial3D" if graph_mode == "section_aware_3d" else "spatial2D",
         graph_z_scale=1.0,
         graph_radius=None,
         graph_sigma=None,
@@ -175,6 +176,7 @@ def test_section_inference_never_densifies_the_full_expression_matrix(monkeypatc
 
     monkeypatch.setattr(sp.csr_matrix, "toarray", record_toarray)
     params = SimpleNamespace(
+        dataset_type="spatial3D",
         K=2,
         graph_mode="section_aware_3d",
         graph_z_scale=1.0,

@@ -44,6 +44,7 @@ def _write(path, encoding="csr", layer="X", z=0):
 
 def _params(tmp_path, **changes):
     settings = dict(
+        dataset_type="spatial3D",
         data_layer="X",
         cell_qc_min_genes=2,
         cell_qc_min_counts=None,

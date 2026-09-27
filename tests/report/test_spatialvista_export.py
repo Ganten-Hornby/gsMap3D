@@ -18,6 +18,7 @@ from gsMap.config.report_config import (
     should_export_spatialvista,
     spatialvista_output_is_current,
 )
+from gsMap.config.spatial import report_geometry
 from gsMap.report.spatialvista import export_spatialvista
 
 
@@ -293,6 +294,8 @@ def test_report_completion_detects_changed_export_settings(project):
     metadata = dict(
         trait_labels={"IQ": "IQ"},
         trait_payload_version=2,
+        spatial_layout="sections",
+        spatial_geometry=report_geometry(config),
         downsampling_n_spots_umap=50000,
         downsampling_n_spots_2d=300000,
         downsampling_n_spots_3d=200000,

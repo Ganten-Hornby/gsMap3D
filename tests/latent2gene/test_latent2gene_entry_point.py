@@ -8,6 +8,17 @@ from gsMap.latent2gene.entry_point import run_latent_to_gene
 from gsMap.latent2gene.memmap_io import MemMapDense
 
 
+def _record_spatial_contract(paths, root):
+    from gsMap.config.spatial import guard_spatial_contract
+
+    paths.project_dir = root
+    paths.dataset_type = "spatial2D"
+    paths.spatial_key = "spatial"
+    paths.find_latent_metadata_path = root / "find_latent_metadata.yaml"
+    paths.model_path = root / "model.pt"
+    guard_spatial_contract(paths, write=True)
+
+
 def _complete_memmap(path, shape):
     memmap = MemMapDense(
         path,
@@ -33,6 +44,7 @@ def test_completed_arrays_repair_missing_metadata_without_recomputation(tmp_path
         sample_h5ad_dict={"section": tmp_path / "section.h5ad"},
         to_dict_with_paths_as_strings=lambda: {"dataset_type": "spatial2D"},
     )
+    _record_spatial_contract(paths, tmp_path)
     paths.concatenated_latent_adata_path.touch()
     paths.mean_frac_path.touch()
     _complete_memmap(paths.rank_memmap_path, (3, 2))
@@ -74,6 +86,7 @@ def test_completed_rank_is_reused_after_marker_failure(tmp_path, monkeypatch):
         data_layer="X",
         to_dict_with_paths_as_strings=lambda: {"dataset_type": "spatial2D"},
     )
+    _record_spatial_contract(paths, tmp_path)
     paths.concatenated_latent_adata_path.touch()
     paths.mean_frac_path.touch()
     _complete_memmap(paths.rank_memmap_path, (3, 2))
