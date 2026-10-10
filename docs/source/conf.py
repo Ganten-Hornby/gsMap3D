@@ -1,7 +1,63 @@
+from urllib.parse import urlsplit
+
 project = "gsMap"
 copyright = "2026, JianYang-Lab"
 author = "Liyang, Wenhao"
 # release = gsMap.__version__
+
+# Downloads, tutorial commands and report previews share this resource root.
+# Change this value or pass
+# -D gsmap_resource_base_url=https://your-server.example/data/gsMap to Sphinx.
+gsmap_resource_base_url = "https://yanglab-obs.lab.westlake.edu.cn/public/gsMap/gsMap3D-r1"
+# Existing source pages use this prefix; rewrite it when building the docs.
+_source_resource_base_url = "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1"
+
+
+def _configure_resource_url(app, config):
+    from sphinx.errors import ConfigError
+
+    value = config.gsmap_resource_base_url
+    if not isinstance(value, str):
+        raise ConfigError("gsmap_resource_base_url must be an absolute HTTP(S) URL")
+    value = value.rstrip("/")
+    try:
+        parsed = urlsplit(value)
+        valid = (
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname
+            and parsed.port != 0
+            and not parsed.username
+            and not parsed.password
+            and not parsed.query
+            and not parsed.fragment
+            and not any(
+                character.isspace() or character in "\\\"'<>`;$&|(){}*" for character in value
+            )
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigError(
+            "gsmap_resource_base_url must be an absolute HTTP(S) URL "
+            "without credentials, whitespace, a query or a fragment"
+        )
+    config.gsmap_resource_base_url = value
+
+
+def _replace_resource_urls(app, docname, source):
+    # Rewrite before parsing so literal URLs inside shell code blocks and
+    # Markdown/RST links are updated together. Other domains stay unchanged.
+    source[0] = source[0].replace(
+        f"{_source_resource_base_url}/", f"{app.config.gsmap_resource_base_url}/"
+    )
+
+
+def setup(app):
+    app.add_config_value("gsmap_resource_base_url", gsmap_resource_base_url, "env", types=[str])
+    app.connect("config-inited", _configure_resource_url)
+    app.connect("source-read", _replace_resource_urls)
+    return {"parallel_read_safe": True, "parallel_write_safe": True}
+
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
