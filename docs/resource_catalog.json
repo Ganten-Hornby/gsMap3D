@@ -224,22 +224,22 @@
       }
     },
     {
-      "id": "human-gastrulation",
+      "id": "human-gastrulation-cs8",
       "category": "datasets/st/3d",
       "revision": "r1",
-      "description": "Human CS8 gastrulation; 62 registered sections; ordered sample_paths.txt and gwas.yaml included; default ordinal matching.",
+      "description": "Human CS8 gastrulation; 3D reconstruction from 62 aligned sections; ordered sample_paths.txt and gwas.yaml included; default ordinal matching.",
       "publication": "https://doi.org/10.1016/j.cell.2024.03.041",
       "tutorial": "3d_tutorial/human_gastrulation.html",
       "reports": [
-        "human-gastrulation"
+        "human-gastrulation-cs8"
       ],
-      "path": "datasets/st/3d/human-gastrulation/r1/bundle.tar.gz",
-      "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/human-gastrulation/r1/bundle.tar.gz",
-      "sha256": "4aa861162bd142a53351099a87a3ef9e086dd31666a7ae8d794598d7167451fa",
-      "bytes": 162464045,
+      "path": "datasets/st/3d/human-gastrulation-cs8/r1/bundle.tar.gz",
+      "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/human-gastrulation-cs8/r1/bundle.tar.gz",
+      "sha256": "90a02938248572571fe2e83f7da7be43b42d2bf7abc35756da27def5a78e1739",
+      "bytes": 132220302,
       "status": "published_verified",
       "display": {
-        "description": "62 registered sections with spatial annotations.",
+        "description": "3D reconstruction from 62 aligned sections with cluster annotations.",
         "n_spots": 38562,
         "sources": [
           {
@@ -250,7 +250,7 @@
         "report_previews": [
           {
             "label": "View report",
-            "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reports/human-gastrulation/r1/index.html"
+            "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/reports/human-gastrulation-cs8/r1/index.html"
           }
         ]
       }
@@ -321,7 +321,7 @@
     {
       "id": "mouse-e11",
       "category": "datasets/st/3d",
-      "revision": "r2",
+      "revision": "r1",
       "description": "Mouse E11.5 embryo; 84 serial sections and 6,993,667 cells. Raw counts stored once in X; spatial_domain and ManualAnnotation, coordinates, ordered sample_paths.txt and gwas.yaml included.",
       "publication": "https://doi.org/10.1016/j.cell.2024.10.011",
       "tutorial": "3d_tutorial/mouse_e11.html",
@@ -329,10 +329,10 @@
       "reports": [
         "e11-ordinal"
       ],
-      "path": "datasets/st/3d/mouse-e11/r2/bundle.tar.gz",
-      "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/mouse-e11/r2/bundle.tar.gz",
-      "sha256": "cfaf7769957fad0b99126ae9a0c6930c6e5cd2b5874da4d9aac4026cd572fadf",
-      "bytes": 5698181755,
+      "path": "datasets/st/3d/mouse-e11/r1/bundle.tar.gz",
+      "url": "https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/mouse-e11/r1/bundle.tar.gz",
+      "sha256": "1c1219884dfa60d16813234cef0fce6e4834b3a831c1bc697378a450fb0b0273",
+      "bytes": 5699185102,
       "status": "published_verified",
       "display": {
         "description": "84 serial sections; raw counts in X, spatial domains and manual cell-type annotations.",

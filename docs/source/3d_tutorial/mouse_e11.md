@@ -40,7 +40,7 @@ Then download this dataset. **Skip this step if its folder already exists.**
 ```bash
 mkdir -p example_data
 wget -O example_data/mouse-e11.tar.gz \
-    https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/mouse-e11/r2/bundle.tar.gz && \
+    https://yanglab.westlake.edu.cn/data/gsMap/gsMap3D-r1/datasets/st/3d/mouse-e11/r1/bundle.tar.gz && \
     tar -xzf example_data/mouse-e11.tar.gz -C example_data
 ```
 

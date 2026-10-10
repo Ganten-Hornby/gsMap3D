@@ -61,7 +61,7 @@ if __name__ == "__main__":
                 (
                     "gastrulation-download-local-mirror",
                     gastrulation[0],
-                    "/datasets/st/3d/human-gastrulation/",
+                    "/datasets/st/3d/human-gastrulation-cs8/",
                 ),
                 ("e16-download-local-mirror", e16[0], "/datasets/st/2d/mouse-e16-mosta/"),
                 (
@@ -109,7 +109,7 @@ if __name__ == "__main__":
                 catalog = json.loads((args.published_data / "catalog.json").read_text())
                 datasets = (
                     "mouse-visium",
-                    "human-gastrulation",
+                    "human-gastrulation-cs8",
                     "mouse-e16-mosta",
                     "mouse-e11",
                 )

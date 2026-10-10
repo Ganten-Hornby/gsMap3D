@@ -17,7 +17,7 @@ TUTORIALS = {
     "visium-coronal": "2d_tutorial/10x.md",
     "visium-sagittal": "2d_tutorial/10x.md",
     "visium-kidney": "2d_tutorial/10x.md",
-    "human-gastrulation": "3d_tutorial/human_gastrulation.md",
+    "human-gastrulation-cs8": "3d_tutorial/human_gastrulation.md",
     "e11-ordinal": "3d_tutorial/mouse_e11.md",
 }
 

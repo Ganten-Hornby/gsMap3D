@@ -19,7 +19,7 @@ def render_catalog(catalog):
     titles = {
         "mouse-visium": "Mouse brain and kidney (Visium)",
         "mouse-e16-mosta": "Mouse E16.5 embryo (MOSTA)",
-        "human-gastrulation": "Human CS8 embryo",
+        "human-gastrulation-cs8": "Human CS8 gastrulation",
         "mouse-e11": "Mouse E11.5 embryo",
         "example-traits": "Six example GWAS",
         "homologs": "Mouse/macaque–human homologs",

@@ -61,19 +61,19 @@ def test_direct_cli_python_parameters_match(example, monkeypatch):
             "latent_representation_niche",
         ):
             assert default not in settings
-    elif example == "human-gastrulation":
+    elif example == "human-gastrulation-cs8":
         for key in ("n_adjacent_slices", "graph_mode", "high_quality_cell_qc", "random_seed"):
             assert key not in recorded[0][1]
 
 
 def test_gastrulation_packaged_inputs_survive_moving_workspace(tmp_path, monkeypatch):
     workspace = tmp_path / "original workspace"
-    dataset = workspace / "example_data/human-gastrulation"
+    dataset = workspace / "example_data/human-gastrulation-cs8"
     data = dataset / "ST"
     data.mkdir(parents=True)
     for index in range(1, 63):
-        (data / f"human_gastrulation_slice_{index}.h5ad").touch()
-    templates = REPO / "tests/fixtures/tutorial_inputs/human-gastrulation"
+        (data / f"cs8_section_{index:03d}.h5ad").touch()
+    templates = REPO / "tests/fixtures/tutorial_inputs/human-gastrulation-cs8"
     for name in ("sample_paths.txt", "gwas.yaml"):
         shutil.copyfile(templates / name, dataset / name)
     gwas = workspace / "example_data/example-traits"
@@ -83,7 +83,7 @@ def test_gastrulation_packaged_inputs_survive_moving_workspace(tmp_path, monkeyp
     relocated = tmp_path / "relocated workspace"
     workspace.rename(relocated)
     monkeypatch.chdir(tmp_path)
-    dataset = relocated / "example_data/human-gastrulation"
+    dataset = relocated / "example_data/human-gastrulation-cs8"
     config = SimpleNamespace(sample_h5ad_dict=None, h5ad_list_file=dataset / "sample_paths.txt")
     samples = process_h5ad_inputs(config, {"h5ad_list_file": ("h5ad_list_file", "file")})
     assert [int(path.stem.rsplit("_", 1)[1]) for path in samples.values()] == list(range(1, 63))
@@ -96,7 +96,24 @@ def test_gastrulation_packaged_inputs_survive_moving_workspace(tmp_path, monkeyp
     )
 
 
-@pytest.mark.parametrize("example", ["human-gastrulation", "e11-ordinal"])
+def test_cs8_tutorial_names_and_geometry_summary_match_public_bundle():
+    name = "human-gastrulation-cs8"
+    paths = (REPO / "tests/fixtures/tutorial_inputs" / name / "sample_paths.txt").read_text()
+    assert paths.splitlines() == [f"ST/cs8_section_{i:03d}.h5ad" for i in range(1, 63)]
+    tutorial = (REPO / "docs/source/3d_tutorial/human_gastrulation.md").read_text()
+    assert "human_gastrulation_slice_" not in tutorial
+    catalog = json.loads((REPO / "docs/resource_catalog.json").read_text())
+    entry = next(item for item in catalog["resources"] if item["id"] == name)
+    for description in (tutorial, entry["description"], entry["display"]["description"]):
+        assert "3D reconstruction" in description and "aligned" in description
+        for detail in ("MAPS", "inferred Z", "not author-verified", "20 µm"):
+            assert detail not in description
+    assert entry["revision"] == "r1"
+    assert entry["path"] == f"datasets/st/3d/{name}/r1/bundle.tar.gz"
+    assert all(item["id"] != "human-gastrulation" for item in catalog["resources"])
+
+
+@pytest.mark.parametrize("example", ["human-gastrulation-cs8", "e11-ordinal"])
 def test_3d_tutorials_use_dataset_local_inputs_without_setup_code(example):
     for interface in ("cli", "python"):
         setup, _ = tutorial_code(REPO, example, interface)
@@ -107,7 +124,7 @@ def test_3d_tutorials_use_dataset_local_inputs_without_setup_code(example):
     assert "Prepare the section list" not in text
     assert "write_text(" not in text
     _, code = tutorial_code(REPO, example, "cli")
-    dataset = "mouse-e11" if example.startswith("e11-") else "human-gastrulation"
+    dataset = "mouse-e11" if example.startswith("e11-") else "human-gastrulation-cs8"
     for _, settings in cli_settings(code):
         assert settings["h5ad_list_file"] == f"example_data/{dataset}/sample_paths.txt"
         if "sumstats_config_file" in settings:
@@ -143,7 +160,7 @@ def test_each_tutorial_downloads_only_its_own_dataset(page):
     assert len(downloads[0].splitlines()) <= 4
     assert "../downloads" in path.read_text()
     assert not re.search(
-        r"resources/(?:mouse-visium|mouse-e16-mosta|human-gastrulation|e11-annotations|example-traits)\b",
+        r"resources/(?:mouse-visium|mouse-e16-mosta|human-gastrulation-cs8|e11-annotations|example-traits)\b",
         path.read_text(),
     )
 
@@ -244,7 +261,7 @@ def test_dataset_catalog_has_counts_sources_and_distinct_previews():
     counts = {
         "mouse-e16-mosta": 121767,
         "mouse-visium": 7628,
-        "human-gastrulation": 38562,
+        "human-gastrulation-cs8": 38562,
         "mouse-e11": 6993667,
     }
     for entry in catalog["resources"]:
@@ -323,7 +340,7 @@ def test_tutorials_follow_three_step_structure(page):
 
 def test_e11_download_is_ready_to_run():
     text = (REPO / "docs/source/3d_tutorial/mouse_e11.md").read_text()
-    assert "datasets/st/3d/mouse-e11/r2/bundle.tar.gz" in text
+    assert "datasets/st/3d/mouse-e11/r1/bundle.tar.gz" in text
     assert "no preparation or configuration-file editing is needed" in text
     assert "sample_paths.txt" in text
     assert "gwas.yaml" in text
@@ -334,7 +351,7 @@ def test_report_preview_links_work_independently_of_docs_location():
     expected = {
         "2d_tutorial/10x.md": {"visium-coronal", "visium-sagittal", "visium-kidney"},
         "2d_tutorial/mouse_embryo.md": {"mouse-e16-mosta"},
-        "3d_tutorial/human_gastrulation.md": {"human-gastrulation"},
+        "3d_tutorial/human_gastrulation.md": {"human-gastrulation-cs8"},
         "3d_tutorial/mouse_e11.md": {"e11-ordinal"},
     }
     for page, reports in expected.items():
