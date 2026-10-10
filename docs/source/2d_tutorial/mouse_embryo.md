@@ -49,6 +49,13 @@ corrected symmetric KNN graph (10 external neighbors). Counts are in
 `layers['count']`, annotations in `obs['annotation']`, and coordinates in
 `obsm['spatial']`.
 
+:::{note}
+Use `--plot-origin lower` (Python: `plot_origin="lower"`) for this MOSTA
+section. It places the origin at the bottom left, with Y increasing upward;
+`upper` reverses the Y-axis. This setting controls the orientation of the
+report's spatial maps and gene expression/GSS plots, not the analysis results.
+:::
+
 ````{tab} CLI
 ```bash
 # Create output directory

@@ -7,6 +7,9 @@ Examples show CLI options and their Python equivalents. Apply option-only
 snippets to a complete command from the {doc}`2d_tutorial/10x` or
 {doc}`3d_tutorial/human_gastrulation` tutorial.
 
+For the underlying concepts, see {doc}`key_concepts`; for execution tuning, see
+{doc}`scalability`.
+
 ## File paths and configuration flags
 
 | File or folder | CLI flag | Python field |

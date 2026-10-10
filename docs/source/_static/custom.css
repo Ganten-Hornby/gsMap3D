@@ -1,8 +1,3 @@
-/* Hide the theme toggle button in Furo theme */
-.theme-toggle-container {
-    display: none !important;
-}
-
 /* The extension's default 28px button fits an icon, not a text label. */
 html .mermaid-fullscreen-btn {
     width: auto;
