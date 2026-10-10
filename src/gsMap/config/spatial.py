@@ -42,15 +42,36 @@ def spatial_coordinates(values, dataset_type, *, n_obs=None):
     return used
 
 
+def coordinate_columns(node):
+    """AnnData DataFrame encoding: preserve declared column order, no data reads."""
+    if not isinstance(node, h5py.Group) or node.attrs.get("encoding-type") != "dataframe":
+        raise ValueError("Coordinates must be a dense numeric array or numeric DataFrame")
+    names = [
+        v.decode() if isinstance(v, bytes) else str(v) for v in node.attrs.get("column-order", [])
+    ]
+    if not names or len(names) != len(set(names)):
+        raise ValueError("Coordinate DataFrame has empty or duplicate columns")
+    columns = [node[name] for name in names]
+    if any(
+        not isinstance(col, h5py.Dataset) or col.ndim != 1 or col.dtype.kind not in "iuf"
+        for col in columns
+    ):
+        raise ValueError(
+            "Coordinate DataFrame columns must be one-dimensional real numeric arrays"
+        )
+    if len({col.shape[0] for col in columns}) != 1:
+        raise ValueError("Coordinate DataFrame column lengths differ")
+    return columns
+
+
 def probe_coordinates(path, key, dataset_type):
     """Read metadata and at most 4096 deterministic rows; never load X or AnnData."""
     with h5py.File(path, "r") as handle:
         if not key or f"obsm/{key}" not in handle:
             raise ValueError(f"Spatial key {key!r} is missing in {path}")
         dataset = handle[f"obsm/{key}"]
-        if not isinstance(dataset, h5py.Dataset):
-            raise ValueError(f"obsm/{key} must be a dense numeric coordinate array in {path}")
-        shape = dataset.shape
+        columns = None if isinstance(dataset, h5py.Dataset) else coordinate_columns(dataset)
+        shape = dataset.shape if columns is None else (columns[0].shape[0], len(columns))
         if len(shape) != 2 or shape[0] == 0 or shape[1] not in (2, 3):
             raise ValueError(
                 f"Invalid spatial coordinate shape {shape} in {path}; expected nonempty N×2/N×3"
@@ -66,12 +87,17 @@ def probe_coordinates(path, key, dataset_type):
             raise ValueError(
                 f"Spatial coordinate rows {shape[0]} do not match n_obs={n_obs} in {path}"
             )
-        if dataset.dtype.kind not in "iuf":
+        if columns is None and dataset.dtype.kind not in "iuf":
             raise ValueError(f"Spatial coordinates must have a real numeric dtype in {path}")
         rows = np.linspace(0, shape[0] - 1, min(PROBE_ROWS, shape[0]), dtype=np.int64)
         # Column slicing also avoids treating an unused third coordinate as 2D data.
         width = 2 if DatasetType(dataset_type) == DatasetType.SPATIAL_2D else 3
-        sample = spatial_coordinates(dataset[rows, :width], dataset_type)
+        values = (
+            dataset[rows, :width]
+            if columns is None
+            else np.column_stack([col[rows] for col in columns[:width]])
+        )
+        sample = spatial_coordinates(values, dataset_type)
     return {
         "shape": shape,
         "median": np.median(sample, axis=0),
