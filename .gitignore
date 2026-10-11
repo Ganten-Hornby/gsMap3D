@@ -257,3 +257,9 @@ run_gsmap3d.py
 /logs/
 /slurm-logs/
 /config.local.toml
+
+# Private revision bookkeeping (keep outside the source repository)
+/REBUTTAL_WORKFLOW.sqlite*
+/RULES.md
+/rebuttal/
+/comments_response_plan.docx
