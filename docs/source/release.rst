@@ -1,6 +1,26 @@
 Release notes
 =============
 
+v0.1.4a2
+--------
+
+Install this alpha release explicitly with ``pip install gsMap3D==0.1.4a2``.
+
+* Explicit ``expression_data_type=noncounts`` support for rank-only marker
+  scoring with an existing cell embedding. This mode skips ``find_latent``,
+  requires ``no_expression_fraction=True``, and rejects count-based QC options.
+  Counts remain the default; automatic expression-type detection is not yet
+  included.
+* A GWAS-independent ``DataPreparationConfig`` for configuring the latent
+  representation and marker-score stages.
+* Clearer 2D/3D coordinate validation and support for single-volume thick-tissue
+  inputs, with cross-section matching disabled for a single 3D input.
+* Numeric pandas DataFrame spatial coordinates are accepted.
+* Updated report headers, spatial cell banners, plotting guidance, tutorial
+  resources, documentation navigation, and resource-mirror configuration.
+
+This pre-release does not update stable Docker tags.
+
 v0.1.4a1
 --------
 

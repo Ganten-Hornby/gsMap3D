@@ -18,6 +18,7 @@ SPEC.loader.exec_module(MODULE)
     ("version", "prerelease"),
     [
         ("0.1.4a1", "true"),
+        ("0.1.4a2", "true"),
         ("0.1.4b1", "true"),
         ("0.1.4rc1", "true"),
         ("0.1.4.dev1", "true"),
