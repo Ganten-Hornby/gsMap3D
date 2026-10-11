@@ -25,7 +25,7 @@ from .cauchy_config import CauchyCombinationConfig
 
 # Use relative imports to avoid circular dependency
 from .find_latent_config import FindLatentRepresentationsConfig
-from .latent2gene_config import DatasetType, LatentToGeneConfig
+from .latent2gene_config import DatasetType, LatentToGeneConfig, validate_expression_contract
 from .report_config import (
     ReportConfig,
     should_export_spatialvista,
@@ -66,6 +66,7 @@ class QuickModeConfig(
 
     def __post_init__(self):
         ConfigWithAutoPaths.__post_init__(self)
+        validate_expression_contract(self, start_step=self.start_step)
 
         self._init_sumstats()
         self._init_annotation_list()

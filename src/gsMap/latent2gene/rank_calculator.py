@@ -38,6 +38,7 @@ from rich.table import Table
 from scipy.sparse import csr_matrix
 
 from gsMap.config import LatentToGeneConfig
+from gsMap.config.latent2gene_config import ExpressionDataType, validate_expression_contract
 from gsMap.logging_config import is_interactive_output
 from gsMap.utils.expression_qc import expression_row_metrics, h5_expression_row_metrics
 
@@ -820,6 +821,9 @@ class RankCalculator:
                 - mean_frac: Path to mean expression fraction parquet
         """
 
+        expression_data_type = validate_expression_contract(self.config)
+        allow_negative = expression_data_type == ExpressionDataType.NONCOUNTS
+
         # Use provided sample_h5ad_dict or get from config
         if sample_h5ad_dict is None:
             sample_h5ad_dict = self.config.sample_h5ad_dict
@@ -895,7 +899,11 @@ class RankCalculator:
                 # Do not trust upstream metrics after gene/homolog conversion, and
                 # do not confuse explicit zeros/duplicate CSR entries with genes.
                 X_group, _matrix_source = _select_rank_matrix_element(f, data_layer)
-                n_genes_per_cell, _ = h5_expression_row_metrics(X_group)
+                # Noncounts use distinct nonzero features, including signed
+                # standardized values. Row sums are never used as UMI depth.
+                n_genes_per_cell, _ = h5_expression_row_metrics(
+                    X_group, allow_negative=allow_negative
+                )
 
                 if annotation_key is not None:
                     if annotation_key not in adata_temp_obs.columns:

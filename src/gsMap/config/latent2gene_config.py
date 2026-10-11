@@ -40,6 +40,31 @@ class HomogeneousSelectionMode(StrEnum):
     HARD_NICHE_FILTER = "hard_niche_filter"
 
 
+class ExpressionDataType(StrEnum):
+    """Explicit expression semantics for downstream rank-based analysis."""
+
+    COUNTS = "counts"
+    NONCOUNTS = "noncounts"
+
+
+def validate_expression_contract(config, *, start_step=None):
+    """Keep count QC strict and require explicit rank-only noncount semantics."""
+    data_type = ExpressionDataType(getattr(config, "expression_data_type", "counts"))
+    config.expression_data_type = data_type
+    if data_type == ExpressionDataType.NONCOUNTS:
+        if start_step == "find_latent":
+            raise ValueError("Noncounts expression must skip find_latent and start at latent2gene")
+        if not getattr(config, "no_expression_fraction", False):
+            raise ValueError("Noncounts expression requires no_expression_fraction=True")
+        if getattr(config, "high_quality_neighbor_filter", False) or getattr(
+            config, "high_quality_cell_qc", False
+        ):
+            raise ValueError("Noncounts expression cannot use count-based high-quality cell filtering")
+        if getattr(config, "cell_qc_min_counts", None) is not None:
+            raise ValueError("Noncounts expression cannot use cell_qc_min_counts")
+    return data_type
+
+
 @dataclass
 class LatentToGeneComputeConfig:
     """Compute configuration for latent-to-gene step.
@@ -187,9 +212,22 @@ class LatentToGeneCoreConfig:
     data_layer: Annotated[
         str,
         typer.Option(
-            help="Gene expression raw counts data layer in h5ad layers, e.g., 'count', 'counts'. Other wise use 'X' for adata.X"
+            help="Expression data layer in h5ad layers, e.g., 'count', 'counts'; use 'X' for adata.X"
         ),
     ] = "X"
+
+    expression_data_type: Annotated[
+        ExpressionDataType,
+        typer.Option(
+            help=(
+                "Expression QC contract: counts requires finite nonnegative values; "
+                "noncounts permits finite signed values with external embeddings, "
+                "counts distinct nonzero features for min_genes, and requires "
+                "--no-expression-fraction."
+            ),
+            case_sensitive=False,
+        ),
+    ] = ExpressionDataType.COUNTS
 
     latent_representation_niche: Annotated[
         str | None, typer.Option(help="Key for spatial niche embedding in obsm")
@@ -330,6 +368,7 @@ class LatentToGeneConfig(LatentToGeneComputeConfig, LatentToGeneCoreConfig, Conf
     def __post_init__(self):
         """Initialize and validate configuration"""
         super().__post_init__()
+        validate_expression_contract(self)
 
         # Dataclass construction does not coerce programmatic string values to
         # StrEnum members (Typer does). Normalize both API and CLI calls so all

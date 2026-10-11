@@ -20,6 +20,7 @@ subcommand = namedtuple("subcommand", ["name", "func", "add_args_function", "des
 _LAZY_IMPORTS = {
     "BaseConfig": (".base", "BaseConfig"),
     "ConfigWithAutoPaths": (".base", "ConfigWithAutoPaths"),
+    "DataPreparationConfig": (".data_preparation_config", "DataPreparationConfig"),
     "ensure_path_exists": (".base", "ensure_path_exists"),
     "dataclass_typer": (".decorators", "dataclass_typer"),
     "track_resource_usage": (".decorators", "track_resource_usage"),
@@ -64,6 +65,7 @@ __all__ = [
     "BaseConfig",
     "CauchyCombinationConfig",
     "ConfigWithAutoPaths",
+    "DataPreparationConfig",
     "CrossSliceSelectionMode",
     "DatasetType",
     "FindLatentRepresentationsConfig",
