@@ -60,12 +60,12 @@ ______________________________________________________________________
 
 ## 📚 Documentation
 
-Please see our [Documentation](https://yanglab.westlake.edu.cn/data/gsMap3D/docs/r1/) and [Website](https://yanglab.westlake.edu.cn/gsmap3d-portal).
+Please see our [Documentation](https://yanglab.westlake.edu.cn/gsmap3d-portal/docs) and [Website](https://yanglab.westlake.edu.cn/gsmap3d-portal).
 
-Start with [Downloads](docs/source/downloads.md) to install shared resources once,
-then follow the direct CLI/Python [tutorials](docs/source/2d_tutorial/10x.md).
+Start with [Downloads](https://yanglab-obs.lab.westlake.edu.cn/public/gsMap/gsMap3D-r1/docs/r1/downloads.html) to install shared resources once,
+then follow the direct CLI/Python [tutorials](https://yanglab-obs.lab.westlake.edu.cn/public/gsMap/gsMap3D-r1/docs/r1/3d_tutorial/human_gastrulation.html).
 Each tutorial shows its required input files. The
-[Customization Guide](docs/source/advanced_usage.md) explains how to select your
+[Customization Guide](https://yanglab-obs.lab.westlake.edu.cn/public/gsMap/gsMap3D-r1/docs/r1/advanced_usage.html) explains how to select your
 own data, reference weights, embeddings and analysis settings. Download/report
 links marked staged are not yet public.
 
